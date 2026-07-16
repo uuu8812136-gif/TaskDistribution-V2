@@ -2,6 +2,11 @@
   "name": "task-distribution-frontend",
   "version": "1.0.0",
   "type": "module",
+  "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": "22.23.1",
+    "npm": "10.9.8"
+  },
   "description": "任务分配管理系统 - 后台管理界面",
   "scripts": {
     "dev": "vite",
@@ -14,10 +19,16 @@
     "pinia": "^2.1.7",
     "element-plus": "^2.5.0",
     "@element-plus/icons-vue": "^2.3.1",
-    "axios": "^1.6.2",
+    "axios": "^1.18.1",
     "dayjs": "^1.11.10",
-    "echarts": "^5.4.3",
-    "vue-echarts": "^6.6.8"
+    "echarts": "^6.1.0",
+    "vue-echarts": "^8.0.1"
+  },
+  "overrides": {
+    "form-data": "^4.0.6",
+    "lodash": "^4.18.1",
+    "lodash-es": "^4.18.1",
+    "postcss": "^8.5.19"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.0",
