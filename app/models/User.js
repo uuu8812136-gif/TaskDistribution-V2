@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
+function normalizeUsername(value) {
+  return typeof value === 'string'
+    ? value.normalize('NFKC').trim().toLowerCase()
+    : value;
+}
+
 const userSchema = new mongoose.Schema({
   // 登录信息
   username: {
@@ -10,6 +16,13 @@ const userSchema = new mongoose.Schema({
     trim: true,
     minlength: [3, '用户名至少3个字符'],
     maxlength: [50, '用户名最多50个字符']
+  },
+  usernameNormalized: {
+    type: String,
+    trim: true,
+    lowercase: true,
+    minlength: [3, '标准化用户名至少3个字符'],
+    maxlength: [50, '标准化用户名最多50个字符']
   },
   password: {
     type: String,
@@ -42,6 +55,25 @@ const userSchema = new mongoose.Schema({
     enum: ['admin', 'executor', 'cc'],
     default: 'executor'
   }],
+
+  // V2 global identity. Team-level roles live in TeamMembership.
+  isSuperAdmin: {
+    type: Boolean,
+    default: false,
+    required: true
+  },
+
+  // Incrementing this value invalidates every JWT issued for the user.
+  tokenVersion: {
+    type: Number,
+    default: 0,
+    min: 0,
+    required: true,
+    validate: {
+      validator: Number.isInteger,
+      message: 'tokenVersion必须是整数'
+    }
+  },
   
   // 部门
   department: {
@@ -68,6 +100,22 @@ const userSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+userSchema.pre('validate', function setNormalizedUsername(next) {
+  if (this.isModified('username') || !this.usernameNormalized) {
+    this.usernameNormalized = normalizeUsername(this.username);
+  }
+  next();
+});
+
+userSchema.index(
+  { usernameNormalized: 1 },
+  {
+    unique: true,
+    name: 'uq_user_username_normalized',
+    partialFilterExpression: { usernameNormalized: { $type: 'string' } }
+  }
+);
 
 // 密码加密中间件
 userSchema.pre('save', async function(next) {
@@ -97,4 +145,5 @@ userSchema.methods.toJSON = function() {
 };
 
 module.exports = mongoose.model('User', userSchema);
+module.exports.normalizeUsername = normalizeUsername;
 
