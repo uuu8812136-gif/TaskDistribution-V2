@@ -1,72 +1,117 @@
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
-import router from '@/router'
 
+const TOKEN_STORAGE_KEY = 'token'
 const configuredApiBaseURL = import.meta.env.VITE_API_BASE_URL?.trim()
 const apiBaseURL = configuredApiBaseURL
   ? configuredApiBaseURL.replace(/\/+$/, '')
   : '/api'
 
-// 创建 axios 实例
+let contextEpoch = 0
+let unauthorizedHandler = null
+
+export class StaleContextResponseError extends Error {
+  constructor() {
+    super('Response belongs to an inactive authentication context')
+    this.name = 'StaleContextResponseError'
+    this.code = 'ERR_AUTH_CONTEXT_STALE'
+  }
+}
+
+export function isStaleContextResponseError(error) {
+  return error?.code === 'ERR_AUTH_CONTEXT_STALE'
+}
+
+export function getRequestContextEpoch() {
+  return contextEpoch
+}
+
+export function advanceRequestContextEpoch() {
+  contextEpoch += 1
+  return contextEpoch
+}
+
+export function readAuthToken() {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || ''
+}
+
+export function replaceAuthToken(token) {
+  if (token) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token)
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY)
+  }
+}
+
+export function clearAuthToken() {
+  localStorage.removeItem(TOKEN_STORAGE_KEY)
+  localStorage.removeItem('userInfo')
+}
+
+export function setUnauthorizedHandler(handler) {
+  unauthorizedHandler = typeof handler === 'function' ? handler : null
+}
+
+function assertCurrentContext(config) {
+  if (
+    config?.contextScoped !== false &&
+    Number.isInteger(config?.authContextEpoch) &&
+    config.authContextEpoch !== contextEpoch
+  ) {
+    throw new StaleContextResponseError()
+  }
+}
+
 const request = axios.create({
   baseURL: apiBaseURL,
-  timeout: 15000
+  timeout: 30000
 })
 
-// 请求拦截器
-request.interceptors.request.use(
-  (config) => {
-    // 添加 token
-    const token = localStorage.getItem('token')
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`
-    }
-    return config
-  },
-  (error) => {
-    console.error('请求错误:', error)
-    return Promise.reject(error)
+request.interceptors.request.use((config) => {
+  if (/^https?:\/\//i.test(config.url || '')) {
+    return Promise.reject(new Error('Authenticated requests must use the configured API base URL'))
   }
-)
+  config.authContextEpoch = contextEpoch
+  const token = readAuthToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
 
-// 响应拦截器
 request.interceptors.response.use(
   (response) => {
-    console.log('✅ API响应成功:', response.config.url, response.data)
+    assertCurrentContext(response.config)
     return response.data
   },
   (error) => {
-    console.error('❌ API响应错误:', error)
+    try {
+      assertCurrentContext(error.config)
+    } catch (staleError) {
+      return Promise.reject(staleError)
+    }
 
-    if (error.response) {
-      const { status, data } = error.response
-      console.error('错误状态:', status, '错误数据:', data)
+    const status = error.response?.status
+    const data = error.response?.data
+    const hadToken = Boolean(readAuthToken())
+    const isLoginRequest = error.config?.url === '/auth/login'
 
-      switch (status) {
-        case 401:
-          ElMessage.error('登录已过期，请重新登录')
-          localStorage.removeItem('token')
-          localStorage.removeItem('userInfo')
-          router.push('/login')
-          break
-        case 403:
-          ElMessage.error(data.message || '没有权限')
-          break
-        case 404:
-          ElMessage.error(data.message || '请求的资源不存在')
-          break
-        case 500:
-          ElMessage.error(data.message || '服务器错误')
-          break
-        default:
-          ElMessage.error(data.message || '请求失败')
+    if (status === 401 && hadToken && !isLoginRequest) {
+      clearAuthToken()
+      if (unauthorizedHandler) {
+        unauthorizedHandler(error)
+      } else {
+        advanceRequestContextEpoch()
       }
-    } else if (error.request) {
-      console.error('网络错误:', error.request)
+      ElMessage.error('登录已过期，请重新登录')
+    } else if (status === 403) {
+      ElMessage.error(data?.message || '没有权限')
+    } else if (status === 404) {
+      ElMessage.error(data?.message || '请求的资源不存在')
+    } else if (status >= 500) {
+      ElMessage.error(data?.message || '服务器错误')
+    } else if (status && !isLoginRequest) {
+      ElMessage.error(data?.message || '请求失败')
+    } else if (!error.response && error.code !== 'ERR_CANCELED') {
       ElMessage.error('网络错误，请检查网络连接')
-    } else {
-      console.error('请求配置错误:', error.message)
-      ElMessage.error('请求配置错误')
     }
 
     return Promise.reject(error)
@@ -74,4 +119,3 @@ request.interceptors.response.use(
 )
 
 export default request
-

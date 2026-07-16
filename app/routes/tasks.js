@@ -1,52 +1,82 @@
+'use strict';
+
 const express = require('express');
-const router = express.Router();
 const taskController = require('../controllers/taskController');
 const taskFlowController = require('../controllers/taskFlowController');
-const { authenticate, isAdmin } = require('../middlewares/auth');
-const upload = require('../middlewares/upload');
+const {
+  authenticateContext,
+  requireBusinessContext,
+  requireModuleDataScope,
+  requirePermission,
+  requireTeamContext
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 
-// 所有路由都需要登录
-router.use(authenticate);
+const router = express.Router();
 
-// ========== 任务管理 ==========
+router.use(
+  authenticateContext,
+  requireBusinessContext,
+  businessWriteGuard,
+  requireModuleDataScope('task')
+);
 
-// 批量导出任务为Excel（放在/:id之前，避免被/:id路由捕获）
-router.get('/export', taskController.batchExportTasks);
+const taskView = requirePermission('task.view');
+const taskCreate = requirePermission('task.create');
+const taskEdit = requirePermission('task.edit');
+const taskAssign = requirePermission('task.assign');
+const taskReview = requirePermission('task.review');
+const taskExport = requirePermission('task.export');
 
-// 创建任务（管理员，支持附件上传）
-router.post('/', isAdmin, upload.array('attachments', 10), taskController.createTask);
+function requireAssignmentPermissionWhenPresent(req, res, next) {
+  const assignmentFields = ['executor', 'mainExecutor', 'ccUsers', 'subTasks'];
+  if (assignmentFields.some((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field))) {
+    return taskAssign(req, res, next);
+  }
+  return next();
+}
 
-// 获取任务列表
-router.get('/', taskController.getTasks);
+function rejectLegacyMultipart(req, res, next) {
+  if (req.is('multipart/form-data')) {
+    return res.status(415).json({
+      message: 'Multipart task attachments are disabled; upload files through /api/files first',
+      code: 'LEGACY_MULTIPART_DISABLED'
+    });
+  }
+  return next();
+}
 
-// 获取我的任务（执行人/抄送人/创建者）
-router.get('/my-tasks', taskController.getMyTasks);
+// Static routes must remain before /:id.
+router.get('/export', taskExport, taskController.batchExportTasks);
+router.get('/my-tasks', taskView, taskController.getMyTasks);
 
-// 获取任务详情
-router.get('/:id', taskController.getTaskById);
+router.post(
+  '/',
+  requireTeamContext,
+  taskCreate,
+  taskAssign,
+  rejectLegacyMultipart,
+  taskController.createTask
+);
+router.get('/', taskView, taskController.getTasks);
 
-// 更新任务（管理员，支持附件上传）
-router.put('/:id', isAdmin, upload.array('attachments', 10), taskController.updateTask);
+router.get('/:id', taskView, taskController.getTaskById);
+router.put(
+  '/:id',
+  requireTeamContext,
+  taskEdit,
+  rejectLegacyMultipart,
+  requireAssignmentPermissionWhenPresent,
+  taskController.updateTask
+);
+router.delete('/:id', requireTeamContext, taskEdit, taskController.deleteTask);
 
-// 删除任务（管理员）
-router.delete('/:id', isAdmin, taskController.deleteTask);
-
-// ========== 任务执行流程 ==========
-
-// 完成任务（执行人）
-router.post('/:id/complete', taskFlowController.completeTask);
-
-// 修改完成提交（执行人）
-router.put('/:id/complete', taskFlowController.updateCompletion);
-
-// 审核任务（抄送人）
-router.post('/:id/review', taskFlowController.reviewTask);
-
-// 确认任务（管理员）
-router.post('/:id/confirm', taskFlowController.confirmTask);
-
-// 获取任务审核记录
-router.get('/:id/reviews', taskFlowController.getTaskReviews);
+// These route-level guards establish the authorization boundary. The flow
+// controllers also enforce resource-level task/team filters.
+router.post('/:id/complete', requireTeamContext, taskEdit, taskFlowController.completeTask);
+router.put('/:id/complete', requireTeamContext, taskEdit, taskFlowController.updateCompletion);
+router.post('/:id/review', requireTeamContext, taskReview, taskFlowController.reviewTask);
+router.post('/:id/confirm', requireTeamContext, taskReview, taskFlowController.confirmTask);
+router.get('/:id/reviews', taskView, taskFlowController.getTaskReviews);
 
 module.exports = router;
-

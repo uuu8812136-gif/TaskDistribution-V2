@@ -10,6 +10,7 @@ node_modules/
 dist/
 coverage/
 unpackage/
+.vite/
 
 # Runtime data
 uploads/
@@ -22,5 +23,6 @@ app/script/backup_task_distribution_*/
 # Test data and local state
 .test-data/
 .cache/
+tools/runtime/
 .DS_Store
 Thumbs.db

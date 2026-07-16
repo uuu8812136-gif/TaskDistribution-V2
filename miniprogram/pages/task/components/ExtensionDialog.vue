@@ -47,7 +47,7 @@
 
 <script>
 import { ref, computed } from 'vue'
-import { formatDate } from '@/utils/format.js'
+import { formatDate, parseDate } from '@/utils/format.js'
 
 export default {
 	name: 'ExtensionDialog',
@@ -127,8 +127,8 @@ export default {
 			}
 			
 			// 验证新时间必须晚于当前时间
-			const newDate = new Date(form.value.newTime)
-			const currentDate = new Date(props.currentTime)
+			const newDate = parseDate(form.value.newTime)
+			const currentDate = parseDate(props.currentTime)
 			
 			if (newDate <= currentDate) {
 				uni.showToast({

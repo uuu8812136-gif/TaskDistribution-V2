@@ -1,0 +1,92 @@
+'use strict';
+
+const express = require('express');
+const multer = require('multer');
+const { createFileController } = require('../controllers/fileController');
+const {
+  authenticateContext,
+  requireBusinessContext,
+  requireTeamContext
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
+const {
+  FileAssetError,
+  assertTemporaryUploadPermission
+} = require('../services/fileAssetService');
+const { validatedExtension } = require('../services/fileStorageService');
+
+function createUpload(maxFileSize) {
+  return multer({
+    storage: multer.memoryStorage(),
+    limits: {
+      fileSize: maxFileSize,
+      files: 1,
+      fields: 10,
+      parts: 11,
+      fieldNameSize: 100,
+      fieldSize: 16 * 1024
+    },
+    fileFilter(req, file, callback) {
+      try {
+        validatedExtension(file.originalname, file.mimetype);
+        callback(null, true);
+      } catch (error) {
+        callback(new FileAssetError(415, 'FILE_TYPE_UNSUPPORTED', error.message));
+      }
+    }
+  }).single('file');
+}
+
+function uploadMiddleware(upload) {
+  return function handleUpload(req, res, next) {
+    upload(req, res, (error) => {
+      if (!error) return next();
+      if (error instanceof FileAssetError) return next(error);
+      if (error instanceof multer.MulterError) {
+        const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+        return next(new FileAssetError(
+          tooLarge ? 413 : 400,
+          tooLarge ? 'FILE_TOO_LARGE' : 'FILE_UPLOAD_INVALID',
+          tooLarge ? 'File exceeds the configured size limit' : 'Invalid file upload'
+        ));
+      }
+      return next(error);
+    });
+  };
+}
+
+function requireTemporaryUploadPermission(req, res, next) {
+  try {
+    assertTemporaryUploadPermission(req.authContext);
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+
+function createFilesRouter({ storageRoot, maxFileSize } = {}) {
+  if (!Number.isSafeInteger(maxFileSize) || maxFileSize <= 0) {
+    throw new TypeError('maxFileSize must be a positive safe integer');
+  }
+  const router = express.Router();
+  const controller = createFileController({ storageRoot });
+  const upload = createUpload(maxFileSize);
+
+  router.use(authenticateContext, requireBusinessContext);
+  router.post(
+    '/',
+    requireTeamContext,
+    businessWriteGuard,
+    requireTemporaryUploadPermission,
+    uploadMiddleware(upload),
+    controller.uploadTemporary
+  );
+  router.get('/:fileId', controller.getMetadata);
+  router.get('/:fileId/download', controller.download);
+  router.patch('/:fileId/bind', requireTeamContext, businessWriteGuard, controller.bind);
+  router.delete('/:fileId', requireTeamContext, businessWriteGuard, controller.remove);
+
+  return router;
+}
+
+module.exports = { createFilesRouter };

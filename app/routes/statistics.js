@@ -1,19 +1,39 @@
+'use strict';
+
 const express = require('express');
-const router = express.Router();
 const statisticsController = require('../controllers/statisticsController');
-const { authenticate, isAdmin } = require('../middlewares/auth');
+const {
+  authenticateContext,
+  requireBusinessContext,
+  requireModuleDataScope,
+  requirePermission
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 
-// 所有路由都需要登录
-router.use(authenticate);
+const router = express.Router();
 
-// 获取统计概览
-router.get('/overview', statisticsController.getStatisticsOverview);
+router.use(
+  authenticateContext,
+  requireBusinessContext,
+  businessWriteGuard,
+  requireModuleDataScope('task')
+);
 
-// 导出任务统计（管理员）
-router.get('/export/tasks', isAdmin, statisticsController.exportTasksToExcel);
-
-// 导出人员统计（管理员）
-router.get('/export/users', isAdmin, statisticsController.exportUserStatistics);
+router.get(
+  '/overview',
+  requirePermission('task.view'),
+  statisticsController.getStatisticsOverview
+);
+router.get(
+  '/export/tasks',
+  requirePermission('task.export'),
+  statisticsController.exportTasksToExcel
+);
+router.get(
+  '/export/users',
+  requirePermission('task.export'),
+  requirePermission('member.view'),
+  statisticsController.exportUserStatistics
+);
 
 module.exports = router;
-

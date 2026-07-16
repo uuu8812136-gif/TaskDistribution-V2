@@ -32,6 +32,25 @@ test('health endpoint identifies the isolated instance', async () => {
   });
 });
 
+test('request ids are stable, bounded, and returned to callers', async () => {
+  const app = createApp(testConfig());
+  const supplied = 'client-request.20260716:001';
+  await request(app)
+    .get('/health')
+    .set('X-Request-Id', supplied)
+    .expect('X-Request-Id', supplied)
+    .expect(200);
+
+  const generated = await request(app)
+    .get('/health')
+    .set('X-Request-Id', 'not a valid request id')
+    .expect(200);
+  assert.match(
+    generated.headers['x-request-id'],
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+  );
+});
+
 test('legacy public upload paths stay disabled by default', async () => {
   await request(createApp(testConfig())).get('/uploads/unknown.txt').expect(404);
 });
@@ -47,4 +66,15 @@ test('CORS accepts configured origins and rejects unrelated origins', async () =
     .get('/health')
     .set('Origin', 'https://www.horselink.cn')
     .expect(403);
+});
+
+test('transport and production schedule APIs are mounted behind authentication', async () => {
+  const app = createApp(testConfig());
+  for (const path of [
+    '/api/transport-records',
+    '/api/production-schedules/monthly'
+  ]) {
+    const response = await request(app).get(path).expect(401);
+    assert.notEqual(response.body.message, '接口不存在');
+  }
 });

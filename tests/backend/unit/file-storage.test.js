@@ -8,6 +8,7 @@ const {
   createStorageKey,
   normalizeOriginalName,
   resolveStoragePath,
+  validateFileContent,
   validatedExtension
 } = require('../../../app/services/fileStorageService');
 
@@ -50,4 +51,30 @@ test('normalizes browser-supplied paths and resolves only below the storage root
 
   assert.equal(path.relative(root, target).startsWith('..'), false);
   assert.equal(target.endsWith(path.join(TEAM_ID, '2030', '02', `${UUID}.pdf`)), true);
+});
+
+test('normalizes UTF-8 browser filename bytes without trusting path segments', () => {
+  const browserEncodedName = Buffer.from('client-photo.png', 'utf8').toString('latin1');
+  assert.equal(normalizeOriginalName(`C:\\fakepath\\${browserEncodedName}`), 'client-photo.png');
+
+  const encodedChineseName = Buffer.from('\u8bbe\u5907\u7167\u7247.png', 'utf8').toString('latin1');
+  assert.equal(normalizeOriginalName(encodedChineseName), '\u8bbe\u5907\u7167\u7247.png');
+});
+
+test('validates file signatures instead of trusting the multipart MIME header', () => {
+  const png = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    Buffer.from([0x00, 0x00, 0x00, 0x0d]),
+    Buffer.from('IHDR'),
+    Buffer.alloc(8)
+  ]);
+  assert.equal(validateFileContent(png, 'image/png'), true);
+  assert.throws(
+    () => validateFileContent(Buffer.from('not a png'), 'image/png'),
+    /does not match/
+  );
+  assert.throws(
+    () => validateFileContent(Buffer.from([0x61, 0x00, 0x62]), 'text/plain'),
+    /does not match/
+  );
 });

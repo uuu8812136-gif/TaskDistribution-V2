@@ -1,25 +1,41 @@
+'use strict';
+
 const express = require('express');
-const router = express.Router();
 const extensionController = require('../controllers/extensionController');
-const { authenticate, isAdmin } = require('../middlewares/auth');
+const {
+  authenticateContext,
+  requireBusinessContext,
+  requirePermission,
+  requireTeamContext
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 
-// 所有路由都需要登录
-router.use(authenticate);
+const router = express.Router();
 
-// 申请延期
-router.post('/apply/:id', extensionController.applyExtension);
+router.use(authenticateContext, requireBusinessContext, businessWriteGuard);
 
-// 审批延期（管理员）
-router.post('/approve/:id', isAdmin, extensionController.approveExtension);
-
-// 获取延期申请列表
-router.get('/', extensionController.getExtensionRequests);
-
-// 获取延期申请详情
-router.get('/:id', extensionController.getExtensionRequestById);
-
-// 获取任务的延期历史
-router.get('/history/:taskId', extensionController.getTaskExtensionHistory);
+router.post(
+  '/apply/:id',
+  requireTeamContext,
+  requirePermission('task.edit'),
+  extensionController.applyExtension
+);
+router.post(
+  '/approve/:id',
+  requireTeamContext,
+  requirePermission('task.review'),
+  extensionController.approveExtension
+);
+router.get('/', requirePermission('task.view'), extensionController.getExtensionRequests);
+router.get(
+  '/history/:taskId',
+  requirePermission('task.view'),
+  extensionController.getTaskExtensionHistory
+);
+router.get(
+  '/:id',
+  requirePermission('task.view'),
+  extensionController.getExtensionRequestById
+);
 
 module.exports = router;
-

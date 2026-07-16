@@ -1,8 +1,8 @@
 /**
  * API 接口统一管理
  */
-import { get, post, put, del } from '@/utils/request.js'
-import config from '@/config/index.js'
+import { get, post, put, del, upload, download } from '@/utils/request.js'
+import { managedFileId } from '@/utils/attachments.js'
 
 // ==================== 认证模块 ====================
 
@@ -10,8 +10,19 @@ import config from '@/config/index.js'
  * 用户登录
  */
 export const login = (data) => {
-  return post('/auth/login', data)
+  return post('/auth/login', data, { auth: false, contextScoped: false })
 }
+
+export const getAccessibleTeams = () => get('/auth/teams')
+
+export const switchTeam = (teamId) => post('/auth/switch-team', { teamId })
+
+export const enterGlobalReadOnly = () => post('/auth/global-readonly')
+
+export const logout = () => post('/auth/logout', {}, {
+  showLoading: false,
+  silentError: true
+})
 
 /**
  * 获取当前用户信息
@@ -25,6 +36,21 @@ export const getCurrentUser = () => {
  */
 export const changePassword = (data) => {
   return post('/auth/change-password', data)
+}
+
+export const uploadTaskAttachment = async (file) => {
+  const response = await upload('/files', file.path, {
+    originalName: file.name
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return { fileId }
+}
+
+export const downloadTaskAttachment = (file) => {
+  const fileId = managedFileId(file)
+  if (!fileId) throw new TypeError('Managed attachment fileId is required')
+  return download(`/files/${fileId}/download`)
 }
 
 // ==================== 任务模块 ====================
@@ -116,39 +142,6 @@ export const reviewTask = async (id, data) => {
     console.error('reviewTask API 错误:', error)
     throw error
   }
-}
-
-/**
- * 上传单个文件
- */
-const uploadFile = (url, filePath) => {
-  return new Promise((resolve, reject) => {
-    const token = uni.getStorageSync('token')
-    
-    uni.uploadFile({
-      url: config.baseURL + url,
-      filePath: filePath,
-      name: 'file',
-      header: {
-        Authorization: token ? `Bearer ${token}` : ''
-      },
-      success: (res) => {
-        try {
-          const result = JSON.parse(res.data)
-          if (res.statusCode === 200 || res.statusCode === 201) {
-            resolve(result)
-          } else {
-            reject(new Error(result.message || '上传失败'))
-          }
-        } catch (e) {
-          reject(e)
-        }
-      },
-      fail: (err) => {
-        reject(err)
-      }
-    })
-  })
 }
 
 /**
@@ -246,6 +239,58 @@ export const clearReadMessages = () => {
  */
 export const getUsers = (params) => {
   return get('/users', params)
+}
+
+export const getOrgUnits = (params = {}) => {
+  return get('/org-units', params)
+}
+
+// ==================== 数据提报模块 ====================
+
+export const getTransportRecords = (params = {}) => {
+  return get('/transport-records', params)
+}
+
+export const getTransportRecord = (transportRecordId, params = {}) => {
+  return get(`/transport-records/${transportRecordId}`, params)
+}
+
+export const createTransportRecord = (data) => {
+  return post('/transport-records', data)
+}
+
+export const uploadTransportPhoto = async (file) => {
+  const response = await upload('/files', file.path, {
+    originalName: file.name
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return fileId
+}
+
+export const getPrivateFileMetadata = (fileId, params = {}) => {
+  const normalized = managedFileId({ fileId })
+  if (!normalized) throw new TypeError('Managed fileId is required')
+  return get(`/files/${normalized}`, params)
+}
+
+export const downloadPrivateFile = (fileId, params = {}) => {
+  const normalized = managedFileId({ fileId })
+  if (!normalized) throw new TypeError('Managed fileId is required')
+  const teamId = typeof params.teamId === 'string' ? params.teamId : ''
+  const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''
+  return download(`/files/${normalized}/download${query}`)
+}
+
+export const getDailyProductionSchedules = (slot, params = {}) => {
+  if (slot !== 'previous' && slot !== 'current') {
+    throw new TypeError('Daily production slot must be previous or current')
+  }
+  return get(`/production-schedules/daily/${slot}`, params)
+}
+
+export const getMonthlyProductionSchedules = (params = {}) => {
+  return get('/production-schedules/monthly', params)
 }
 
 // ==================== 统计模块 ====================

@@ -18,7 +18,7 @@
           class="form-input"
           v-model="form.username"
           placeholder="请输入账号"
-          :maxlength="20"
+          :maxlength="50"
         />
       </view>
 
@@ -32,18 +32,9 @@
           v-model="form.password"
           type="password"
           placeholder="请输入密码"
-          :maxlength="20"
+          :maxlength="128"
           @confirm="handleLogin"
         />
-      </view>
-
-      <view class="form-item-checkbox">
-        <checkbox-group @change="handleRememberChange">
-          <label>
-            <checkbox :checked="rememberPassword" color="#409EFF" />
-            <text>记住密码</text>
-          </label>
-        </checkbox-group>
       </view>
 
       <button class="login-btn" @click="handleLogin" :loading="loading">
@@ -62,9 +53,10 @@
 
 <script>
 import { ref, onMounted } from "vue";
-import { login } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
 import { useMessageStore } from "@/stores/message.js";
+import { clearLegacyCredentialCaches, readAuthToken } from "@/utils/sessionRuntime.js";
+import { getSessionEntryRoute } from "@/utils/sessionPolicy.js";
 
 export default {
   name: "Login",
@@ -77,49 +69,28 @@ export default {
       password: "",
     });
 
-    const rememberPassword = ref(false);
     const loading = ref(false);
 
-    // 页面加载时检查是否记住密码
     onMounted(() => {
-      // 检查是否自动登录
+      clearLegacyCredentialCaches();
       checkAutoLogin();
-
-      // 加载保存的账号密码
-      const savedUsername = uni.getStorageSync("savedUsername");
-      const savedPassword = uni.getStorageSync("savedPassword");
-      const remember = uni.getStorageSync("rememberPassword");
-
-      if (remember && savedUsername) {
-        form.value.username = savedUsername;
-        form.value.password = savedPassword || "";
-        rememberPassword.value = true;
-      }
     });
 
     // 检查自动登录
     const checkAutoLogin = () => {
-      const token = uni.getStorageSync("token");
+      const token = readAuthToken();
       if (token) {
-        // 有token，尝试获取用户信息
         userStore
-          .fetchUserInfo()
+          .bootstrap()
           .then(() => {
-            // 成功，跳转到主页
             uni.reLaunch({
-              url: "/pages/task/received",
+              url: getSessionEntryRoute(userStore.mode),
             });
           })
-          .catch(() => {
-            // token失效，清除
-            userStore.logout();
+          .catch((error) => {
+            console.error("恢复登录状态失败:", error);
           });
       }
-    };
-
-    // 记住密码复选框变化
-    const handleRememberChange = (e) => {
-      rememberPassword.value = e.detail.value.length > 0;
     };
 
     // 登录
@@ -144,29 +115,13 @@ export default {
       loading.value = true;
 
       try {
-        // 调用登录接口
-        const res = await login({
+        await userStore.login({
           username: form.value.username,
           password: form.value.password,
         });
+        form.value.password = "";
 
-        // 保存token和用户信息
-        userStore.setToken(res.token);
-        userStore.setUserInfo(res.user);
-
-        // 记住密码
-        if (rememberPassword.value) {
-          uni.setStorageSync("rememberPassword", true);
-          uni.setStorageSync("savedUsername", form.value.username);
-          uni.setStorageSync("savedPassword", form.value.password);
-        } else {
-          uni.removeStorageSync("rememberPassword");
-          uni.removeStorageSync("savedUsername");
-          uni.removeStorageSync("savedPassword");
-        }
-
-        // 获取未读消息数量
-        messageStore.fetchUnreadCount();
+        if (userStore.canAccessBusiness) messageStore.fetchUnreadCount();
 
         uni.showToast({
           title: "登录成功",
@@ -176,9 +131,9 @@ export default {
         // 跳转到主页
         setTimeout(() => {
           uni.reLaunch({
-            url: "/pages/task/received",
+            url: getSessionEntryRoute(userStore.mode),
           });
-        }, 1000);
+        }, 500);
       } catch (error) {
         console.error("登录失败:", error);
         // 错误提示已在request.js中处理
@@ -189,9 +144,7 @@ export default {
 
     return {
       form,
-      rememberPassword,
       loading,
-      handleRememberChange,
       handleLogin,
     };
   },

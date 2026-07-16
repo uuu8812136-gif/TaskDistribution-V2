@@ -12,9 +12,7 @@ export const useMessageStore = defineStore('message', {
       try {
         const result = await getUnreadCount()
         this.unreadCount = result.count
-      } catch (error) {
-        console.error('获取未读消息数量失败:', error)
-      }
+      } catch {}
     },
 
     // 减少未读数量

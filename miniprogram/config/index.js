@@ -7,10 +7,14 @@ const nodeEnv = typeof process !== 'undefined' && process.env ? process.env : {}
 const buildMode = viteEnv.MODE || nodeEnv.NODE_ENV || 'development'
 const isProduction = buildMode === 'production'
 
+function parseHttpEndpoint(value) {
+  return /^(https?):\/\/(\[[^\]]+\]|[^\/:?#@]+)(?::(\d+))?(\/[^?#]*)?$/i.exec(value)
+}
+
 function normalizeHttpUrl(value, variableName) {
-  const normalized = value.replace(/\/+$/, '')
-  if (!/^https?:\/\//i.test(normalized)) {
-    throw new Error(`${variableName} must be an absolute http(s) URL.`)
+  const normalized = value.trim().replace(/\/+$/, '')
+  if (!parseHttpEndpoint(normalized)) {
+    throw new Error(`${variableName} must be an absolute http(s) URL without credentials, query or fragment.`)
   }
   return normalized
 }
@@ -20,9 +24,9 @@ function assertIsolatedEndpoint(value, variableName) {
     return
   }
 
-  const endpoint = value.match(/^https?:\/\/([^/:]+)(?::(\d+))?/i)
-  const hostname = endpoint?.[1]?.toLowerCase() || ''
-  const port = endpoint?.[2] || ''
+  const endpoint = parseHttpEndpoint(value)
+  const hostname = endpoint?.[2]?.toLowerCase().replace(/\.$/, '') || ''
+  const port = endpoint?.[3] || ''
   if (LIVE_HOSTS.includes(hostname)) {
     throw new Error(`${variableName} cannot target a live endpoint in ${buildMode} mode.`)
   }

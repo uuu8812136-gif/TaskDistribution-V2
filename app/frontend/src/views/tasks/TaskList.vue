@@ -37,8 +37,8 @@
         <el-form-item>
           <el-button type="primary" @click="handleSearch">搜索</el-button>
           <el-button @click="handleReset">重置</el-button>
-          <el-button v-if="userStore.isAdmin" type="success" @click="handleCreate">创建任务</el-button>
-          <el-button type="warning" @click="handleBatchExport" :loading="exportLoading">
+          <el-button v-if="canCreate" type="success" @click="handleCreate">创建任务</el-button>
+          <el-button v-if="canExport" type="warning" @click="handleBatchExport" :loading="exportLoading">
             <el-icon style="margin-right: 4px"><Download /></el-icon>
             导出Excel
           </el-button>
@@ -86,8 +86,8 @@
         <el-table-column label="操作" width="190" fixed="right">
           <template #default="{ row }">
             <el-button type="primary" size="small" text @click="handleView(row)">查看</el-button>
-            <el-button v-if="userStore.isAdmin" type="warning" size="small" text @click="handleEdit(row)">编辑</el-button>
-            <el-button v-if="userStore.isAdmin" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+            <el-button v-if="canEdit" type="warning" size="small" text @click="handleEdit(row)">编辑</el-button>
+            <el-button v-if="canEdit" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -108,16 +108,19 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useUserStore } from '@/stores/user'
+import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
 const router = useRouter()
-const userStore = useUserStore()
+const session = useSessionStore()
+const canCreate = computed(() => session.can('task.create', { write: true, teamRequired: true }))
+const canEdit = computed(() => session.can('task.edit', { write: true, teamRequired: true }))
+const canExport = computed(() => session.hasPermission('task.export'))
 
 const loading = ref(false)
 const exportLoading = ref(false)

@@ -8,6 +8,14 @@
 			}
 		},
 		{
+			"path": "pages/team/select",
+			"style": {
+				"navigationBarTitleText": "选择项目团队",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/task/received",
 			"style": {
 				"navigationBarTitleText": "我的任务",
@@ -40,6 +48,48 @@
 				"navigationBarTitleText": "我的",
 				"navigationBarBackgroundColor": "#409EFF",
 				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/reporting/index",
+			"style": {
+				"navigationBarTitleText": "数据提报",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/reporting/transport-list",
+			"style": {
+				"navigationBarTitleText": "运输记录",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/reporting/transport-form",
+			"style": {
+				"navigationBarTitleText": "运输提报",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/reporting/transport-detail",
+			"style": {
+				"navigationBarTitleText": "运输详情",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/reporting/schedule",
+			"style": {
+				"navigationBarTitleText": "生产排产",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
 			}
 		},
 		{
@@ -108,6 +158,10 @@
 			{
 				"pagePath": "pages/task/manage",
 				"text": "任务管理"
+			},
+			{
+				"pagePath": "pages/reporting/index",
+				"text": "数据提报"
 			},
 			{
 				"pagePath": "pages/message/index",

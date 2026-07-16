@@ -1,7 +1,7 @@
 <template>
   <view class="message-container">
     <!-- 操作栏 -->
-    <view class="action-bar">
+    <view v-if="canWriteMessages" class="action-bar">
       <button class="action-btn" @click="markAllRead">全部已读</button>
       <button class="action-btn" @click="clearRead">清空已读</button>
     </view>
@@ -39,7 +39,7 @@
               <text class="message-time">{{
                 formatRelativeTime(msg.createdAt)
               }}</text>
-              <text class="message-delete" @click.stop="handleDelete(msg._id)"
+              <text v-if="canWriteMessages" class="message-delete" @click.stop="handleDelete(msg._id)"
                 >删除</text
               >
             </view>
@@ -73,7 +73,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import {
   getMessages,
@@ -83,6 +83,7 @@ import {
   clearReadMessages,
 } from "@/api/index.js";
 import { useMessageStore } from "@/stores/message.js";
+import { useUserStore } from "@/stores/user.js";
 import { formatRelativeTime, getMessageTypeText } from "@/utils/format.js";
 import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
 
@@ -93,6 +94,8 @@ export default {
   },
   setup() {
     const messageStore = useMessageStore();
+    const userStore = useUserStore();
+    const canWriteMessages = computed(() => userStore.isTeamMode && !userStore.isReadOnly);
 
     const messages = ref([]);
     const loading = ref(false);
@@ -162,7 +165,7 @@ export default {
     // 点击消息
     const handleMessageClick = async (msg) => {
       // 标记为已读
-      if (!msg.isRead) {
+      if (canWriteMessages.value && !msg.isRead) {
         try {
           await markMessageRead(msg._id);
           msg.isRead = true;
@@ -286,6 +289,7 @@ export default {
 
     return {
       messages,
+      canWriteMessages,
       loading,
       refreshing,
       hasMore,

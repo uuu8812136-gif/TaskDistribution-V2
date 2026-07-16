@@ -39,10 +39,7 @@ export function createTask(data) {
   return request({
     url: '/tasks',
     method: 'post',
-    data,
-    headers: {
-      'Content-Type': 'multipart/form-data'
-    }
+    data
   })
 }
 

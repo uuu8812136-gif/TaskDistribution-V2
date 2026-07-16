@@ -73,7 +73,7 @@
               </view>
             </view>
 
-            <view v-if="ext.status === 'pending'" class="card-footer">
+            <view v-if="ext.status === 'pending' && canApprove" class="card-footer">
               <button
                 class="action-btn reject"
                 @click="handleApprove(ext, false)"
@@ -114,7 +114,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { getExtensions, approveExtension } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
 import {
@@ -127,6 +127,10 @@ export default {
   name: "ExtensionList",
   setup() {
     const userStore = useUserStore();
+    const canApprove = computed(() => userStore.can('task.review', {
+      write: true,
+      teamRequired: true
+    }));
 
     const statusOptions = [
       { label: "全部状态", value: "" },
@@ -144,8 +148,7 @@ export default {
     const hasMore = ref(true);
 
     onMounted(() => {
-      // 检查是否是管理员
-      if (!userStore.isAdmin) {
+      if (!userStore.can('task.view')) {
         uni.showToast({
           title: "无权限访问",
           icon: "none",
@@ -305,6 +308,7 @@ export default {
       loading,
       refreshing,
       hasMore,
+      canApprove,
       onStatusChange,
       onRefresh,
       loadMore,

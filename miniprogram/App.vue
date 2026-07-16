@@ -1,7 +1,13 @@
 <script>
+	import { useUserStore } from '@/stores/user.js'
+	import { setUnauthorizedHandler } from '@/utils/request.js'
+	import { clearLegacyCredentialCaches } from '@/utils/sessionRuntime.js'
+
 	export default {
 		onLaunch: function() {
-			console.log('App Launch')
+			clearLegacyCredentialCaches()
+			const userStore = useUserStore()
+			setUnauthorizedHandler(() => userStore.handleUnauthorized())
 		},
 		onShow: function() {
 			console.log('App Show')

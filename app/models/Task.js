@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const fileAttachmentSchema = require('./schemas/fileAttachmentSchema');
 
 const taskSchema = new mongoose.Schema({
   teamId: {
@@ -114,17 +115,7 @@ const taskSchema = new mongoose.Schema({
   },
   
   // 附件和图片
-  attachments: [{
-    filename: String,
-    originalName: String,
-    path: String,
-    mimetype: String,
-    size: Number,
-    uploadTime: {
-      type: Date,
-      default: Date.now
-    }
-  }],
+  attachments: [fileAttachmentSchema],
   
   // 标签
   tags: [{
@@ -151,17 +142,7 @@ const taskSchema = new mongoose.Schema({
   completionNote: {
     type: String
   },
-  completionAttachments: [{
-    filename: String,
-    originalName: String,
-    path: String,
-    mimetype: String,
-    size: Number,
-    uploadTime: {
-      type: Date,
-      default: Date.now
-    }
-  }],
+  completionAttachments: [fileAttachmentSchema],
   completedBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -189,17 +170,7 @@ const taskSchema = new mongoose.Schema({
       type: String,
       trim: true
     },
-    attachments: [{
-      filename: String,
-      originalName: String,
-      path: String,
-      mimetype: String,
-      size: Number,
-      uploadTime: {
-        type: Date,
-        default: Date.now
-      }
-    }],
+    attachments: [fileAttachmentSchema],
     completedAt: {
       type: Date
     }

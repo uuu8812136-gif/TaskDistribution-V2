@@ -21,6 +21,7 @@ const request = appRequire('supertest');
 const { MongoMemoryServer } = appRequire('mongodb-memory-server');
 
 const permissions = require('../../../app/config/permissions');
+const AuditLog = require('../../../app/models/AuditLog');
 const AuthSession = require('../../../app/models/AuthSession');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
@@ -28,7 +29,7 @@ const TeamMembership = require('../../../app/models/TeamMembership');
 const User = require('../../../app/models/User');
 const authRouter = require('../../../app/routes/auth');
 
-const MODELS = [AuthSession, TeamMembership, OrgUnit, ProjectTeam, User];
+const MODELS = [AuditLog, AuthSession, TeamMembership, OrgUnit, ProjectTeam, User];
 
 let app;
 let mongoServer;
@@ -254,6 +255,31 @@ test('switch-team rotates the session and invalidates the old token', async () =
   assert.notEqual(first.team.id, second.team.id);
 });
 
+test('ordinary users cannot distinguish an unowned team from a missing team', async () => {
+  const user = await createUser({ username: 'scope.probe' });
+  await createTeam({ createdBy: user._id, member: user });
+  const unowned = await createTeam({ createdBy: user._id });
+  const signedIn = await login(user.username).expect(200);
+
+  const unownedResponse = await request(app)
+    .post('/api/auth/switch-team')
+    .set(bearer(signedIn.body.token))
+    .send({ teamId: unowned.team.id })
+    .expect(404);
+  const missingResponse = await request(app)
+    .post('/api/auth/switch-team')
+    .set(bearer(signedIn.body.token))
+    .send({ teamId: new mongoose.Types.ObjectId().toString() })
+    .expect(404);
+
+  assert.deepEqual(unownedResponse.body, missingResponse.body);
+  assert.equal(unownedResponse.body.code, 'AUTH_TEAM_NOT_FOUND');
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(signedIn.body.token))
+    .expect(200);
+});
+
 test('concurrent team switches allow exactly one successor session', async () => {
   const user = await createUser({ username: 'race.user' });
   await createTeam({ createdBy: user._id, member: user });
@@ -348,11 +374,64 @@ test('change-password increments tokenVersion and revokes every active session',
     }),
     2
   );
+  const audit = await AuditLog.findOne({
+    action: permissions.AUDIT_ACTIONS.UPDATE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.USER,
+    resourceId: user.id
+  }).lean();
+  assert.ok(audit);
+  assert.deepEqual(audit.before, { tokenVersion: '[REDACTED]' });
+  assert.equal(audit.after.tokenVersion, '[REDACTED]');
+  assert.equal(audit.after.authenticationStateChanged, true);
+  assert.equal(JSON.stringify(audit).includes('replacement-password'), false);
 
   await request(app).get('/api/auth/me').set(bearer(first.body.token)).expect(401);
   await request(app).get('/api/auth/me').set(bearer(second.body.token)).expect(401);
   await login(user.username, 'initial-password').expect(401);
   await login(user.username, 'replacement-password').expect(200);
+});
+
+test('authentication lifecycle writes sanitized audit evidence', async () => {
+  const superAdmin = await createUser({
+    username: 'audit.root',
+    isSuperAdmin: true
+  });
+  const { team } = await createTeam({ createdBy: superAdmin._id });
+
+  await login('missing.audit.user', 'wrong-password').expect(401);
+  const signedIn = await login(superAdmin.username).expect(200);
+  const entered = await request(app)
+    .post('/api/auth/switch-team')
+    .set(bearer(signedIn.body.token))
+    .send({ teamId: team.id })
+    .expect(200);
+  const global = await request(app)
+    .post('/api/auth/global-readonly')
+    .set(bearer(entered.body.token))
+    .expect(200);
+  await request(app)
+    .post('/api/auth/logout')
+    .set(bearer(global.body.token))
+    .expect(200);
+
+  const events = await AuditLog.find({}).sort({ createdAt: 1 }).lean();
+  assert.deepEqual(
+    events.map(({ action }) => action),
+    [
+      permissions.AUDIT_ACTIONS.LOGIN_FAILURE,
+      permissions.AUDIT_ACTIONS.LOGIN_SUCCESS,
+      permissions.AUDIT_ACTIONS.ENTER_TEAM,
+      permissions.AUDIT_ACTIONS.EXIT_TEAM,
+      permissions.AUDIT_ACTIONS.LOGOUT
+    ]
+  );
+  assert.equal(events[0].actorRole, permissions.AUDIT_ACTOR_ROLES.SYSTEM);
+  assert.equal(events[0].after.usernameNormalized, 'missing.audit.user');
+  assert.equal(events[1].actorUserId.toString(), superAdmin.id);
+  assert.equal(events[1].actorMode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
+  assert.equal(events[2].targetTeamId.toString(), team.id);
+  assert.equal(events[3].before.activeTeamId, team.id);
+  assert.equal(JSON.stringify(events).includes('wrong-password'), false);
 });
 
 test('legacy register is team-scoped and cannot create a global identity', async () => {

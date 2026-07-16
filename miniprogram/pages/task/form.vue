@@ -4,6 +4,23 @@
 			<!-- 基本信息 -->
 			<view class="form-section">
 				<view class="section-title">基本信息</view>
+
+				<view v-if="isTeamTaskScope" class="form-item">
+					<text class="form-label"><text class="required">*</text> 任务所属组织</text>
+					<picker
+						mode="selector"
+						:range="orgUnitOptions"
+						range-key="label"
+						:value="orgUnitIndex"
+						:disabled="isEdit"
+						@change="onOrgUnitChange"
+					>
+						<view class="picker-input">
+							<text>{{ selectedOrgUnitLabel || '请选择任务归属的分部或组织' }}</text>
+						</view>
+					</picker>
+					<text class="form-hint">普通参与人须属于该组织，创建后不能修改归属</text>
+				</view>
 				
 				<view class="form-item">
 					<text class="form-label"><text class="required">*</text> 任务名称</text>
@@ -140,13 +157,13 @@
 					</view>
 					<scroll-view class="picker-list" scroll-y="true">
 						<view 
-							v-for="user in allUsers" 
+							v-for="user in assignableUsers"
 							:key="user._id"
 							class="picker-item"
 							:class="{ selected: isExecutorSelected(user._id) }"
 							@click="toggleExecutor(user)"
 						>
-							<text>{{ user.name }}</text>
+							<text>{{ user.department ? user.name + ' · ' + user.department : user.name }}</text>
 							<text v-if="isExecutorSelected(user._id)" class="check-icon">✓</text>
 						</view>
 					</scroll-view>
@@ -165,13 +182,13 @@
 					</view>
 					<scroll-view class="picker-list" scroll-y="true">
 						<view 
-							v-for="user in allUsers" 
+							v-for="user in assignableUsers"
 							:key="user._id"
 							class="picker-item"
 							:class="{ selected: isCcUserSelected(user._id) }"
 							@click="toggleCcUser(user)"
 						>
-							<text>{{ user.name }}</text>
+							<text>{{ user.department ? user.name + ' · ' + user.department : user.name }}</text>
 							<text v-if="isCcUserSelected(user._id)" class="check-icon">✓</text>
 						</view>
 					</scroll-view>
@@ -227,15 +244,22 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { createTask, updateTask, getTaskDetail, getUsers } from '@/api/index.js'
+import { createTask, updateTask, getTaskDetail, getUsers, uploadTaskAttachment } from '@/api/index.js'
 import { getPriorityText } from '@/utils/format.js'
-import config from '@/config/index.js'
+import { managedFileId } from '@/utils/attachments.js'
+import { useUserStore } from '@/stores/user.js'
+import {
+	buildTaskOrgUnitOptions,
+	filterTaskParticipants
+} from '@/utils/taskAssignment.js'
 
 export default {
 	name: 'TaskForm',
 	setup() {
+		const userStore = useUserStore()
 		const taskId = ref('')
 		const isEdit = ref(false)
+		const orgUnitId = ref(userStore.context.membership?.orgUnitId || '')
 		
 		const form = ref({
 			taskName: '',
@@ -255,6 +279,20 @@ export default {
 		const mainExecutor = ref(null)  // 主执行人
 		const showExecutorPicker = ref(false)  // 执行人选择器显示状态
 		const showCcUserPicker = ref(false)  // 抄送人选择器显示状态
+		const isTeamTaskScope = computed(() => userStore.moduleDataScopes.task === 'TEAM')
+		const orgUnitOptions = computed(() => buildTaskOrgUnitOptions(allUsers.value))
+		const orgUnitIndex = computed(() => {
+			const index = orgUnitOptions.value.findIndex((item) => item.value === orgUnitId.value)
+			return index < 0 ? 0 : index
+		})
+		const selectedOrgUnitLabel = computed(() => (
+			orgUnitOptions.value.find((item) => item.value === orgUnitId.value)?.label || ''
+		))
+		const assignableUsers = computed(() => filterTaskParticipants(
+			allUsers.value,
+			orgUnitId.value,
+			isTeamTaskScope.value
+		))
 		
 		const priorityOptions = [
 			{ label: '低', value: 'low' },
@@ -283,6 +321,7 @@ export default {
 		})
 		
 		const fileList = ref([])
+		const existingAttachments = ref([])
 		const loading = ref(false)
 		
 		onMounted(() => {
@@ -290,6 +329,14 @@ export default {
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
 			taskId.value = currentPage.options.id
+			const requiredPermissions = taskId.value
+				? ['task.edit', 'task.assign']
+				: ['task.create', 'task.assign']
+			if (!userStore.can(requiredPermissions, { write: true, teamRequired: true })) {
+				uni.showToast({ title: '无权限执行该操作', icon: 'none' })
+				setTimeout(() => uni.navigateBack(), 300)
+				return
+			}
 			
 			// 加载用户列表
 			loadUsers()
@@ -309,7 +356,9 @@ export default {
 				// 传入 limit: 1000 以获取所有用户（避免分页限制）
 				const res = await getUsers({ limit: 1000 })
 				allUsers.value = res.users || []
-				console.log('✅ 加载用户列表成功，共', allUsers.value.length, '人')
+				if (!isEdit.value && isTeamTaskScope.value && orgUnitOptions.value.length === 1) {
+					orgUnitId.value = orgUnitOptions.value[0].value
+				}
 			} catch (error) {
 				console.error('加载用户列表失败:', error)
 				uni.showToast({
@@ -324,6 +373,9 @@ export default {
 			try {
 				const res = await getTaskDetail(taskId.value)
 				const task = res.task
+				orgUnitId.value = typeof task.orgUnitId === 'string'
+					? task.orgUnitId
+					: task.orgUnitId?._id || ''
 				
 				// 填充表单
 				form.value.taskName = task.taskName
@@ -332,6 +384,10 @@ export default {
 				form.value.description = task.description || ''
 				form.value.priority = task.priority
 				form.value.remarks = task.remarks || ''
+				existingAttachments.value = (task.attachments || [])
+					.map((attachment) => managedFileId(attachment))
+					.filter(Boolean)
+					.map((fileId) => ({ fileId }))
 				
 				// 处理时间
 				if (task.plannedCompletionTime) {
@@ -409,6 +465,14 @@ export default {
 		
 		const removeCcUser = (index) => {
 			selectedCcUsers.value.splice(index, 1)
+		}
+
+		const onOrgUnitChange = (event) => {
+			const selected = orgUnitOptions.value[Number(event.detail.value)]
+			orgUnitId.value = selected?.value || ''
+			selectedExecutors.value = []
+			selectedCcUsers.value = []
+			mainExecutor.value = null
 		}
 		
 		// 优先级选择
@@ -569,6 +633,11 @@ export default {
 				uni.showToast({ title: '请输入任务名称', icon: 'none' })
 				return
 			}
+
+			if (isTeamTaskScope.value && !orgUnitId.value) {
+				uni.showToast({ title: '请选择任务所属组织', icon: 'none' })
+				return
+			}
 			
 			if (!form.value.taskType) {
 				uni.showToast({ title: '请输入任务类型', icon: 'none' })
@@ -600,6 +669,7 @@ export default {
 			try {
 				// 构建请求数据
 				const data = {
+					orgUnitId: orgUnitId.value,
 					taskName: form.value.taskName,
 					taskType: form.value.taskType,
 					taskSource: form.value.taskSource,
@@ -612,44 +682,13 @@ export default {
 					ccUsers: selectedCcUsers.value.map(u => u._id)
 				}
 				
-				// 上传附件（如果有）
-				if (fileList.value.length > 0) {
-					const attachments = []
+				// Existing managed references are retained while newly selected files are added.
+				{
+					const attachments = [...existingAttachments.value]
 					for (const file of fileList.value) {
-						const token = uni.getStorageSync('token')
-						
-					const uploadRes = await new Promise((resolve, reject) => {
-						uni.uploadFile({
-							url: config.baseURL + '/upload',
-							filePath: file.path,
-							name: 'file',
-							header: {
-								Authorization: `Bearer ${token}`
-							},
-							formData: {
-								friendlyName: file.name  // 传递友好的文件名
-							},
-							success: (res) => {
-								if (res.statusCode === 200) {
-									const result = JSON.parse(res.data)
-									// 构建符合后端期望的格式
-									resolve({
-										path: result.filePath,
-										originalName: result.originalName,
-										mimetype: result.mimetype,
-										size: result.size
-									})
-								} else {
-									reject(new Error('上传失败'))
-								}
-							},
-							fail: reject
-						})
-					})
-						
+						const uploadRes = await uploadTaskAttachment(file)
 						attachments.push(uploadRes)
 					}
-					
 					data.attachments = attachments
 				}
 				
@@ -684,6 +723,11 @@ export default {
 		fileList,
 		loading,
 		allUsers,
+		assignableUsers,
+		isTeamTaskScope,
+		orgUnitOptions,
+		orgUnitIndex,
+		selectedOrgUnitLabel,
 		selectedExecutors,
 		selectedCcUsers,
 		mainExecutor,
@@ -695,6 +739,7 @@ export default {
 		toggleExecutor,
 		removeExecutor,
 		onMainExecutorChange,
+		onOrgUnitChange,
 		isCcUserSelected,
 		toggleCcUser,
 		removeCcUser,

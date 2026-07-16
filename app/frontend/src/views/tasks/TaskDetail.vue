@@ -82,44 +82,7 @@
         </div>
       </template>
       
-      <div class="attachment-list">
-        <!-- 图片附件 -->
-        <div v-if="getTaskImages(task.attachments).length > 0" class="attachment-section">
-          <div class="attachment-section-title">图片附件</div>
-          <div class="image-grid">
-            <el-image
-              v-for="(img, idx) in getTaskImages(task.attachments)"
-              :key="idx"
-              :src="getFileUrl(img.path)"
-              :preview-src-list="getTaskImages(task.attachments).map(i => getFileUrl(i.path))"
-              :initial-index="idx"
-              fit="cover"
-              class="attachment-img"
-              style="width: 200px;"
-            />
-          </div>
-        </div>
-        
-        <!-- 文件附件 -->
-        <div v-if="getTaskFiles(task.attachments).length > 0" class="attachment-section">
-          <div class="attachment-section-title">文件附件</div>
-          <div class="file-list">
-            <div
-              v-for="(file, idx) in getTaskFiles(task.attachments)"
-              :key="idx"
-              class="file-item"
-            >
-              <el-icon class="file-icon"><Document /></el-icon>
-              <div class="file-info">
-                <el-link :href="getFileUrl(file.path)" target="_blank" type="primary">
-                  {{ file.originalName || '文件' }}
-                </el-link>
-                <span class="file-size">{{ formatFileSize(file.size) }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+      <AuthenticatedAttachments :attachments="task.attachments" :team-id="route.query.teamId || ''" />
     </el-card>
 
     <!-- 子任务列表卡片 -->
@@ -235,43 +198,10 @@
               <!-- 完成附件 -->
               <div v-if="completion.attachments && completion.attachments.length > 0" class="completion-attachments">
                 <el-divider content-position="left">完成附件 ({{ completion.attachments.length }})</el-divider>
-                
-                <!-- 图片 -->
-                <div v-if="getCompletionImages(completion.attachments).length > 0" class="attachment-section">
-                  <div class="attachment-section-title">图片</div>
-                  <div class="image-grid">
-                    <el-image
-                      v-for="(img, idx) in getCompletionImages(completion.attachments)"
-                      :key="idx"
-                      :src="getFileUrl(img.path)"
-                      :preview-src-list="getCompletionImages(completion.attachments).map(i => getFileUrl(i.path))"
-                      :initial-index="idx"
-                      fit="cover"
-                      class="attachment-img"
-                      style="width: 200px;"
-                    />
-                  </div>
-                </div>
-                
-                <!-- 文件 -->
-                <div v-if="getCompletionFiles(completion.attachments).length > 0" class="attachment-section">
-                  <div class="attachment-section-title">文件</div>
-                  <div class="file-list">
-                    <div
-                      v-for="(file, idx) in getCompletionFiles(completion.attachments)"
-                      :key="idx"
-                      class="file-item"
-                    >
-                      <el-icon class="file-icon"><Document /></el-icon>
-                      <div class="file-info">
-                        <el-link :href="getFileUrl(file.path)" target="_blank" type="primary">
-                          {{ file.originalName || '文件' }}
-                        </el-link>
-                        <span class="file-size">{{ formatFileSize(file.size) }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
+                <AuthenticatedAttachments
+                  :attachments="completion.attachments"
+                  :team-id="route.query.teamId || ''"
+                />
               </div>
             </div>
             
@@ -317,34 +247,10 @@
             <!-- 审核附件 -->
             <div v-if="review.attachments && review.attachments.length > 0" class="review-attachments">
               <el-divider content-position="left">审核附件</el-divider>
-              
-              <!-- 图片 -->
-              <div v-if="getReviewImages(review.attachments).length > 0" class="review-images">
-                <el-image
-                  v-for="(img, idx) in getReviewImages(review.attachments)"
-                  :key="idx"
-                  :src="getFileUrl(img.path)"
-                  :preview-src-list="getReviewImages(review.attachments).map(i => getFileUrl(i.path))"
-                  :initial-index="idx"
-                  fit="cover"
-                  class="review-img"
-                  style="width: 200px;"
-                />
-              </div>
-              
-              <!-- 文档 -->
-              <div v-if="getReviewFiles(review.attachments).length > 0" class="review-files">
-                <div
-                  v-for="(file, idx) in getReviewFiles(review.attachments)"
-                  :key="idx"
-                  class="review-file-item"
-                >
-                  <el-link :href="getFileUrl(file.path)" target="_blank" type="primary">
-                    <el-icon><Document /></el-icon>
-                    {{ file.originalName || '文件' }}
-                  </el-link>
-                </div>
-              </div>
+              <AuthenticatedAttachments
+                :attachments="review.attachments"
+                :team-id="route.query.teamId || ''"
+              />
             </div>
           </el-card>
         </el-timeline-item>
@@ -571,15 +477,23 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getTaskDetail, getTaskReviews, completeTask, reviewTask, confirmTask } from '@/api/task'
 import { applyExtension, approveExtension } from '@/api/extension'
+import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
-import { Document, Upload } from '@element-plus/icons-vue'
+import {
+  cleanupTemporaryFiles,
+  prepareAttachmentReferences
+} from '@/utils/attachments'
+import AuthenticatedAttachments from '@/components/AuthenticatedAttachments.vue'
+import { Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
+import { useSessionStore } from '@/stores/session'
 import request from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
+const session = useSessionStore()
 
 const loading = ref(false)
 const task = ref(null)
@@ -649,84 +563,6 @@ const fetchData = async () => {
   } finally {
     loading.value = false
   }
-}
-
-// 获取文件完整URL
-const getFileUrl = (path) => {
-  if (!path) return ''
-  // 确保路径以 / 开头
-  const normalizedPath = path.startsWith('/') ? path : '/' + path
-  // 使用当前页面的 origin，这样 HTTP/HTTPS 都能自动匹配
-  return window.location.origin + normalizedPath
-}
-
-// 格式化文件大小
-const formatFileSize = (bytes) => {
-  if (!bytes || bytes === 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i]
-}
-
-// 获取任务附件中的图片
-const getTaskImages = (attachments) => {
-  if (!attachments || !Array.isArray(attachments)) return []
-  
-  return attachments.filter(att => {
-    // 优先使用 mimetype 判断
-    if (att.mimetype && att.mimetype.startsWith('image/')) {
-      return true
-    }
-    
-    // 如果没有 mimetype，使用文件扩展名判断
-    if (att.originalName) {
-      const ext = att.originalName.split('.').pop().toLowerCase()
-      return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)
-    }
-    
-    return false
-  })
-}
-
-// 获取任务附件中的文件
-const getTaskFiles = (attachments) => {
-  if (!attachments || !Array.isArray(attachments)) return []
-  
-  return attachments.filter(att => {
-    // 优先使用 mimetype 判断
-    if (att.mimetype) {
-      return !att.mimetype.startsWith('image/')
-    }
-    
-    // 如果没有 mimetype，使用文件扩展名判断
-    if (att.originalName) {
-      const ext = att.originalName.split('.').pop().toLowerCase()
-      return !['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].includes(ext)
-    }
-    
-    return true
-  })
-}
-
-// 获取完成附件中的图片
-const getCompletionImages = (attachments) => {
-  return getTaskImages(attachments)
-}
-
-// 获取完成附件中的文件
-const getCompletionFiles = (attachments) => {
-  return getTaskFiles(attachments)
-}
-
-// 获取审核记录中的图片
-const getReviewImages = (attachments) => {
-  return getTaskImages(attachments)
-}
-
-// 获取审核记录中的文件
-const getReviewFiles = (attachments) => {
-  return getTaskFiles(attachments)
 }
 
 // 获取延期状态文本
@@ -828,6 +664,7 @@ const isCreator = computed(() => {
 // 判断是否可以完成任务（执行人 && 进行中状态 && 未过期）
 const canComplete = computed(() => {
   if (!task.value) return false
+  if (!session.isTeamMode || session.isReadOnly) return false
   if (isOverdue.value) return false
   return isExecutor.value && task.value.status === 'in_progress'
 })
@@ -835,6 +672,7 @@ const canComplete = computed(() => {
 // 判断是否可以审核（抄送人或管理员，但每人只能审核一次）
 const canReview = computed(() => {
   if (!task.value) return false
+  if (!session.isTeamMode || session.isReadOnly) return false
   if (task.value.status === 'finished') return false
   
   // 检查当前用户是否已经审核过
@@ -845,25 +683,26 @@ const canReview = computed(() => {
   if (hasReviewed) return false
   
   // 管理员或抄送人可以审核
-  return isCCUser.value || userStore.isAdmin
+  return isCCUser.value || session.can('task.review', { write: true, teamRequired: true })
 })
 
 // 判断是否可以确认（管理员 && 待确认状态）
 const canConfirm = computed(() => {
   if (!task.value) return false
-  return userStore.isAdmin && task.value.status === 'pending_confirm'
+  return session.can('task.review', { write: true, teamRequired: true }) && task.value.status === 'pending_confirm'
 })
 
 // 判断是否可以申请延期（执行人 && 进行中状态 && 未申请过）
 const canApplyExtension = computed(() => {
   if (!task.value) return false
+  if (!session.isTeamMode || session.isReadOnly) return false
   return isExecutor.value && task.value.status === 'in_progress' && !task.value.hasExtensionRequest
 })
 
 // 判断是否可以审批延期（管理员 && 延期待审批状态）
 const canApproveExtension = computed(() => {
   if (!task.value) return false
-  return userStore.isAdmin && task.value.status === 'extension_pending'
+  return session.can('task.review', { write: true, teamRequired: true }) && task.value.status === 'extension_pending'
 })
 
 // 审核弹窗标题（区分抄送者和管理者）
@@ -888,6 +727,18 @@ const handleCompleteFileChange = (file, fileList) => {
   completeForm.value.attachments = fileList
 }
 
+const submitWithAttachments = async (fileList, submit) => {
+  let uploadedFileIds = []
+  try {
+    const prepared = await prepareAttachmentReferences(fileList || [], uploadTemporaryFile)
+    uploadedFileIds = prepared.uploadedFileIds
+    return await submit(prepared.references)
+  } catch (error) {
+    await cleanupTemporaryFiles(error.uploadedFileIds || uploadedFileIds, deleteFile)
+    throw error
+  }
+}
+
 const handleCompleteSubmit = async () => {
   if (!completeForm.value.completionNote) {
     ElMessage.warning('请填写完成说明')
@@ -895,38 +746,12 @@ const handleCompleteSubmit = async () => {
   }
   
   try {
-    // 上传文件
-    const uploadedFiles = []
-    if (completeForm.value.attachments && completeForm.value.attachments.length > 0) {
-      for (const file of completeForm.value.attachments) {
-        if (file.raw) {
-          const formData = new FormData()
-          formData.append('file', file.raw)
-          
-          const uploadRes = await request({
-            url: '/upload',
-            method: 'post',
-            data: formData,
-            headers: {
-              'Content-Type': 'multipart/form-data'
-            }
-          })
-          
-          uploadedFiles.push({
-            path: uploadRes.filePath,  // 注意：后端返回的是 filePath
-            originalName: uploadRes.originalName,
-            mimetype: uploadRes.mimetype,
-            size: uploadRes.size
-          })
-        }
-      }
-    }
-    
-    // 提交完成
-    await completeTask(route.params.id, {
-      completionNote: completeForm.value.completionNote,
-      attachments: uploadedFiles
-    })
+    await submitWithAttachments(completeForm.value.attachments, (attachments) => (
+      completeTask(route.params.id, {
+        completionNote: completeForm.value.completionNote,
+        attachments
+      })
+    ))
     
     ElMessage.success('提交成功')
     completeDialogVisible.value = false
@@ -958,39 +783,13 @@ const handleReviewSubmit = async () => {
   }
   
   try {
-    // 上传文件
-    const uploadedFiles = []
-    if (reviewForm.value.attachments && reviewForm.value.attachments.length > 0) {
-      for (const file of reviewForm.value.attachments) {
-        if (file.raw) {
-          const formData = new FormData()
-          formData.append('file', file.raw)
-          
-          const uploadRes = await request({
-            url: '/upload',
-            method: 'post',
-            data: formData,
-            headers: {
-              'Content-Type': 'multipart/form-data'
-            }
-          })
-          
-          uploadedFiles.push({
-            path: uploadRes.filePath,  // 注意：后端返回的是 filePath
-            originalName: uploadRes.originalName,
-            mimetype: uploadRes.mimetype,
-            size: uploadRes.size
-          })
-        }
-      }
-    }
-    
-    // 提交审核
-    await reviewTask(route.params.id, {
-      content: reviewForm.value.content,
-      rating: reviewForm.value.rating,
-      attachments: uploadedFiles
-    })
+    await submitWithAttachments(reviewForm.value.attachments, (attachments) => (
+      reviewTask(route.params.id, {
+        content: reviewForm.value.content,
+        rating: reviewForm.value.rating,
+        attachments
+      })
+    ))
     
     ElMessage.success('审核成功')
     reviewDialogVisible.value = false
@@ -1023,38 +822,13 @@ const handleConfirmSubmit = async () => {
 
   confirmSubmitting.value = true
   try {
-    // 上传文件
-    const uploadedFiles = []
-    if (confirmForm.value.attachments && confirmForm.value.attachments.length > 0) {
-      for (const file of confirmForm.value.attachments) {
-        if (file.raw) {
-          const formData = new FormData()
-          formData.append('file', file.raw)
-          
-          const uploadRes = await request({
-            url: '/upload',
-            method: 'post',
-            data: formData,
-            headers: {
-              'Content-Type': 'multipart/form-data'
-            }
-          })
-          
-          uploadedFiles.push({
-            path: uploadRes.filePath,
-            originalName: uploadRes.originalName,
-            mimetype: uploadRes.mimetype,
-            size: uploadRes.size
-          })
-        }
-      }
-    }
-
-    await confirmTask(route.params.id, {
-      content: confirmForm.value.content,
-      rating: confirmForm.value.rating,
-      attachments: uploadedFiles
-    })
+    await submitWithAttachments(confirmForm.value.attachments, (attachments) => (
+      confirmTask(route.params.id, {
+        content: confirmForm.value.content,
+        rating: confirmForm.value.rating,
+        attachments
+      })
+    ))
 
     ElMessage.success('审核成功，任务已完结')
     confirmDialogVisible.value = false

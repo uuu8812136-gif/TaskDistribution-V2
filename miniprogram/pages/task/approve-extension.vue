@@ -135,10 +135,12 @@
 import { ref, reactive, onMounted } from "vue";
 import { formatDate } from "@/utils/format.js";
 import { approveExtension } from "@/api/index.js";
+import { useUserStore } from "@/stores/user.js";
 
 export default {
   name: "ApproveExtension",
   setup() {
+    const userStore = useUserStore();
     const extensionData = ref({});
     const taskId = ref("");
 
@@ -149,6 +151,11 @@ export default {
     });
 
     onMounted(() => {
+      if (!userStore.can('task.review', { write: true, teamRequired: true })) {
+        uni.showToast({ title: '无权限执行该操作', icon: 'none' });
+        setTimeout(() => uni.navigateBack(), 300);
+        return;
+      }
       // 从URL参数获取延期申请数据
       const pages = getCurrentPages();
       const currentPage = pages[pages.length - 1];

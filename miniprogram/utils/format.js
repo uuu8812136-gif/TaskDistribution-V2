@@ -2,6 +2,20 @@
  * 工具函数 - 格式化、状态转换等
  */
 
+export const parseDate = (value) => {
+  if (value instanceof Date) return new Date(value.getTime())
+  if (typeof value === 'number') return new Date(value)
+  if (typeof value !== 'string') return new Date(value)
+
+  const trimmed = value.trim()
+  if (!trimmed) return new Date(NaN)
+  const hasExplicitTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(trimmed)
+  const normalized = !hasExplicitTimezone && /^\d{4}-\d{1,2}-\d{1,2}/.test(trimmed)
+    ? trimmed.replace(/^(\d{4})-(\d{1,2})-(\d{1,2})/, '$1/$2/$3').replace('T', ' ')
+    : trimmed
+  return new Date(normalized)
+}
+
 /**
  * 格式化日期时间
  * @param {String|Date} date - 日期
@@ -10,7 +24,7 @@
 export const formatDate = (date, format = 'YYYY-MM-DD HH:mm:ss') => {
   if (!date) return ''
   
-  const d = new Date(date)
+  const d = parseDate(date)
   if (isNaN(d.getTime())) return ''
   
   const year = d.getFullYear()
@@ -35,7 +49,7 @@ export const formatDate = (date, format = 'YYYY-MM-DD HH:mm:ss') => {
 export const formatRelativeTime = (date) => {
   if (!date) return ''
   
-  const d = new Date(date)
+  const d = parseDate(date)
   if (isNaN(d.getTime())) return ''
   
   const now = new Date()
@@ -121,7 +135,7 @@ export const isTaskOverdue = (plannedCompletionTime, status) => {
   
   if (!plannedCompletionTime) return false
   
-  const plannedTime = new Date(plannedCompletionTime)
+  const plannedTime = parseDate(plannedCompletionTime)
   const now = new Date()
   
   // 精确到毫秒比较

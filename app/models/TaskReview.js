@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const fileAttachmentSchema = require('./schemas/fileAttachmentSchema');
 
 const taskReviewSchema = new mongoose.Schema({
   teamId: {
@@ -49,13 +50,7 @@ const taskReviewSchema = new mongoose.Schema({
   },
   
   // 附件
-  attachments: [{
-    filename: String,
-    originalName: String,
-    path: String,
-    mimetype: String,
-    size: Number
-  }]
+  attachments: [fileAttachmentSchema]
 }, {
   timestamps: true
 });

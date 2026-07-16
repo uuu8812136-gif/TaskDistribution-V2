@@ -1,28 +1,30 @@
+'use strict';
+
 const express = require('express');
-const router = express.Router();
 const userController = require('../controllers/userController');
-const { authenticate, isAdmin } = require('../middlewares/auth');
+const {
+  authenticateContext,
+  requirePermission,
+  requireTeamContext
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 
-// 所有路由都需要登录
-router.use(authenticate);
+const router = express.Router();
 
-// 获取所有用户（管理员）
-router.get('/', isAdmin, userController.getAllUsers);
+router.use(authenticateContext, requireTeamContext, businessWriteGuard);
 
-// 获取单个用户信息
-router.get('/:id', userController.getUserById);
+router.get('/', requirePermission('member.view'), userController.getAllUsers);
+router.get('/:id', requirePermission('member.view'), userController.getUserById);
 
-// 创建用户（管理员）
-router.post('/', isAdmin, userController.createUser);
-
-// 更新用户信息（管理员）
-router.put('/:id', isAdmin, userController.updateUser);
-
-// 删除用户（管理员）
-router.delete('/:id', isAdmin, userController.deleteUser);
-
-// 重置用户密码（管理员）
-router.post('/:id/reset-password', isAdmin, userController.resetPassword);
+// Legacy writes are intentionally retained only as explicit migration errors.
+// Canonical member changes must use /api/team-members and its audited service.
+router.post('/', requirePermission('member.manage'), userController.createUser);
+router.put('/:id', requirePermission('member.manage'), userController.updateUser);
+router.delete('/:id', requirePermission('member.manage'), userController.deleteUser);
+router.post(
+  '/:id/reset-password',
+  requirePermission('member.manage'),
+  userController.resetPassword
+);
 
 module.exports = router;
-

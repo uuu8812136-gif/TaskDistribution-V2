@@ -140,7 +140,7 @@
     </view>
 
     <!-- 新建任务按钮 -->
-    <view class="add-btn" @click="goToCreate">
+    <view v-if="canCreate" class="add-btn" @click="goToCreate">
       <text class="add-icon">+</text>
     </view>
     
@@ -150,7 +150,7 @@
 </template>
 
 <script>
-import { ref, onMounted } from "vue";
+import { ref, computed, onMounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import { getAllTasks } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
@@ -171,6 +171,10 @@ export default {
   },
   setup() {
     const userStore = useUserStore();
+    const canCreate = computed(() => userStore.can('task.create', {
+      write: true,
+      teamRequired: true
+    }));
 
     const statusOptions = [
       { label: "全部状态", value: "" },
@@ -206,8 +210,7 @@ export default {
     });
 
     onMounted(() => {
-      // 检查是否是管理员
-      if (!userStore.isAdmin) {
+      if (!userStore.can('task.view')) {
         uni.showToast({
           title: "无权限访问",
           icon: "none",
@@ -345,6 +348,7 @@ export default {
       loading,
       refreshing,
       hasMore,
+      canCreate,
       onStatusChange,
       onPriorityChange,
       handleSearch,

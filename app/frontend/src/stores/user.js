@@ -1,56 +1,50 @@
+import { computed } from 'vue'
 import { defineStore } from 'pinia'
-import { login, getCurrentUser } from '@/api/auth'
-import { ElMessage } from 'element-plus'
+import { useSessionStore } from '@/stores/session'
 
-export const useUserStore = defineStore('user', {
-  state: () => ({
-    token: localStorage.getItem('token') || '',
-    userInfo: null
-  }),
+// 兼容旧页面。新代码应直接使用 useSessionStore 和固定 permission key。
+export const useUserStore = defineStore('user', () => {
+  const session = useSessionStore()
+  const token = computed(() => session.token)
+  const userInfo = computed(() => session.user)
+  const isLoggedIn = computed(() => session.isLoggedIn)
 
-  getters: {
-    isLoggedIn: (state) => !!state.token,
-    isAdmin: (state) => state.userInfo?.roles?.includes('admin') || false,
-    isExecutor: (state) => state.userInfo?.roles?.includes('executor') || false,
-    isCCUser: (state) => state.userInfo?.roles?.includes('cc') || false
-  },
+  // 旧的“管理员”按钮仅在团队写上下文中展示，不再读取 user.roles.admin。
+  const isAdmin = computed(() => (
+    !session.isReadOnly &&
+    session.hasPermission([
+      'task.create',
+      'task.edit',
+      'task.assign',
+      'task.review',
+      'member.manage',
+      'org.manage'
+    ], 'any')
+  ))
+  const isExecutor = computed(() => session.user?.roles?.includes('executor') || false)
+  const isCCUser = computed(() => session.user?.roles?.includes('cc') || false)
 
-  actions: {
-    // 登录
-    async login(credentials) {
-      try {
-        const response = await login(credentials)
-        this.token = response.token
-        this.userInfo = response.user
-        localStorage.setItem('token', response.token)
-        ElMessage.success('登录成功')
-        return response
-      } catch (error) {
-        ElMessage.error(error.response?.data?.message || '登录失败')
-        throw error
-      }
-    },
-
-    // 获取当前用户信息
-    async fetchUserInfo() {
-      try {
-        const response = await getCurrentUser()
-        this.userInfo = response.user
-        return response
-      } catch (error) {
-        console.error('获取用户信息失败:', error)
-        this.logout()
-        throw error
-      }
-    },
-
-    // 退出登录
-    logout() {
-      this.token = ''
-      this.userInfo = null
-      localStorage.removeItem('token')
-      location.href = '/login'
+  const login = (credentials) => session.login(credentials)
+  const fetchUserInfo = () => session.bootstrap({ force: true })
+  const logout = async () => {
+    try {
+      await session.logout()
+    } catch {
+      // 兼容旧页面：服务端登出失败也必须离开已清理的本地会话。
+    } finally {
+      window.location.assign('/login')
     }
   }
-})
 
+  return {
+    token,
+    userInfo,
+    isLoggedIn,
+    isAdmin,
+    isExecutor,
+    isCCUser,
+    login,
+    fetchUserInfo,
+    logout
+  }
+})

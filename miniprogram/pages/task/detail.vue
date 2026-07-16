@@ -80,7 +80,7 @@
 							class="attachment-item"
 							@click.stop="previewAttachment(file)"
 						>
-							<text class="file-icon">{{ getFileIcon(file.mimetype) }}</text>
+							<text class="file-icon">{{ getFileIcon(file) }}</text>
 							<view class="file-info">
 								<text class="file-name">{{ file.originalName }}</text>
 								<text class="file-size">{{ formatFileSize(file.size) }}</text>
@@ -314,7 +314,7 @@
 								class="attachment-item"
 								@click.stop="previewAttachment(file)"
 							>
-								<text class="file-icon">{{ getFileIcon(file.mimetype) }}</text>
+								<text class="file-icon">{{ getFileIcon(file) }}</text>
 								<view class="file-info">
 									<text class="file-name">{{ file.originalName }}</text>
 									<text class="file-size">{{ formatFileSize(file.size) }}</text>
@@ -352,25 +352,15 @@
 						<!-- 审核附件 -->
 						<view v-if="review.attachments && review.attachments.length > 0" class="review-attachments">
 							<text class="attachments-title">📎 审核附件:</text>
-							<view class="review-images" v-if="getReviewImages(review.attachments).length > 0">
-								<image 
-									v-for="(img, idx) in getReviewImages(review.attachments)"
-									:key="idx"
-									:src="getFileUrl(img.path)"
-									mode="aspectFill"
-									class="review-img"
-									@click="previewReviewImage(review.attachments, idx)"
-								></image>
-							</view>
-							<view class="review-files" v-if="getReviewFiles(review.attachments).length > 0">
-								<view 
-									v-for="(file, idx) in getReviewFiles(review.attachments)"
-									:key="idx"
-									class="review-file-item"
-									@click="downloadFile(file)"
+							<view class="attachments-list">
+								<view
+									v-for="(file, idx) in review.attachments"
+									:key="file.fileId || idx"
+									class="attachment-item"
+									@click.stop="previewAttachment(file)"
 								>
-									<text class="file-icon">📄</text>
-									<text class="file-name">{{ file.originalName }}</text>
+									<text class="file-icon">{{ getFileIcon(file) }}</text>
+									<text class="file-name">{{ file.originalName || file.filename || '附件' }}</text>
 								</view>
 							</view>
 						</view>
@@ -463,7 +453,7 @@
 			
 			<!-- 管理员：编辑任务 -->
 			<button 
-				v-if="userStore.isAdmin" 
+				v-if="canEdit"
 				class="action-btn"
 				@click="handleEdit"
 			>
@@ -472,7 +462,7 @@
 			
 			<!-- 管理员：删除任务 -->
 			<button 
-				v-if="userStore.isAdmin" 
+				v-if="canEdit"
 				class="action-btn danger"
 				@click="handleDelete"
 			>
@@ -493,11 +483,11 @@
 <script>
 import { ref, computed, onMounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
-import config from '@/config/index.js'
 import { 
 	getTaskDetail, 
 	getTaskReviews, 
 	getExtensionHistory,
+	downloadTaskAttachment,
 	completeTask,
 	reviewTask,
 	confirmTask,
@@ -517,7 +507,13 @@ import {
 	getExtensionStatusColor,
 	isTaskOverdue
 } from '@/utils/format.js'
-import { getFullFileUrl } from '@/utils/path.js'
+import {
+	attachmentMimeType,
+	attachmentName,
+	canOpenDocument,
+	isImageAttachment,
+	managedFileId
+} from '@/utils/attachments.js'
 import ExtensionDialog from './components/ExtensionDialog.vue'
 
 export default {
@@ -634,6 +630,7 @@ export default {
 		// 判断是否可以完成任务（执行人 && 进行中状态 && 执行人视图 && 未过期）
 		const canComplete = computed(() => {
 			if (!taskDetail.value._id) return false
+			if (!userStore.can('task.edit', { write: true, teamRequired: true })) return false
 			if (viewType.value !== 'executor') return false
 			if (isOverdue.value) return false  // 过期的任务不能完成
 			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
@@ -643,6 +640,7 @@ export default {
 		// 判断是否可以审核（抄送人 && 待审核状态 && 抄送人视图）
 		const canReview = computed(() => {
 			if (!taskDetail.value._id) return false
+			if (!userStore.can('task.review', { write: true, teamRequired: true })) return false
 			if (viewType.value !== 'cc') return false
 			const isCc = taskDetail.value.ccUsers?.some(u => u._id === userStore.userInfo?._id)
 			return isCc && taskDetail.value.status === 'pending_review'
@@ -651,13 +649,14 @@ export default {
 		// 判断是否可以确认（管理员 && 待确认状态）
 		const canConfirm = computed(() => {
 			if (!taskDetail.value._id) return false
-			return userStore.isAdmin && taskDetail.value.status === 'pending_confirm'
+			return userStore.can('task.review', { write: true, teamRequired: true }) && taskDetail.value.status === 'pending_confirm'
 		})
 		
 		// 判断是否可以申请延期（执行人 && 进行中状态 && 执行人视图 && 未申请过）
 		// 注意：即使任务过期，也可以申请延期
 		const canApplyExtension = computed(() => {
 			if (!taskDetail.value._id) return false
+			if (!userStore.can('task.edit', { write: true, teamRequired: true })) return false
 			if (viewType.value !== 'executor') return false
 			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
 			// 允许过期任务申请延期
@@ -667,8 +666,13 @@ export default {
 		// 判断是否可以审批延期（管理员 && 延期待审批状态）
 		const canApproveExtension = computed(() => {
 			if (!taskDetail.value._id) return false
-			return userStore.isAdmin && taskDetail.value.status === 'extension_pending'
+			return userStore.can('task.review', { write: true, teamRequired: true }) && taskDetail.value.status === 'extension_pending'
 		})
+
+		const canEdit = computed(() => userStore.can('task.edit', {
+			write: true,
+			teamRequired: true
+		}))
 		
 		// 提交完成
 		const handleComplete = () => {
@@ -785,41 +789,9 @@ export default {
 			})
 		}
 		
-		// 获取审核记录中的图片
-		const getReviewImages = (attachments) => {
-			if (!attachments || !Array.isArray(attachments)) return []
-			return attachments.filter(att => {
-				const ext = (att.originalName || '').split('.').pop().toLowerCase()
-				return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)
-			})
-		}
-		
-		// 获取审核记录中的文件
-		const getReviewFiles = (attachments) => {
-			if (!attachments || !Array.isArray(attachments)) return []
-			return attachments.filter(att => {
-				const ext = (att.originalName || '').split('.').pop().toLowerCase()
-				return !['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)
-			})
-		}
-		
-		// 获取文件完整URL
-		const getFileUrl = (path) => {
-			return getFullFileUrl(path)
-		}
-		
-		// 预览审核图片
-		const previewReviewImage = (attachments, index) => {
-			const images = getReviewImages(attachments)
-			const urls = images.map(img => getFileUrl(img.path))
-			uni.previewImage({
-				urls: urls,
-				current: index
-			})
-		}
-		
 		// 获取文件图标
-		const getFileIcon = (mimetype) => {
+		const getFileIcon = (file) => {
+			const mimetype = attachmentMimeType(file)
 			if (!mimetype) return '📄'
 			if (mimetype.startsWith('image/')) return '🖼'
 			if (mimetype.startsWith('video/')) return '🎬'
@@ -840,105 +812,37 @@ export default {
 			return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i]
 		}
 		
-		// 预览附件（通用）
-		const previewAttachment = (file) => {
-			console.log('=== previewAttachment ===')
-			console.log('file:', file)
-			
-			if (!file) {
-				console.error('文件对象为空')
-				uni.showToast({ title: '文件信息错误', icon: 'none' })
+		// 所有远程附件先通过带 Authorization 的 downloadFile 获取临时文件。
+		const previewAttachment = async (file) => {
+			if (!managedFileId(file)) {
+				uni.showToast({ title: '历史附件待迁移', icon: 'none' })
 				return
 			}
-			
-			if (!file.path && !file.filePath) {
-				console.error('文件路径为空:', file)
-				uni.showToast({ title: '文件路径错误', icon: 'none' })
-				return
-			}
-			
-			const filePath = file.path || file.filePath
-			const mimetype = file.mimetype || ''
-			
-			console.log('filePath:', filePath)
-			console.log('mimetype:', mimetype)
-			
-			// 如果是图片，使用 uni.previewImage
-			if (mimetype.startsWith('image/')) {
-				const fileUrl = getFileUrl(filePath)
-				console.log('预览图片URL:', fileUrl)
-				uni.previewImage({
-					urls: [fileUrl],
-					current: 0,
-					fail: (err) => {
-						console.error('预览失败:', err)
-						uni.showToast({ title: '预览失败', icon: 'none' })
-					}
-				})
-			} else {
-				// 其他文件，下载查看
-				downloadFile(file)
-			}
-		}
-		
-		// 下载文件
-		const downloadFile = (file) => {
-			const fileUrl = getFileUrl(file.path || file.filePath)
-			
-			uni.showLoading({
-				title: '下载中...',
-				mask: true
-			})
-			
-			uni.downloadFile({
-				url: fileUrl,
-				success: (res) => {
-					uni.hideLoading()
-					if (res.statusCode === 200) {
-						// 检查文件类型，微信小程序支持的文档格式
-						const supportedTypes = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']
-						const fileName = file.originalName || ''
-						const ext = fileName.split('.').pop()?.toLowerCase()
-						
-						if (supportedTypes.includes(ext)) {
-							// 支持的格式，尝试打开
-							uni.openDocument({
-								filePath: res.tempFilePath,
-								showMenu: true,
-								success: () => {
-									console.log('打开文档成功')
-								},
-								fail: (err) => {
-									console.error('打开文档失败:', err)
-									// 打开失败，提示用户保存
-									uni.showModal({
-										title: '提示',
-										content: '无法预览此文件，文件已下载到临时目录',
-										showCancel: false
-									})
-								}
-							})
-						} else {
-							// 不支持的格式，提示用户
-							uni.showModal({
-								title: '提示',
-								content: `${fileName}\n\n该文件格式（.${ext}）暂不支持在线预览，已下载到临时目录。\n\n您可以通过其他方式查看该文件。`,
-								showCancel: false,
-								confirmText: '知道了'
-							})
-						}
-					}
-				},
-				fail: (err) => {
-					uni.hideLoading()
-					console.error('下载文件失败:', err)
-					uni.showToast({
-						title: '下载失败',
-						icon: 'none'
-					})
+			try {
+				const result = await downloadTaskAttachment(file)
+				if (isImageAttachment(file)) {
+					uni.previewImage({ urls: [result.tempFilePath], current: 0 })
+					return
 				}
-			})
+				if (canOpenDocument(file)) {
+					uni.openDocument({
+						filePath: result.tempFilePath,
+						showMenu: true,
+						fail: () => uni.showToast({ title: '文件预览失败', icon: 'none' })
+					})
+					return
+				}
+				uni.showModal({
+					title: '文件已下载',
+					content: `${attachmentName(file)} 暂不支持在线预览`,
+					showCancel: false
+				})
+			} catch (error) {
+				console.error('附件下载失败:', error)
+			}
 		}
+
+		const downloadFile = previewAttachment
 		
 		// 格式化方法
 		const getStatusText = (status) => getTaskStatusText(status)
@@ -960,6 +864,7 @@ export default {
 		canConfirm,
 		canApplyExtension,
 		canApproveExtension,
+		canEdit,
 		handleComplete,
 		handleReview,
 		handleConfirm,
@@ -969,10 +874,6 @@ export default {
 		onExtensionConfirm,
 		handleShowApproveDialog,
 		getFileIcon,
-		getReviewImages,
-		getReviewFiles,
-		getFileUrl,
-		previewReviewImage,
 		previewAttachment,
 		downloadFile,
 		formatDate,

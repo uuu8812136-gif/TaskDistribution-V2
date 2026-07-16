@@ -17,6 +17,30 @@
       <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
         <!-- 步骤1：基本信息 -->
         <div v-show="currentStep === 0">
+          <el-form-item
+            v-if="isTeamTaskScope"
+            label="任务所属组织"
+            prop="orgUnitId"
+          >
+            <el-select
+              v-model="form.orgUnitId"
+              filterable
+              :disabled="isEdit"
+              placeholder="请选择任务归属的分部或组织"
+              style="width: 100%"
+              @change="handleOrgUnitChange"
+            >
+              <el-option
+                v-for="orgUnit in orgUnitOptions"
+                :key="orgUnit.value"
+                :label="orgUnit.label"
+                :value="orgUnit.value"
+              />
+            </el-select>
+            <div class="field-hint">
+              普通执行人和抄送人必须属于该组织，创建后不能修改归属。
+            </div>
+          </el-form-item>
           <el-form-item label="任务名称" prop="taskName">
             <el-input v-model="form.taskName" placeholder="请输入任务名称" />
           </el-form-item>
@@ -50,8 +74,20 @@
         <!-- 步骤2：人员分配 -->
         <div v-show="currentStep === 1">
           <el-form-item label="执行人" prop="executor">
-            <el-select v-model="form.executor" multiple placeholder="选择执行人" style="width: 100%">
-              <el-option v-for="user in users" :key="user._id" :label="user.name" :value="user._id" />
+            <el-select
+              v-model="form.executor"
+              multiple
+              filterable
+              :disabled="isTeamTaskScope && !form.orgUnitId"
+              placeholder="选择执行人"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="user in assignableUsers"
+                :key="user._id"
+                :label="userOptionLabel(user)"
+                :value="user._id"
+              />
             </el-select>
           </el-form-item>
           <el-form-item label="主负责人" prop="mainExecutor">
@@ -65,8 +101,20 @@
             </el-select>
           </el-form-item>
           <el-form-item label="抄送人" prop="ccUsers">
-            <el-select v-model="form.ccUsers" multiple placeholder="选择抄送人" style="width: 100%">
-              <el-option v-for="user in users" :key="user._id" :label="user.name" :value="user._id" />
+            <el-select
+              v-model="form.ccUsers"
+              multiple
+              filterable
+              :disabled="isTeamTaskScope && !form.orgUnitId"
+              placeholder="选择抄送人"
+              style="width: 100%"
+            >
+              <el-option
+                v-for="user in assignableUsers"
+                :key="user._id"
+                :label="userOptionLabel(user)"
+                :value="user._id"
+              />
             </el-select>
           </el-form-item>
         </div>
@@ -92,6 +140,7 @@
             <el-upload
               :file-list="fileList"
               :on-change="handleFileChange"
+              :on-remove="handleFileChange"
               :auto-upload="false"
               multiple
             >
@@ -116,14 +165,26 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getUserList } from '@/api/user'
 import { createTask, updateTask, getTaskDetail } from '@/api/task'
+import { deleteFile, uploadTemporaryFile } from '@/api/file'
+import {
+  cleanupTemporaryFiles,
+  existingAttachmentFileList,
+  prepareAttachmentReferences
+} from '@/utils/attachments'
 import { ElMessage } from 'element-plus'
+import { useSessionStore } from '@/stores/session'
+import {
+  buildTaskOrgUnitOptions,
+  filterTaskParticipants
+} from '@/utils/taskAssignment'
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
 const isEdit = ref(!!route.params.id)
 
 const currentStep = ref(0)
@@ -133,6 +194,7 @@ const users = ref([])
 const fileList = ref([])
 
 const form = reactive({
+  orgUnitId: session.context.membership?.orgUnitId || '',
   taskName: '',
   taskType: '',
   taskSource: '',
@@ -146,13 +208,32 @@ const form = reactive({
 })
 
 const rules = {
+  orgUnitId: [{ required: true, message: '请选择任务所属组织', trigger: 'change' }],
   taskName: [{ required: true, message: '请输入任务名称', trigger: 'blur' }],
   plannedCompletionTime: [{ required: true, message: '请选择计划完成时间', trigger: 'change' }],
   executor: [{ required: true, message: '请选择执行人', trigger: 'change' }]
 }
 
+const isTeamTaskScope = computed(() => session.moduleDataScopes.task === 'TEAM')
+const orgUnitOptions = computed(() => buildTaskOrgUnitOptions(users.value))
+const assignableUsers = computed(() => filterTaskParticipants(
+  users.value,
+  form.orgUnitId,
+  isTeamTaskScope.value
+))
+
 const getUserName = (userId) => {
   return users.value.find(u => u._id === userId)?.name || ''
+}
+
+const userOptionLabel = (user) => (
+  user.department ? `${user.name} · ${user.department}` : user.name
+)
+
+const handleOrgUnitChange = () => {
+  form.executor = []
+  form.mainExecutor = ''
+  form.ccUsers = []
 }
 
 const addSubTask = () => {
@@ -183,32 +264,31 @@ const prevStep = () => {
 }
 
 const handleSubmit = async () => {
+  const valid = await formRef.value?.validate().catch(() => false)
+  if (!valid) return
   submitting.value = true
+  let uploadedFileIds = []
   try {
-    const formData = new FormData()
-    Object.keys(form).forEach(key => {
-      if (key === 'subTasks') {
-        formData.append(key, JSON.stringify(form[key]))
-      } else if (Array.isArray(form[key])) {
-        form[key].forEach(item => formData.append(key, item))
-      } else {
-        formData.append(key, form[key])
-      }
-    })
-
-    fileList.value.forEach(file => {
-      formData.append('attachments', file.raw)
-    })
+    const prepared = await prepareAttachmentReferences(fileList.value, uploadTemporaryFile)
+    uploadedFileIds = prepared.uploadedFileIds
+    const payload = {
+      ...form,
+      executor: [...form.executor],
+      ccUsers: [...form.ccUsers],
+      subTasks: form.subTasks.map((subTask) => ({ ...subTask })),
+      attachments: prepared.references
+    }
 
     if (isEdit.value) {
-      await updateTask(route.params.id, formData)
+      await updateTask(route.params.id, payload)
       ElMessage.success('任务更新成功')
     } else {
-      await createTask(formData)
+      await createTask(payload)
       ElMessage.success('任务创建成功')
     }
     router.push('/tasks')
   } catch (error) {
+    await cleanupTemporaryFiles(error.uploadedFileIds || uploadedFileIds, deleteFile)
     console.error('提交失败:', error)
   } finally {
     submitting.value = false
@@ -224,18 +304,16 @@ onMounted(async () => {
     // 获取所有用户，设置足够大的 limit
     const result = await getUserList({ limit: 1000 })
     users.value = result.users
-    console.log('✅ 加载用户列表成功，共', users.value.length, '人')
+
+    if (!isEdit.value && isTeamTaskScope.value && orgUnitOptions.value.length === 1) {
+      form.orgUnitId = orgUnitOptions.value[0].value
+    }
 
     if (isEdit.value) {
-      console.log('=== 开始加载任务详情 ===')
-      console.log('任务ID:', route.params.id)
-      
       const taskData = await getTaskDetail(route.params.id)
-      console.log('获取到的任务数据:', taskData)
-      console.log('任务对象:', taskData.task)
-      
       // 回填表单数据
       Object.assign(form, {
+        orgUnitId: taskData.task.orgUnitId,
         taskName: taskData.task.taskName,
         taskType: taskData.task.taskType,
         taskSource: taskData.task.taskSource,
@@ -247,8 +325,7 @@ onMounted(async () => {
         ccUsers: taskData.task.ccUsers.map(cc => cc._id),
         subTasks: taskData.task.subTasks || []
       })
-      
-      console.log('回填后的表单数据:', form)
+      fileList.value = existingAttachmentFileList(taskData.task.attachments)
     }
   } catch (error) {
     console.error('初始化失败:', error)
@@ -259,6 +336,13 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .task-form {
+  .field-hint {
+    margin-top: 6px;
+    color: #909399;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
   .step-actions {
     display: flex;
     justify-content: center;

@@ -1,28 +1,30 @@
 <template>
   <div class="main-layout">
-    <!-- 顶部导航 -->
     <el-header class="layout-header">
       <div class="header-left">
-        <el-icon class="menu-icon" @click="toggleCollapse">
-          <Fold v-if="!isCollapse" />
-          <Expand v-else />
-        </el-icon>
-        <span class="logo-title">Horselink（马链）任务管理系统</span>
+        <el-button text class="menu-button" :aria-label="isCollapse ? '展开菜单' : '收起菜单'" @click="toggleCollapse">
+          <el-icon><Expand v-if="isCollapse" /><Fold v-else /></el-icon>
+        </el-button>
+        <span class="logo-title">Horselink 公司管理系统</span>
       </div>
 
       <div class="header-right">
-        <!-- 消息通知 -->
-        <el-badge :value="messageStore.unreadCount" :max="99" class="message-badge">
-          <el-button circle @click="goToMessages">
+        <TeamSwitcher />
+        <el-badge
+          :value="messageStore.unreadCount"
+          :max="99"
+          :hidden="messageStore.unreadCount === 0"
+          class="message-badge"
+        >
+          <el-button circle aria-label="消息中心" @click="goToMessages">
             <el-icon><Bell /></el-icon>
           </el-button>
         </el-badge>
 
-        <!-- 用户信息 -->
         <el-dropdown @command="handleCommand">
           <div class="user-info">
-            <el-avatar :size="32">{{ userStore.userInfo?.name?.substring(0, 1) }}</el-avatar>
-            <span class="username">{{ userStore.userInfo?.name }}</span>
+            <el-avatar :size="32">{{ session.user?.name?.substring(0, 1) || '用' }}</el-avatar>
+            <span class="username">{{ session.user?.name }}</span>
             <el-icon><ArrowDown /></el-icon>
           </div>
           <template #dropdown>
@@ -45,9 +47,26 @@
       </div>
     </el-header>
 
+    <GlobalReadOnlyBanner />
+
     <el-container class="layout-container">
-      <!-- 侧边栏菜单 -->
-      <el-aside :width="isCollapse ? '64px' : '200px'" class="layout-aside">
+      <div
+        v-if="isMobile && !isCollapse"
+        class="mobile-menu-mask"
+        aria-hidden="true"
+        @click="isCollapse = true"
+      />
+
+      <el-aside
+        :width="isMobile ? '220px' : (isCollapse ? '64px' : '200px')"
+        class="layout-aside"
+        :aria-hidden="isMobile && isCollapse"
+        :inert="isMobile && isCollapse"
+        :class="{
+          'is-mobile': isMobile,
+          'is-mobile-open': isMobile && !isCollapse
+        }"
+      >
         <el-menu
           :default-active="activeMenu"
           :collapse="isCollapse"
@@ -59,12 +78,46 @@
             <template #title>统计看板</template>
           </el-menu-item>
 
-          <el-menu-item v-if="userStore.isAdmin" index="/users">
-            <el-icon><User /></el-icon>
-            <template #title>用户管理</template>
+          <el-sub-menu
+            v-if="session.isTeamMode && (session.hasPermission('member.view') || canManageOrganization)"
+            index="/team-management"
+          >
+            <template #title>
+              <el-icon><OfficeBuilding /></el-icon>
+              <span>团队管理</span>
+            </template>
+            <el-menu-item v-if="session.hasPermission('member.view')" index="/users">
+              团队成员
+            </el-menu-item>
+            <el-menu-item v-if="canManageOrganization" index="/organization">
+              组织架构
+            </el-menu-item>
+          </el-sub-menu>
+
+          <el-menu-item v-if="session.isSuperAdmin" index="/team-control">
+            <el-icon><Setting /></el-icon>
+            <template #title>项目团队控制</template>
           </el-menu-item>
 
-          <el-sub-menu index="/tasks">
+          <el-sub-menu v-if="session.hasPermission('equipment.view')" index="/equipment-module">
+            <template #title>
+              <el-icon><Tools /></el-icon>
+              <span>设备管理</span>
+            </template>
+            <el-menu-item index="/equipment">设备台账</el-menu-item>
+            <el-menu-item index="/equipment/categories">设备分类</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu v-if="session.hasPermission('report.view')" index="/reporting-module">
+            <template #title>
+              <el-icon><Tickets /></el-icon>
+              <span>数据提报</span>
+            </template>
+            <el-menu-item index="/reporting/transport">运输提报</el-menu-item>
+            <el-menu-item index="/reporting/production">生产排产</el-menu-item>
+          </el-sub-menu>
+
+          <el-sub-menu v-if="session.hasPermission('task.view')" index="/tasks">
             <template #title>
               <el-icon><Document /></el-icon>
               <span>任务管理</span>
@@ -74,13 +127,20 @@
             <el-menu-item index="/tasks/board">任务看板</el-menu-item>
           </el-sub-menu>
 
-          <el-menu-item v-if="userStore.isAdmin" index="/extensions">
+          <el-menu-item
+            v-if="session.can('task.review', { write: true, teamRequired: true })"
+            index="/extensions"
+          >
             <el-icon><Clock /></el-icon>
             <template #title>延期管理</template>
           </el-menu-item>
 
           <el-menu-item index="/messages">
-            <el-badge :value="messageStore.unreadCount" :max="99" :hidden="messageStore.unreadCount === 0">
+            <el-badge
+              :value="messageStore.unreadCount"
+              :max="99"
+              :hidden="messageStore.unreadCount === 0"
+            >
               <el-icon><Bell /></el-icon>
             </el-badge>
             <template #title>消息中心</template>
@@ -93,25 +153,23 @@
         </el-menu>
       </el-aside>
 
-      <!-- 主内容区 -->
       <el-main class="layout-main">
         <div class="main-content">
           <router-view v-slot="{ Component }">
             <transition name="fade" mode="out-in">
-              <component :is="Component" />
+              <component :is="Component" :key="`${route.fullPath}:${session.contextEpoch}`" />
             </transition>
           </router-view>
         </div>
       </el-main>
     </el-container>
 
-    <!-- 修改密码对话框 -->
-    <el-dialog v-model="passwordDialogVisible" title="修改密码" width="500px">
+    <el-dialog v-model="passwordDialogVisible" title="修改密码" width="min(500px, 92vw)">
       <el-form
         ref="passwordFormRef"
         :model="passwordForm"
         :rules="passwordRules"
-        label-width="100px"
+        label-width="88px"
       >
         <el-form-item label="旧密码" prop="oldPassword">
           <el-input v-model="passwordForm.oldPassword" type="password" show-password />
@@ -125,34 +183,40 @@
       </el-form>
       <template #footer>
         <el-button @click="passwordDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="handleChangePassword">确定</el-button>
+        <el-button type="primary" :loading="passwordSubmitting" @click="handleChangePassword">
+          确定
+        </el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useUserStore } from '@/stores/user'
-import { useMessageStore } from '@/stores/message'
-import { changePassword } from '@/api/auth'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import GlobalReadOnlyBanner from '@/components/GlobalReadOnlyBanner.vue'
+import TeamSwitcher from '@/components/TeamSwitcher.vue'
+import { changePassword } from '@/api/auth'
+import { useMessageStore } from '@/stores/message'
+import { useSessionStore } from '@/stores/session'
 
 const route = useRoute()
 const router = useRouter()
-const userStore = useUserStore()
+const session = useSessionStore()
 const messageStore = useMessageStore()
-
+const canManageOrganization = computed(() => (
+  session.isTeamMode &&
+  session.hasPermission('org.manage') &&
+  (session.isSuperAdmin || session.context.membership?.role === 'PROJECT_ADMIN')
+))
 const isCollapse = ref(false)
+const isMobile = ref(false)
 const passwordDialogVisible = ref(false)
+const passwordSubmitting = ref(false)
 const passwordFormRef = ref(null)
-
-const passwordForm = ref({
-  oldPassword: '',
-  newPassword: '',
-  confirmPassword: ''
-})
+const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
+let messagePollTimer = null
 
 const passwordRules = {
   oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
@@ -163,95 +227,98 @@ const passwordRules = {
   confirmPassword: [
     { required: true, message: '请确认新密码', trigger: 'blur' },
     {
-      validator: (rule, value, callback) => {
-        if (value !== passwordForm.value.newPassword) {
-          callback(new Error('两次输入的密码不一致'))
-        } else {
-          callback()
-        }
+      validator: (_rule, value, callback) => {
+        if (value !== passwordForm.newPassword) callback(new Error('两次输入的密码不一致'))
+        else callback()
       },
       trigger: 'blur'
     }
   ]
 }
 
-const activeMenu = computed(() => {
-  const path = route.path
-  if (path.startsWith('/tasks')) {
-    return path
-  }
-  return path
-})
+const activeMenu = computed(() => route.meta.activeMenu || route.path)
+const toggleCollapse = () => { isCollapse.value = !isCollapse.value }
+const goToMessages = () => router.push({ name: 'Messages' })
 
-const toggleCollapse = () => {
-  isCollapse.value = !isCollapse.value
+const syncResponsiveLayout = () => {
+  const mobile = window.matchMedia('(max-width: 768px)').matches
+  if (mobile === isMobile.value) return
+
+  isMobile.value = mobile
+  isCollapse.value = mobile
 }
 
-const goToMessages = () => {
-  router.push('/messages')
+const stopMessagePolling = () => {
+  if (messagePollTimer) clearInterval(messagePollTimer)
+  messagePollTimer = null
+}
+
+const startMessagePolling = () => {
+  stopMessagePolling()
+  if (!session.canAccessBusiness) return
+  messageStore.fetchUnreadCount()
+  messagePollTimer = setInterval(() => messageStore.fetchUnreadCount(), 30000)
 }
 
 const handleCommand = (command) => {
-  switch (command) {
-    case 'profile':
-      router.push('/profile')
-      break
-    case 'changePassword':
-      passwordDialogVisible.value = true
-      break
-    case 'logout':
-      handleLogout()
-      break
-  }
+  if (command === 'profile') router.push({ name: 'Profile' })
+  if (command === 'changePassword') passwordDialogVisible.value = true
+  if (command === 'logout') handleLogout()
 }
 
 const handleChangePassword = async () => {
-  await passwordFormRef.value.validate(async (valid) => {
-    if (valid) {
-      try {
-        await changePassword({
-          oldPassword: passwordForm.value.oldPassword,
-          newPassword: passwordForm.value.newPassword
-        })
-        ElMessage.success('密码修改成功，请重新登录')
-        passwordDialogVisible.value = false
-        setTimeout(() => {
-          userStore.logout()
-        }, 1500)
-      } catch (error) {
-        console.error('修改密码失败:', error)
-      }
-    }
-  })
+  const valid = await passwordFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+
+  passwordSubmitting.value = true
+  try {
+    await changePassword({
+      oldPassword: passwordForm.oldPassword,
+      newPassword: passwordForm.newPassword
+    })
+    ElMessage.success('密码修改成功，请重新登录')
+    passwordDialogVisible.value = false
+    session.clearLocalSession('password-changed')
+    await router.replace({ name: 'Login' })
+  } catch {
+    // 请求层统一展示错误。
+  } finally {
+    passwordSubmitting.value = false
+  }
 }
 
-const handleLogout = () => {
-  ElMessageBox.confirm('确定要退出登录吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(() => {
-    userStore.logout()
-  }).catch(() => {})
-}
-
-onMounted(async () => {
-  // 获取用户信息
-  if (!userStore.userInfo) {
-    try {
-      await userStore.fetchUserInfo()
-    } catch (error) {
-      console.error('获取用户信息失败:', error)
-    }
+const handleLogout = async () => {
+  try {
+    await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
+      confirmButtonText: '退出',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
   }
 
-  // 获取未读消息数量
-  messageStore.fetchUnreadCount()
+  try {
+    await session.logout()
+  } catch {
+    // 本地会话会在 store 的 finally 中清理，仍需回到登录页。
+  } finally {
+    await router.replace({ name: 'Login' })
+  }
+}
 
-  // 定时刷新未读消息数量
-  setInterval(() => {
-    messageStore.fetchUnreadCount()
-  }, 30000) // 每30秒刷新一次
+watch(() => session.contextEpoch, startMessagePolling)
+watch(() => route.fullPath, () => {
+  if (isMobile.value) isCollapse.value = true
+})
+onMounted(startMessagePolling)
+onMounted(() => {
+  syncResponsiveLayout()
+  window.addEventListener('resize', syncResponsiveLayout)
+})
+onUnmounted(() => {
+  stopMessagePolling()
+  window.removeEventListener('resize', syncResponsiveLayout)
 })
 </script>
 
@@ -264,105 +331,175 @@ onMounted(async () => {
 }
 
 .layout-header {
+  flex: 0 0 60px;
+  height: 60px;
+  padding: 0 20px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  gap: 20px;
   background: #fff;
   border-bottom: 1px solid #e4e7ed;
-  padding: 0 20px;
-  height: 60px !important;
+}
 
-  .header-left {
-    display: flex;
-    align-items: center;
-    gap: 16px;
+.header-left,
+.header-right,
+.user-info {
+  display: flex;
+  align-items: center;
+}
 
-    .menu-icon {
-      font-size: 20px;
-      cursor: pointer;
-      transition: all 0.3s;
+.header-left {
+  min-width: 0;
+  gap: 10px;
+}
 
-      &:hover {
-        color: #409eff;
-      }
-    }
+.header-right {
+  gap: 14px;
+}
 
-    .logo-title {
-      font-size: 18px;
-      font-weight: 600;
-      color: #303133;
-    }
+.menu-button {
+  width: 34px;
+  height: 34px;
+  margin: 0;
+  font-size: 19px;
+}
+
+.logo-title {
+  overflow: hidden;
+  color: #303133;
+  font-size: 17px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-badge :deep(.el-badge__content) {
+  top: 8px;
+  right: 18px;
+}
+
+.user-info {
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+
+  &:hover {
+    background: #f5f7fa;
   }
+}
 
-  .header-right {
-    display: flex;
-    align-items: center;
-    gap: 20px;
-
-    .message-badge {
-      :deep(.el-badge__content) {
-        top: 8px;
-        right: 18px;
-      }
-    }
-
-    .user-info {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      cursor: pointer;
-      padding: 8px 12px;
-      border-radius: 4px;
-      transition: all 0.3s;
-
-      &:hover {
-        background: #f5f7fa;
-      }
-
-      .username {
-        font-size: 14px;
-        color: #606266;
-      }
-    }
-  }
+.username {
+  max-width: 100px;
+  overflow: hidden;
+  color: #606266;
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .layout-container {
+  position: relative;
+  min-height: 0;
   flex: 1;
-  height: calc(100vh - 60px);
+}
+
+.mobile-menu-mask {
+  position: fixed;
+  inset: 60px 0 0;
+  z-index: 1090;
+  background: rgb(0 0 0 / 32%);
 }
 
 .layout-aside {
+  overflow-x: hidden;
   background: #fff;
   border-right: 1px solid #e4e7ed;
-  transition: width 0.3s;
-  overflow-x: hidden;
+  transition: width 0.2s;
+
+  &.is-mobile {
+    position: fixed;
+    top: 60px;
+    bottom: 0;
+    left: 0;
+    z-index: 1100;
+    width: 220px !important;
+    overflow-y: auto;
+    box-shadow: 8px 0 24px rgb(0 0 0 / 12%);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  &.is-mobile-open {
+    transform: translateX(0);
+  }
 
   .el-menu {
-    border-right: none;
     height: 100%;
+    border-right: 0;
   }
 }
 
 .layout-main {
-  background: #f5f7fa;
+  min-width: 0;
   padding: 0;
   overflow-y: auto;
+  background: #f5f7fa;
+}
 
-  .main-content {
-    padding: 20px;
-    min-height: 100%;
-  }
+.main-content {
+  min-height: 100%;
+  padding: 20px;
 }
 
 .fade-enter-active,
 .fade-leave-active {
-  transition: opacity 0.2s ease;
+  transition: opacity 0.16s ease;
 }
 
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
 }
-</style>
 
+@media (max-width: 900px) {
+  .logo-title,
+  .username {
+    display: none;
+  }
+
+  .layout-header {
+    padding-inline: 10px;
+  }
+
+  .header-right {
+    gap: 8px;
+  }
+}
+
+@media (max-width: 600px) {
+  .layout-header {
+    padding-inline: 8px;
+    gap: 6px;
+  }
+
+  .header-right {
+    gap: 6px;
+  }
+
+  .user-info {
+    gap: 3px;
+    padding-inline: 2px;
+  }
+
+  .user-info :deep(.el-avatar) {
+    width: 28px;
+    height: 28px;
+  }
+
+  .main-content {
+    padding: 12px;
+  }
+}
+</style>

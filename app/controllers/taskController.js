@@ -1,852 +1,1146 @@
+'use strict';
+
+const mongoose = require('mongoose');
+const XLSX = require('xlsx');
 const Task = require('../models/Task');
 const User = require('../models/User');
 const TaskReview = require('../models/TaskReview');
 const ExtensionRequest = require('../models/ExtensionRequest');
-const XLSX = require('xlsx');
+const TeamMembership = require('../models/TeamMembership');
+const OrgUnit = require('../models/OrgUnit');
+const FileAsset = require('../models/FileAsset');
+const {
+  AUDIT_ACTIONS,
+  AUDIT_RESOURCE_TYPES,
+  DATA_SCOPES,
+  MEMBERSHIP_STATUSES,
+  ORG_UNIT_STATUSES
+} = require('../config/permissions');
 const {
   notifyTaskAssigned,
   notifyTaskUpdated,
   notifyTaskDeleted
 } = require('../utils/notificationHelper');
+const { createAuditService } = require('../services/auditService');
+const { runWithOptionalTransaction } = require('../services/transactionService');
+const { assertTaskParticipantOrgUnits } = require('../services/taskAccessService');
+const {
+  createFileAssetService,
+  normalizeAttachmentInput,
+  preserveLegacyAttachments
+} = require('../services/fileAssetService');
+const {
+  buildRequestScopedFilter,
+  buildScopedDetailFilter,
+  normalizeObjectId
+} = require('../services/scopedQueryService');
+const {
+  assertPermission,
+  resolveModuleDataScope,
+  sameId
+} = require('../services/teamContextService');
+const {
+  AuthContextError,
+  isAuthContextError,
+  sendAuthContextError
+} = require('../services/authContextError');
 
-// 创建任务（支持子任务）
-exports.createTask = async (req, res) => {
-  try {
-    const {
-      taskName,
-      taskType,
-      taskSource,
-      description,
-      executor,
-      mainExecutor,
-      ccUsers,
-      plannedCompletionTime,
-      tags,
-      priority,
-      remarks,
-      subTasks  // 子任务数组
-    } = req.body;
-    
-    // 验证必填字段
-    if (!taskName || !plannedCompletionTime) {
-      return res.status(400).json({ message: '任务名称和计划完成时间不能为空' });
-    }
-    
-    // 验证执行人
-    if (!executor || executor.length === 0) {
-      return res.status(400).json({ message: '至少指定一个执行人' });
-    }
-    
-    // 确保executor是数组
-    const executorArray = Array.isArray(executor) ? executor : [executor];
-    
-    // 处理附件 - 支持两种方式
-    let attachments = [];
-    
-    // 方式1: multer 上传的文件（从 req.files）
-    if (req.files && req.files.length > 0) {
-      req.files.forEach(file => {
-        // 将 Windows 路径的反斜杠转换为正斜杠（URL 格式）
-        const urlPath = file.path.replace(/\\/g, '/');
-        // 处理中文文件名编码
-        const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-        
-        attachments.push({
-          filename: file.filename,
-          originalName: originalName,  // 使用转码后的文件名
-          path: urlPath,
-          mimetype: file.mimetype,
-          size: file.size
-        });
-      });
-    }
-    
-    // 方式2: 前端已上传的附件信息（从 req.body.attachments）
-    if (req.body.attachments && Array.isArray(req.body.attachments)) {
-      attachments = req.body.attachments;
-    }
-    
-    // 创建主任务
-    const mainTask = new Task({
-      taskName,
-      taskType,
-      taskSource,
-      description,
-      executor: executorArray,
-      mainExecutor: mainExecutor || executorArray[0],  // 如果没指定主负责人，默认第一个执行人
-      ccUsers,
-      creator: req.user._id,
-      plannedCompletionTime,
-      attachments,
-      tags,
-      priority,
-      remarks,
-      isMainTask: true,
-      status: 'in_progress'
-    });
-    
-    // 初始化 executorCompletions（多执行人完成跟踪）
-    mainTask.executorCompletions = executorArray.map(executorId => ({
-      executor: executorId,
-      status: 'pending',
-      content: null,
-      attachments: [],
-      completedAt: null
-    }));
-    
-    await mainTask.save();
-    
-    // 创建子任务
-    const createdSubTasks = [];
-    if (subTasks && Array.isArray(subTasks) && subTasks.length > 0) {
-      for (const subTask of subTasks) {
-        if (!subTask.taskName || !subTask.executor) {
-          continue;  // 跳过无效子任务
-        }
-        
-        const newSubTask = new Task({
-          taskName: subTask.taskName,
-          description: subTask.description,
-          executor: [subTask.executor],  // 子任务只能有一个执行人
-          mainExecutor: subTask.executor,
-          ccUsers: mainTask.ccUsers,  // 继承主任务的抄送人
-          creator: req.user._id,
-          plannedCompletionTime: subTask.plannedCompletionTime || plannedCompletionTime,
-          priority: subTask.priority || priority,
-          remarks: subTask.remarks,
-          parentTask: mainTask._id,
-          isMainTask: false,
-          status: 'in_progress'
-        });
-        
-        // 初始化子任务的 executorCompletions
-        newSubTask.executorCompletions = [{
-          executor: subTask.executor,
-          status: 'pending',
-          content: null,
-          attachments: [],
-          completedAt: null
-        }];
-        
-        await newSubTask.save();
-        createdSubTasks.push(newSubTask);
-      }
-    }
-    
-    // 填充关联数据
-    await mainTask.populate([
-      { path: 'creator', select: 'name username' },
-      { path: 'executor', select: 'name username' },
-      { path: 'mainExecutor', select: 'name username' },
-      { path: 'ccUsers', select: 'name username' }
-    ]);
-    
-    // 发送任务分配通知
+const TASK_MODULE = 'task';
+const RELATED_RESOURCE_ERROR = 'RELATED_RESOURCE_INVALID';
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function asSnapshot(document) {
+  if (!document) return document;
+  return typeof document.toObject === 'function'
+    ? document.toObject({ depopulate: true, virtuals: false })
+    : document;
+}
+
+function normalizeInputId(value, fieldName) {
+  const candidate = value && typeof value === 'object' && value._id ? value._id : value;
+  return normalizeObjectId(candidate, fieldName);
+}
+
+function parseArray(value, fieldName, { allowEmpty = true } = {}) {
+  if (value === undefined || value === null || value === '') return [];
+
+  let parsed = value;
+  if (typeof parsed === 'string' && parsed.trim().startsWith('[')) {
     try {
-      // 通知所有执行人和抄送人
-      // 从 populate 后的数据中提取有效的 ObjectId
-      const executorIds = mainTask.executor.map(user => user._id);
-      const ccUserIds = mainTask.ccUsers ? mainTask.ccUsers.map(user => user._id) : [];
-      const allRecipients = [
-        ...executorIds,
-        ...ccUserIds
-      ];
-      console.log('📧 准备发送通知，接收人数量:', allRecipients.length);
-      await notifyTaskAssigned(mainTask, allRecipients, req.user._id);
-    } catch (notifyError) {
-      console.error('❌ 发送任务分配通知失败:', notifyError);
-      // 不影响主流程
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new AuthContextError(400, 'INVALID_REQUEST', `${fieldName} must be an array`);
     }
-    
-    res.status(201).json({
-      message: '任务创建成功',
-      task: mainTask,
-      subTasks: createdSubTasks
-    });
-  } catch (error) {
-    console.error('创建任务错误:', error);
-    
-    if (error.name === 'ValidationError') {
-      const messages = Object.values(error.errors).map(err => err.message);
-      return res.status(400).json({ message: messages.join(', ') });
-    }
-    
-    res.status(500).json({ message: '服务器错误' });
   }
-};
-
-// 获取任务列表（根据权限）
-exports.getTasks = async (req, res) => {
-  try {
-    const { page = 1, limit = 10, status, priority, keyword, startDate, endDate } = req.query;
-    
-    // 构建查询条件
-    const query = { isMainTask: true };  // 只查主任务
-    
-    // 权限过滤
-    if (!req.user.roles.includes('admin')) {
-      // 非管理员只能看到自己相关的任务
-      query.$or = [
-        { executor: req.user._id },
-        { ccUsers: req.user._id }
-      ];
-    }
-    
-    if (status) {
-      query.status = status;
-    }
-    
-    if (priority) {
-      query.priority = priority;
-    }
-    
-    if (keyword) {
-      query.$or = [
-        { taskName: new RegExp(keyword, 'i') },
-        { description: new RegExp(keyword, 'i') }
-      ];
-    }
-    
-    // 按创建时间范围查询
-    if (startDate || endDate) {
-      query.createdAt = {};
-      if (startDate) {
-        // 从开始日期的 00:00:00 开始
-        const start = new Date(startDate);
-        start.setHours(0, 0, 0, 0);
-        query.createdAt.$gte = start;
-      }
-      if (endDate) {
-        // 到结束日期的 23:59:59 结束
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
-        query.createdAt.$lte = end;
-      }
-    }
-    
-    // 分页查询
-    const skip = (page - 1) * limit;
-    const tasks = await Task.find(query)
-      .populate('creator', 'name username')
-      .populate('executor', 'name username')
-      .populate('mainExecutor', 'name username')
-      .populate('ccUsers', 'name username')
-      .populate('subTasks')
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ createdAt: -1 });
-    
-    const total = await Task.countDocuments(query);
-    
-    res.json({
-      tasks,
-      pagination: {
-        total,
-        page: parseInt(page),
-        limit: parseInt(limit),
-        pages: Math.ceil(total / limit)
-      }
-    });
-  } catch (error) {
-    console.error('获取任务列表错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  if (!allowEmpty && items.length === 0) {
+    throw new AuthContextError(400, 'INVALID_REQUEST', `${fieldName} cannot be empty`);
   }
-};
+  return items;
+}
 
-// 获取任务详情
-exports.getTaskById = async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id)
-      .populate('creator', 'name username phone')
-      .populate('executor', 'name username phone')
-      .populate('mainExecutor', 'name username phone')
-      .populate('ccUsers', 'name username phone')
-      .populate('completedBy', 'name username phone')
-      .populate('confirmedBy', 'name username phone')
-      .populate('executorCompletions.executor', 'name username phone realName')
-      .populate('parentTask')
-      .populate({
-        path: 'subTasks',
-        populate: {
-          path: 'executor',
-          select: 'name username'
+function normalizeIdArray(value, fieldName, options = {}) {
+  const unique = new Set();
+  for (const item of parseArray(value, fieldName, options)) {
+    unique.add(normalizeInputId(item, fieldName));
+  }
+  const result = [...unique];
+  if (options.allowEmpty === false && result.length === 0) {
+    throw new AuthContextError(400, 'INVALID_REQUEST', `${fieldName} cannot be empty`);
+  }
+  return result;
+}
+
+function parseSubTasks(value) {
+  if (value === undefined || value === null || value === '') return [];
+  let parsed = value;
+  if (typeof parsed === 'string') {
+    try {
+      parsed = JSON.parse(parsed);
+    } catch {
+      throw new AuthContextError(400, 'INVALID_REQUEST', 'subTasks must be valid JSON');
+    }
+  }
+  if (!Array.isArray(parsed)) {
+    throw new AuthContextError(400, 'INVALID_REQUEST', 'subTasks must be an array');
+  }
+  return parsed;
+}
+
+function normalizeSubTaskExecutor(subTask, fallbackExecutor, fieldName) {
+  const raw = subTask && subTask.executor;
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return fallbackExecutor;
+    return normalizeInputId(raw[0], fieldName);
+  }
+  return raw ? normalizeInputId(raw, fieldName) : fallbackExecutor;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function keywordConstraint(keyword) {
+  const normalized = typeof keyword === 'string' ? keyword.trim().slice(0, 200) : '';
+  if (!normalized) return null;
+  const expression = new RegExp(escapeRegExp(normalized), 'i');
+  return { $or: [{ taskName: expression }, { description: expression }] };
+}
+
+function combineUserConstraints(constraints) {
+  const valid = constraints.filter(Boolean);
+  if (valid.length === 0) return {};
+  return valid.length === 1 ? valid[0] : { $and: valid };
+}
+
+function dateConstraint(startDate, endDate, requirePair = false) {
+  if (requirePair && Boolean(startDate) !== Boolean(endDate)) {
+    throw new AuthContextError(
+      400,
+      'INVALID_DATE_RANGE',
+      'Please provide both startDate and endDate, or neither'
+    );
+  }
+  if (!startDate && !endDate) return null;
+
+  const createdAt = {};
+  if (startDate) {
+    const start = new Date(startDate);
+    if (Number.isNaN(start.getTime())) {
+      throw new AuthContextError(400, 'INVALID_DATE_RANGE', 'startDate is invalid');
+    }
+    start.setHours(0, 0, 0, 0);
+    createdAt.$gte = start;
+  }
+  if (endDate) {
+    const end = new Date(endDate);
+    if (Number.isNaN(end.getTime())) {
+      throw new AuthContextError(400, 'INVALID_DATE_RANGE', 'endDate is invalid');
+    }
+    end.setHours(23, 59, 59, 999);
+    createdAt.$lte = end;
+  }
+  return { createdAt };
+}
+
+function globalTeamId(req) {
+  return req.authContext?.activeTeamId ? undefined : req.query?.teamId;
+}
+
+function scopedListFilter(req, userFilter) {
+  return buildRequestScopedFilter(req, {
+    moduleKey: TASK_MODULE,
+    userFilter,
+    globalTeamId: globalTeamId(req)
+  });
+}
+
+function scopedDetailFilter(req, id, userFilter = {}) {
+  return buildScopedDetailFilter({
+    authContext: req.authContext,
+    moduleKey: TASK_MODULE,
+    id,
+    userFilter,
+    globalTeamId: globalTeamId(req),
+    method: req.method
+  });
+}
+
+function withSession(query, session) {
+  return session && query && typeof query.session === 'function' ? query.session(session) : query;
+}
+
+function notFound(res) {
+  return res.status(404).json({ message: '任务不存在' });
+}
+
+function relatedResourceError() {
+  return new AuthContextError(
+    400,
+    RELATED_RESOURCE_ERROR,
+    'One or more related resources are invalid for the active team'
+  );
+}
+
+function sendControllerError(res, next, error, fallbackMessage) {
+  if (isAuthContextError(error)) return sendAuthContextError(res, error);
+  if (error?.name === 'ValidationError' || error?.name === 'CastError') {
+    const message = error.name === 'ValidationError'
+      ? Object.values(error.errors).map((item) => item.message).join(', ')
+      : '请求参数无效';
+    return res.status(400).json({ message });
+  }
+  if (error?.code === 11000) {
+    return res.status(409).json({ message: '数据已存在或发生并发冲突' });
+  }
+  if (Number.isInteger(error?.status) && error.status < 500) {
+    return res.status(error.status).json({ message: error.message, code: error.code });
+  }
+  console.error(fallbackMessage, error);
+  if (typeof next === 'function') return next(error);
+  return res.status(500).json({ message: '服务器错误' });
+}
+
+function createTaskController(overrides = {}) {
+  const TaskModel = overrides.Task || Task;
+  const UserModel = overrides.User || User;
+  const TaskReviewModel = overrides.TaskReview || TaskReview;
+  const ExtensionRequestModel = overrides.ExtensionRequest || ExtensionRequest;
+  const TeamMembershipModel = overrides.TeamMembership || TeamMembership;
+  const OrgUnitModel = overrides.OrgUnit || OrgUnit;
+  const mongooseInstance = overrides.mongoose || mongoose;
+  const transactionRunner = overrides.runWithOptionalTransaction || runWithOptionalTransaction;
+  const auditService = overrides.auditService || createAuditService();
+  const fileAssetService = overrides.fileAssetService || createFileAssetService();
+  const notifications = overrides.notifications || {
+    notifyTaskAssigned,
+    notifyTaskUpdated,
+    notifyTaskDeleted
+  };
+
+  async function runAtomic(work) {
+    return transactionRunner(
+      work,
+      overrides.connection || mongooseInstance.connection
+    );
+  }
+
+  async function findActiveOrgUnit(teamId, orgUnitId, session) {
+    const query = OrgUnitModel.findOne({
+      _id: normalizeInputId(orgUnitId, 'orgUnitId'),
+      teamId,
+      status: ORG_UNIT_STATUSES.ACTIVE
+    });
+    return withSession(query, session);
+  }
+
+  async function resolveTrustedOrgUnit(authContext, requestedOrgUnitId, session) {
+    const teamId = normalizeInputId(authContext.activeTeamId, 'activeTeamId');
+    const dataScope = resolveModuleDataScope(authContext, TASK_MODULE);
+    let trustedOrgUnitId;
+    if (dataScope.scope === DATA_SCOPES.TEAM) {
+      if (!requestedOrgUnitId) throw relatedResourceError();
+      trustedOrgUnitId = requestedOrgUnitId;
+    } else {
+      trustedOrgUnitId = dataScope.orgUnitId;
+      if (requestedOrgUnitId && !sameId(requestedOrgUnitId, trustedOrgUnitId)) {
+        throw relatedResourceError();
+      }
+    }
+    if (!trustedOrgUnitId) throw relatedResourceError();
+    const orgUnit = await findActiveOrgUnit(teamId, trustedOrgUnitId, session);
+    if (!orgUnit) throw relatedResourceError();
+    return normalizeInputId(orgUnit._id, 'orgUnitId');
+  }
+
+  async function validateActiveTeamUsers(
+    authContext,
+    userIds,
+    session,
+    taskOrgUnitId = null
+  ) {
+    const normalizedIds = [...new Set(userIds.map((id) => normalizeInputId(id, 'userId')))];
+    if (normalizedIds.length === 0) return [];
+
+    const teamId = normalizeInputId(authContext.activeTeamId, 'activeTeamId');
+    const membershipQuery = TeamMembershipModel.find({
+      teamId,
+      userId: { $in: normalizedIds },
+      status: MEMBERSHIP_STATUSES.ACTIVE
+    }).lean();
+    const memberships = await withSession(membershipQuery, session);
+    if (memberships.length !== normalizedIds.length) throw relatedResourceError();
+
+    const membershipUserIds = new Set(memberships.map((membership) => String(membership.userId)));
+    if (normalizedIds.some((id) => !membershipUserIds.has(id))) throw relatedResourceError();
+
+    assertTaskParticipantOrgUnits({
+      authContext,
+      memberships,
+      taskOrgUnitId
+    });
+
+    const orgUnitIds = [...new Set(memberships.map((membership) => String(membership.orgUnitId)))];
+    const [activeOrgUnits, activeUsers] = await Promise.all([
+      withSession(OrgUnitModel.find({
+        _id: { $in: orgUnitIds },
+        teamId,
+        status: ORG_UNIT_STATUSES.ACTIVE
+      }).select('_id').lean(), session),
+      withSession(UserModel.find({
+        _id: { $in: normalizedIds },
+        status: 'active'
+      }).select('_id').lean(), session)
+    ]);
+    if (activeOrgUnits.length !== orgUnitIds.length || activeUsers.length !== normalizedIds.length) {
+      throw relatedResourceError();
+    }
+    return normalizedIds;
+  }
+
+  async function populateTask(task, { detail = false } = {}) {
+    if (!task) return task;
+    const userFields = detail ? 'name username phone realName' : 'name username';
+    const populate = [
+      { path: 'creator', select: userFields },
+      { path: 'executor', select: userFields },
+      { path: 'mainExecutor', select: userFields },
+      { path: 'ccUsers', select: userFields }
+    ];
+    if (detail) {
+      populate.push(
+        { path: 'completedBy', select: userFields },
+        { path: 'confirmedBy', select: userFields },
+        { path: 'executorCompletions.executor', select: userFields },
+        {
+          path: 'parentTask',
+          match: { teamId: task.teamId, orgUnitId: task.orgUnitId }
+        },
+        {
+          path: 'subTasks',
+          match: { teamId: task.teamId, orgUnitId: task.orgUnitId },
+          populate: { path: 'executor', select: 'name username' }
         }
-      });
-    
-    if (!task) {
-      return res.status(404).json({ message: '任务不存在' });
+      );
     }
-    
-    // 权限检查：只有任务相关人员可以查看
-    const userId = req.user._id.toString();
-    const isCreator = task.creator._id.toString() === userId;
-    const isExecutor = task.executor.some(e => e._id.toString() === userId);
-    const isCCUser = task.ccUsers.some(cc => cc._id.toString() === userId);
-    const isAdmin = req.user.roles.includes('admin');
-    
-    if (!isCreator && !isExecutor && !isCCUser && !isAdmin) {
-      return res.status(403).json({ message: '无权查看此任务' });
-    }
-    
-    res.json({ task });
-  } catch (error) {
-    console.error('获取任务详情错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    await task.populate(populate);
+    return task;
   }
-};
 
-// 更新任务信息
-exports.updateTask = async (req, res) => {
-  try {
-    console.log('=== 更新任务请求 ===');
-    console.log('任务ID:', req.params.id);
-    console.log('req.body:', req.body);
-    console.log('req.files:', req.files);
-    
-    const task = await Task.findById(req.params.id);
-    
-    if (!task) {
-      return res.status(404).json({ message: '任务不存在' });
-    }
-    
-    // 权限检查：只有创建者（管理员）可以修改任务
-    if (task.creator.toString() !== req.user._id.toString() && !req.user.roles.includes('admin')) {
-      return res.status(403).json({ message: '无权修改此任务' });
-    }
-    
-    // 更新允许的字段
-    const {
-      taskName,
-      taskType,
-      taskSource,
-      description,
-      executor,
-      mainExecutor,
-      ccUsers,
-      plannedCompletionTime,
-      tags,
-      priority,
-      remarks,
-      subTasks
-    } = req.body;
-    
-    if (taskName) task.taskName = taskName;
-    if (taskType) task.taskType = taskType;
-    if (taskSource) task.taskSource = taskSource;
-    if (description) task.description = description;
-    if (priority) task.priority = priority;
-    if (remarks !== undefined) task.remarks = remarks;
-    
-    // 处理数组字段（FormData传递的可能是字符串或数组）
-    if (executor) {
-      const newExecutors = Array.isArray(executor) ? executor : [executor];
-      
-      // 如果执行人列表发生变化，需要更新 executorCompletions
-      const oldExecutorIds = task.executor.map(e => e.toString());
-      const newExecutorIds = newExecutors.map(e => e.toString());
-      
-      if (JSON.stringify(oldExecutorIds.sort()) !== JSON.stringify(newExecutorIds.sort())) {
-        console.log('执行人列表变更，更新 executorCompletions');
-        
-        // 保留已完成的记录，为新增执行人创建pending记录
-        const existingCompletions = task.executorCompletions || [];
-        const updatedCompletions = [];
-        
-        newExecutorIds.forEach(executorId => {
-          const existing = existingCompletions.find(ec => ec.executor.toString() === executorId);
-          if (existing) {
-            // 保留现有记录
-            updatedCompletions.push(existing);
-          } else {
-            // 新增执行人
-            updatedCompletions.push({
-              executor: executorId,
+  async function createTask(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.create');
+      assertPermission(req.authContext, 'task.assign');
+      const body = req.body || {};
+      if (!body.taskName || !body.plannedCompletionTime) {
+        return res.status(400).json({ message: '任务名称和计划完成时间不能为空' });
+      }
+
+      const executorIds = normalizeIdArray(body.executor, 'executor', { allowEmpty: false });
+      const mainExecutorId = body.mainExecutor
+        ? normalizeInputId(body.mainExecutor, 'mainExecutor')
+        : executorIds[0];
+      const ccUserIds = normalizeIdArray(body.ccUsers, 'ccUsers');
+      const parsedSubTasks = parseSubTasks(body.subTasks);
+      const normalizedSubTasks = parsedSubTasks.map((subTask, index) => ({
+        ...subTask,
+        executorId: normalizeSubTaskExecutor(
+          subTask,
+          mainExecutorId,
+          `subTasks[${index}].executor`
+        )
+      }));
+      const participantIds = [
+        ...executorIds,
+        mainExecutorId,
+        ...ccUserIds,
+        ...normalizedSubTasks.map((subTask) => subTask.executorId)
+      ];
+      const attachmentInput = hasOwn(body, 'attachments') ? body.attachments : [];
+      const attachmentIds = normalizeAttachmentInput(attachmentInput);
+
+      const result = await runAtomic(async (session) => {
+        const teamId = normalizeInputId(req.authContext.activeTeamId, 'activeTeamId');
+        const orgUnitId = await resolveTrustedOrgUnit(
+          req.authContext,
+          body.orgUnitId,
+          session
+        );
+        await validateActiveTeamUsers(
+          req.authContext,
+          participantIds,
+          session,
+          orgUnitId
+        );
+
+        const mainTask = new TaskModel({
+          teamId,
+          orgUnitId,
+          taskName: body.taskName,
+          taskType: body.taskType,
+          taskSource: body.taskSource,
+          description: body.description,
+          executor: executorIds,
+          mainExecutor: mainExecutorId,
+          ccUsers: ccUserIds,
+          creator: req.authContext.userId,
+          plannedCompletionTime: body.plannedCompletionTime,
+          attachments: [],
+          tags: parseArray(body.tags, 'tags'),
+          priority: body.priority,
+          remarks: body.remarks,
+          isMainTask: true,
+          status: 'in_progress',
+          executorCompletions: executorIds.map((executor) => ({
+            executor,
+            status: 'pending',
+            content: null,
+            attachments: [],
+            completedAt: null
+          }))
+        });
+        await mainTask.save({ session: session || undefined });
+
+        if (attachmentIds.length > 0) {
+          mainTask.attachments = await fileAssetService.reconcileOwnerFiles({
+            authContext: req.authContext,
+            req,
+            attachments: attachmentInput,
+            previousAttachments: [],
+            ownerType: FileAsset.FILE_OWNER_TYPES.TASK,
+            ownerId: mainTask._id,
+            method: 'POST',
+            session
+          });
+          await mainTask.save({ session: session || undefined });
+        }
+
+        const createdSubTasks = [];
+        for (const subTask of normalizedSubTasks) {
+          if (!subTask.taskName) {
+            throw new AuthContextError(400, 'INVALID_REQUEST', '子任务名称不能为空');
+          }
+          const child = new TaskModel({
+            teamId,
+            orgUnitId,
+            taskName: subTask.taskName,
+            taskType: subTask.taskType || body.taskType,
+            taskSource: subTask.taskSource || body.taskSource,
+            description: subTask.description,
+            executor: [subTask.executorId],
+            mainExecutor: subTask.executorId,
+            ccUsers: ccUserIds,
+            creator: req.authContext.userId,
+            plannedCompletionTime: subTask.plannedCompletionTime || body.plannedCompletionTime,
+            priority: subTask.priority || body.priority,
+            remarks: subTask.remarks,
+            parentTask: mainTask._id,
+            isMainTask: false,
+            status: 'in_progress',
+            executorCompletions: [{
+              executor: subTask.executorId,
               status: 'pending',
               content: null,
               attachments: [],
               completedAt: null
-            });
-          }
+            }]
+          });
+          await child.save({ session: session || undefined });
+          createdSubTasks.push(child);
+          await auditService.record({
+            req,
+            action: AUDIT_ACTIONS.CREATE,
+            resourceType: AUDIT_RESOURCE_TYPES.TASK,
+            resourceId: child._id,
+            after: asSnapshot(child),
+            targetTeamId: teamId,
+            session
+          });
+        }
+
+        await auditService.record({
+          req,
+          action: AUDIT_ACTIONS.CREATE,
+          resourceType: AUDIT_RESOURCE_TYPES.TASK,
+          resourceId: mainTask._id,
+          after: asSnapshot(mainTask),
+          targetTeamId: teamId,
+          session
         });
-        
-        task.executorCompletions = updatedCompletions;
-      }
-      
-      task.executor = newExecutors;
-    }
-    if (mainExecutor) {
-      task.mainExecutor = mainExecutor;
-    }
-    if (ccUsers) {
-      task.ccUsers = Array.isArray(ccUsers) ? ccUsers : (ccUsers ? [ccUsers] : []);
-    }
-    if (plannedCompletionTime) {
-      task.plannedCompletionTime = plannedCompletionTime;
-    }
-    if (tags) {
-      task.tags = Array.isArray(tags) ? tags : (tags ? [tags] : []);
-    }
-    
-    // 处理子任务（如果传递了 JSON 字符串）
-    if (subTasks) {
+        return { mainTask, createdSubTasks, teamId };
+      });
+
+      await populateTask(result.mainTask);
       try {
-        const parsedSubTasks = typeof subTasks === 'string' ? JSON.parse(subTasks) : subTasks;
-        console.log('解析的子任务:', parsedSubTasks);
-        // 注意：如果需要更新子任务，需要额外的逻辑来处理子任务的增删改
-      } catch (err) {
-        console.error('解析子任务失败:', err);
+        const recipients = [
+          ...result.mainTask.executor.map((entry) => entry._id || entry),
+          ...result.mainTask.ccUsers.map((entry) => entry._id || entry)
+        ];
+        await notifications.notifyTaskAssigned(
+          result.mainTask,
+          recipients,
+          req.authContext.userId
+        );
+      } catch (error) {
+        console.error('发送任务分配通知失败:', error);
+      }
+
+      return res.status(201).json({
+        message: '任务创建成功',
+        task: result.mainTask,
+        subTasks: result.createdSubTasks
+      });
+    } catch (error) {
+      return sendControllerError(res, next, error, '创建任务错误:');
+    }
+  }
+
+  async function getTasks(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.view');
+      const { status, priority, keyword, startDate, endDate } = req.query;
+      const userFilter = combineUserConstraints([
+        { isMainTask: true },
+        status ? { status } : null,
+        priority ? { priority } : null,
+        keywordConstraint(keyword),
+        dateConstraint(startDate, endDate)
+      ]);
+      const query = scopedListFilter(req, userFilter);
+      const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+      const limit = Math.min(500, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+      const skip = (page - 1) * limit;
+
+      const [tasks, total] = await Promise.all([
+        TaskModel.find(query)
+          .populate('creator', 'name username')
+          .populate('executor', 'name username')
+          .populate('mainExecutor', 'name username')
+          .populate('ccUsers', 'name username')
+          .populate({
+            path: 'subTasks',
+            match: (parent) => ({
+              teamId: parent.teamId,
+              orgUnitId: parent.orgUnitId
+            })
+          })
+          .skip(skip)
+          .limit(limit)
+          .sort({ createdAt: -1 }),
+        TaskModel.countDocuments(query)
+      ]);
+
+      return res.json({
+        tasks,
+        pagination: { total, page, limit, pages: Math.ceil(total / limit) }
+      });
+    } catch (error) {
+      return sendControllerError(res, next, error, '获取任务列表错误:');
+    }
+  }
+
+  async function getTaskById(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.view');
+      const task = await TaskModel.findOne(scopedDetailFilter(req, req.params.id));
+      if (!task) return notFound(res);
+      await populateTask(task, { detail: true });
+      return res.json({ task });
+    } catch (error) {
+      return sendControllerError(res, next, error, '获取任务详情错误:');
+    }
+  }
+
+  async function reconcileSubTasks({ req, task, parsedSubTasks, session }) {
+    const teamId = normalizeInputId(task.teamId, 'teamId');
+    const orgUnitId = normalizeInputId(task.orgUnitId, 'orgUnitId');
+    const fallbackExecutor = normalizeInputId(
+      task.mainExecutor || task.executor?.[0],
+      'mainExecutor'
+    );
+    const normalized = parsedSubTasks.map((subTask, index) => ({
+      ...subTask,
+      executorId: normalizeSubTaskExecutor(
+        subTask,
+        fallbackExecutor,
+        `subTasks[${index}].executor`
+      )
+    }));
+    await validateActiveTeamUsers(
+      req.authContext,
+      normalized.map((subTask) => subTask.executorId),
+      session,
+      orgUnitId
+    );
+
+    const existingQuery = TaskModel.find({
+      teamId,
+      orgUnitId,
+      parentTask: task._id
+    });
+    const existing = await withSession(existingQuery, session);
+    const byId = new Map(existing.map((subTask) => [String(subTask._id), subTask]));
+    const retainedIds = [];
+    const changed = [];
+
+    for (const input of normalized) {
+      if (!input.taskName) {
+        throw new AuthContextError(400, 'INVALID_REQUEST', '子任务名称不能为空');
+      }
+      let subTask;
+      let before;
+      if (input._id) {
+        const id = normalizeInputId(input._id, 'subTask._id');
+        subTask = byId.get(id);
+        if (!subTask) {
+          throw new AuthContextError(404, 'RESOURCE_NOT_FOUND', '任务不存在');
+        }
+        before = asSnapshot(subTask);
+        retainedIds.push(id);
+      } else {
+        subTask = new TaskModel({
+          teamId,
+          orgUnitId,
+          creator: req.authContext.userId,
+          parentTask: task._id,
+          isMainTask: false,
+          status: 'in_progress'
+        });
+      }
+
+      subTask.taskName = input.taskName;
+      subTask.taskType = input.taskType || task.taskType;
+      subTask.taskSource = input.taskSource || task.taskSource;
+      subTask.description = input.description;
+      subTask.executor = [input.executorId];
+      subTask.mainExecutor = input.executorId;
+      subTask.ccUsers = task.ccUsers;
+      subTask.plannedCompletionTime = input.plannedCompletionTime || task.plannedCompletionTime;
+      subTask.priority = input.priority || task.priority;
+      subTask.remarks = input.remarks;
+      const completion = (subTask.executorCompletions || []).find(
+        (entry) => sameId(entry.executor, input.executorId)
+      );
+      subTask.executorCompletions = [completion || {
+        executor: input.executorId,
+        status: 'pending',
+        content: null,
+        attachments: [],
+        completedAt: null
+      }];
+      await subTask.save({ session: session || undefined });
+      changed.push(subTask);
+      await auditService.record({
+        req,
+        action: before ? AUDIT_ACTIONS.UPDATE : AUDIT_ACTIONS.CREATE,
+        resourceType: AUDIT_RESOURCE_TYPES.TASK,
+        resourceId: subTask._id,
+        before,
+        after: asSnapshot(subTask),
+        targetTeamId: teamId,
+        session
+      });
+    }
+
+    const deleted = existing.filter((subTask) => !retainedIds.includes(String(subTask._id)));
+    if (deleted.length > 0) {
+      await TaskModel.deleteMany({
+        teamId,
+        orgUnitId,
+        parentTask: task._id,
+        _id: { $in: deleted.map((subTask) => subTask._id) }
+      }, { session: session || undefined });
+      for (const subTask of deleted) {
+        await auditService.record({
+          req,
+          action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.TASK,
+          resourceId: subTask._id,
+          before: asSnapshot(subTask),
+          targetTeamId: teamId,
+          session
+        });
       }
     }
-    
-    // 处理附件上传
-    if (req.files && req.files.length > 0) {
-      const newAttachments = req.files.map(file => {
-        // 处理中文文件名编码
-        const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
-        
+    return changed;
+  }
+
+  async function updateTask(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.edit');
+      const body = req.body || {};
+      if (hasOwn(body, 'attachments')) normalizeAttachmentInput(body.attachments);
+      const assignmentFields = ['executor', 'mainExecutor', 'ccUsers', 'subTasks'];
+      if (assignmentFields.some((field) => hasOwn(body, field))) {
+        assertPermission(req.authContext, 'task.assign');
+      }
+
+      const result = await runAtomic(async (session) => {
+        const findQuery = TaskModel.findOne(scopedDetailFilter(req, req.params.id));
+        const task = await withSession(findQuery, session);
+        if (!task) return null;
+        const before = asSnapshot(task);
+        if (hasOwn(body, 'orgUnitId') && !sameId(body.orgUnitId, task.orgUnitId)) {
+          throw new AuthContextError(
+            400,
+            'TASK_ORG_UNIT_IMMUTABLE',
+            'Task organization unit cannot be changed after creation'
+          );
+        }
+
+        let newExecutorIds = task.executor.map(String);
+        if (hasOwn(body, 'executor')) {
+          newExecutorIds = normalizeIdArray(body.executor, 'executor', { allowEmpty: false });
+        }
+        const newMainExecutorId = hasOwn(body, 'mainExecutor') && body.mainExecutor
+          ? normalizeInputId(body.mainExecutor, 'mainExecutor')
+          : String(task.mainExecutor || newExecutorIds[0]);
+        const newCcUserIds = hasOwn(body, 'ccUsers')
+          ? normalizeIdArray(body.ccUsers, 'ccUsers')
+          : task.ccUsers.map(String);
+        await validateActiveTeamUsers(
+          req.authContext,
+          [...newExecutorIds, newMainExecutorId, ...newCcUserIds],
+          session,
+          task.orgUnitId
+        );
+
+        const directFields = [
+          'taskName',
+          'taskType',
+          'taskSource',
+          'description',
+          'plannedCompletionTime',
+          'priority',
+          'remarks'
+        ];
+        for (const field of directFields) {
+          if (hasOwn(body, field)) task[field] = body[field];
+        }
+        if (hasOwn(body, 'tags')) task.tags = parseArray(body.tags, 'tags');
+
+        const oldCompletions = task.executorCompletions || [];
+        task.executorCompletions = newExecutorIds.map((executor) => (
+          oldCompletions.find((entry) => sameId(entry.executor, executor)) || {
+            executor,
+            status: 'pending',
+            content: null,
+            attachments: [],
+            completedAt: null
+          }
+        ));
+        task.executor = newExecutorIds;
+        task.mainExecutor = newMainExecutorId;
+        task.ccUsers = newCcUserIds;
+
+        if (hasOwn(body, 'attachments')) {
+          const previousAttachments = [...(task.attachments || [])];
+          const managedAttachments = await fileAssetService.reconcileOwnerFiles({
+            authContext: req.authContext,
+            req,
+            attachments: body.attachments,
+            previousAttachments,
+            ownerType: FileAsset.FILE_OWNER_TYPES.TASK,
+            ownerId: task._id,
+            method: 'PUT',
+            session
+          });
+          task.attachments = [
+            ...preserveLegacyAttachments(previousAttachments),
+            ...managedAttachments
+          ];
+        }
+        await task.save({ session: session || undefined });
+
+        if (hasOwn(body, 'subTasks')) {
+          await reconcileSubTasks({
+            req,
+            task,
+            parsedSubTasks: parseSubTasks(body.subTasks),
+            session
+          });
+        }
+
+        await auditService.record({
+          req,
+          action: AUDIT_ACTIONS.UPDATE,
+          resourceType: AUDIT_RESOURCE_TYPES.TASK,
+          resourceId: task._id,
+          before,
+          after: asSnapshot(task),
+          targetTeamId: task.teamId,
+          session
+        });
+        return task;
+      });
+
+      if (!result) return notFound(res);
+      await populateTask(result);
+      try {
+        const recipients = [
+          ...result.executor.map((entry) => entry._id || entry),
+          ...result.ccUsers.map((entry) => entry._id || entry)
+        ];
+        await notifications.notifyTaskUpdated(
+          result,
+          recipients,
+          req.authContext.userId,
+          '任务信息已更新'
+        );
+      } catch (error) {
+        console.error('发送任务更新通知失败:', error);
+      }
+      return res.json({ message: '任务更新成功', task: result });
+    } catch (error) {
+      return sendControllerError(res, next, error, '更新任务错误:');
+    }
+  }
+
+  async function deleteTask(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.edit');
+      const deleted = await runAtomic(async (session) => {
+        const findQuery = TaskModel.findOne(scopedDetailFilter(req, req.params.id));
+        const task = await withSession(findQuery, session);
+        if (!task) return null;
+        const teamId = normalizeInputId(task.teamId, 'teamId');
+        const orgUnitId = normalizeInputId(task.orgUnitId, 'orgUnitId');
+        const children = task.isMainTask
+          ? await withSession(TaskModel.find({
+            teamId,
+            orgUnitId,
+            parentTask: task._id
+          }), session)
+          : [];
+
+        if (children.length > 0) {
+          await TaskModel.deleteMany({
+            teamId,
+            orgUnitId,
+            parentTask: task._id,
+            _id: { $in: children.map((child) => child._id) }
+          }, { session: session || undefined });
+        }
+        await TaskModel.deleteOne(
+          { _id: task._id, teamId, orgUnitId },
+          { session: session || undefined }
+        );
+
+        for (const child of children) {
+          await auditService.record({
+            req,
+            action: AUDIT_ACTIONS.DELETE,
+            resourceType: AUDIT_RESOURCE_TYPES.TASK,
+            resourceId: child._id,
+            before: asSnapshot(child),
+            targetTeamId: teamId,
+            session
+          });
+        }
+        await auditService.record({
+          req,
+          action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.TASK,
+          resourceId: task._id,
+          before: asSnapshot(task),
+          targetTeamId: teamId,
+          session
+        });
         return {
-          path: file.path.replace(/\\/g, '/'),  // 统一使用正斜杠
-          originalName: originalName,  // 使用转码后的文件名
-          mimetype: file.mimetype,
-          size: file.size
+          teamId,
+          taskName: task.taskName,
+          recipients: [...task.executor.map(String), ...task.ccUsers.map(String)]
         };
       });
-      
-      // 将新附件添加到现有附件数组
-      task.attachments = [...(task.attachments || []), ...newAttachments];
-      console.log('添加附件:', newAttachments);
-    }
-    
-    console.log('保存前的任务数据:', {
-      taskName: task.taskName,
-      taskType: task.taskType,
-      executor: task.executor,
-      mainExecutor: task.mainExecutor
-    });
-    
-    await task.save();
-    
-    console.log('任务保存成功');
-    
-    await task.populate([
-      { path: 'creator', select: 'name username' },
-      { path: 'executor', select: 'name username' },
-      { path: 'mainExecutor', select: 'name username' },
-      { path: 'ccUsers', select: 'name username' }
-    ]);
-    
-    // 发送任务更新通知
-    try {
-      // 通知所有相关人员
-      const allRecipients = [
-        ...task.executor.map(e => e._id),
-        ...task.ccUsers.map(cc => cc._id)
-      ];
-      await notifyTaskUpdated(task, allRecipients, req.user._id, '任务信息已更新');
-    } catch (notifyError) {
-      console.error('发送任务更新通知失败:', notifyError);
-    }
-    
-    res.json({
-      message: '任务更新成功',
-      task
-    });
-  } catch (error) {
-    console.error('更新任务错误:', error);
-    res.status(500).json({ message: '服务器错误', error: error.message });
-  }
-};
 
-// 删除任务
-exports.deleteTask = async (req, res) => {
-  try {
-    const task = await Task.findById(req.params.id);
-    
-    if (!task) {
-      return res.status(404).json({ message: '任务不存在' });
-    }
-    
-    // 权限检查：只有创建者（管理员）可以删除任务
-    if (task.creator.toString() !== req.user._id.toString() && !req.user.roles.includes('admin')) {
-      return res.status(403).json({ message: '无权删除此任务' });
-    }
-    
-    // 保存任务信息用于通知
-    const taskName = task.taskName;
-    // task.executor 和 task.ccUsers 此时已经是 ObjectId 数组
-    const allRecipients = [
-      ...task.executor,
-      ...(task.ccUsers || [])
-    ];
-    
-    // 如果是主任务，删除所有子任务
-    if (task.isMainTask) {
-      await Task.deleteMany({ parentTask: task._id });
-    }
-    
-    await Task.findByIdAndDelete(req.params.id);
-    
-    // 发送任务删除通知
-    try {
-      console.log('📧 准备发送删除通知，接收人数量:', allRecipients.length);
-      await notifyTaskDeleted(taskName, allRecipients, req.user._id);
-    } catch (notifyError) {
-      console.error('❌ 发送任务删除通知失败:', notifyError);
-    }
-    
-    res.json({ message: '任务删除成功' });
-  } catch (error) {
-    console.error('删除任务错误:', error);
-    res.status(500).json({ message: '服务器错误' });
-  }
-};
-
-// 获取我的任务
-exports.getMyTasks = async (req, res) => {
-  try {
-    const { type = 'executor', status } = req.query;
-    
-    const query = {};
-    
-    // 根据类型筛选
-    if (type === 'executor') {
-      // 我执行的任务
-      query.executor = req.user._id;
-    } else if (type === 'cc') {
-      // 我抄送的任务
-      query.ccUsers = req.user._id;
-    } else if (type === 'created') {
-      // 我创建的任务
-      query.creator = req.user._id;
-    }
-    
-    if (status) {
-      query.status = status;
-    }
-    
-    const tasks = await Task.find(query)
-      .populate('creator', 'name username')
-      .populate('executor', 'name username')
-      .populate('mainExecutor', 'name username')
-      .populate('ccUsers', 'name username')
-      .populate('parentTask', 'taskName')
-      .sort({ createdAt: -1 });
-    
-    res.json({ tasks });
-  } catch (error) {
-    console.error('获取我的任务错误:', error);
-    res.status(500).json({ message: '服务器错误' });
-  }
-};
-
-// 批量导出任务为Excel
-exports.batchExportTasks = async (req, res) => {
-  try {
-    const { startDate, endDate, status, priority, keyword } = req.query;
-    
-    // 构建查询条件：默认查询所有主任务
-    const query = {
-      isMainTask: true
-    };
-    
-    // 如果提供了时间范围，添加时间筛选
-    if (startDate && endDate) {
-      // 从开始日期的 00:00:00 到结束日期的 23:59:59
-      const start = new Date(startDate);
-      start.setHours(0, 0, 0, 0);
-      
-      const end = new Date(endDate);
-      end.setHours(23, 59, 59, 999);
-      
-      query.createdAt = {
-        $gte: start,
-        $lte: end
-      };
-    } else if (startDate || endDate) {
-      // 如果只提供了一个时间，返回错误
-      return res.status(400).json({ message: '请同时提供开始时间和结束时间，或都不提供' });
-    }
-    
-    // 添加其他搜索条件
-    if (status) {
-      query.status = status;
-    }
-    
-    if (priority) {
-      query.priority = priority;
-    }
-    
-    if (keyword) {
-      query.$or = [
-        { taskName: new RegExp(keyword, 'i') },
-        { description: new RegExp(keyword, 'i') }
-      ];
-    }
-    
-    console.log('=== 导出任务查询条件 ===');
-    console.log('query:', JSON.stringify(query, null, 2));
-    
-    // 查询主任务
-    const mainTasks = await Task.find(query)
-      .populate('creator', 'name username')
-      .populate('executor', 'name username')
-      .populate('mainExecutor', 'name username')
-      .populate('ccUsers', 'name username')
-      .populate('completedBy', 'name username')
-      .sort({ createdAt: 1 });
-    
-    // 准备Excel数据
-    const excelData = [];
-    let rowIndex = 1;
-    
-    for (const task of mainTasks) {
-      // 获取子任务
-      const subTasks = await Task.find({ parentTask: task._id })
-        .populate('executor', 'name username')
-        .sort({ createdAt: 1 });
-      
-      // 获取审核记录
-      const reviews = await TaskReview.find({ task: task._id })
-        .populate('reviewer', 'name username')
-        .sort({ createdAt: 1 });
-      
-      // 获取延期记录
-      const extensions = await ExtensionRequest.find({ task: task._id })
-        .sort({ applyTime: 1 });
-      
-      // 主任务行
-      excelData.push({
-        '序号': rowIndex++,
-        '任务名称': task.taskName,
-        '任务状态': getStatusText(task.status),
-        '任务类型': task.taskType || '-',
-        '任务来源': task.taskSource || '-',
-        '优先级': getPriorityText(task.priority),
-        '完成率': task.completionRate + '%',
-        
-        // 人员信息
-        '创建人': task.creator ? task.creator.name : '-',
-        '主负责人': task.mainExecutor ? task.mainExecutor.name : '-',
-        '执行人': task.executor && task.executor.length > 0 
-          ? task.executor.filter(e => e && e.name).map(e => e.name).join('、') 
-          : '-',
-        '抄送人': task.ccUsers && task.ccUsers.length > 0 
-          ? task.ccUsers.filter(cc => cc && cc.name).map(cc => cc.name).join('、') 
-          : '-',
-        
-        // 时间信息
-        '创建时间': formatDate(task.createdAt),
-        '开始时间': formatDate(task.startTime),
-        '计划完成时间': formatDate(task.plannedCompletionTime),
-        '实际完成时间': task.actualCompletionTime ? formatDate(task.actualCompletionTime) : '-',
-        '是否超期': isOverdue(task) ? '是' : '否',
-        
-        // 任务描述和备注
-        '任务描述': task.description || '-',
-        '备注': task.remarks || '-',
-        
-        // 附件信息（只显示文件名）
-        '任务附件': task.attachments && task.attachments.length > 0 
-          ? task.attachments.filter(att => att && att.originalName).map(att => att.originalName).join('; ') 
-          : '-',
-        
-        // 完成信息
-        '完成人': task.completedBy ? task.completedBy.name : '-',
-        '完成说明': task.completionNote || '-',
-        '完成附件': task.completionAttachments && task.completionAttachments.length > 0
-          ? task.completionAttachments.filter(att => att && att.originalName).map(att => att.originalName).join('; ')
-          : '-',
-        
-        // 子任务统计
-        '子任务数': subTasks.length,
-        '已完成子任务': subTasks.filter(st => st.status === 'finished').length,
-        
-        // 延期信息
-        '是否延期': task.hasExtensionRequest ? '是' : '否',
-        '延期次数': extensions.length,
-        '延期天数': extensions.filter(ext => ext.status === 'approved')
-          .reduce((sum, ext) => sum + (ext.approvedDays || 0), 0),
-        
-        // 审核信息
-        '审核次数': reviews.length,
-        '审核人': reviews.map(r => r.reviewer?.name || '未知').join('、'),
-        '审核评分': reviews.length > 0 
-          ? (reviews.reduce((sum, r) => sum + (r.rating || 0), 0) / reviews.length).toFixed(1)
-          : '-'
-      });
-      
-      // 子任务行
-      for (const subTask of subTasks) {
-        excelData.push({
-          '序号': rowIndex++,
-          '任务名称': `└─ ${subTask.taskName} [子任务-${task.taskName}]`,
-          '任务状态': getStatusText(subTask.status),
-          '任务类型': subTask.taskType || '-',
-          '任务来源': subTask.taskSource || '-',
-          '优先级': getPriorityText(subTask.priority),
-          '完成率': subTask.completionRate + '%',
-          
-          // 人员信息
-          '创建人': task.creator ? task.creator.name : '-',
-          '主负责人': '-',
-          '执行人': subTask.executor && subTask.executor.length > 0 
-            ? subTask.executor.filter(e => e && e.name).map(e => e.name).join('、') 
-            : '-',
-          '抄送人': '-',
-          
-          // 时间信息
-          '创建时间': formatDate(subTask.createdAt),
-          '开始时间': formatDate(subTask.startTime),
-          '计划完成时间': formatDate(subTask.plannedCompletionTime),
-          '实际完成时间': subTask.actualCompletionTime ? formatDate(subTask.actualCompletionTime) : '-',
-          '是否超期': isOverdue(subTask) ? '是' : '否',
-          
-          // 任务描述和备注
-          '任务描述': subTask.description || '-',
-          '备注': subTask.remarks || '-',
-          
-          // 附件信息
-          '任务附件': '-',
-          
-          // 完成信息
-          '完成人': '-',
-          '完成说明': subTask.completionNote || '-',
-          '完成附件': '-',
-          
-          // 子任务统计
-          '子任务数': 0,
-          '已完成子任务': 0,
-          
-          // 延期信息
-          '是否延期': '否',
-          '延期次数': 0,
-          '延期天数': 0,
-          
-          // 审核信息
-          '审核次数': 0,
-          '审核人': '-',
-          '审核评分': '-'
-        });
+      if (!deleted) return notFound(res);
+      try {
+        await validateActiveTeamUsers(req.authContext, deleted.recipients, null);
+        await notifications.notifyTaskDeleted(
+          deleted.taskName,
+          deleted.recipients,
+          req.authContext.userId,
+          deleted.teamId
+        );
+      } catch (error) {
+        console.error('发送任务删除通知失败:', error);
       }
+      return res.json({ message: '任务删除成功' });
+    } catch (error) {
+      return sendControllerError(res, next, error, '删除任务错误:');
     }
-    
-    // 创建工作簿
-    const wb = XLSX.utils.book_new();
-    
-    // 创建工作表
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    
-    // 设置列宽
-    ws['!cols'] = [
-      { wch: 6 },   // 序号
-      { wch: 30 },  // 任务名称
-      { wch: 12 },  // 任务状态
-      { wch: 12 },  // 任务类型
-      { wch: 12 },  // 任务来源
-      { wch: 10 },  // 优先级
-      { wch: 10 },  // 完成率
-      { wch: 12 },  // 创建人
-      { wch: 12 },  // 主负责人
-      { wch: 20 },  // 执行人
-      { wch: 20 },  // 抄送人
-      { wch: 18 },  // 创建时间
-      { wch: 18 },  // 开始时间
-      { wch: 18 },  // 计划完成时间
-      { wch: 18 },  // 实际完成时间
-      { wch: 10 },  // 是否超期
-      { wch: 40 },  // 任务描述
-      { wch: 30 },  // 备注
-      { wch: 40 },  // 任务附件
-      { wch: 12 },  // 完成人
-      { wch: 40 },  // 完成说明
-      { wch: 40 },  // 完成附件
-      { wch: 10 },  // 子任务数
-      { wch: 12 },  // 已完成子任务
-      { wch: 10 },  // 是否延期
-      { wch: 10 },  // 延期次数
-      { wch: 10 },  // 延期天数
-      { wch: 10 },  // 审核次数
-      { wch: 30 },  // 审核人
-      { wch: 10 }   // 审核评分
-    ];
-    
-    // 添加工作表到工作簿
-    XLSX.utils.book_append_sheet(wb, ws, '任务列表');
-    
-    // 生成Excel文件
-    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-    
-    // 设置响应头
-    let filename
-    if (startDate && endDate) {
-      filename = `任务列表_${startDate.substring(0, 10)}_${endDate.substring(0, 10)}_${new Date().getTime()}.xlsx`;
-    } else {
-      filename = `任务列表_全部_${new Date().getTime()}.xlsx`;
-    }
-    
-    console.log('=== 导出文件信息 ===');
-    console.log('查询到的任务数:', mainTasks.length);
-    console.log('导出的行数:', excelData.length);
-    console.log('文件名:', filename);
-    
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
-    
-    res.send(buffer);
-  } catch (error) {
-    console.error('=== 批量导出任务错误 ===');
-    console.error('错误:', error);
-    console.error('错误堆栈:', error.stack);
-    res.status(500).json({ message: '导出失败', error: error.message });
   }
-};
 
-// 辅助函数：格式化日期
+  async function getMyTasks(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.view');
+      const { type = 'executor', status } = req.query;
+      const ownConstraint = type === 'cc'
+        ? { ccUsers: req.authContext.userId }
+        : type === 'created'
+          ? { creator: req.authContext.userId }
+          : { executor: req.authContext.userId };
+      const userFilter = combineUserConstraints([
+        ownConstraint,
+        status ? { status } : null
+      ]);
+      const tasks = await TaskModel.find(scopedListFilter(req, userFilter))
+        .populate('creator', 'name username')
+        .populate('executor', 'name username')
+        .populate('mainExecutor', 'name username')
+        .populate('ccUsers', 'name username')
+        .populate({
+          path: 'parentTask',
+          select: 'taskName teamId orgUnitId',
+          match: (child) => ({
+            teamId: child.teamId,
+            orgUnitId: child.orgUnitId
+          })
+        })
+        .sort({ createdAt: -1 });
+      return res.json({ tasks });
+    } catch (error) {
+      return sendControllerError(res, next, error, '获取我的任务错误:');
+    }
+  }
+
+  async function batchExportTasks(req, res, next) {
+    try {
+      assertPermission(req.authContext, 'task.export');
+      const { startDate, endDate, status, priority, keyword } = req.query;
+      const userFilter = combineUserConstraints([
+        { isMainTask: true },
+        status ? { status } : null,
+        priority ? { priority } : null,
+        keywordConstraint(keyword),
+        dateConstraint(startDate, endDate, true)
+      ]);
+      const mainTasks = await TaskModel.find(scopedListFilter(req, userFilter))
+        .populate('creator', 'name username')
+        .populate('executor', 'name username')
+        .populate('mainExecutor', 'name username')
+        .populate('ccUsers', 'name username')
+        .populate('completedBy', 'name username')
+        .sort({ createdAt: 1 });
+
+      const excelData = [];
+      let rowIndex = 1;
+      for (const task of mainTasks) {
+        const taskTeamId = normalizeInputId(task.teamId, 'teamId');
+        const [subTasks, reviews, extensions] = await Promise.all([
+          TaskModel.find({
+            teamId: taskTeamId,
+            orgUnitId: task.orgUnitId,
+            parentTask: task._id
+          }).populate('executor', 'name username').sort({ createdAt: 1 }),
+          TaskReviewModel.find({ teamId: taskTeamId, task: task._id })
+            .populate('reviewer', 'name username')
+            .sort({ createdAt: 1 }),
+          ExtensionRequestModel.find({ teamId: taskTeamId, task: task._id })
+            .sort({ applyTime: 1 })
+        ]);
+
+        excelData.push(exportRow(task, {
+          rowIndex: rowIndex++,
+          subTasks,
+          reviews,
+          extensions
+        }));
+        for (const subTask of subTasks) {
+          excelData.push(exportSubTaskRow(subTask, task, rowIndex++));
+        }
+      }
+
+      await auditService.record({
+        req,
+        action: AUDIT_ACTIONS.EXPORT,
+        resourceType: AUDIT_RESOURCE_TYPES.TASK,
+        after: {
+          filters: { startDate, endDate, status, priority, keyword, teamId: req.query.teamId },
+          taskCount: mainTasks.length,
+          rowCount: excelData.length
+        },
+        targetTeamId: req.authContext.activeTeamId || req.query.teamId || null
+      });
+
+      const workbook = XLSX.utils.book_new();
+      const worksheet = XLSX.utils.json_to_sheet(excelData);
+      worksheet['!cols'] = exportColumnWidths();
+      XLSX.utils.book_append_sheet(workbook, worksheet, '任务列表');
+      const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+      const suffix = startDate && endDate
+        ? `${String(startDate).slice(0, 10)}_${String(endDate).slice(0, 10)}`
+        : '全部';
+      const filename = `任务列表_${suffix}_${Date.now()}.xlsx`;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+      return res.send(buffer);
+    } catch (error) {
+      return sendControllerError(res, next, error, '批量导出任务错误:');
+    }
+  }
+
+  return Object.freeze({
+    createTask,
+    getTasks,
+    getTaskById,
+    updateTask,
+    deleteTask,
+    getMyTasks,
+    batchExportTasks
+  });
+}
+
+function exportRow(task, { rowIndex, subTasks, reviews, extensions }) {
+  return {
+    '序号': rowIndex,
+    '任务名称': task.taskName,
+    '任务状态': getStatusText(task.status),
+    '任务类型': task.taskType || '-',
+    '任务来源': task.taskSource || '-',
+    '优先级': getPriorityText(task.priority),
+    '完成率': `${task.completionRate || 0}%`,
+    '创建人': task.creator?.name || '-',
+    '主负责人': task.mainExecutor?.name || '-',
+    '执行人': names(task.executor),
+    '抄送人': names(task.ccUsers),
+    '创建时间': formatDate(task.createdAt),
+    '开始时间': formatDate(task.startTime),
+    '计划完成时间': formatDate(task.plannedCompletionTime),
+    '实际完成时间': task.actualCompletionTime ? formatDate(task.actualCompletionTime) : '-',
+    '是否超期': isOverdue(task) ? '是' : '否',
+    '任务描述': task.description || '-',
+    '备注': task.remarks || '-',
+    '任务附件': attachmentNames(task.attachments),
+    '完成人': task.completedBy?.name || '-',
+    '完成说明': task.completionNote || '-',
+    '完成附件': attachmentNames(task.completionAttachments),
+    '子任务数': subTasks.length,
+    '已完成子任务': subTasks.filter((item) => item.status === 'finished').length,
+    '是否延期': task.hasExtensionRequest ? '是' : '否',
+    '延期次数': extensions.length,
+    '延期天数': extensions
+      .filter((item) => item.status === 'approved')
+      .reduce((sum, item) => sum + (item.approvedDays || 0), 0),
+    '审核次数': reviews.length,
+    '审核人': names(reviews.map((review) => review.reviewer)),
+    '审核评分': reviews.length > 0
+      ? (reviews.reduce((sum, review) => sum + (review.rating || 0), 0) / reviews.length).toFixed(1)
+      : '-'
+  };
+}
+
+function exportSubTaskRow(subTask, parentTask, rowIndex) {
+  return {
+    '序号': rowIndex,
+    '任务名称': `└─ ${subTask.taskName} [子任务-${parentTask.taskName}]`,
+    '任务状态': getStatusText(subTask.status),
+    '任务类型': subTask.taskType || '-',
+    '任务来源': subTask.taskSource || '-',
+    '优先级': getPriorityText(subTask.priority),
+    '完成率': `${subTask.completionRate || 0}%`,
+    '创建人': parentTask.creator?.name || '-',
+    '主负责人': '-',
+    '执行人': names(subTask.executor),
+    '抄送人': '-',
+    '创建时间': formatDate(subTask.createdAt),
+    '开始时间': formatDate(subTask.startTime),
+    '计划完成时间': formatDate(subTask.plannedCompletionTime),
+    '实际完成时间': subTask.actualCompletionTime ? formatDate(subTask.actualCompletionTime) : '-',
+    '是否超期': isOverdue(subTask) ? '是' : '否',
+    '任务描述': subTask.description || '-',
+    '备注': subTask.remarks || '-',
+    '任务附件': attachmentNames(subTask.attachments),
+    '完成人': '-',
+    '完成说明': subTask.completionNote || '-',
+    '完成附件': attachmentNames(subTask.completionAttachments),
+    '子任务数': 0,
+    '已完成子任务': 0,
+    '是否延期': subTask.hasExtensionRequest ? '是' : '否',
+    '延期次数': 0,
+    '延期天数': 0,
+    '审核次数': 0,
+    '审核人': '-',
+    '审核评分': '-'
+  };
+}
+
+function names(values) {
+  const result = (values || []).filter(Boolean).map((value) => value.name).filter(Boolean);
+  return result.length > 0 ? result.join('、') : '-';
+}
+
+function attachmentNames(values) {
+  const result = (values || []).filter(Boolean).map((value) => value.originalName).filter(Boolean);
+  return result.length > 0 ? result.join('; ') : '-';
+}
+
+function exportColumnWidths() {
+  return [6, 30, 12, 12, 12, 10, 10, 12, 12, 20, 20, 18, 18, 18, 18, 10, 40, 30,
+    40, 12, 40, 40, 10, 12, 10, 10, 10, 10, 30, 10].map((wch) => ({ wch }));
+}
+
 function formatDate(date) {
   if (!date) return '';
-  const d = new Date(date);
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hour = String(d.getHours()).padStart(2, '0');
-  const minute = String(d.getMinutes()).padStart(2, '0');
+  const value = new Date(date);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  const hour = String(value.getHours()).padStart(2, '0');
+  const minute = String(value.getMinutes()).padStart(2, '0');
   return `${year}-${month}-${day} ${hour}:${minute}`;
 }
 
-// 辅助函数：状态文本
 function getStatusText(status) {
-  const statusMap = {
-    'pending': '待开始',
-    'in_progress': '进行中',
-    'partial_completed': '部分完成',
-    'extension_pending': '延期待审批',
-    'extension_approved': '延期通过',
-    'completed': '已完成',
-    'pending_review': '待审核',
-    'pending_confirm': '待确认',
-    'finished': '已完结'
-  };
-  return statusMap[status] || status;
+  return ({
+    pending: '待开始',
+    in_progress: '进行中',
+    partial_completed: '部分完成',
+    extension_pending: '延期待审批',
+    extension_approved: '延期通过',
+    completed: '已完成',
+    pending_review: '待审核',
+    pending_confirm: '待确认',
+    finished: '已完结'
+  })[status] || status;
 }
 
-// 辅助函数：优先级文本
 function getPriorityText(priority) {
-  const priorityMap = {
-    'low': '低',
-    'normal': '普通',
-    'high': '高',
-    'urgent': '紧急'
-  };
-  return priorityMap[priority] || priority;
+  return ({ low: '低', normal: '普通', high: '高', urgent: '紧急' })[priority] || priority;
 }
 
-// 辅助函数：判断是否超期
 function isOverdue(task) {
-  if (task.status === 'finished' || task.status === 'pending_confirm') {
-    return false;
-  }
+  if (task.status === 'finished' || task.status === 'pending_confirm') return false;
   if (!task.plannedCompletionTime) return false;
-  const plannedTime = new Date(task.plannedCompletionTime);
-  const now = new Date();
-  return now.getTime() > plannedTime.getTime();
+  return Date.now() > new Date(task.plannedCompletionTime).getTime();
 }
+
+const controller = createTaskController();
+
+module.exports = {
+  ...controller,
+  createTaskController
+};

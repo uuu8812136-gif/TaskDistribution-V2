@@ -7,12 +7,20 @@
 			</view>
 			<view class="user-info">
 				<text class="user-name">{{ userInfo?.name }}</text>
-				<text class="user-dept">{{ userInfo?.department }}</text>
+				<text class="user-dept">{{ orgUnitName }}</text>
 			</view>
 		</view>
 		
 		<!-- 信息列表 -->
 		<view class="info-section">
+			<view class="info-item">
+				<text class="label">项目团队</text>
+				<text class="value">{{ activeTeamName }}</text>
+			</view>
+			<view class="info-item">
+				<text class="label">访问模式</text>
+				<text class="value">{{ accessModeText }}</text>
+			</view>
 			<view class="info-item">
 				<text class="label">账号</text>
 				<text class="value">{{ userInfo?.username }}</text>
@@ -39,6 +47,14 @@
 		
 		<!-- 功能列表 -->
 		<view class="menu-section">
+			<view class="menu-item" @click="goToTeamSelect">
+				<view class="menu-left">
+					<text class="menu-icon">⇄</text>
+					<text class="menu-text">切换项目团队</text>
+				</view>
+				<text class="menu-arrow">〉</text>
+			</view>
+
 			<view class="menu-item" @click="goToChangePassword">
 				<view class="menu-left">
 					<text class="menu-icon">🔑</text>
@@ -81,6 +97,12 @@ export default {
 		const userStore = useUserStore()
 		
 		const userInfo = computed(() => userStore.userInfo)
+		const activeTeamName = computed(() => {
+			if (userStore.isGlobalReadOnly) return '全部团队'
+			return userStore.activeTeam?.name || '未选择'
+		})
+		const orgUnitName = computed(() => userStore.context?.orgUnit?.name || userInfo.value?.department || '')
+		const accessModeText = computed(() => userStore.isGlobalReadOnly ? '跨团队只读' : '团队内访问')
 		
 		// 页面显示时触发
 		onShow(() => {
@@ -90,6 +112,8 @@ export default {
 		
 		// 获取角色文本
 		const getRoleText = computed(() => {
+			if (userStore.isSuperAdmin) return '超级管理员'
+			if (userStore.context?.membership?.role === 'PROJECT_ADMIN') return '项目管理员'
 			const roles = userInfo.value?.roles || []
 			const roleMap = {
 				admin: '管理员',
@@ -104,6 +128,10 @@ export default {
 			uni.navigateTo({
 				url: '/pages/profile/change-password'
 			})
+		}
+
+		const goToTeamSelect = () => {
+			uni.navigateTo({ url: '/pages/team/select?from=profile' })
 		}
 		
 		// 退出登录
@@ -121,7 +149,11 @@ export default {
 		
 		return {
 			userInfo,
+			activeTeamName,
+			orgUnitName,
+			accessModeText,
 			getRoleText,
+			goToTeamSelect,
 			goToChangePassword,
 			handleLogout
 		}

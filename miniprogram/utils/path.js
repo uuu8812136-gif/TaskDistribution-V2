@@ -1,4 +1,5 @@
 import config from '@/config/index.js'
+import { joinHttpUrl } from './url.js'
 
 /**
  * 将文件路径转换为完整的 URL
@@ -10,23 +11,10 @@ export function getFullFileUrl(path) {
 		return ''
 	}
 	
-	// 如果已经是完整URL，直接返回
-	if (path.startsWith('http://') || path.startsWith('https://')) {
-		return path
-	}
-	
 	// 获取基础URL（不带 /api）
-	const baseUrl = config.uploadURL || config.baseURL.replace('/api', '')
+	const baseUrl = config.uploadURL || config.baseURL.replace(/\/api$/, '')
 	
-	// 将 Windows 路径的反斜杠转换为正斜杠
-	let normalizedPath = path.replace(/\\/g, '/')
-	
-	// 确保路径以 / 开头
-	if (!normalizedPath.startsWith('/')) {
-		normalizedPath = '/' + normalizedPath
-	}
-	
-	return baseUrl + normalizedPath
+	return joinHttpUrl(baseUrl, path)
 }
 
 /**

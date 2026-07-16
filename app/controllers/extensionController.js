@@ -1,271 +1,430 @@
-const Task = require('../models/Task');
+'use strict';
+
 const ExtensionRequest = require('../models/ExtensionRequest');
+const Task = require('../models/Task');
+const {
+  AUDIT_ACTIONS,
+  AUDIT_RESOURCE_TYPES,
+  MEMBERSHIP_ROLES,
+  SESSION_MODES
+} = require('../config/permissions');
 const {
   notifyExtensionApplied,
   notifyExtensionApproved,
   notifyExtensionRejected
 } = require('../utils/notificationHelper');
+const { createAuditService } = require('../services/auditService');
+const {
+  buildTaskDetailFilter,
+  buildTaskScopedFilter,
+  validateActiveTeamUsers,
+  withSession
+} = require('../services/taskAccessService');
+const { normalizeObjectId } = require('../services/scopedQueryService');
+const { runWithOptionalTransaction } = require('../services/transactionService');
+const { assertPermission, sameId } = require('../services/teamContextService');
+const {
+  isAuthContextError,
+  sendAuthContextError
+} = require('../services/authContextError');
 
-// 申请延期
+const auditService = createAuditService();
+const REQUEST_STATUSES = new Set(['pending', 'approved', 'rejected']);
+
+function httpError(status, message, code) {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+function notFound() {
+  return httpError(404, 'Extension request not found', 'RESOURCE_NOT_FOUND');
+}
+
+function taskNotFound() {
+  return httpError(404, 'Task not found', 'RESOURCE_NOT_FOUND');
+}
+
+function badRequest(message, code = 'EXTENSION_INVALID') {
+  return httpError(400, message, code);
+}
+
+function idOf(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value.toHexString === 'function') return value.toHexString();
+  if (value._id !== undefined) return idOf(value._id);
+  return String(value);
+}
+
+function snapshot(document) {
+  return document.toObject({
+    depopulate: true,
+    flattenMaps: true,
+    versionKey: false,
+    virtuals: false
+  });
+}
+
+function canAdministrateTask(authContext) {
+  return authContext?.isSuperAdmin === true ||
+    authContext?.membership?.role === MEMBERSHIP_ROLES.PROJECT_ADMIN;
+}
+
+async function findScopedTask(req, taskId, session) {
+  return withSession(Task.findOne(buildTaskDetailFilter(req, taskId)), session);
+}
+
+function extensionIdentityFilter(req, requestId) {
+  const filter = { _id: normalizeObjectId(requestId, 'extensionRequestId') };
+  if (req.authContext.mode === SESSION_MODES.TEAM) {
+    filter.teamId = req.authContext.activeTeamId;
+  }
+  return filter;
+}
+
+async function findScopedExtension(req, requestId, session) {
+  const extensionRequest = await withSession(
+    ExtensionRequest.findOne(extensionIdentityFilter(req, requestId)),
+    session
+  );
+  if (!extensionRequest) return null;
+
+  const task = await findScopedTask(req, extensionRequest.task, session);
+  if (!task || !sameId(extensionRequest.teamId, task.teamId)) return null;
+  return { extensionRequest, task };
+}
+
+async function recordTaskMutation({ req, task, before, session }) {
+  await auditService.record({
+    req,
+    action: AUDIT_ACTIONS.UPDATE,
+    resourceType: AUDIT_RESOURCE_TYPES.TASK,
+    resourceId: task._id,
+    before,
+    after: snapshot(task),
+    targetTeamId: task.teamId,
+    session
+  });
+}
+
+async function recordExtensionMutation({
+  req,
+  extensionRequest,
+  before,
+  action,
+  session
+}) {
+  await auditService.record({
+    req,
+    action,
+    resourceType: AUDIT_RESOURCE_TYPES.EXTENSION_REQUEST,
+    resourceId: extensionRequest._id,
+    before,
+    after: snapshot(extensionRequest),
+    targetTeamId: extensionRequest.teamId,
+    session
+  });
+}
+
+function handleError(res, error, operation) {
+  if (isAuthContextError(error)) return sendAuthContextError(res, error);
+  if (Number.isInteger(error?.status) && error.status < 500) {
+    return res.status(error.status).json({ message: error.message, code: error.code });
+  }
+  if (error?.name === 'ValidationError' || error?.name === 'CastError') {
+    return res.status(400).json({ message: error.message, code: 'VALIDATION_FAILED' });
+  }
+  console.error(`${operation} failed:`, error);
+  return res.status(500).json({ message: 'Server error' });
+}
+
 exports.applyExtension = async (req, res) => {
   try {
-    const { reason, requestedDays } = req.body;
-    
-    if (!reason || !requestedDays) {
-      return res.status(400).json({ message: '申请原因和延期天数不能为空' });
+    assertPermission(req.authContext, 'task.edit');
+    const actorId = req.authContext.userId;
+    const { reason, requestedDays } = req.body || {};
+    if (!reason || typeof reason !== 'string') throw badRequest('Extension reason is required');
+    if (!Number.isInteger(requestedDays) || requestedDays < 1) {
+      throw badRequest('requestedDays must be a positive integer');
     }
-    
-    if (requestedDays < 1) {
-      return res.status(400).json({ message: '延期天数至少为1天' });
-    }
-    
-    const task = await Task.findById(req.params.id).populate('parentTask');
-    
-    if (!task) {
-      return res.status(404).json({ message: '任务不存在' });
-    }
-    
-    // 权限检查
-    let canApply = false;
-    
-    if (task.isMainTask) {
-      // 主任务：只有主负责人可以申请
-      if (task.mainExecutor && task.mainExecutor.toString() === req.user._id.toString()) {
-        canApply = true;
+
+    const mutation = await runWithOptionalTransaction(async (session) => {
+      const task = await findScopedTask(req, req.params.id, session);
+      if (!task) throw taskNotFound();
+
+      let responsibleUserId = idOf(task.mainExecutor);
+      if (!task.isMainTask) {
+        if (!task.parentTask) throw taskNotFound();
+        const parentTask = await findScopedTask(req, task.parentTask, session);
+        if (!parentTask) throw taskNotFound();
+        responsibleUserId = idOf(parentTask.mainExecutor);
       }
-    } else {
-      // 子任务：需要是团队主负责人
-      if (task.parentTask) {
-        const parentTask = await Task.findById(task.parentTask._id);
-        if (parentTask.mainExecutor && parentTask.mainExecutor.toString() === req.user._id.toString()) {
-          canApply = true;
-        }
+      if (!responsibleUserId || !sameId(responsibleUserId, actorId)) {
+        throw httpError(
+          403,
+          'Only the responsible task owner may request an extension',
+          'EXTENSION_APPLICANT_DENIED'
+        );
       }
-    }
-    
-    if (!canApply) {
-      return res.status(403).json({ message: '只有主负责人可以申请延期' });
-    }
-    
-    // 检查任务状态：只有未完成的任务可以申请延期
-    if (task.status === 'finished' || task.status === 'pending_confirm') {
-      return res.status(400).json({ message: '任务已完成，无法申请延期' });
-    }
-    
-    // 检查是否已申请过延期
-    if (task.hasExtensionRequest) {
-      return res.status(400).json({ message: '该任务已申请过延期，不能重复申请' });
-    }
-    
-    // 注意：允许过期任务申请延期，以便通过正规流程延长期限
-    
-    // 创建延期申请
-    const extensionRequest = new ExtensionRequest({
-      task: task._id,
-      applicant: req.user._id,
-      requestType: task.isMainTask ? 'main_task' : 'sub_task',
-      reason,
-      requestedDays,
-      originalCompletionTime: task.plannedCompletionTime,
-      approver: task.creator  // 审批人为任务创建者
+      await validateActiveTeamUsers({
+        authContext: req.authContext,
+        userIds: [actorId, task.creator],
+        taskOrgUnitId: task.orgUnitId,
+        session
+      });
+
+      if (['finished', 'pending_confirm'].includes(task.status)) {
+        throw badRequest('Finished tasks cannot be extended');
+      }
+      if (task.hasExtensionRequest) {
+        throw badRequest('An extension has already been requested for this task');
+      }
+
+      const beforeTask = snapshot(task);
+      const extensionRequest = new ExtensionRequest({
+        teamId: task.teamId,
+        task: task._id,
+        applicant: actorId,
+        requestType: task.isMainTask ? 'main_task' : 'sub_task',
+        reason,
+        requestedDays,
+        originalCompletionTime: task.plannedCompletionTime,
+        approver: task.creator
+      });
+      await extensionRequest.save({ session });
+      task.status = 'extension_pending';
+      task.hasExtensionRequest = true;
+      await task.save({ session });
+
+      await recordExtensionMutation({
+        req,
+        extensionRequest,
+        action: AUDIT_ACTIONS.SUBMIT,
+        session
+      });
+      await recordTaskMutation({ req, task, before: beforeTask, session });
+      return { task, extensionRequest };
     });
-    
-    await extensionRequest.save();
-    
-    // 更新任务状态
-    task.status = 'extension_pending';
-    task.hasExtensionRequest = true;
-    await task.save();
-    
-    await extensionRequest.populate([
+
+    try {
+      await notifyExtensionApplied(
+        mutation.task,
+        mutation.extensionRequest,
+        idOf(mutation.task.creator),
+        actorId
+      );
+    } catch (notificationError) {
+      console.error('Extension application notification failed:', notificationError);
+    }
+
+    await mutation.extensionRequest.populate([
       { path: 'applicant', select: 'name username' },
       { path: 'approver', select: 'name username' },
       { path: 'task', select: 'taskName' }
     ]);
-    
-    // 发送延期申请通知给管理员
-    try {
-      await task.populate('creator');
-      await notifyExtensionApplied(task, extensionRequest, task.creator._id, req.user._id);
-    } catch (notifyError) {
-      console.error('发送延期申请通知失败:', notifyError);
-    }
-    
-    res.status(201).json({
-      message: '延期申请已提交',
-      extensionRequest
+    return res.status(201).json({
+      message: 'Extension request submitted',
+      extensionRequest: mutation.extensionRequest
     });
   } catch (error) {
-    console.error('申请延期错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    return handleError(res, error, 'applyExtension');
   }
 };
 
-// 审批延期申请
 exports.approveExtension = async (req, res) => {
   try {
-    const { status, approvedDays, approvalNote } = req.body;
-    
-    if (!status || !['approved', 'rejected'].includes(status)) {
-      return res.status(400).json({ message: '审批状态无效' });
+    assertPermission(req.authContext, 'task.review');
+    const actorId = req.authContext.userId;
+    const { status, approvedDays, approvalNote } = req.body || {};
+    if (!['approved', 'rejected'].includes(status)) {
+      throw badRequest('Approval status is invalid');
     }
-    
-    if (status === 'approved' && !approvedDays) {
-      return res.status(400).json({ message: '批准延期需要指定延期天数' });
+    if (status === 'approved' && (!Number.isInteger(approvedDays) || approvedDays < 1)) {
+      throw badRequest('approvedDays must be a positive integer');
     }
-    
-    const extensionRequest = await ExtensionRequest.findById(req.params.id)
-      .populate('task');
-    
-    if (!extensionRequest) {
-      return res.status(404).json({ message: '延期申请不存在' });
-    }
-    
-    // 权限检查：只有任务创建者（管理员）可以审批
-    const task = extensionRequest.task;
-    if (task.creator.toString() !== req.user._id.toString() && !req.user.roles.includes('admin')) {
-      return res.status(403).json({ message: '只有任务创建者可以审批延期申请' });
-    }
-    
-    // 检查申请状态
-    if (extensionRequest.status !== 'pending') {
-      return res.status(400).json({ message: '该申请已处理' });
-    }
-    
-    // 更新申请记录
-    extensionRequest.status = status;
-    extensionRequest.approvalTime = new Date();
-    extensionRequest.approvalNote = approvalNote;
-    
-    if (status === 'approved') {
-      // 批准：计算新的完成时间
-      const originalTime = new Date(extensionRequest.originalCompletionTime);
-      const newTime = new Date(originalTime.getTime() + approvedDays * 24 * 60 * 60 * 1000);
-      
-      extensionRequest.approvedDays = approvedDays;
-      extensionRequest.newCompletionTime = newTime;
-      
-      // 更新任务
-      task.plannedCompletionTime = newTime;
-      task.extendedCompletionTime = newTime;
-      task.status = 'in_progress';  // 恢复进行中状态
-      
-      // 如果是主任务延期，同时延期所有子任务
-      if (task.isMainTask) {
-        const subTasks = await Task.find({ parentTask: task._id });
-        for (const subTask of subTasks) {
-          const subOriginalTime = new Date(subTask.plannedCompletionTime);
-          const subNewTime = new Date(subOriginalTime.getTime() + approvedDays * 24 * 60 * 60 * 1000);
-          
-          subTask.plannedCompletionTime = subNewTime;
-          subTask.extendedCompletionTime = subNewTime;
-          await subTask.save();
-        }
+
+    const mutation = await runWithOptionalTransaction(async (session) => {
+      const scoped = await findScopedExtension(req, req.params.id, session);
+      if (!scoped) throw notFound();
+      const { extensionRequest, task } = scoped;
+      if (!sameId(task.creator, actorId) && !canAdministrateTask(req.authContext)) {
+        throw httpError(
+          403,
+          'Only the task creator or a project administrator may approve extensions',
+          'EXTENSION_APPROVAL_DENIED'
+        );
       }
-      
-      await task.save();
-    } else {
-      // 拒绝：任务状态恢复
-      task.status = 'in_progress';
-      await task.save();
+      await validateActiveTeamUsers({
+        authContext: req.authContext,
+        userIds: [extensionRequest.applicant],
+        taskOrgUnitId: task.orgUnitId,
+        session
+      });
+      if (extensionRequest.status !== 'pending') {
+        throw badRequest('Extension request has already been processed');
+      }
+
+      const beforeRequest = snapshot(extensionRequest);
+      const beforeTask = snapshot(task);
+      extensionRequest.status = status;
+      extensionRequest.approvalTime = new Date();
+      extensionRequest.approvalNote = approvalNote;
+
+      const childMutations = [];
+      if (status === 'approved') {
+        const originalTime = new Date(extensionRequest.originalCompletionTime);
+        const newTime = new Date(
+          originalTime.getTime() + approvedDays * 24 * 60 * 60 * 1000
+        );
+        extensionRequest.approvedDays = approvedDays;
+        extensionRequest.newCompletionTime = newTime;
+        task.plannedCompletionTime = newTime;
+        task.extendedCompletionTime = newTime;
+        task.status = 'in_progress';
+
+        if (task.isMainTask) {
+          const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
+            parentTask: task._id
+          })), session);
+          for (const subTask of subTasks) {
+            const beforeSubTask = snapshot(subTask);
+            const originalSubTaskTime = new Date(subTask.plannedCompletionTime);
+            const newSubTaskTime = new Date(
+              originalSubTaskTime.getTime() + approvedDays * 24 * 60 * 60 * 1000
+            );
+            subTask.plannedCompletionTime = newSubTaskTime;
+            subTask.extendedCompletionTime = newSubTaskTime;
+            await subTask.save({ session });
+            childMutations.push({ task: subTask, before: beforeSubTask });
+          }
+        }
+      } else {
+        task.status = 'in_progress';
+      }
+
+      await task.save({ session });
+      await extensionRequest.save({ session });
+      for (const childMutation of childMutations) {
+        await recordTaskMutation({ req, ...childMutation, session });
+      }
+      await recordTaskMutation({ req, task, before: beforeTask, session });
+      await recordExtensionMutation({
+        req,
+        extensionRequest,
+        before: beforeRequest,
+        action: status === 'approved' ? AUDIT_ACTIONS.APPROVE : AUDIT_ACTIONS.REJECT,
+        session
+      });
+      return { task, extensionRequest };
+    });
+
+    try {
+      if (status === 'approved') {
+        await notifyExtensionApproved(
+          mutation.task,
+          mutation.extensionRequest,
+          idOf(mutation.extensionRequest.applicant),
+          actorId
+        );
+      } else {
+        await notifyExtensionRejected(
+          mutation.task,
+          mutation.extensionRequest,
+          idOf(mutation.extensionRequest.applicant),
+          actorId
+        );
+      }
+    } catch (notificationError) {
+      console.error('Extension approval notification failed:', notificationError);
     }
-    
-    await extensionRequest.save();
-    
-    await extensionRequest.populate([
+
+    await mutation.extensionRequest.populate([
       { path: 'applicant', select: 'name username' },
       { path: 'approver', select: 'name username' }
     ]);
-    
-    // 发送审批结果通知给申请人
-    try {
-      if (status === 'approved') {
-        await notifyExtensionApproved(task, extensionRequest, extensionRequest.applicant._id, req.user._id);
-      } else {
-        await notifyExtensionRejected(task, extensionRequest, extensionRequest.applicant._id, req.user._id);
-      }
-    } catch (notifyError) {
-      console.error('发送审批通知失败:', notifyError);
-    }
-    
-    res.json({
-      message: status === 'approved' ? '延期申请已批准' : '延期申请已拒绝',
-      extensionRequest
+    return res.json({
+      message: status === 'approved' ? 'Extension approved' : 'Extension rejected',
+      extensionRequest: mutation.extensionRequest
     });
   } catch (error) {
-    console.error('审批延期错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    return handleError(res, error, 'approveExtension');
   }
 };
 
-// 获取延期申请列表
 exports.getExtensionRequests = async (req, res) => {
   try {
-    const { status, taskId } = req.query;
-    
-    const query = {};
-    
-    if (status) {
-      query.status = status;
-    }
-    
+    assertPermission(req.authContext, 'task.view');
+    const { status, taskId } = req.query || {};
+    if (status && !REQUEST_STATUSES.has(status)) throw badRequest('Status is invalid');
+
+    let taskIds;
     if (taskId) {
-      query.task = taskId;
+      const task = await findScopedTask(req, taskId, null);
+      taskIds = task ? [task._id] : [];
+    } else {
+      const tasks = await Task.find(buildTaskScopedFilter(req)).select('_id');
+      taskIds = tasks.map((task) => task._id);
     }
-    
-    // 权限过滤：管理员看所有，普通用户只看自己相关的
-    if (!req.user.roles.includes('admin')) {
+
+    const query = { task: { $in: taskIds } };
+    if (req.authContext.mode === SESSION_MODES.TEAM) {
+      query.teamId = req.authContext.activeTeamId;
+    }
+    if (status) query.status = status;
+    if (!canAdministrateTask(req.authContext)) {
       query.$or = [
-        { applicant: req.user._id },
-        { approver: req.user._id }
+        { applicant: req.authContext.userId },
+        { approver: req.authContext.userId }
       ];
     }
-    
+
     const requests = await ExtensionRequest.find(query)
-      .populate('task', 'taskName status')
+      .populate('task', 'taskName status teamId orgUnitId')
       .populate('applicant', 'name username')
       .populate('approver', 'name username')
       .sort({ applyTime: -1 });
-    
-    res.json({ requests });
+    return res.json({ requests });
   } catch (error) {
-    console.error('获取延期申请列表错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    return handleError(res, error, 'getExtensionRequests');
   }
 };
 
-// 获取延期申请详情
 exports.getExtensionRequestById = async (req, res) => {
   try {
-    const request = await ExtensionRequest.findById(req.params.id)
-      .populate('task')
-      .populate('applicant', 'name username phone')
-      .populate('approver', 'name username phone');
-    
-    if (!request) {
-      return res.status(404).json({ message: '延期申请不存在' });
-    }
-    
-    res.json({ request });
+    assertPermission(req.authContext, 'task.view');
+    const scoped = await findScopedExtension(req, req.params.id, null);
+    if (!scoped) throw notFound();
+    await scoped.extensionRequest.populate([
+      { path: 'task' },
+      { path: 'applicant', select: 'name username phone' },
+      { path: 'approver', select: 'name username phone' }
+    ]);
+    return res.json({ request: scoped.extensionRequest });
   } catch (error) {
-    console.error('获取延期申请详情错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    return handleError(res, error, 'getExtensionRequestById');
   }
 };
 
-// 获取任务的延期历史
 exports.getTaskExtensionHistory = async (req, res) => {
   try {
-    const history = await ExtensionRequest.find({ task: req.params.taskId })
-      .populate('applicant', 'name username')
+    assertPermission(req.authContext, 'task.view');
+    const task = await findScopedTask(req, req.params.taskId, null);
+    if (!task) throw taskNotFound();
+    const history = await ExtensionRequest.find({
+      teamId: task.teamId,
+      task: task._id
+    }).populate('applicant', 'name username')
       .populate('approver', 'name username')
       .sort({ applyTime: -1 });
-    
-    res.json({ history });
+    return res.json({ history });
   } catch (error) {
-    console.error('获取延期历史错误:', error);
-    res.status(500).json({ message: '服务器错误' });
+    return handleError(res, error, 'getTaskExtensionHistory');
   }
 };
 
-
+module.exports._private = {
+  extensionIdentityFilter,
+  findScopedExtension
+};

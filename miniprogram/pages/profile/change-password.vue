@@ -51,10 +51,12 @@
 <script>
 import { ref } from 'vue'
 import { changePassword } from '@/api/index.js'
+import { useUserStore } from '@/stores/user.js'
 
 export default {
 	name: 'ChangePassword',
 	setup() {
+		const userStore = useUserStore()
 		const form = ref({
 			oldPassword: '',
 			newPassword: '',
@@ -120,10 +122,13 @@ export default {
 					duration: 2000
 				})
 				
-				// 延时返回
+				form.value.oldPassword = ''
+				form.value.newPassword = ''
+				form.value.confirmPassword = ''
+				userStore.clearLocalSession('password-changed')
 				setTimeout(() => {
-					uni.navigateBack()
-				}, 2000)
+					uni.reLaunch({ url: '/pages/login/index' })
+				}, 800)
 				
 			} catch (error) {
 				console.error('修改密码失败:', error)

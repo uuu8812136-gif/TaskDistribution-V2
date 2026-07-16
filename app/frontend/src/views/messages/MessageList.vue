@@ -4,7 +4,7 @@
       <template #header>
         <div class="card-header">
           <span>消息中心</span>
-          <div>
+          <div v-if="canModifyMessages">
             <el-button type="primary" @click="handleMarkAllRead">全部已读</el-button>
             <el-button type="danger" @click="handleClearRead">清空已读</el-button>
           </div>
@@ -35,7 +35,7 @@
             {{ fromNow(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150">
+        <el-table-column v-if="canModifyMessages" label="操作" width="150">
           <template #default="{ row }">
             <el-button v-if="!row.isRead" type="primary" size="small" text @click="handleMarkRead(row)">
               标记已读
@@ -60,8 +60,9 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { useMessageStore } from '@/stores/message'
+import { useSessionStore } from '@/stores/session'
 import {
   getMessageList,
   markMessageAsRead,
@@ -73,6 +74,8 @@ import { fromNow, messageTypeIcon } from '@/utils/format'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const messageStore = useMessageStore()
+const session = useSessionStore()
+const canModifyMessages = computed(() => session.isTeamMode && !session.isReadOnly)
 
 const loading = ref(false)
 const activeTab = ref('all')

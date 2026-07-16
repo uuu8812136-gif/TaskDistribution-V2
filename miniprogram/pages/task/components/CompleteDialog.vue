@@ -43,7 +43,7 @@
 
 <script>
 import { ref } from 'vue'
-import config from '@/config/index.js'
+import { uploadTaskAttachment } from '@/api/index.js'
 
 export default {
 	name: 'CompleteDialog',
@@ -122,36 +122,7 @@ export default {
 				
 				try {
 					for (const file of fileList.value) {
-						const token = uni.getStorageSync('token')
-						
-					const uploadRes = await new Promise((resolve, reject) => {
-						uni.uploadFile({
-							url: config.baseURL + '/upload',
-							filePath: file.path,
-							name: 'file',
-							header: {
-								Authorization: `Bearer ${token}`
-							},
-							formData: {
-								friendlyName: file.name  // 传递友好的文件名
-							},
-							success: (res) => {
-								if (res.statusCode === 200) {
-									const data = JSON.parse(res.data)
-									resolve({
-										path: data.filePath,
-										originalName: data.originalName,
-										mimetype: data.mimetype,
-										size: data.size
-									})
-								} else {
-									reject(new Error('上传失败'))
-								}
-							},
-							fail: reject
-						})
-					})
-						
+						const uploadRes = await uploadTaskAttachment(file)
 						attachments.push(uploadRes)
 					}
 					

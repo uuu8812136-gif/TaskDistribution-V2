@@ -1,5 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import { useUserStore } from '@/stores/user'
+import { ElMessage } from 'element-plus'
+import { useSessionStore, SESSION_MODES } from '@/stores/session'
+import { isStaleContextResponseError, readAuthToken } from '@/utils/request'
+import { isModeAllowed } from '@/utils/teamManagement'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -11,118 +14,280 @@ const router = createRouter({
       meta: { requiresAuth: false }
     },
     {
+      path: '/team-select',
+      name: 'TeamSelect',
+      component: () => import('@/views/TeamSelect.vue'),
+      meta: { requiresAuth: true, teamRequired: false, readOnlyAllowed: true }
+    },
+    {
       path: '/',
       component: () => import('@/layouts/MainLayout.vue'),
       meta: { requiresAuth: true },
       children: [
-        {
-          path: '',
-          redirect: '/dashboard'
-        },
+        { path: '', redirect: '/dashboard' },
         {
           path: 'dashboard',
           name: 'Dashboard',
           component: () => import('@/views/Dashboard.vue'),
-          meta: { title: '统计看板' }
+          meta: { title: '统计看板', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'users',
           name: 'Users',
           component: () => import('@/views/users/UserList.vue'),
-          meta: { title: '用户管理', requiresAdmin: true }
+          meta: {
+            title: '团队成员',
+            permission: 'member.view',
+            teamRequired: true,
+            readOnlyAllowed: false,
+            allowedModes: [SESSION_MODES.TEAM]
+          }
+        },
+        {
+          path: 'organization',
+          name: 'Organization',
+          component: () => import('@/views/organization/OrgUnitManagement.vue'),
+          meta: {
+            title: '组织架构',
+            permission: 'org.manage',
+            teamAdminRequired: true,
+            teamRequired: true,
+            readOnlyAllowed: false,
+            allowedModes: [SESSION_MODES.TEAM]
+          }
+        },
+        {
+          path: 'team-control',
+          name: 'TeamControl',
+          component: () => import('@/views/teams/TeamControl.vue'),
+          meta: {
+            title: '项目团队控制',
+            superAdminRequired: true,
+            teamRequired: false,
+            readOnlyAllowed: true,
+            allowedModes: [SESSION_MODES.GLOBAL_READ_ONLY, SESSION_MODES.TEAM]
+          }
+        },
+        {
+          path: 'equipment',
+          name: 'Equipment',
+          component: () => import('@/views/equipment/EquipmentList.vue'),
+          meta: {
+            title: '设备台账',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/categories',
+          name: 'EquipmentCategories',
+          component: () => import('@/views/equipment/EquipmentCategories.vue'),
+          meta: {
+            title: '设备分类',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/:id',
+          name: 'EquipmentDetail',
+          component: () => import('@/views/equipment/EquipmentDetail.vue'),
+          meta: {
+            title: '设备详情',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'reporting/transport',
+          name: 'TransportRecords',
+          component: () => import('@/views/reporting/TransportRecords.vue'),
+          meta: {
+            title: '运输提报',
+            permission: 'report.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'reporting/transport/:id',
+          name: 'TransportRecordDetail',
+          component: () => import('@/views/reporting/TransportRecordDetail.vue'),
+          meta: {
+            title: '运输提报详情',
+            activeMenu: '/reporting/transport',
+            permission: 'report.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'reporting/production',
+          name: 'ProductionSchedules',
+          component: () => import('@/views/reporting/ProductionSchedules.vue'),
+          meta: {
+            title: '生产排产',
+            permission: 'report.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
         },
         {
           path: 'tasks',
           name: 'Tasks',
           component: () => import('@/views/tasks/TaskList.vue'),
-          meta: { title: '全部任务' }
+          meta: { title: '全部任务', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'tasks/my',
           name: 'MyTasks',
           component: () => import('@/views/tasks/MyTasks.vue'),
-          meta: { title: '我的任务' }
+          meta: { title: '我的任务', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'tasks/board',
           name: 'TaskBoard',
           component: () => import('@/views/tasks/TaskBoard.vue'),
-          meta: { title: '任务看板' }
+          meta: { title: '任务看板', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'tasks/create',
           name: 'CreateTask',
           component: () => import('@/views/tasks/TaskForm.vue'),
-          meta: { title: '创建任务', requiresAdmin: true }
+          meta: {
+            title: '创建任务',
+            permission: 'task.create',
+            teamRequired: true,
+            readOnlyAllowed: false
+          }
         },
         {
           path: 'tasks/:id/edit',
           name: 'EditTask',
           component: () => import('@/views/tasks/TaskForm.vue'),
-          meta: { title: '编辑任务', requiresAdmin: true }
+          meta: {
+            title: '编辑任务',
+            permission: 'task.edit',
+            teamRequired: true,
+            readOnlyAllowed: false
+          }
         },
         {
           path: 'tasks/:id',
           name: 'TaskDetail',
           component: () => import('@/views/tasks/TaskDetail.vue'),
-          meta: { title: '任务详情' }
+          meta: { title: '任务详情', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'extensions',
           name: 'Extensions',
           component: () => import('@/views/extensions/ExtensionList.vue'),
-          meta: { title: '延期管理', requiresAdmin: true }
+          meta: {
+            title: '延期管理',
+            permission: 'task.review',
+            teamRequired: true,
+            readOnlyAllowed: false
+          }
         },
         {
           path: 'messages',
           name: 'Messages',
           component: () => import('@/views/messages/MessageList.vue'),
-          meta: { title: '消息中心' }
+          meta: { title: '消息中心', teamRequired: true, readOnlyAllowed: true }
         },
         {
           path: 'profile',
           name: 'Profile',
           component: () => import('@/views/profile/ProfileView.vue'),
-          meta: { title: '个人中心' }
+          meta: { title: '个人中心', teamRequired: false, readOnlyAllowed: true }
         }
       ]
     },
     {
       path: '/:pathMatch(.*)*',
       name: 'NotFound',
-      component: () => import('@/views/NotFound.vue')
+      component: () => import('@/views/NotFound.vue'),
+      meta: { requiresAuth: true, readOnlyAllowed: true }
     }
   ]
 })
 
-// 路由守卫
-router.beforeEach((to, from, next) => {
-  const userStore = useUserStore()
-  const token = localStorage.getItem('token')
+router.beforeEach(async (to) => {
+  const session = useSessionStore()
+  const token = readAuthToken()
 
-  // 需要登录的页面
-  if (to.meta.requiresAuth !== false) {
-    if (!token) {
-      next('/login')
-      return
-    }
+  if (!token) {
+    if (session.token) session.clearLocalSession('missing-token')
+    if (to.meta.requiresAuth === false) return true
+    return { name: 'Login', query: { redirect: to.fullPath } }
+  }
 
-    // 需要管理员权限
-    if (to.meta.requiresAdmin && !userStore.isAdmin) {
-      ElMessage.error('需要管理员权限')
-      next(from.path || '/')
-      return
+  try {
+    await session.bootstrap()
+  } catch (error) {
+    if (isStaleContextResponseError(error) && readAuthToken()) {
+      try {
+        await session.bootstrap({ force: true })
+      } catch {
+        return false
+      }
+    } else if (readAuthToken()) {
+      ElMessage.error('暂时无法验证登录状态，请稍后重试')
+      return false
+    } else {
+      return { name: 'Login', query: { redirect: to.fullPath } }
     }
   }
 
-  // 已登录访问登录页，跳转到首页
-  if (to.path === '/login' && token) {
-    next('/')
-    return
+  if (to.name === 'Login') {
+    return session.isTeamSelection ? { name: 'TeamSelect' } : { name: 'Dashboard' }
   }
 
-  next()
+  if (session.mode === SESSION_MODES.TEAM_SELECTION && to.name !== 'TeamSelect') {
+    return { name: 'TeamSelect' }
+  }
+
+  if (to.meta.superAdminRequired && !session.isSuperAdmin) {
+    ElMessage.error('该功能仅限超级管理员访问')
+    return { name: 'Dashboard' }
+  }
+
+  if (
+    to.meta.teamAdminRequired &&
+    !session.isSuperAdmin &&
+    session.context.membership?.role !== 'PROJECT_ADMIN'
+  ) {
+    ElMessage.error('该功能仅限项目管理员访问')
+    return { name: 'Dashboard' }
+  }
+
+  if (to.meta.readOnlyAllowed === false && session.isReadOnly) {
+    ElMessage.warning('当前为只读模式，请先进入具体团队')
+    return { name: 'Dashboard' }
+  }
+
+  if (
+    to.meta.teamRequired &&
+    session.mode !== SESSION_MODES.TEAM &&
+    !(session.isGlobalReadOnly && to.meta.readOnlyAllowed === true)
+  ) {
+    return { name: 'TeamSelect' }
+  }
+
+  if (!isModeAllowed(session.mode, to.meta.allowedModes)) {
+    ElMessage.warning('当前登录模式不能访问该功能')
+    return session.isTeamSelection ? { name: 'TeamSelect' } : { name: 'Dashboard' }
+  }
+
+  if (to.meta.permission && !session.hasPermission(to.meta.permission, to.meta.permissionMatch)) {
+    ElMessage.error('没有访问该功能的权限')
+    return { name: 'Dashboard' }
+  }
+
+  return true
 })
 
 export default router
-

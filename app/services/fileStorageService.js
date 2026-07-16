@@ -32,11 +32,97 @@ function normalizeTeamId(value) {
 
 function normalizeOriginalName(value) {
   if (typeof value !== 'string') throw new TypeError('originalName is required');
-  const normalized = path.basename(value.replace(/[\u0000-\u001f\u007f]/g, '')).trim();
+  let decodedValue = value;
+  if ([...value].every((character) => character.codePointAt(0) <= 0xff)) {
+    const rawBytes = Buffer.from(value, 'latin1');
+    const utf8Candidate = rawBytes.toString('utf8');
+    if (
+      !utf8Candidate.includes('\ufffd') &&
+      Buffer.from(utf8Candidate, 'utf8').equals(rawBytes)
+    ) {
+      decodedValue = utf8Candidate;
+    }
+  }
+  const withoutControls = decodedValue
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .replace(/\\/g, '/');
+  const normalized = path.posix.basename(withoutControls).trim();
   if (!normalized || normalized.length > 255) {
     throw new TypeError('originalName must contain between 1 and 255 characters');
   }
   return normalized;
+}
+
+function startsWith(buffer, signature, offset = 0) {
+  return buffer.length >= offset + signature.length &&
+    buffer.subarray(offset, offset + signature.length).equals(signature);
+}
+
+function isZipContainer(buffer, requiredDirectory) {
+  const zipSignatures = [
+    Buffer.from([0x50, 0x4b, 0x03, 0x04]),
+    Buffer.from([0x50, 0x4b, 0x05, 0x06]),
+    Buffer.from([0x50, 0x4b, 0x07, 0x08])
+  ];
+  return zipSignatures.some((signature) => startsWith(buffer, signature)) &&
+    buffer.includes(Buffer.from('[Content_Types].xml')) &&
+    buffer.includes(Buffer.from(requiredDirectory));
+}
+
+function isPlainText(buffer) {
+  if (buffer.includes(0)) return false;
+  try {
+    new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function validateFileContent(buffer, mimeType) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
+    throw new TypeError('Uploaded file is empty');
+  }
+
+  const validators = {
+    'image/jpeg': (value) => (
+      startsWith(value, Buffer.from([0xff, 0xd8, 0xff])) &&
+      value.length >= 5 &&
+      value.subarray(value.length - 2).equals(Buffer.from([0xff, 0xd9]))
+    ),
+    'image/png': (value) => (
+      startsWith(value, Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) &&
+      value.length >= 24 &&
+      value.subarray(12, 16).equals(Buffer.from('IHDR'))
+    ),
+    'image/gif': (value) => startsWith(value, Buffer.from('GIF87a')) ||
+      startsWith(value, Buffer.from('GIF89a')),
+    'application/pdf': (value) => (
+      startsWith(value, Buffer.from('%PDF-')) &&
+      value.subarray(Math.max(0, value.length - 1024)).includes(Buffer.from('%%EOF'))
+    ),
+    'application/msword': (value) => startsWith(
+      value,
+      Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+    ),
+    'application/vnd.ms-excel': (value) => startsWith(
+      value,
+      Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1])
+    ),
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': (value) => (
+      isZipContainer(value, 'word/')
+    ),
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': (value) => (
+      isZipContainer(value, 'xl/')
+    ),
+    'text/plain': isPlainText
+  };
+
+  const validator = validators[mimeType];
+  if (!validator || !validator(buffer)) {
+    throw new TypeError('File content does not match its declared MIME type');
+  }
+  return true;
 }
 
 function validatedExtension(originalName, mimeType) {
@@ -100,5 +186,6 @@ module.exports = {
   normalizeTeamId,
   resolveStoragePath,
   sha256File,
+  validateFileContent,
   validatedExtension
 };

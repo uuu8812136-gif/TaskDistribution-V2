@@ -10,10 +10,14 @@
         <view class="tabbar-icon">
           <text 
             class="icon-text"
-            :style="{ color: current === index ? '#409eff' : '#999999', fontSize: item.size + 'rpx' }"
+            :style="{ color: current === index ? '#409eff' : '#999999', fontSize: (item.size || 40) + 'rpx' }"
           >
             {{ item.icon }}
           </text>
+          <text
+            v-if="item.pagePath === '/pages/message/index' && messageStore.unreadCount > 0"
+            class="unread-count"
+          >{{ messageStore.unreadCount > 99 ? '99+' : messageStore.unreadCount }}</text>
         </view>
         <view 
           class="tabbar-text"
@@ -27,6 +31,8 @@
 </template>
 
 <script>
+import { useMessageStore } from '@/stores/message.js'
+
 export default {
   name: 'CustomTabbar',
   
@@ -45,6 +51,12 @@ export default {
           size: 48
         },
         {
+          text: '数据提报',
+          icon: '▤',
+          pagePath: '/pages/reporting/index',
+          size: 46
+        },
+        {
           text: '消息',
           icon: '✉',
           pagePath: '/pages/message/index',
@@ -56,8 +68,13 @@ export default {
           pagePath: '/pages/profile/index'
         }
       ],
-      current: 0
+      current: 0,
+      tabbarUpdateHandler: null
     }
+  },
+
+  setup() {
+    return { messageStore: useMessageStore() }
   },
   
   mounted() {
@@ -65,14 +82,16 @@ export default {
     this.updateCurrent()
     
     // 监听页面显示事件
-    uni.$on('tabbar-update', () => {
+    this.tabbarUpdateHandler = () => {
       this.updateCurrent()
-    })
+    }
+    uni.$on('tabbar-update', this.tabbarUpdateHandler)
   },
   
-  beforeDestroy() {
-    // 移除事件监听
-    uni.$off('tabbar-update')
+  beforeUnmount() {
+    if (this.tabbarUpdateHandler) {
+      uni.$off('tabbar-update', this.tabbarUpdateHandler)
+    }
   },
   
   methods: {
@@ -146,6 +165,7 @@ export default {
       padding: 15rpx 0;
       
       .tabbar-icon {
+		position: relative;
         margin-bottom: 10rpx;
         height: 48rpx;
         
@@ -154,6 +174,22 @@ export default {
           line-height: 1;
           transition: color 0.3s;
         }
+
+		.unread-count {
+			position: absolute;
+			top: -16rpx;
+			left: 30rpx;
+			min-width: 28rpx;
+			height: 28rpx;
+			padding: 0 6rpx;
+			box-sizing: border-box;
+			border-radius: 14rpx;
+			background: #f56c6c;
+			color: #ffffff;
+			font-size: 18rpx;
+			line-height: 28rpx;
+			text-align: center;
+		}
       }
       
       .tabbar-text {

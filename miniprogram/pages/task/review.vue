@@ -119,12 +119,13 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { reviewTask } from '@/api/index.js'
-import config from '@/config/index.js'
+import { reviewTask, uploadTaskAttachment } from '@/api/index.js'
+import { useUserStore } from '@/stores/user.js'
 
 export default {
 	name: 'TaskReview',
 	setup() {
+		const userStore = useUserStore()
 		const taskId = ref('')
 		const taskName = ref('')
 		
@@ -138,6 +139,11 @@ export default {
 		
 		// 获取页面参数
 		onMounted(() => {
+			if (!userStore.can('task.review', { write: true, teamRequired: true })) {
+				uni.showToast({ title: '无权限执行该操作', icon: 'none' })
+				setTimeout(() => uni.navigateBack(), 300)
+				return
+			}
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
 			taskId.value = currentPage.options.id || ''
@@ -316,44 +322,7 @@ export default {
 				
 				try {
 					for (const file of fileList.value) {
-						const token = uni.getStorageSync('token')
-						
-						const uploadRes = await new Promise((resolve, reject) => {
-							uni.uploadFile({
-								url: config.baseURL + '/upload',
-								filePath: file.path,
-								name: 'file',
-								header: {
-									Authorization: `Bearer ${token}`
-								},
-								formData: {
-									friendlyName: file.name  // 传递友好的文件名
-								},
-								success: (res) => {
-									console.log('=== 上传成功 ===')
-									console.log('statusCode:', res.statusCode)
-									console.log('response data:', res.data)
-									
-									if (res.statusCode === 200) {
-										const data = JSON.parse(res.data)
-										console.log('解析后的数据:', data)
-										
-										const attachment = {
-											path: data.filePath,
-											originalName: data.originalName,
-											mimetype: data.mimetype,
-											size: data.size
-										}
-										console.log('构建的附件对象:', attachment)
-										resolve(attachment)
-									} else {
-										reject(new Error('上传失败'))
-									}
-								},
-								fail: reject
-							})
-						})
-						
+						const uploadRes = await uploadTaskAttachment(file)
 						console.log('uploadRes:', uploadRes)
 						attachments.push(uploadRes)
 					}

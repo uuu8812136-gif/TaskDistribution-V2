@@ -1,5 +1,17 @@
+const { randomUUID } = require('node:crypto');
 const express = require('express');
 const cors = require('cors');
+
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+function requestIdMiddleware(req, res, next) {
+  const supplied = req.get('x-request-id');
+  req.id = typeof supplied === 'string' && REQUEST_ID_PATTERN.test(supplied)
+    ? supplied
+    : randomUUID();
+  res.setHeader('X-Request-Id', req.id);
+  return next();
+}
 
 function createCorsOptions(config) {
   return {
@@ -26,6 +38,7 @@ function createApp(config) {
 
   const app = express();
   app.disable('x-powered-by');
+  app.use(requestIdMiddleware);
   app.use(cors(createCorsOptions(config)));
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
@@ -56,30 +69,21 @@ function createApp(config) {
   app.use('/api/extensions', require('./routes/extensions'));
   app.use('/api/statistics', require('./routes/statistics'));
   app.use('/api/messages', require('./routes/messages'));
+  app.use('/api/equipment', require('./routes/equipment'));
+  app.use('/api/transport-records', require('./routes/transportRecords'));
+  app.use('/api/production-schedules', require('./routes/productionSchedules'));
+  const { createFilesRouter } = require('./routes/files');
+  app.use('/api/files', createFilesRouter({
+    storageRoot: config.uploadPath,
+    maxFileSize: config.maxFileSize
+  }));
 
-  const upload = require('./middlewares/upload');
   const { authenticate } = require('./middlewares/auth');
-  app.post('/api/upload', authenticate, upload.single('file'), (req, res) => {
-    try {
-      if (!req.file) {
-        return res.status(400).json({ message: '没有上传文件' });
-      }
-
-      const originalName = req.body.friendlyName
-        ? req.body.friendlyName
-        : Buffer.from(req.file.originalname, 'latin1').toString('utf8');
-
-      return res.json({
-        message: '文件上传成功',
-        filePath: `/uploads/${req.file.filename}`,
-        originalName,
-        size: req.file.size,
-        mimetype: req.file.mimetype
-      });
-    } catch (error) {
-      console.error('文件上传错误:', error);
-      return res.status(500).json({ message: '文件上传失败' });
-    }
+  app.post('/api/upload', authenticate, (req, res) => {
+    return res.status(410).json({
+      message: '旧上传接口已停用，请使用团队鉴权文件接口',
+      code: 'LEGACY_UPLOAD_DISABLED'
+    });
   });
 
   app.use((req, res) => {
@@ -100,4 +104,4 @@ function createApp(config) {
   return app;
 }
 
-module.exports = { createApp };
+module.exports = { createApp, requestIdMiddleware };
