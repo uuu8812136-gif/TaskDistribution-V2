@@ -14,7 +14,7 @@
         <el-step title="附件上传" />
       </el-steps>
 
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="120px">
+      <el-form ref="formRef" :model="form" :rules="rules" label-position="top">
         <!-- 步骤1：基本信息 -->
         <div v-show="currentStep === 0">
           <el-form-item
@@ -121,15 +121,21 @@
 
         <!-- 步骤3：子任务 -->
         <div v-show="currentStep === 2">
-          <el-button type="primary" @click="addSubTask" style="margin-bottom: 20px">添加子任务</el-button>
-          <div v-for="(subTask, index) in form.subTasks" :key="index" style="margin-bottom: 20px; padding: 15px; border: 1px solid #eee; border-radius: 4px">
+          <el-button type="primary" class="subtask-add" @click="addSubTask">
+            <el-icon><Plus /></el-icon>
+            添加子任务
+          </el-button>
+          <div v-for="(subTask, index) in form.subTasks" :key="index" class="subtask-card">
             <el-form-item :label="`子任务${index + 1}`">
               <el-input v-model="subTask.taskName" placeholder="子任务名称" />
             </el-form-item>
             <el-form-item label="描述">
               <el-input v-model="subTask.description" type="textarea" :rows="2" />
             </el-form-item>
-            <el-button type="danger" size="small" @click="removeSubTask(index)">删除</el-button>
+            <el-button type="danger" plain size="small" class="subtask-remove" @click="removeSubTask(index)">
+              <el-icon><Delete /></el-icon>
+              删除
+            </el-button>
           </div>
           <el-empty v-if="form.subTasks.length === 0" description="暂无子任务" />
         </div>
@@ -144,7 +150,10 @@
               :auto-upload="false"
               multiple
             >
-              <el-button type="primary">选择文件</el-button>
+              <el-button type="primary">
+                <el-icon><Upload /></el-icon>
+                选择文件
+              </el-button>
               <template #tip>
                 <div class="el-upload__tip">支持上传图片、文档，单个文件不超过10MB</div>
               </template>
@@ -360,6 +369,12 @@ onMounted(async () => {
 
 <style scoped lang="scss">
 .task-form {
+  min-width: 0;
+
+  :deep(.el-page-header) {
+    margin-bottom: 20px;
+  }
+
   .field-hint {
     margin-top: 6px;
     color: #909399;
@@ -367,13 +382,47 @@ onMounted(async () => {
     line-height: 1.5;
   }
 
+  .subtask-add {
+    margin-bottom: 16px;
+  }
+
+  .subtask-card {
+    margin-bottom: 16px;
+    padding: 16px;
+    background: rgb(245 249 255 / 72%);
+    border: 1px solid var(--zl-border-soft);
+    border-radius: 14px;
+  }
+
+  .subtask-remove {
+    display: flex;
+    margin-left: auto;
+  }
+
   .step-actions {
     display: flex;
     justify-content: center;
-    gap: 20px;
+    gap: 8px;
     margin-top: 30px;
     padding-top: 20px;
     border-top: 1px solid #eee;
+  }
+}
+
+@media (max-width: 760px) {
+  .task-form {
+    :deep(.el-card__body) {
+      padding: 16px;
+    }
+
+    :deep(.el-step__title) {
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .step-actions .el-button {
+      flex: 1;
+    }
   }
 }
 </style>

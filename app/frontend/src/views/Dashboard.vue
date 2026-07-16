@@ -1,65 +1,95 @@
 <template>
   <div class="dashboard">
-    <el-row :gutter="20">
-      <!-- 数据卡片 -->
-      <el-col :xs="24" :sm="12" :md="6" v-for="card in dataCards" :key="card.key">
-        <el-card class="stat-card" shadow="hover">
-          <div class="card-content">
-            <div class="card-icon" :style="{ background: card.color }">
-              <el-icon :size="28">
-                <component :is="card.icon" />
-              </el-icon>
-            </div>
-            <div class="card-data">
-              <div class="card-value">{{ card.value }}</div>
-              <div class="card-label">{{ card.label }}</div>
-            </div>
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <header class="dashboard-heading">
+      <span class="heading-icon" aria-hidden="true">
+        <el-icon><DataAnalysis /></el-icon>
+      </span>
+      <div>
+        <h1>统计看板</h1>
+        <p>任务执行概览</p>
+      </div>
+    </header>
 
-    <el-row :gutter="20" style="margin-top: 20px">
-      <!-- 任务状态分布 -->
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
+    <section class="stats-grid" aria-label="任务统计概览">
+      <el-card
+        v-for="card in dataCards"
+        :key="card.key"
+        class="stat-card"
+        shadow="never"
+        :style="{ '--stat-color': card.color, '--stat-tint': card.tint }"
+      >
+        <div class="card-content">
+          <div class="card-icon">
+            <el-icon :size="24">
+              <component :is="card.icon" />
+            </el-icon>
+          </div>
+          <div class="card-data">
+            <div class="card-value">{{ card.value }}</div>
+            <div class="card-label">{{ card.label }}</div>
+          </div>
+        </div>
+      </el-card>
+    </section>
+
+    <section class="dashboard-grid chart-grid">
+      <el-card class="dashboard-card chart-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <div class="card-title">
+              <el-icon><TrendCharts /></el-icon>
               <span>任务状态分布</span>
             </div>
-          </template>
-          <div class="chart-container">
-            <v-chart :option="pieChartOption" style="height: 300px" />
           </div>
-        </el-card>
-      </el-col>
+        </template>
+        <div class="chart-container">
+          <v-chart
+            :option="pieChartOption"
+            class="chart-canvas"
+            autoresize
+            role="img"
+            aria-label="任务状态分布图"
+          />
+        </div>
+      </el-card>
 
-      <!-- 任务优先级统计 -->
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
+      <el-card class="dashboard-card chart-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <div class="card-title">
+              <el-icon><Histogram /></el-icon>
               <span>任务优先级统计</span>
             </div>
-          </template>
-          <div class="chart-container">
-            <v-chart :option="barChartOption" style="height: 300px" />
           </div>
-        </el-card>
-      </el-col>
-    </el-row>
+        </template>
+        <div class="chart-container">
+          <v-chart
+            :option="barChartOption"
+            class="chart-canvas"
+            autoresize
+            role="img"
+            aria-label="任务优先级统计图"
+          />
+        </div>
+      </el-card>
+    </section>
 
-    <el-row :gutter="20" style="margin-top: 20px">
-      <!-- 待处理任务 -->
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
+    <section class="dashboard-grid activity-grid">
+      <el-card class="dashboard-card activity-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <div class="card-title">
+              <el-icon><List /></el-icon>
               <span>待处理任务</span>
-              <el-button text type="primary" @click="goToTasks">查看更多</el-button>
             </div>
-          </template>
-          <el-table :data="pendingTasks" style="width: 100%" max-height="300">
+            <el-button text type="primary" class="card-link" @click="goToTasks">
+              查看更多
+              <el-icon><ArrowRight /></el-icon>
+            </el-button>
+          </div>
+        </template>
+        <div v-if="pendingTasks.length" class="table-scroll">
+          <el-table :data="pendingTasks" class="pending-table" max-height="300">
             <el-table-column prop="taskName" label="任务名称" min-width="200" show-overflow-tooltip />
             <el-table-column prop="priority" label="优先级" width="100">
               <template #default="{ row }">
@@ -74,36 +104,45 @@
               </template>
             </el-table-column>
           </el-table>
-          <el-empty v-if="pendingTasks.length === 0" description="暂无待处理任务" />
-        </el-card>
-      </el-col>
+        </div>
+        <el-empty v-else description="暂无待处理任务" />
+      </el-card>
 
-      <!-- 最新消息 -->
-      <el-col :xs="24" :md="12">
-        <el-card>
-          <template #header>
-            <div class="card-header">
+      <el-card class="dashboard-card activity-card" shadow="never">
+        <template #header>
+          <div class="card-header">
+            <div class="card-title">
+              <el-icon><Bell /></el-icon>
               <span>最新消息</span>
-              <el-button text type="primary" @click="goToMessages">查看更多</el-button>
             </div>
-          </template>
-          <el-timeline>
-            <el-timeline-item
-              v-for="message in recentMessages"
-              :key="message._id"
-              :timestamp="fromNow(message.createdAt)"
-              placement="top"
+            <el-button text type="primary" class="card-link" @click="goToMessages">
+              查看更多
+              <el-icon><ArrowRight /></el-icon>
+            </el-button>
+          </div>
+        </template>
+        <el-timeline v-if="recentMessages.length" class="message-timeline">
+          <el-timeline-item
+            v-for="message in recentMessages"
+            :key="message._id"
+            :timestamp="fromNow(message.createdAt)"
+            placement="top"
+          >
+            <button
+              type="button"
+              class="message-item"
+              :class="{ 'is-static': !message.relatedTask }"
+              :disabled="!message.relatedTask"
+              @click="handleMessageClick(message)"
             >
-              <div class="message-item" @click="handleMessageClick(message)">
-                <div class="message-title">{{ message.title }}</div>
-                <div class="message-content">{{ message.content }}</div>
-              </div>
-            </el-timeline-item>
-          </el-timeline>
-          <el-empty v-if="recentMessages.length === 0" description="暂无新消息" />
-        </el-card>
-      </el-col>
-    </el-row>
+              <div class="message-title">{{ message.title }}</div>
+              <div class="message-content">{{ message.content }}</div>
+            </button>
+          </el-timeline-item>
+        </el-timeline>
+        <el-empty v-else description="暂无新消息" />
+      </el-card>
+    </section>
   </div>
 </template>
 
@@ -140,6 +179,8 @@ const router = useRouter()
 const overview = ref({})
 const pendingTasks = ref([])
 const recentMessages = ref([])
+const prefersReducedMotion = typeof window !== 'undefined' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
 const dataCards = computed(() => [
   {
@@ -147,48 +188,59 @@ const dataCards = computed(() => [
     label: '任务总数',
     value: overview.value.totalTasks || 0,
     icon: 'Document',
-    color: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)'
+    color: '#1677ff',
+    tint: 'rgb(22 119 255 / 11%)'
   },
   {
     key: 'inProgress',
     label: '进行中',
     value: overview.value.inProgressTasks || 0,
     icon: 'Loading',
-    color: 'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)'
+    color: '#7c5cff',
+    tint: 'rgb(124 92 255 / 11%)'
   },
   {
     key: 'finished',
     label: '已完成',
     value: overview.value.finishedTasks || 0,
     icon: 'CircleCheck',
-    color: 'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)'
+    color: '#389e0d',
+    tint: 'rgb(82 196 26 / 12%)'
   },
   {
     key: 'delayed',
     label: '延期任务',
     value: overview.value.delayedTasks || 0,
     icon: 'Clock',
-    color: 'linear-gradient(135deg, #fa709a 0%, #fee140 100%)'
+    color: '#d48806',
+    tint: 'rgb(250 173 20 / 13%)'
   }
 ])
 
 const pieChartOption = computed(() => ({
+  animation: !prefersReducedMotion,
+  color: ['#4096ff', '#52c41a', '#faad14', '#7c5cff'],
   tooltip: {
     trigger: 'item',
-    formatter: '{b}: {c} ({d}%)'
+    formatter: '{b}: {c} ({d}%)',
+    borderColor: '#dce6f4'
   },
   legend: {
     bottom: '0',
-    left: 'center'
+    left: 'center',
+    textStyle: {
+      color: '#64748b'
+    }
   },
   series: [
     {
       name: '任务状态',
       type: 'pie',
       radius: ['40%', '70%'],
+      center: ['50%', '43%'],
       avoidLabelOverlap: false,
       itemStyle: {
-        borderRadius: 10,
+        borderRadius: 6,
         borderColor: '#fff',
         borderWidth: 2
       },
@@ -217,8 +269,10 @@ const pieChartOption = computed(() => ({
 }))
 
 const barChartOption = computed(() => ({
+  animation: !prefersReducedMotion,
   tooltip: {
     trigger: 'axis',
+    borderColor: '#dce6f4',
     axisPointer: {
       type: 'shadow'
     }
@@ -232,18 +286,30 @@ const barChartOption = computed(() => ({
   xAxis: {
     type: 'category',
     data: ['低', '普通', '高', '紧急'],
+    axisLabel: {
+      color: '#64748b'
+    },
+    axisLine: {
+      lineStyle: { color: '#dce6f4' }
+    },
     axisTick: {
       alignWithLabel: true
     }
   },
   yAxis: {
-    type: 'value'
+    type: 'value',
+    axisLabel: {
+      color: '#64748b'
+    },
+    splitLine: {
+      lineStyle: { color: '#e8eef7' }
+    }
   },
   series: [
     {
       name: '任务数量',
       type: 'bar',
-      barWidth: '60%',
+      barMaxWidth: 42,
       data: [
         overview.value.priorityStats?.low || 0,
         overview.value.priorityStats?.normal || 0,
@@ -251,17 +317,8 @@ const barChartOption = computed(() => ({
         overview.value.priorityStats?.urgent || 0
       ],
       itemStyle: {
-        color: {
-          type: 'linear',
-          x: 0,
-          y: 0,
-          x2: 0,
-          y2: 1,
-          colorStops: [
-            { offset: 0, color: '#83bff6' },
-            { offset: 1, color: '#188df0' }
-          ]
-        }
+        color: '#4096ff',
+        borderRadius: [6, 6, 0, 0]
       }
     }
   ]
@@ -269,25 +326,20 @@ const barChartOption = computed(() => ({
 
 const fetchData = async () => {
   try {
-    console.log('📊 开始获取统计数据...')
-    
     // 获取统计概览
     const overviewData = await getStatisticsOverview()
-    console.log('📊 统计概览返回:', overviewData)
     // 后端返回的数据在 overview 对象里
     overview.value = overviewData.overview || overviewData
 
     // 获取待处理任务
     const tasksRes = await getMyTasks({ type: 'executor', status: 'in_progress' })
-    console.log('📋 任务列表返回:', tasksRes)
     pendingTasks.value = tasksRes.tasks?.slice(0, 5) || []
 
     // 获取最新消息
     const messagesRes = await getMessageList({ page: 1, limit: 5 })
-    console.log('📬 消息列表返回:', messagesRes)
     recentMessages.value = messagesRes.messages || []
-  } catch (error) {
-    console.error('❌ 获取数据失败:', error)
+  } catch {
+    console.error('获取看板数据失败')
   }
 }
 
@@ -312,74 +364,358 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .dashboard {
+  min-width: 0;
+  animation: dashboard-rise 0.5s var(--zl-easing) both;
+}
+
+.dashboard-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 20px;
+
+  h1 {
+    margin: 0 0 3px;
+    color: var(--zl-text);
+    font-size: 24px;
+    font-weight: 700;
+    line-height: 1.35;
+    letter-spacing: 0;
+  }
+
+  p {
+    margin: 0;
+    color: var(--zl-muted);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+}
+
+.heading-icon {
+  width: 44px;
+  height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 44px;
+  color: var(--zl-primary-deep);
+  background: rgb(64 150 255 / 11%);
+  border: 1px solid rgb(64 150 255 / 16%);
+  border-radius: 14px;
+  font-size: 22px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.stat-card {
+  position: relative;
+  min-width: 0;
+  border-color: rgb(220 230 244 / 82%);
+  box-shadow: 0 5px 18px rgb(30 64 175 / 7%);
+  transition: transform 0.3s var(--zl-easing), box-shadow 0.3s var(--zl-easing);
+
+  &::before {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 3px;
+    background: var(--stat-color);
+    content: '';
+  }
+
+  &:hover {
+    box-shadow: 0 10px 28px rgb(30 64 175 / 12%);
+    transform: translateY(-2px);
+  }
+
+  :deep(.el-card__body) {
+    height: 100%;
+    padding: 18px;
+  }
+}
+
+.card-content {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.card-icon {
+  width: 48px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 48px;
+  color: var(--stat-color);
+  background: var(--stat-tint);
+  border-radius: 14px;
+}
+
+.card-data {
+  min-width: 0;
+  flex: 1;
+}
+
+.card-value {
+  overflow: hidden;
+  margin-bottom: 3px;
+  color: var(--zl-text);
+  font-size: 27px;
+  font-weight: 700;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+}
+
+.card-label {
+  overflow: hidden;
+  color: var(--zl-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.dashboard-card {
+  min-width: 0;
+  height: 100%;
+  border-color: rgb(220 230 244 / 82%);
+  box-shadow: 0 5px 18px rgb(30 64 175 / 6%);
+
+  :deep(.el-card__header) {
+    min-height: 58px;
+    padding: 14px 18px;
+    border-bottom-color: rgb(220 230 244 / 76%);
+  }
+
+  :deep(.el-card__body) {
+    min-width: 0;
+    padding: 18px;
+  }
+}
+
+.card-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-weight: 600;
+}
+
+.card-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #27364d;
+  font-size: 15px;
+  line-height: 22px;
+
+  .el-icon {
+    flex: 0 0 auto;
+    color: var(--zl-primary-deep);
+    font-size: 18px;
+  }
+}
+
+.card-link {
+  min-height: 32px !important;
+  padding-inline: 6px;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.chart-container {
+  min-width: 0;
+}
+
+.chart-canvas {
+  width: 100%;
+  height: 300px;
+}
+
+.table-scroll {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.pending-table {
+  width: 100%;
+  min-width: 520px;
+}
+
+.message-timeline {
+  margin-top: 3px;
+  padding-left: 3px;
+}
+
+.message-item {
+  width: 100%;
+  padding: 9px 10px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 0.2s var(--zl-easing);
+
+  &:hover,
+  &:focus-visible {
+    background: rgb(64 150 255 / 8%);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--zl-primary);
+    outline-offset: 2px;
+  }
+
+  &.is-static {
+    cursor: default;
+  }
+}
+
+.message-title {
+  overflow: hidden;
+  margin-bottom: 4px;
+  color: var(--zl-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.message-content {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #526176;
+  font-size: 13px;
+  line-height: 1.6;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+@keyframes dashboard-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1100px) {
+  .stats-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .dashboard-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+    margin-top: 12px;
+  }
+
+  .stats-grid {
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+
+  .chart-canvas {
+    height: 270px;
+  }
+}
+
+@media (max-width: 420px) {
+  .dashboard-heading {
+    margin-bottom: 16px;
+
+    h1 {
+      font-size: 21px;
+    }
+  }
+
+  .heading-icon {
+    width: 40px;
+    height: 40px;
+    flex-basis: 40px;
+    font-size: 20px;
+  }
+
   .stat-card {
-    margin-bottom: 20px;
-
-    .card-content {
-      display: flex;
-      align-items: center;
-      gap: 16px;
-
-      .card-icon {
-        width: 60px;
-        height: 60px;
-        border-radius: 12px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: white;
-      }
-
-      .card-data {
-        flex: 1;
-
-        .card-value {
-          font-size: 28px;
-          font-weight: bold;
-          color: #303133;
-          margin-bottom: 4px;
-        }
-
-        .card-label {
-          font-size: 14px;
-          color: #909399;
-        }
-      }
+    :deep(.el-card__body) {
+      padding: 13px;
     }
   }
 
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    font-weight: 600;
+  .card-content {
+    gap: 10px;
   }
 
-  .chart-container {
-    padding: 10px;
+  .card-icon {
+    width: 42px;
+    height: 42px;
+    flex-basis: 42px;
+    border-radius: 12px;
   }
 
+  .card-value {
+    font-size: 23px;
+  }
+
+  .dashboard-card {
+    :deep(.el-card__header),
+    :deep(.el-card__body) {
+      padding: 14px;
+    }
+  }
+
+  .card-link {
+    font-size: 13px;
+  }
+
+  .chart-canvas {
+    height: 250px;
+  }
+}
+
+@media (max-width: 340px) {
+  .stats-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dashboard {
+    animation: none;
+  }
+
+  .stat-card,
   .message-item {
-    cursor: pointer;
-    padding: 8px;
-    border-radius: 4px;
-    transition: all 0.3s;
+    transition: none;
+  }
 
-    &:hover {
-      background: #f5f7fa;
-    }
-
-    .message-title {
-      font-weight: 600;
-      margin-bottom: 4px;
-      color: #303133;
-    }
-
-    .message-content {
-      font-size: 13px;
-      color: #606266;
-      line-height: 1.5;
-    }
+  .stat-card:hover {
+    transform: none;
   }
 }
 </style>

@@ -86,10 +86,12 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right">
+        <el-table-column label="操作" width="150" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button text type="primary" @click="goDetail(row)">详情</el-button>
-            <el-button v-if="canEdit" text type="primary" @click="openEdit(row)">编辑</el-button>
+            <div class="table-actions">
+              <el-button text type="primary" @click="goDetail(row)">详情</el-button>
+              <el-button v-if="canEdit" text type="primary" @click="openEdit(row)">编辑</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -422,20 +424,22 @@ onMounted(initialize)
 .page-heading { justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .page-heading h1 { margin: 0 0 5px; font-size: 24px; letter-spacing: 0; }
 .page-heading p { margin: 0; color: #909399; }
-.heading-actions { gap: 10px; }
-.toolbar { flex-wrap: wrap; gap: 10px; padding: 14px 0; border-block: 1px solid #e4e7ed; }
+.heading-actions { gap: 8px; }
+.toolbar { flex-wrap: wrap; gap: 8px; padding: 14px 0; border-block: 1px solid var(--zl-border-soft); }
 .toolbar .el-select { width: 150px; }
 .toolbar .team-select { width: 190px; }
 .keyword-input { width: min(320px, 100%); }
 .toolbar-spacer { flex: 1; }
-.table-shell { margin-top: 16px; overflow: hidden; background: #fff; border: 1px solid #e4e7ed; border-radius: 6px; }
+.table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+.table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .full-width { width: 100%; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }
-  .heading-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .heading-actions { flex-wrap: wrap; justify-content: flex-start; }
   .toolbar > *, .toolbar .el-select, .toolbar .team-select, .keyword-input { width: 100%; }
+  .toolbar > .el-button.is-circle { width: var(--zl-control-height); align-self: flex-end; }
   .toolbar-spacer { display: none; }
   .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
   .form-grid { grid-template-columns: 1fr; }

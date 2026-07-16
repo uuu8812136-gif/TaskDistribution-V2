@@ -16,10 +16,16 @@
     <el-tabs v-model="activeTab" class="schedule-tabs" @tab-change="handleTabChange">
       <el-tab-pane label="日排产" name="daily">
         <section class="toolbar">
-          <el-segmented v-model="dailySlot" :options="dailySlotOptions" @change="loadDaily" />
+          <el-segmented
+            v-model="dailySlot"
+            :options="dailySlotOptions"
+            :disabled="dailyEditing"
+            @change="loadDaily"
+          />
           <el-select
             v-model="selectedOrgUnitId"
             filterable
+            :disabled="dailyEditing"
             placeholder="选择所属组织"
             class="org-select"
             @change="loadDaily"
@@ -32,7 +38,13 @@
             <el-icon><Download /></el-icon>
             导出
           </el-button>
-          <el-button :loading="dailyLoading" circle aria-label="刷新日排产" @click="loadDaily">
+          <el-button
+            :disabled="dailyEditing"
+            :loading="dailyLoading"
+            circle
+            aria-label="刷新日排产"
+            @click="loadDaily"
+          >
             <el-icon><Refresh /></el-icon>
           </el-button>
           <el-button v-if="canManage && !dailyEditing" type="primary" :disabled="!selectedOrgUnitId" @click="dailyEditing = true">
@@ -228,9 +240,9 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   exportDailyProductionSchedule,
   exportMonthlyProductionSchedules,
@@ -515,6 +527,25 @@ async function initialize() {
   await Promise.all([loadDaily(), loadMonthly()])
 }
 
+onBeforeRouteLeave(async () => {
+  if (!dailyEditing.value) return true
+
+  try {
+    await ElMessageBox.confirm(
+      '日排产存在未保存修改，确定离开并放弃修改吗？',
+      '未保存修改',
+      {
+        confirmButtonText: '放弃并离开',
+        cancelButtonText: '继续编辑',
+        type: 'warning'
+      }
+    )
+    return true
+  } catch {
+    return false
+  }
+})
+
 onMounted(initialize)
 </script>
 
@@ -527,19 +558,19 @@ onMounted(initialize)
 .team-band { padding: 12px 0; border-block: 1px solid #e4e7ed; }
 .team-band .el-select { width: min(260px, 100%); }
 .schedule-tabs { margin-top: 12px; }
-.toolbar { flex-wrap: wrap; gap: 10px; padding: 10px 0 14px; }
+.toolbar { flex-wrap: wrap; gap: 8px; padding: 10px 0 14px; }
 .toolbar .org-select { width: 210px; }
 .monthly-toolbar .el-select, .monthly-toolbar .el-date-editor { width: 165px; }
 .toolbar-spacer { flex: 1; }
-.daily-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: #fff; border-block: 1px solid #e4e7ed; }
+.daily-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); background: var(--zl-surface); border-block: 1px solid var(--zl-border-soft); }
 .daily-summary > div { min-width: 0; padding: 14px 16px; border-right: 1px solid #ebeef5; }
 .daily-summary > div:last-child { border-right: 0; }
 .daily-summary span { display: block; margin-bottom: 7px; color: #909399; font-size: 12px; }
 .daily-summary strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.table-shell { overflow: hidden; background: #fff; border: 1px solid #e4e7ed; border-radius: 6px; }
+.table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
 .daily-table { margin-top: 16px; }
 .table-number { width: 100%; min-width: 90px; }
-.edit-actions { justify-content: flex-end; gap: 10px; padding-top: 14px; }
+.edit-actions { justify-content: flex-end; gap: 8px; padding-top: 14px; }
 .reason-input { width: min(420px, 100%); margin-right: auto; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .monthly-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
@@ -547,8 +578,10 @@ onMounted(initialize)
 .monthly-form-total { padding: 12px 0; text-align: right; color: #303133; font-size: 16px; font-weight: 600; }
 @media (max-width: 760px) {
   .toolbar > *, .toolbar .org-select, .monthly-toolbar .el-select, .monthly-toolbar .el-date-editor { width: 100%; }
+  .toolbar > .el-button.is-circle { width: var(--zl-control-height); align-self: flex-end; }
   .toolbar-spacer { display: none; }
   .daily-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .daily-summary :deep(.el-input-number) { width: 100%; min-width: 0; }
   .daily-summary > div:nth-child(2) { border-right: 0; }
   .edit-actions { align-items: stretch; flex-direction: column; }
   .reason-input { width: 100%; }

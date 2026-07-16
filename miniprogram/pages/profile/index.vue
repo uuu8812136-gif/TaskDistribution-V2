@@ -164,13 +164,14 @@ export default {
 <style scoped lang="scss">
 .profile-container {
 	min-height: 100vh;
-	background: #F5F7FA;
+	background: var(--zl-page-bg, #eef3fb);
 	padding: 24rpx;
-	padding-bottom: 124rpx; /* 24rpx + 100rpx (TabBar高度) */
+	padding-bottom: calc(136rpx + constant(safe-area-inset-bottom));
+	padding-bottom: calc(136rpx + env(safe-area-inset-bottom));
 }
 
 .user-card {
-	background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+	background: var(--zl-primary, #4096ff);
 	border-radius: 16rpx;
 	padding: 48rpx 32rpx;
 	display: flex;
@@ -237,8 +238,11 @@ export default {
 	}
 	
 	.value {
+		max-width: 62%;
 		font-size: 28rpx;
 		color: #303133;
+		text-align: right;
+		word-break: break-all;
 	}
 	
 	.status {

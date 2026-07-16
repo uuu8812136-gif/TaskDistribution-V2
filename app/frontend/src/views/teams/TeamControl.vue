@@ -82,38 +82,40 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" width="190" fixed="right" align="center">
           <template #default="{ row }">
-            <template v-if="session.isGlobalReadOnly">
-              <el-button
-                v-if="row.status === 'ACTIVE'"
-                text
-                type="primary"
-                :loading="switchingTeamId === row._id"
-                @click="enterTeam(row)"
-              >
-                进入团队
-              </el-button>
-              <el-button
-                v-else
-                text
-                type="success"
-                @click="enableDisabledTeam(row)"
-              >
-                重新启用
-              </el-button>
-            </template>
-            <template v-else-if="row._id === session.activeTeamId">
-              <el-button
-                v-if="row.status === 'ACTIVE'"
-                text
-                type="danger"
-                @click="disableActiveTeam(row)"
-              >
-                停用当前团队
-              </el-button>
-              <span v-else class="muted">团队已停用</span>
-            </template>
+            <div class="table-actions">
+              <template v-if="session.isGlobalReadOnly">
+                <el-button
+                  v-if="row.status === 'ACTIVE'"
+                  text
+                  type="primary"
+                  :loading="switchingTeamId === row._id"
+                  @click="enterTeam(row)"
+                >
+                  进入团队
+                </el-button>
+                <el-button
+                  v-else
+                  text
+                  type="success"
+                  @click="enableDisabledTeam(row)"
+                >
+                  重新启用
+                </el-button>
+              </template>
+              <template v-else-if="row._id === session.activeTeamId">
+                <el-button
+                  v-if="row.status === 'ACTIVE'"
+                  text
+                  type="danger"
+                  @click="disableActiveTeam(row)"
+                >
+                  停用当前团队
+                </el-button>
+                <span v-else class="muted">团队已停用</span>
+              </template>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -403,10 +405,10 @@ onMounted(loadTeams)
 .toolbar {
   align-items: center;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 8px;
   padding: 12px;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  background: var(--zl-surface);
+  border: 1px solid var(--zl-border-soft);
   border-bottom: 0;
 }
 
@@ -426,9 +428,11 @@ onMounted(loadTeams)
 .table-shell {
   min-width: 0;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--zl-border-soft);
+  border-radius: 0 0 16px 16px;
 }
+
+.table-actions { justify-content: center; }
 
 .team-cell {
   min-width: 0;
@@ -469,7 +473,8 @@ onMounted(loadTeams)
   }
 
   .heading-actions {
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
   }
 
   .toolbar-spacer {

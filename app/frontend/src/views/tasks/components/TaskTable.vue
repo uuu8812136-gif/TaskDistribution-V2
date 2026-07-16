@@ -20,13 +20,14 @@
         {{ formatDate(row.plannedCompletionTime, 'YYYY-MM-DD') }}
       </template>
     </el-table-column>
-    <el-table-column label="操作" width="100">
+    <el-table-column label="操作" width="100" align="center">
       <template #default="{ row }">
-        <el-button type="primary" size="small" text @click="$emit('view', row)">查看</el-button>
+        <div class="table-actions">
+          <el-button type="primary" size="small" text @click="$emit('view', row)">查看</el-button>
+        </div>
       </template>
     </el-table-column>
   </el-table>
-  <el-empty v-if="tasks.length === 0 && !loading" description="暂无任务" />
 </template>
 
 <script setup>
@@ -39,4 +40,10 @@ defineProps({
 
 defineEmits(['view'])
 </script>
+
+<style scoped>
+.table-actions {
+  justify-content: center;
+}
+</style>
 

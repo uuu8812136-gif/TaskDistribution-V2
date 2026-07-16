@@ -1,16 +1,23 @@
 <template>
   <div class="message-list">
-    <el-card>
-      <template #header>
-        <div class="card-header">
-          <span>消息中心</span>
-          <div v-if="canModifyMessages">
-            <el-button type="primary" @click="handleMarkAllRead">全部已读</el-button>
-            <el-button type="danger" @click="handleClearRead">清空已读</el-button>
-          </div>
-        </div>
-      </template>
+    <header class="page-heading">
+      <div>
+        <h1>消息中心</h1>
+        <p>集中查看任务通知和系统消息</p>
+      </div>
+      <div v-if="canModifyMessages" class="heading-actions">
+        <el-button type="primary" @click="handleMarkAllRead">
+          <el-icon><CircleCheck /></el-icon>
+          全部已读
+        </el-button>
+        <el-button type="danger" plain @click="handleClearRead">
+          <el-icon><Delete /></el-icon>
+          清空已读
+        </el-button>
+      </div>
+    </header>
 
+    <el-card>
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
         <el-tab-pane label="全部" name="all" />
         <el-tab-pane label="未读" name="unread" />
@@ -35,12 +42,14 @@
             {{ fromNow(row.createdAt) }}
           </template>
         </el-table-column>
-        <el-table-column v-if="canModifyMessages" label="操作" width="150">
+        <el-table-column v-if="canModifyMessages" label="操作" width="150" align="center">
           <template #default="{ row }">
-            <el-button v-if="!row.isRead" type="primary" size="small" text @click="handleMarkRead(row)">
-              标记已读
-            </el-button>
-            <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+            <div class="table-actions">
+              <el-button v-if="!row.isRead" type="primary" size="small" text @click="handleMarkRead(row)">
+                标记已读
+              </el-button>
+              <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -53,7 +62,7 @@
         layout="total, sizes, prev, pager, next"
         @size-change="val => { pagination.limit = val; pagination.page = 1; fetchData(); }"
         @current-change="val => { pagination.page = val; fetchData(); }"
-        style="margin-top: 20px; justify-content: flex-end"
+        class="pagination"
       />
     </el-card>
   </div>
@@ -179,15 +188,44 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .message-list {
-  .card-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+  min-width: 0;
+
+  .page-heading h1 {
+    margin: 0 0 5px;
+    font-size: 24px;
+  }
+
+  .page-heading p {
+    margin: 0;
+    color: var(--zl-muted);
   }
 
   .unread-title {
     font-weight: 600;
     color: #303133;
+  }
+
+  .table-actions {
+    justify-content: center;
+  }
+
+  .pagination {
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+}
+
+@media (max-width: 760px) {
+  .message-list {
+    .heading-actions .el-button {
+      flex: 1;
+    }
+
+    .pagination {
+      justify-content: flex-start;
+      overflow-x: auto;
+      padding-bottom: 4px;
+    }
   }
 }
 </style>

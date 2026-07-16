@@ -58,7 +58,7 @@
       />
 
       <el-aside
-        :width="isMobile ? '220px' : (isCollapse ? '64px' : '200px')"
+        :width="isMobile ? '232px' : (isCollapse ? '76px' : '232px')"
         class="layout-aside"
         :aria-hidden="isMobile && isCollapse"
         :inert="isMobile && isCollapse"
@@ -210,8 +210,11 @@ const canManageOrganization = computed(() => (
   session.hasPermission('org.manage') &&
   (session.isSuperAdmin || session.context.membership?.role === 'PROJECT_ADMIN')
 ))
-const isCollapse = ref(false)
-const isMobile = ref(false)
+const initialMobile = typeof window !== 'undefined'
+  && typeof window.matchMedia === 'function'
+  && window.matchMedia('(max-width: 768px)').matches
+const isCollapse = ref(initialMobile)
+const isMobile = ref(initialMobile)
 const passwordDialogVisible = ref(false)
 const passwordSubmitting = ref(false)
 const passwordFormRef = ref(null)
@@ -331,15 +334,19 @@ onUnmounted(() => {
 }
 
 .layout-header {
-  flex: 0 0 60px;
-  height: 60px;
-  padding: 0 20px;
+  position: relative;
+  z-index: 1120;
+  flex: 0 0 64px;
+  height: 64px;
+  padding: 0 24px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 20px;
-  background: #fff;
-  border-bottom: 1px solid #e4e7ed;
+  background: rgb(255 255 255 / 78%);
+  border-bottom: 1px solid rgb(255 255 255 / 80%);
+  box-shadow: 0 3px 18px rgb(30 64 175 / 7%);
+  backdrop-filter: blur(18px) saturate(1.35);
 }
 
 .header-left,
@@ -406,38 +413,55 @@ onUnmounted(() => {
 }
 
 .mobile-menu-mask {
-  position: fixed;
-  inset: 60px 0 0;
+  position: absolute;
+  inset: 0;
   z-index: 1090;
   background: rgb(0 0 0 / 32%);
 }
 
 .layout-aside {
   overflow-x: hidden;
-  background: #fff;
-  border-right: 1px solid #e4e7ed;
+  background: rgb(255 255 255 / 74%);
+  border-right: 1px solid rgb(255 255 255 / 80%);
+  backdrop-filter: blur(18px) saturate(1.3);
   transition: width 0.2s;
 
   &.is-mobile {
-    position: fixed;
-    top: 60px;
+    position: absolute;
+    top: 0;
     bottom: 0;
     left: 0;
     z-index: 1100;
-    width: 220px !important;
+    width: 232px !important;
     overflow-y: auto;
-    box-shadow: 8px 0 24px rgb(0 0 0 / 12%);
     transform: translateX(-100%);
     transition: transform 0.2s ease;
   }
 
   &.is-mobile-open {
+    box-shadow: 8px 0 24px rgb(0 0 0 / 12%);
     transform: translateX(0);
   }
 
   .el-menu {
     height: 100%;
     border-right: 0;
+    background: transparent;
+
+    &.el-menu--collapse {
+      width: 76px;
+    }
+  }
+
+  :deep(.el-menu-item),
+  :deep(.el-sub-menu__title) {
+    width: calc(100% - 16px);
+    margin: 4px 8px;
+    border-radius: 10px;
+  }
+
+  :deep(.el-menu-item.is-active) {
+    background: rgb(64 150 255 / 12%);
   }
 }
 
@@ -445,12 +469,15 @@ onUnmounted(() => {
   min-width: 0;
   padding: 0;
   overflow-y: auto;
-  background: #f5f7fa;
+  background: transparent;
 }
 
 .main-content {
+  width: 100%;
+  max-width: var(--zl-content-max);
   min-height: 100%;
-  padding: 20px;
+  margin-inline: auto;
+  padding: 24px;
 }
 
 .fade-enter-active,

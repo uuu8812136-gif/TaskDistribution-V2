@@ -310,10 +310,11 @@ export default {
 <style scoped lang="scss">
 .message-container {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--zl-page-bg, #eef3fb);
   display: flex;
   flex-direction: column;
-  padding-bottom: 100rpx; /* 为TabBar留出空间 */
+  padding-bottom: calc(136rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(136rpx + env(safe-area-inset-bottom));
 }
 
 .action-bar {
@@ -325,12 +326,14 @@ export default {
 
   .action-btn {
     flex: 1;
-    height: 64rpx;
-    line-height: 64rpx;
+    height: var(--zl-control-height, 80rpx);
+    line-height: var(--zl-control-height, 80rpx);
+    margin: 0;
+    padding: 0;
     font-size: 26rpx;
-    background: #f5f7fa;
-    color: #606266;
-    border-radius: 32rpx;
+    background: var(--zl-surface-soft, #f5f8fc);
+    color: var(--zl-muted, #64748b);
+    border-radius: var(--zl-control-radius, 20rpx);
     border: none;
 
     &::after {
@@ -352,7 +355,7 @@ export default {
 
   &.unread {
     background: #f0f9ff;
-    border-left: 6rpx solid #409eff;
+    border-left: 6rpx solid var(--zl-primary, #4096ff);
   }
 
   .message-header {
@@ -372,7 +375,7 @@ export default {
 
       .type-text {
         font-size: 24rpx;
-        color: #409eff;
+        color: var(--zl-primary, #4096ff);
       }
     }
 

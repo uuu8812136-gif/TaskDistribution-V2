@@ -343,7 +343,7 @@ export default {
 <style scoped lang="scss">
 .complete-container {
 	min-height: 100vh;
-	background: #F5F7FA;
+	background: var(--zl-page-bg, #eef3fb);
 	display: flex;
 	flex-direction: column;
 }
@@ -352,10 +352,11 @@ export default {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	height: 88rpx;
-	background: #4A90E2;
+	min-height: calc(88rpx + var(--status-bar-height));
+	background: var(--zl-primary, #4096ff);
 	color: #FFFFFF;
-	padding: 0 24rpx;
+	padding: var(--status-bar-height) 24rpx 0;
+	box-sizing: border-box;
 	position: sticky;
 	top: 0;
 	z-index: 999;
@@ -379,12 +380,12 @@ export default {
 
 .content {
 	flex: 1;
-	padding: 24rpx;
-	padding-bottom: 120rpx;
+	padding: 24rpx 24rpx calc(168rpx + constant(safe-area-inset-bottom));
+	padding: 24rpx 24rpx calc(168rpx + env(safe-area-inset-bottom));
 }
 
 .task-info-card {
-	background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+	background: var(--zl-primary, #4096ff);
 	border-radius: 16rpx;
 	padding: 32rpx;
 	margin-bottom: 24rpx;
@@ -518,15 +519,20 @@ export default {
 	right: 0;
 	display: flex;
 	gap: 24rpx;
-	padding: 24rpx;
-	background: #FFFFFF;
-	box-shadow: 0 -4rpx 16rpx rgba(0, 0, 0, 0.05);
+	align-items: center;
+	padding: 24rpx 24rpx calc(24rpx + constant(safe-area-inset-bottom));
+	padding: 24rpx 24rpx calc(24rpx + env(safe-area-inset-bottom));
+	background: rgba(255, 255, 255, 0.97);
+	box-shadow: 0 -8rpx 28rpx rgba(15, 23, 42, 0.06);
 	z-index: 999;
 	
 	button {
 		flex: 1;
 		height: 88rpx;
-		border-radius: 44rpx;
+		line-height: 88rpx;
+		margin: 0;
+		padding: 0;
+		border-radius: var(--zl-control-radius, 20rpx);
 		font-size: 32rpx;
 		font-weight: bold;
 		border: none;
@@ -543,7 +549,7 @@ export default {
 	}
 	
 	.btn-submit {
-		background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+		background: var(--zl-primary, #4096ff);
 		color: #FFFFFF;
 	}
 }

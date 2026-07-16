@@ -259,7 +259,7 @@ export default {
 <style scoped lang="scss">
 .approve-extension-page {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--zl-page-bg, #eef3fb);
   display: flex;
   flex-direction: column;
 }
@@ -271,7 +271,9 @@ export default {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 24rpx;
+  min-height: calc(88rpx + var(--status-bar-height));
+  padding: calc(14rpx + var(--status-bar-height)) 24rpx 14rpx;
+  box-sizing: border-box;
   background: #ffffff;
   border-bottom: 1px solid #ebeef5;
 
@@ -300,6 +302,8 @@ export default {
 
 .page-content {
   flex: 1;
+  padding-bottom: calc(144rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(144rpx + env(safe-area-inset-bottom));
 }
 
 .section {
@@ -344,7 +348,7 @@ export default {
       color: #606266;
 
       &.highlight {
-        color: #409eff;
+        color: var(--zl-primary, #4096ff);
         font-weight: bold;
         font-size: 30rpx;
       }
@@ -374,7 +378,7 @@ export default {
 
     &.active {
       background: #fff;
-      border-color: #409eff;
+      border-color: var(--zl-primary, #4096ff);
       box-shadow: 0 2rpx 12rpx rgba(64, 158, 255, 0.2);
     }
 
@@ -393,8 +397,8 @@ export default {
     }
 
     &.active .radio-icon {
-      background: #409eff;
-      border-color: #409eff;
+      background: var(--zl-primary, #4096ff);
+      border-color: var(--zl-primary, #4096ff);
     }
 
     .radio-label {
@@ -473,17 +477,22 @@ export default {
   left: 0;
   right: 0;
   display: flex;
-  padding: 16rpx 24rpx;
-  background: #ffffff;
-  border-top: 1px solid #ebeef5;
-  box-shadow: 0 -2rpx 8rpx rgba(0, 0, 0, 0.05);
+  align-items: center;
+  padding: 16rpx 24rpx calc(16rpx + constant(safe-area-inset-bottom));
+  padding: 16rpx 24rpx calc(16rpx + env(safe-area-inset-bottom));
+  background: rgba(255, 255, 255, 0.97);
+  border-top: 1px solid var(--zl-border, rgba(100, 116, 139, 0.18));
+  box-shadow: 0 -8rpx 28rpx rgba(15, 23, 42, 0.06);
+  z-index: 100;
 
   .action-btn {
     flex: 1;
-    height: 72rpx;
-    line-height: 72rpx;
+    height: var(--zl-control-height, 80rpx);
+    line-height: var(--zl-control-height, 80rpx);
+    margin: 0;
+    padding: 0;
     font-size: 28rpx;
-    border-radius: 8rpx;
+    border-radius: var(--zl-control-radius, 20rpx);
     border: none;
 
     &::after {
@@ -497,7 +506,7 @@ export default {
     }
 
     &.confirm {
-      background: #409eff;
+      background: var(--zl-primary, #4096ff);
       color: #ffffff;
     }
   }

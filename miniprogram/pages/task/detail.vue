@@ -892,11 +892,11 @@ export default {
 <style scoped lang="scss">
 .task-detail-container {
 	min-height: 100vh;
-	background: #F5F7FA;
+	background: var(--zl-page-bg, #eef3fb);
 	display: flex;
 	flex-direction: column;
-	padding-bottom: 120rpx;
-	padding: 24rpx;
+	padding: 24rpx 24rpx calc(144rpx + constant(safe-area-inset-bottom));
+	padding: 24rpx 24rpx calc(144rpx + env(safe-area-inset-bottom));
 }
 
 .detail-content {
@@ -1238,7 +1238,7 @@ export default {
 	background: #ffffff;
 	border-radius: 12rpx;
 	padding: 24rpx;
-	border-left: 4rpx solid #409EFF;
+	border-left: 4rpx solid var(--zl-primary, #4096ff);
 	
 	&.pending {
 		border-left-color: #E6A23C;
@@ -1317,7 +1317,7 @@ export default {
 			line-height: 1.6;
 			
 			&.highlight {
-				color: #409EFF;
+				color: var(--zl-primary, #4096ff);
 				font-weight: bold;
 			}
 		}
@@ -1400,17 +1400,20 @@ export default {
 	left: 0;
 	right: 0;
 	display: flex;
-	padding: 16rpx 24rpx;
-	background: #ffffff;
-	border-top: 1px solid #EBEEF5;
-	box-shadow: 0 -2rpx 8rpx rgba(0, 0, 0, 0.05);
+	align-items: center;
+	padding: 16rpx 24rpx calc(16rpx + constant(safe-area-inset-bottom));
+	padding: 16rpx 24rpx calc(16rpx + env(safe-area-inset-bottom));
+	background: rgba(255, 255, 255, 0.97);
+	border-top: 1px solid var(--zl-border, rgba(100, 116, 139, 0.18));
+	box-shadow: 0 -8rpx 28rpx rgba(15, 23, 42, 0.06);
+	z-index: 100;
 	
 	.action-btn {
 		flex: 1;
-		height: 72rpx;
-		line-height: 72rpx;
+		height: var(--zl-control-height, 80rpx);
+		line-height: var(--zl-control-height, 80rpx);
 		font-size: 28rpx;
-		border-radius: 8rpx;
+		border-radius: var(--zl-control-radius, 20rpx);
 		border: 1px solid #DCDFE6;
 		background: #ffffff;
 		color: #606266;
@@ -1429,9 +1432,9 @@ export default {
 		}
 		
 		&.primary {
-			background: #409EFF;
+			background: var(--zl-primary, #4096ff);
 			color: #ffffff;
-			border-color: #409EFF;
+			border-color: var(--zl-primary, #4096ff);
 		}
 		
 		&.success {
@@ -1514,7 +1517,7 @@ export default {
 		
 		.view-icon {
 			font-size: 32rpx;
-			color: #409EFF;
+			color: var(--zl-primary, #4096ff);
 			margin-left: 12rpx;
 		}
 	}

@@ -1,5 +1,12 @@
 <template>
   <div class="extension-list">
+    <header class="page-heading">
+      <div>
+        <h1>延期管理</h1>
+        <p>查询并处理任务延期申请</p>
+      </div>
+    </header>
+
     <el-card>
       <el-form :inline="true" :model="searchForm" class="search-form">
         <el-form-item label="状态">
@@ -43,19 +50,21 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="100" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button v-if="row.status === 'pending'" type="primary" size="small" text @click="handleApprove(row)">
-              审批
-            </el-button>
-            <el-button v-else type="info" size="small" text @click="handleView(row)">查看</el-button>
+            <div class="table-actions">
+              <el-button v-if="row.status === 'pending'" type="primary" size="small" text @click="handleApprove(row)">
+                审批
+              </el-button>
+              <el-button v-else type="primary" size="small" text @click="handleView(row)">查看</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
     </el-card>
 
     <!-- 审批对话框 -->
-    <el-dialog v-model="approveDialogVisible" title="审批延期申请" width="500px">
+    <el-dialog v-model="approveDialogVisible" title="审批延期申请" width="min(500px, 94vw)">
       <el-descriptions :column="1" border>
         <el-descriptions-item label="任务名称">{{ currentExtension?.task?.taskName }}</el-descriptions-item>
         <el-descriptions-item label="申请人">{{ currentExtension?.applicant?.name }}</el-descriptions-item>
@@ -63,7 +72,7 @@
         <el-descriptions-item label="延期原因">{{ currentExtension?.reason }}</el-descriptions-item>
       </el-descriptions>
 
-      <el-form :model="approveForm" label-width="100px" style="margin-top: 20px">
+      <el-form :model="approveForm" label-position="top" class="approve-form">
         <el-form-item label="审批结果">
           <el-radio-group v-model="approveForm.status">
             <el-radio label="approved">批准</el-radio>
@@ -154,8 +163,50 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .extension-list {
+  min-width: 0;
+
+  .page-heading h1 {
+    margin: 0 0 5px;
+    font-size: 24px;
+  }
+
+  .page-heading p {
+    margin: 0;
+    color: var(--zl-muted);
+  }
+
   .search-form {
-    margin-bottom: 20px;
+    display: flex;
+    align-items: flex-end;
+    gap: 8px;
+    margin-bottom: 16px;
+    padding: 14px;
+    background: rgb(245 249 255 / 72%);
+    border: 1px solid var(--zl-border-soft);
+    border-radius: 14px;
+  }
+
+  .search-form :deep(.el-form-item) { margin: 0; }
+  .search-form :deep(.el-select) { width: 180px; }
+  .table-actions { justify-content: center; }
+  .approve-form { margin-top: 20px; }
+}
+
+@media (max-width: 760px) {
+  .extension-list {
+    .search-form,
+    .search-form :deep(.el-form-item),
+    .search-form :deep(.el-form-item__content),
+    .search-form :deep(.el-select) {
+      width: 100%;
+    }
+
+    .search-form {
+      align-items: stretch;
+      flex-direction: column;
+    }
+
+    .search-form .el-button { width: 100%; }
   }
 }
 </style>

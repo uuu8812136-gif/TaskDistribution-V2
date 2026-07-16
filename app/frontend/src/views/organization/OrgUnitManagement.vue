@@ -65,35 +65,37 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="230" fixed="right">
+        <el-table-column label="操作" width="230" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button text type="primary" @click="openEditDialog(row)">编辑</el-button>
-            <el-tooltip
-              :disabled="row.level < 5 && row.status === 'ACTIVE'"
-              :content="row.level >= 5 ? '组织最多五级' : '停用组织下不能新增子组织'"
-            >
-              <span>
-                <el-button
-                  text
-                  type="primary"
-                  :disabled="row.level >= 5 || row.status !== 'ACTIVE'"
-                  @click="openCreateDialog(row)"
-                >
-                  新增下级
-                </el-button>
-              </span>
-            </el-tooltip>
-            <el-button
-              v-if="row.status === 'ACTIVE'"
-              text
-              type="danger"
-              @click="changeStatus(row, 'DISABLED')"
-            >
-              停用
-            </el-button>
-            <el-button v-else text type="success" @click="changeStatus(row, 'ACTIVE')">
-              启用
-            </el-button>
+            <div class="table-actions">
+              <el-button text type="primary" @click="openEditDialog(row)">编辑</el-button>
+              <el-tooltip
+                :disabled="row.level < 5 && row.status === 'ACTIVE'"
+                :content="row.level >= 5 ? '组织最多五级' : '停用组织下不能新增子组织'"
+              >
+                <span class="table-action-item">
+                  <el-button
+                    text
+                    type="primary"
+                    :disabled="row.level >= 5 || row.status !== 'ACTIVE'"
+                    @click="openCreateDialog(row)"
+                  >
+                    新增下级
+                  </el-button>
+                </span>
+              </el-tooltip>
+              <el-button
+                v-if="row.status === 'ACTIVE'"
+                text
+                type="danger"
+                @click="changeStatus(row, 'DISABLED')"
+              >
+                停用
+              </el-button>
+              <el-button v-else text type="success" @click="changeStatus(row, 'ACTIVE')">
+                启用
+              </el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -420,10 +422,10 @@ onMounted(loadOrgUnits)
 .toolbar {
   align-items: center;
   flex-wrap: wrap;
-  gap: 14px;
+  gap: 8px;
   padding: 12px;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  background: var(--zl-surface);
+  border: 1px solid var(--zl-border-soft);
   border-bottom: 0;
 }
 
@@ -443,9 +445,12 @@ onMounted(loadOrgUnits)
 .table-shell {
   min-width: 0;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--zl-border-soft);
+  border-radius: 0 0 16px 16px;
 }
+
+.table-actions { justify-content: center; }
+.table-action-item { display: inline-flex; }
 
 .name-cell {
   min-width: 0;

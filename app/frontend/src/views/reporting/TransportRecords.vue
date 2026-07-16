@@ -78,10 +78,12 @@
         <el-table-column label="照片" width="74" align="center">
           <template #default="{ row }">{{ row.photoFileIds?.length || 0 }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="142" fixed="right">
+        <el-table-column label="操作" width="142" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button text type="primary" @click="goDetail(row)">详情</el-button>
-            <el-button v-if="canSubmit" text type="primary" @click="openEdit(row._id)">编辑</el-button>
+            <div class="table-actions">
+              <el-button text type="primary" @click="goDetail(row)">详情</el-button>
+              <el-button v-if="canSubmit" text type="primary" @click="openEdit(row._id)">编辑</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -552,14 +554,15 @@ onBeforeUnmount(clearPreview)
 .page-heading { justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .page-heading h1 { margin: 0 0 5px; font-size: 24px; letter-spacing: 0; }
 .page-heading p { margin: 0; color: #909399; }
-.heading-actions, .summary-toolbar { gap: 10px; }
-.toolbar { flex-wrap: wrap; gap: 10px; padding: 14px 0; border-block: 1px solid #e4e7ed; }
+.heading-actions, .summary-toolbar { gap: 8px; }
+.toolbar { flex-wrap: wrap; gap: 8px; padding: 14px 0; border-block: 1px solid var(--zl-border-soft); }
 .toolbar .el-select { width: 140px; }
 .toolbar .team-select { width: 190px; }
 .date-range { width: 250px; }
 .keyword-input { width: min(280px, 100%); }
 .toolbar-spacer { flex: 1; }
-.table-shell { margin-top: 16px; overflow: hidden; background: #fff; border: 1px solid #e4e7ed; border-radius: 6px; }
+.table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+.table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }
 .quantity-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }
@@ -572,8 +575,9 @@ onBeforeUnmount(clearPreview)
 .preview-image { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; object-fit: contain; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }
-  .heading-actions { flex-wrap: wrap; justify-content: flex-end; }
+  .heading-actions { flex-wrap: wrap; justify-content: flex-start; }
   .toolbar > *, .toolbar .el-select, .toolbar .team-select, .date-range, .keyword-input { width: 100%; }
+  .toolbar > .el-button.is-circle { width: var(--zl-control-height); align-self: flex-end; }
   .toolbar-spacer { display: none; }
   .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
   .form-grid, .quantity-grid { grid-template-columns: 1fr; }

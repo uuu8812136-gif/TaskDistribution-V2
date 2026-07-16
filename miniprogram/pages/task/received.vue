@@ -288,12 +288,13 @@ export default {
 <style scoped lang="scss">
 .task-received-container {
   min-height: 100vh;
-  background: #f5f7fa;
+  background: var(--zl-page-bg, #eef3fb);
   display: flex;
   flex-direction: column;
   width: 100%;
   box-sizing: border-box;
-  padding-bottom: 100rpx; /* 为TabBar留出空间 */
+  padding-bottom: calc(136rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(136rpx + env(safe-area-inset-bottom));
 }
 
 .tabs {
@@ -310,7 +311,7 @@ export default {
     position: relative;
 
     &.active {
-      color: #409eff;
+      color: var(--zl-primary, #4096ff);
       font-weight: bold;
 
       &::after {
@@ -321,7 +322,7 @@ export default {
         transform: translateX(-50%);
         width: 60rpx;
         height: 4rpx;
-        background: #409eff;
+        background: var(--zl-primary, #4096ff);
         border-radius: 2rpx;
       }
     }
@@ -339,8 +340,10 @@ export default {
     flex: 1;
     display: flex;
     align-items: center;
-    background: #f5f7fa;
-    border-radius: 32rpx;
+    height: var(--zl-control-height, 80rpx);
+    background: var(--zl-surface-soft, #f5f8fc);
+    border: 1px solid var(--zl-border, rgba(100, 116, 139, 0.18));
+    border-radius: var(--zl-control-radius, 20rpx);
     padding: 0 24rpx;
     margin-right: 16rpx;
 
@@ -351,7 +354,8 @@ export default {
 
     .search-input {
       flex: 1;
-      height: 64rpx;
+      min-width: 0;
+      height: 78rpx;
       font-size: 28rpx;
     }
 
@@ -363,13 +367,16 @@ export default {
   }
 
   .search-btn {
-    padding: 0 32rpx;
-    height: 64rpx;
-    line-height: 64rpx;
-    background: #409eff;
+    flex: 0 0 120rpx;
+    width: 120rpx;
+    margin: 0;
+    padding: 0;
+    height: var(--zl-control-height, 80rpx);
+    line-height: var(--zl-control-height, 80rpx);
+    background: var(--zl-primary, #4096ff);
     color: #ffffff;
     font-size: 28rpx;
-    border-radius: 32rpx;
+    border-radius: var(--zl-control-radius, 20rpx);
     border: none;
 
     &::after {
@@ -419,10 +426,13 @@ export default {
 
 .task-info {
   display: flex;
+  flex-wrap: wrap;
+  gap: 12rpx 24rpx;
   margin-bottom: 20rpx;
 
   .info-item {
-    margin-right: 32rpx;
+    min-width: 0;
+    margin-right: 0;
     font-size: 24rpx;
 
     .label {
@@ -469,8 +479,10 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16rpx;
 
   .task-status {
+    flex-shrink: 0;
     padding: 6rpx 16rpx;
     border-radius: 24rpx;
     font-size: 22rpx;
@@ -478,6 +490,9 @@ export default {
   }
 
   .task-creator {
+    min-width: 0;
+    text-align: right;
+    word-break: break-all;
     font-size: 24rpx;
     color: #909399;
   }

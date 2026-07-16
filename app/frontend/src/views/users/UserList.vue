@@ -142,23 +142,25 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column v-if="canManageMembers" label="操作" width="132" fixed="right">
+        <el-table-column v-if="canManageMembers" label="操作" width="132" fixed="right" align="center">
           <template #default="{ row }">
-            <template v-if="canManageRow(row)">
-              <el-button text type="primary" @click="openEditDialog(row)">编辑</el-button>
-              <el-button
-                v-if="row.status === 'ACTIVE'"
-                text
-                type="danger"
-                @click="disableMember(row)"
-              >
-                停用
-              </el-button>
-              <el-button v-else text type="success" @click="enableMember(row)">启用</el-button>
-            </template>
-            <el-tooltip v-else content="项目管理员只能由超级管理员维护">
-              <span class="muted">不可维护</span>
-            </el-tooltip>
+            <div class="table-actions">
+              <template v-if="canManageRow(row)">
+                <el-button text type="primary" @click="openEditDialog(row)">编辑</el-button>
+                <el-button
+                  v-if="row.status === 'ACTIVE'"
+                  text
+                  type="danger"
+                  @click="disableMember(row)"
+                >
+                  停用
+                </el-button>
+                <el-button v-else text type="success" @click="enableMember(row)">启用</el-button>
+              </template>
+              <el-tooltip v-else content="项目管理员只能由超级管理员维护">
+                <span class="muted">不可维护</span>
+              </el-tooltip>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -669,10 +671,10 @@ onMounted(loadPageData)
 
 .toolbar {
   flex-wrap: wrap;
-  gap: 10px;
+  gap: 8px;
   padding: 12px;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  background: var(--zl-surface);
+  border: 1px solid var(--zl-border-soft);
   border-bottom: 0;
 }
 
@@ -687,9 +689,11 @@ onMounted(loadPageData)
 .table-shell {
   min-width: 0;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #e4e7ed;
+  border: 1px solid var(--zl-border-soft);
+  border-radius: 0 0 16px 16px;
 }
+
+.table-actions { justify-content: center; }
 
 .primary-cell,
 .status-stack,
@@ -788,6 +792,8 @@ onMounted(loadPageData)
 .permission-editor {
   width: 100%;
   border: 1px solid #dcdfe6;
+  border-radius: 12px;
+  overflow: hidden;
 }
 
 .permission-group {

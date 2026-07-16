@@ -764,11 +764,11 @@ export default {
 <style scoped lang="scss">
 .task-form-container {
 	min-height: 100vh;
-	background: #F5F7FA;
+	background: var(--zl-page-bg, #eef3fb);
 	display: flex;
 	flex-direction: column;
-	padding-bottom: 120rpx;
-	padding: 24rpx;
+	padding: 24rpx 24rpx calc(144rpx + constant(safe-area-inset-bottom));
+	padding: 24rpx 24rpx calc(144rpx + env(safe-area-inset-bottom));
 }
 
 .form-content {
@@ -948,7 +948,7 @@ export default {
 			display: inline-flex;
 			align-items: center;
 			padding: 8rpx 16rpx;
-			background: #409EFF;
+			background: var(--zl-primary, #4096ff);
 			color: #ffffff;
 			border-radius: 32rpx;
 			font-size: 24rpx;
@@ -1023,19 +1023,20 @@ export default {
 				
 				&.selected {
 					background: #ECF5FF;
-					color: #409EFF;
+					color: var(--zl-primary, #4096ff);
 				}
 				
 				.check-icon {
 					font-size: 36rpx;
 					font-weight: bold;
-					color: #409EFF;
+					color: var(--zl-primary, #4096ff);
 				}
 			}
 		}
 		
 		.picker-footer {
-			padding: 24rpx 32rpx;
+			padding: 24rpx 32rpx calc(24rpx + constant(safe-area-inset-bottom));
+			padding: 24rpx 32rpx calc(24rpx + env(safe-area-inset-bottom));
 			border-top: 1px solid #EBEEF5;
 			flex-shrink: 0;
 			
@@ -1052,7 +1053,7 @@ export default {
 				}
 				
 				&.confirm {
-					background: #409EFF;
+					background: var(--zl-primary, #4096ff);
 					color: #ffffff;
 				}
 			}
@@ -1070,17 +1071,22 @@ export default {
 	left: 0;
 	right: 0;
 	display: flex;
-	padding: 16rpx 24rpx;
-	background: #ffffff;
-	border-top: 1px solid #EBEEF5;
-	box-shadow: 0 -2rpx 8rpx rgba(0, 0, 0, 0.05);
+	align-items: center;
+	padding: 16rpx 24rpx calc(16rpx + constant(safe-area-inset-bottom));
+	padding: 16rpx 24rpx calc(16rpx + env(safe-area-inset-bottom));
+	background: rgba(255, 255, 255, 0.97);
+	border-top: 1px solid var(--zl-border, rgba(100, 116, 139, 0.18));
+	box-shadow: 0 -8rpx 28rpx rgba(15, 23, 42, 0.06);
+	z-index: 100;
 	
 	.action-btn {
 		flex: 1;
-		height: 72rpx;
-		line-height: 72rpx;
+		height: var(--zl-control-height, 80rpx);
+		line-height: var(--zl-control-height, 80rpx);
+		margin: 0;
+		padding: 0;
 		font-size: 28rpx;
-		border-radius: 12rpx;
+		border-radius: var(--zl-control-radius, 20rpx);
 		border: none;
 		
 		&::after {
@@ -1094,7 +1100,7 @@ export default {
 		}
 		
 		&.submit {
-			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			background: var(--zl-primary, #4096ff);
 			color: #ffffff;
 		}
 	}

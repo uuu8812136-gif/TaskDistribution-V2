@@ -1,7 +1,14 @@
 <template>
   <div class="profile-view">
+    <header class="page-heading">
+      <div>
+        <h1>个人中心</h1>
+        <p>查看账号信息、任务统计并维护登录密码</p>
+      </div>
+    </header>
+
     <el-row :gutter="20">
-      <el-col :span="8">
+      <el-col :xs="24" :lg="8" class="profile-sidebar">
         <el-card>
           <div class="profile-header">
             <el-avatar :size="80">{{ userStore.userInfo?.name?.substring(0, 1) }}</el-avatar>
@@ -22,12 +29,12 @@
         </el-card>
       </el-col>
 
-      <el-col :span="16">
+      <el-col :xs="24" :lg="16" class="profile-main">
         <el-card>
           <template #header>
             <span>个人信息</span>
           </template>
-          <el-descriptions :column="2" border>
+          <el-descriptions :column="descriptionColumns" border>
             <el-descriptions-item label="用户名">{{ userStore.userInfo?.username }}</el-descriptions-item>
             <el-descriptions-item label="姓名">{{ userStore.userInfo?.name }}</el-descriptions-item>
             <el-descriptions-item label="手机号">{{ userStore.userInfo?.phone }}</el-descriptions-item>
@@ -49,6 +56,7 @@
             ref="passwordFormRef"
             :model="passwordForm"
             :rules="passwordRules"
+            :label-position="descriptionColumns === 1 ? 'top' : 'right'"
             label-width="100px"
             style="max-width: 500px"
           >
@@ -72,7 +80,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '@/stores/user'
 import { changePassword } from '@/api/auth'
 import { getMyTasks } from '@/api/task'
@@ -81,6 +89,11 @@ import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
 const passwordFormRef = ref(null)
+const descriptionColumns = ref(2)
+
+const syncResponsiveLayout = () => {
+  descriptionColumns.value = window.matchMedia('(max-width: 760px)').matches ? 1 : 2
+}
 
 const stats = ref({
   executorTasks: 0,
@@ -152,15 +165,45 @@ const fetchStats = async () => {
 }
 
 onMounted(() => {
+  syncResponsiveLayout()
+  window.addEventListener('resize', syncResponsiveLayout)
   fetchStats()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', syncResponsiveLayout)
 })
 </script>
 
 <style scoped lang="scss">
 .profile-view {
+  min-width: 0;
+
+  .page-heading h1 {
+    margin: 0 0 5px;
+    font-size: 24px;
+  }
+
+  .page-heading p {
+    margin: 0;
+    color: var(--zl-muted);
+  }
+
   .profile-header {
     text-align: center;
     padding: 20px 0;
+  }
+}
+
+@media (max-width: 1199px) {
+  .profile-main {
+    margin-top: 20px;
+  }
+}
+
+@media (max-width: 760px) {
+  .profile-view :deep(.el-form-item__label) {
+    width: auto !important;
   }
 }
 </style>

@@ -46,15 +46,17 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="245" fixed="right">
+        <el-table-column label="操作" width="245" fixed="right" align="center">
           <template #default="{ row }">
-            <template v-if="canEdit">
-              <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
-              <el-button v-if="row.status === 'ACTIVE'" text type="primary" @click="openCreate(row)">新增下级</el-button>
-              <el-button v-if="row.status === 'ACTIVE'" text type="danger" @click="disableCategory(row)">停用</el-button>
-              <el-button v-else text type="success" @click="enableCategory(row)">启用</el-button>
-            </template>
-            <span v-else>-</span>
+            <div class="table-actions">
+              <template v-if="canEdit">
+                <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
+                <el-button v-if="row.status === 'ACTIVE'" text type="primary" @click="openCreate(row)">新增下级</el-button>
+                <el-button v-if="row.status === 'ACTIVE'" text type="danger" @click="disableCategory(row)">停用</el-button>
+                <el-button v-else text type="success" @click="enableCategory(row)">启用</el-button>
+              </template>
+              <span v-else>-</span>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -266,15 +268,17 @@ onMounted(() => {
 .heading-main { min-width: 0; gap: 12px; }
 .heading-main h1 { margin: 0 0 4px; font-size: 24px; letter-spacing: 0; }
 .heading-main p { margin: 0; color: #909399; }
-.toolbar { gap: 14px; padding: 14px 0; border-block: 1px solid #e4e7ed; }
+.toolbar { gap: 8px; padding: 14px 0; border-block: 1px solid var(--zl-border-soft); }
 .toolbar .el-input { width: min(300px, 100%); }
 .toolbar-spacer { flex: 1; }
-.table-shell { margin-top: 16px; overflow: hidden; background: #fff; border: 1px solid #e4e7ed; border-radius: 6px; }
+.table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+.table-actions { justify-content: center; }
 .full-width { width: 100%; }
 @media (max-width: 680px) {
   .page-heading { align-items: flex-start; }
   .toolbar { align-items: flex-start; flex-direction: column; }
   .toolbar > *, .toolbar .el-input { width: 100%; }
+  .toolbar > .el-button.is-circle { width: var(--zl-control-height); align-self: flex-end; }
   .toolbar-spacer { display: none; }
 }
 </style>

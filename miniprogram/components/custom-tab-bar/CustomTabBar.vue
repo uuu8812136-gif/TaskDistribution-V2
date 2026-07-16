@@ -10,7 +10,7 @@
         <view class="tabbar-icon">
           <text 
             class="icon-text"
-            :style="{ color: current === index ? '#409eff' : '#999999', fontSize: (item.size || 40) + 'rpx' }"
+            :style="{ color: current === index ? '#4096ff' : '#64748b', fontSize: (item.size || 40) + 'rpx' }"
           >
             {{ item.icon }}
           </text>
@@ -21,7 +21,7 @@
         </view>
         <view 
           class="tabbar-text"
-          :style="{ color: current === index ? '#409eff' : '#999999' }"
+          :style="{ color: current === index ? '#4096ff' : '#64748b' }"
         >
           {{ item.text }}
         </view>
@@ -146,13 +146,17 @@ export default {
   left: 0;
   right: 0;
   z-index: 999;
-  background-color: #ffffff;
+  background-color: rgba(255, 255, 255, 0.96);
   
   .tabbar-container {
     display: flex;
-    height: 150rpx;
-    background-color: #ffffff;
-    border-top: 1px solid #e4e7ed;
+    align-items: stretch;
+    height: calc(112rpx + constant(safe-area-inset-bottom));
+    height: calc(112rpx + env(safe-area-inset-bottom));
+    box-sizing: border-box;
+    background-color: rgba(255, 255, 255, 0.96);
+    border-top: 1px solid rgba(100, 116, 139, 0.16);
+    box-shadow: 0 -8rpx 28rpx rgba(15, 23, 42, 0.06);
     padding-bottom: constant(safe-area-inset-bottom);
     padding-bottom: env(safe-area-inset-bottom);
     
@@ -162,12 +166,13 @@ export default {
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      padding: 15rpx 0;
+      min-width: 0;
+      padding: 8rpx 0 6rpx;
       
       .tabbar-icon {
 		position: relative;
-        margin-bottom: 10rpx;
-        height: 48rpx;
+        margin-bottom: 4rpx;
+        height: 44rpx;
         
         .icon-text {
           font-size: 32rpx;
@@ -193,7 +198,12 @@ export default {
       }
       
       .tabbar-text {
-        font-size: 28rpx;
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 23rpx;
+        line-height: 30rpx;
         transition: color 0.3s;
       }
     }

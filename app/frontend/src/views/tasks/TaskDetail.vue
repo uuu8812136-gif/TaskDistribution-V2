@@ -24,7 +24,7 @@
         style="margin-bottom: 16px; font-size: 14px;"
       />
 
-      <el-descriptions :column="2" border>
+      <el-descriptions :column="descriptionColumns" border>
         <el-descriptions-item label="任务状态">
           <el-tag :type="taskStatusType[task.status]">
             {{ taskStatusMap[task.status] }}
@@ -138,7 +138,7 @@
                 {{ getExtensionStatusText(ext.status) }}
               </el-tag>
             </div>
-            <el-descriptions :column="2" size="small" style="margin-top: 12px">
+            <el-descriptions :column="descriptionColumns" size="small" style="margin-top: 12px">
               <el-descriptions-item label="原时间">
                 {{ formatDate(ext.originalCompletionTime) }}
               </el-descriptions-item>
@@ -311,8 +311,8 @@
     </el-card>
 
     <!-- 提交完成弹窗 -->
-    <el-dialog v-model="completeDialogVisible" title="提交完成" width="600px">
-      <el-form :model="completeForm" label-width="100px">
+    <el-dialog v-model="completeDialogVisible" title="提交完成" width="min(600px, 94vw)">
+      <el-form :model="completeForm" label-position="top">
         <el-form-item label="完成说明" required>
           <el-input
             v-model="completeForm.completionNote"
@@ -343,8 +343,8 @@
     </el-dialog>
 
     <!-- 审核评论弹窗 -->
-    <el-dialog v-model="reviewDialogVisible" :title="reviewDialogTitle" width="600px">
-      <el-form :model="reviewForm" label-width="100px">
+    <el-dialog v-model="reviewDialogVisible" :title="reviewDialogTitle" width="min(600px, 94vw)">
+      <el-form :model="reviewForm" label-position="top">
         <el-form-item label="审核意见" required>
           <el-input
             v-model="reviewForm.content"
@@ -378,8 +378,8 @@
     </el-dialog>
 
     <!-- 管理者审核任务弹窗 -->
-    <el-dialog v-model="confirmDialogVisible" title="管理者审核任务" width="600px">
-      <el-form :model="confirmForm" label-width="100px">
+    <el-dialog v-model="confirmDialogVisible" title="管理者审核任务" width="min(600px, 94vw)">
+      <el-form :model="confirmForm" label-position="top">
         <el-form-item label="审核意见" required>
           <el-input
             v-model="confirmForm.content"
@@ -413,8 +413,8 @@
     </el-dialog>
 
     <!-- 申请延期弹窗 -->
-    <el-dialog v-model="extensionDialogVisible" title="申请延期" width="500px">
-      <el-form :model="extensionForm" label-width="100px">
+    <el-dialog v-model="extensionDialogVisible" title="申请延期" width="min(500px, 94vw)">
+      <el-form :model="extensionForm" label-position="top">
         <el-form-item label="延期理由" required>
           <el-input
             v-model="extensionForm.reason"
@@ -439,8 +439,8 @@
     </el-dialog>
 
     <!-- 审批延期弹窗 -->
-    <el-dialog v-model="approveExtensionDialogVisible" title="审批延期申请" width="600px">
-      <el-form :model="approveExtensionForm" label-width="100px">
+    <el-dialog v-model="approveExtensionDialogVisible" title="审批延期申请" width="min(600px, 94vw)">
+      <el-form :model="approveExtensionForm" label-position="top">
         <el-form-item label="审批决定" required>
           <el-radio-group v-model="approveExtensionForm.status">
             <el-radio label="approved">批准</el-radio>
@@ -473,7 +473,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getTaskDetail, getTaskReviews, completeTask, reviewTask, confirmTask } from '@/api/task'
 import { applyExtension, approveExtension } from '@/api/extension'
@@ -492,6 +492,11 @@ import request from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
+const descriptionColumns = ref(2)
+
+const syncResponsiveLayout = () => {
+  descriptionColumns.value = window.matchMedia('(max-width: 760px)').matches ? 1 : 2
+}
 const userStore = useUserStore()
 const session = useSessionStore()
 
@@ -922,12 +927,24 @@ const handleApproveExtensionSubmit = async () => {
 }
 
 onMounted(() => {
+  syncResponsiveLayout()
+  window.addEventListener('resize', syncResponsiveLayout)
   fetchData()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', syncResponsiveLayout)
 })
 </script>
 
 <style scoped lang="scss">
 .task-detail {
+  min-width: 0;
+
+  :deep(.el-page-header) {
+    margin-bottom: 20px;
+  }
+
   .page-title {
     font-size: 18px;
     font-weight: 600;
@@ -1122,8 +1139,20 @@ onMounted(() => {
   // 操作按钮区域
   .action-buttons {
     display: flex;
-    gap: 12px;
+    gap: 8px;
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 760px) {
+  .task-detail {
+    :deep(.el-card__body) {
+      padding: 16px;
+    }
+
+    .action-buttons .el-button {
+      flex: 1 1 150px;
+    }
   }
 }
 </style>

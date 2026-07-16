@@ -11,7 +11,7 @@
 			"path": "pages/team/select",
 			"style": {
 				"navigationBarTitleText": "选择项目团队",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -19,7 +19,7 @@
 			"path": "pages/task/received",
 			"style": {
 				"navigationBarTitleText": "我的任务",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -28,7 +28,7 @@
 			"path": "pages/task/manage",
 			"style": {
 				"navigationBarTitleText": "任务管理",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -37,7 +37,7 @@
 			"path": "pages/message/index",
 			"style": {
 				"navigationBarTitleText": "消息中心",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -46,7 +46,7 @@
 			"path": "pages/profile/index",
 			"style": {
 				"navigationBarTitleText": "我的",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -54,7 +54,7 @@
 			"path": "pages/reporting/index",
 			"style": {
 				"navigationBarTitleText": "数据提报",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -62,7 +62,7 @@
 			"path": "pages/reporting/transport-list",
 			"style": {
 				"navigationBarTitleText": "运输记录",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -71,7 +71,7 @@
 			"path": "pages/reporting/transport-form",
 			"style": {
 				"navigationBarTitleText": "运输提报",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -79,7 +79,7 @@
 			"path": "pages/reporting/transport-detail",
 			"style": {
 				"navigationBarTitleText": "运输详情",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -87,7 +87,7 @@
 			"path": "pages/reporting/schedule",
 			"style": {
 				"navigationBarTitleText": "生产排产",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -96,7 +96,7 @@
 			"path": "pages/task/detail",
 			"style": {
 				"navigationBarTitleText": "任务详情",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -104,7 +104,7 @@
 			"path": "pages/task/form",
 			"style": {
 				"navigationBarTitleText": "新建任务",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		},
@@ -130,7 +130,7 @@
 			"path": "pages/extension/list",
 			"style": {
 				"navigationBarTitleText": "延期申请管理",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white",
 				"enablePullDownRefresh": true
 			}
@@ -139,7 +139,7 @@
 			"path": "pages/profile/change-password",
 			"style": {
 				"navigationBarTitleText": "修改密码",
-				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
 		}
@@ -147,7 +147,7 @@
 	"tabBar": {
 		"custom": true,
 		"color": "#909399",
-		"selectedColor": "#409EFF",
+		"selectedColor": "#4096FF",
 		"borderStyle": "black",
 		"backgroundColor": "#ffffff",
 		"list": [
@@ -176,8 +176,8 @@
 	"globalStyle": {
 		"navigationBarTextStyle": "white",
 		"navigationBarTitleText": "任务分配系统",
-		"navigationBarBackgroundColor": "#409EFF",
-		"backgroundColor": "#F8F8F8"
+		"navigationBarBackgroundColor": "#4096FF",
+		"backgroundColor": "#EEF3FB"
 	},
 	"uniIdRouter": {}
 }

@@ -1,8 +1,25 @@
 <template>
   <div class="task-list">
-    <el-card>
+    <header class="page-heading">
+      <div>
+        <h1>全部任务</h1>
+        <p>查看、筛选和维护当前权限范围内的任务</p>
+      </div>
+      <div class="heading-actions">
+        <el-button v-if="canExport" :loading="exportLoading" @click="handleBatchExport">
+          <el-icon><Download /></el-icon>
+          导出 Excel
+        </el-button>
+        <el-button v-if="canCreate" type="primary" @click="handleCreate">
+          <el-icon><Plus /></el-icon>
+          创建任务
+        </el-button>
+      </div>
+    </header>
+
+    <el-card class="task-list-card">
       <!-- 搜索栏 -->
-      <el-form :inline="true" :model="searchForm" class="search-form">
+      <el-form :inline="true" :model="searchForm" class="search-form" @submit.prevent="handleSearch">
         <el-form-item label="关键词">
           <el-input v-model="searchForm.keyword" placeholder="搜索任务名称" clearable style="width: 200px" />
         </el-form-item>
@@ -35,13 +52,8 @@
           />
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleSearch">搜索</el-button>
-          <el-button @click="handleReset">重置</el-button>
-          <el-button v-if="canCreate" type="success" @click="handleCreate">创建任务</el-button>
-          <el-button v-if="canExport" type="warning" @click="handleBatchExport" :loading="exportLoading">
-            <el-icon style="margin-right: 4px"><Download /></el-icon>
-            导出Excel
-          </el-button>
+          <el-button type="primary" native-type="submit">搜索</el-button>
+          <el-button native-type="button" @click="handleReset">重置</el-button>
         </el-form-item>
       </el-form>
 
@@ -83,11 +95,13 @@
             <el-progress :percentage="row.completionRate || 0" :stroke-width="6" />
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="190" fixed="right">
+        <el-table-column label="操作" :width="canEdit ? 170 : 86" fixed="right" align="center">
           <template #default="{ row }">
-            <el-button type="primary" size="small" text @click="handleView(row)">查看</el-button>
-            <el-button v-if="canEdit" type="warning" size="small" text @click="handleEdit(row)">编辑</el-button>
-            <el-button v-if="canEdit" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+            <div class="table-actions">
+              <el-button type="primary" size="small" text @click="handleView(row)">查看</el-button>
+              <el-button v-if="canEdit" type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
+              <el-button v-if="canEdit" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -101,7 +115,7 @@
         layout="total, sizes, prev, pager, next, jumper"
         @size-change="val => { pagination.limit = val; pagination.page = 1; fetchData(); }"
         @current-change="val => { pagination.page = val; fetchData(); }"
-        style="margin-top: 20px; justify-content: flex-end"
+        class="pagination"
       />
     </el-card>
   </div>
@@ -297,8 +311,80 @@ onMounted(() => {
 
 <style scoped lang="scss">
 .task-list {
+  min-width: 0;
+
+  .page-heading h1 {
+    margin: 0 0 5px;
+    font-size: 24px;
+  }
+
+  .page-heading p {
+    margin: 0;
+    color: var(--zl-muted);
+  }
+
   .search-form {
-    margin-bottom: 20px;
+    display: flex;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 12px 16px;
+    margin-bottom: 16px;
+    padding: 14px;
+    background: rgb(245 249 255 / 72%);
+    border: 1px solid var(--zl-border-soft);
+    border-radius: 14px;
+  }
+
+  .search-form :deep(.el-form-item) {
+    margin: 0;
+  }
+
+  .search-form :deep(.el-form-item:last-child) {
+    margin-left: auto;
+  }
+
+  .search-form :deep(.el-form-item:last-child .el-form-item__content) {
+    display: flex;
+    gap: 8px;
+  }
+
+  .table-actions {
+    justify-content: center;
+  }
+
+  .pagination {
+    justify-content: flex-end;
+    margin-top: 20px;
+  }
+}
+
+@media (max-width: 760px) {
+  .task-list {
+    .search-form :deep(.el-form-item),
+    .search-form :deep(.el-form-item__content),
+    .search-form :deep(.el-input),
+    .search-form :deep(.el-select),
+    .search-form :deep(.el-date-editor) {
+      width: 100% !important;
+    }
+
+    .search-form :deep(.el-form-item:last-child .el-form-item__content) {
+      display: flex;
+      gap: 8px;
+    }
+
+    .search-form :deep(.el-form-item:last-child .el-button) {
+      flex: 1;
+    }
+
+    .pagination {
+      justify-content: flex-start;
+      padding-bottom: 4px;
+    }
+
+    .pagination :deep(.el-pagination__jump) {
+      display: none;
+    }
   }
 }
 </style>
