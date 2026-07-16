@@ -181,6 +181,10 @@ import {
   buildTaskOrgUnitOptions,
   filterTaskParticipants
 } from '@/utils/taskAssignment'
+import {
+  firstInvalidTaskFormStep,
+  taskFormFieldsThroughStep
+} from '@/utils/taskFormValidation'
 
 const route = useRoute()
 const router = useRouter()
@@ -251,8 +255,28 @@ const handleFileChange = (file, files) => {
   fileList.value = files
 }
 
-const nextStep = () => {
-  if (currentStep.value < 3) {
+const validateTaskForm = async (fields) => {
+  try {
+    const valid = fields
+      ? await formRef.value?.validateField(fields)
+      : await formRef.value?.validate()
+    return valid !== false
+  } catch (invalidFields) {
+    const firstInvalidStep = firstInvalidTaskFormStep(invalidFields)
+    if (firstInvalidStep !== null) {
+      currentStep.value = firstInvalidStep
+    }
+    return false
+  }
+}
+
+const nextStep = async () => {
+  if (currentStep.value >= 3) return
+
+  const fields = taskFormFieldsThroughStep(currentStep.value, {
+    includeOrgUnit: isTeamTaskScope.value
+  })
+  if (await validateTaskForm(fields)) {
     currentStep.value++
   }
 }
@@ -264,7 +288,7 @@ const prevStep = () => {
 }
 
 const handleSubmit = async () => {
-  const valid = await formRef.value?.validate().catch(() => false)
+  const valid = await validateTaskForm()
   if (!valid) return
   submitting.value = true
   let uploadedFileIds = []
