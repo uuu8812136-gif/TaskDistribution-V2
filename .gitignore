@@ -1,0 +1,26 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# Dependencies and builds
+node_modules/
+dist/
+coverage/
+unpackage/
+
+# Runtime data
+uploads/
+logs/
+backups/
+app/script/backup_task_distribution_*/
+*.log
+*.pid
+
+# Test data and local state
+.test-data/
+.cache/
+.DS_Store
+Thumbs.db

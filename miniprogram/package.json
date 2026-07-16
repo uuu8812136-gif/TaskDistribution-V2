@@ -1,0 +1,14 @@
+{
+  "name": "TaskDistributionProgram",
+  "version": "1.0.0",
+  "description": "Horselink（马链）任务管理系统小程序",
+  "main": "main.js",
+  "scripts": {},
+  "keywords": ["uni-app", "task", "management"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "pinia": "^2.1.7"
+  }
+}
+

@@ -1,0 +1,440 @@
+<template>
+  <view class="message-container">
+    <!-- 操作栏 -->
+    <view class="action-bar">
+      <button class="action-btn" @click="markAllRead">全部已读</button>
+      <button class="action-btn" @click="clearRead">清空已读</button>
+    </view>
+
+    <view style="padding: 0px 24rpx">
+      <!-- 消息列表 -->
+      <scroll-view
+        class="message-list"
+        scroll-y
+        @scrolltolower="loadMore"
+        :refresher-enabled="true"
+        :refresher-triggered="refreshing"
+        @refresherrefresh="onRefresh"
+      >
+        <view v-if="messages.length > 0">
+          <view
+            v-for="msg in messages"
+            :key="msg._id"
+            class="message-item"
+            :class="{ unread: !msg.isRead }"
+            @click="handleMessageClick(msg)"
+          >
+            <view class="message-header">
+              <view class="message-type">
+                <text class="type-icon">{{ getTypeIcon(msg.type) }}</text>
+                <text class="type-text">{{ getTypeText(msg.type) }}</text>
+              </view>
+              <view v-if="!msg.isRead" class="unread-badge"></view>
+            </view>
+
+            <text class="message-title">{{ msg.title }}</text>
+            <text class="message-content">{{ msg.content }}</text>
+
+            <view class="message-footer">
+              <text class="message-time">{{
+                formatRelativeTime(msg.createdAt)
+              }}</text>
+              <text class="message-delete" @click.stop="handleDelete(msg._id)"
+                >删除</text
+              >
+            </view>
+          </view>
+        </view>
+
+        <!-- 空状态 -->
+        <view v-else-if="!loading" class="empty-state">
+          <image
+            class="empty-img"
+            src="/static/empty.png"
+            mode="aspectFit"
+          ></image>
+          <text class="empty-text">暂无消息</text>
+        </view>
+
+        <!-- 加载更多 -->
+        <view v-if="hasMore" class="load-more">
+          <text>{{ loading ? "加载中..." : "上拉加载更多" }}</text>
+        </view>
+
+        <view v-else-if="messages.length > 0" class="load-more">
+          <text>没有更多了</text>
+        </view>
+      </scroll-view>
+    </view>
+
+    <!-- 自定义 TabBar -->
+    <CustomTabbar />
+  </view>
+</template>
+
+<script>
+import { ref, onMounted } from "vue";
+import { onShow } from "@dcloudio/uni-app";
+import {
+  getMessages,
+  markMessageRead,
+  markAllRead as apiMarkAllRead,
+  deleteMessage,
+  clearReadMessages,
+} from "@/api/index.js";
+import { useMessageStore } from "@/stores/message.js";
+import { formatRelativeTime, getMessageTypeText } from "@/utils/format.js";
+import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
+
+export default {
+  name: "MessageIndex",
+  components: {
+    CustomTabbar,
+  },
+  setup() {
+    const messageStore = useMessageStore();
+
+    const messages = ref([]);
+    const loading = ref(false);
+    const refreshing = ref(false);
+    const page = ref(1);
+    const limit = ref(20);
+    const hasMore = ref(true);
+
+    // 页面显示时触发
+    onShow(() => {
+      // 通知 TabBar 更新选中状态
+      uni.$emit("tabbar-update");
+    });
+
+    onMounted(() => {
+      loadMessages();
+    });
+
+    // 加载消息列表
+    const loadMessages = async () => {
+      if (loading.value) return;
+
+      loading.value = true;
+
+      try {
+        const params = {
+          page: page.value,
+          limit: limit.value,
+        };
+
+        const res = await getMessages(params);
+
+        if (page.value === 1) {
+          messages.value = res.messages || [];
+        } else {
+          messages.value = [...messages.value, ...(res.messages || [])];
+        }
+
+        hasMore.value = messages.value.length < res.total;
+      } catch (error) {
+        console.error("加载消息失败:", error);
+      } finally {
+        loading.value = false;
+        refreshing.value = false;
+      }
+    };
+
+    // 下拉刷新
+    const onRefresh = () => {
+      refreshing.value = true;
+      page.value = 1;
+      messages.value = [];
+      hasMore.value = true;
+      loadMessages();
+      // 刷新未读数量
+      messageStore.fetchUnreadCount();
+    };
+
+    // 加载更多
+    const loadMore = () => {
+      if (loading.value || !hasMore.value) return;
+
+      page.value++;
+      loadMessages();
+    };
+
+    // 点击消息
+    const handleMessageClick = async (msg) => {
+      // 标记为已读
+      if (!msg.isRead) {
+        try {
+          await markMessageRead(msg._id);
+          msg.isRead = true;
+          messageStore.decreaseUnreadCount();
+        } catch (error) {
+          console.error("标记已读失败:", error);
+        }
+      }
+
+      // 如果有关联任务，跳转到任务详情
+      if (msg.relatedTask) {
+        uni.navigateTo({
+          url: `/pages/task/detail?id=${
+            msg.relatedTask._id || msg.relatedTask
+          }`,
+        });
+      }
+    };
+
+    // 全部已读
+    const markAllRead = () => {
+      uni.showModal({
+        title: "确认",
+        content: "确认将所有消息标记为已读？",
+        success: async (res) => {
+          if (res.confirm) {
+            try {
+              await apiMarkAllRead();
+              uni.showToast({
+                title: "操作成功",
+                icon: "success",
+              });
+
+              // 更新本地数据
+              messages.value.forEach((msg) => {
+                msg.isRead = true;
+              });
+
+              messageStore.clearUnreadCount();
+            } catch (error) {
+              console.error("全部已读失败:", error);
+            }
+          }
+        },
+      });
+    };
+
+    // 清空已读
+    const clearRead = () => {
+      uni.showModal({
+        title: "确认",
+        content: "确认清空所有已读消息？",
+        success: async (res) => {
+          if (res.confirm) {
+            try {
+              await clearReadMessages();
+              uni.showToast({
+                title: "清空成功",
+                icon: "success",
+              });
+
+              // 刷新列表
+              onRefresh();
+            } catch (error) {
+              console.error("清空已读失败:", error);
+            }
+          }
+        },
+      });
+    };
+
+    // 删除消息
+    const handleDelete = (id) => {
+      uni.showModal({
+        title: "确认",
+        content: "确认删除该消息？",
+        success: async (res) => {
+          if (res.confirm) {
+            try {
+              await deleteMessage(id);
+              uni.showToast({
+                title: "删除成功",
+                icon: "success",
+              });
+
+              // 从列表中移除
+              const index = messages.value.findIndex((msg) => msg._id === id);
+              if (index > -1) {
+                const msg = messages.value[index];
+                if (!msg.isRead) {
+                  messageStore.decreaseUnreadCount();
+                }
+                messages.value.splice(index, 1);
+              }
+            } catch (error) {
+              console.error("删除消息失败:", error);
+            }
+          }
+        },
+      });
+    };
+
+    // 获取消息类型图标
+    const getTypeIcon = (type) => {
+      const iconMap = {
+        task_assigned: "📋",
+        task_updated: "✏️",
+        task_deleted: "🗑",
+        task_completed: "✅",
+        task_reviewed: "👀",
+        task_confirmed: "✓",
+        extension_applied: "⏰",
+        extension_approved: "👍",
+        extension_rejected: "👎",
+        task_overdue: "⚠️",
+      };
+      return iconMap[type] || "📨";
+    };
+
+    const getTypeText = (type) => getMessageTypeText(type);
+
+    return {
+      messages,
+      loading,
+      refreshing,
+      hasMore,
+      onRefresh,
+      loadMore,
+      handleMessageClick,
+      markAllRead,
+      clearRead,
+      handleDelete,
+      getTypeIcon,
+      getTypeText,
+      formatRelativeTime,
+    };
+  },
+};
+</script>
+
+<style scoped lang="scss">
+.message-container {
+  min-height: 100vh;
+  background: #f5f7fa;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 100rpx; /* 为TabBar留出空间 */
+}
+
+.action-bar {
+  display: flex;
+  padding: 24rpx;
+  background: #ffffff;
+  margin-bottom: 16rpx;
+  gap: 16rpx;
+
+  .action-btn {
+    flex: 1;
+    height: 64rpx;
+    line-height: 64rpx;
+    font-size: 26rpx;
+    background: #f5f7fa;
+    color: #606266;
+    border-radius: 32rpx;
+    border: none;
+
+    &::after {
+      border: none;
+    }
+  }
+}
+
+.message-list {
+  flex: 1;
+}
+
+.message-item {
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 32rpx;
+  margin-bottom: 24rpx;
+  position: relative;
+
+  &.unread {
+    background: #f0f9ff;
+    border-left: 6rpx solid #409eff;
+  }
+
+  .message-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16rpx;
+
+    .message-type {
+      display: flex;
+      align-items: center;
+
+      .type-icon {
+        font-size: 32rpx;
+        margin-right: 12rpx;
+      }
+
+      .type-text {
+        font-size: 24rpx;
+        color: #409eff;
+      }
+    }
+
+    .unread-badge {
+      width: 16rpx;
+      height: 16rpx;
+      background: #f56c6c;
+      border-radius: 50%;
+    }
+  }
+
+  .message-title {
+    display: block;
+    font-size: 30rpx;
+    font-weight: bold;
+    color: #303133;
+    margin-bottom: 12rpx;
+  }
+
+  .message-content {
+    display: block;
+    font-size: 26rpx;
+    color: #606266;
+    line-height: 1.6;
+    margin-bottom: 16rpx;
+  }
+
+  .message-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+
+    .message-time {
+      font-size: 22rpx;
+      color: #909399;
+    }
+
+    .message-delete {
+      font-size: 24rpx;
+      color: #f56c6c;
+      padding: 8rpx 16rpx;
+    }
+  }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 120rpx 0;
+
+  .empty-img {
+    width: 400rpx;
+    height: 300rpx;
+    margin-bottom: 32rpx;
+  }
+
+  .empty-text {
+    display: block;
+    font-size: 28rpx;
+    color: #909399;
+  }
+}
+
+.load-more {
+  text-align: center;
+  padding: 32rpx 0;
+  font-size: 24rpx;
+  color: #909399;
+}
+</style>

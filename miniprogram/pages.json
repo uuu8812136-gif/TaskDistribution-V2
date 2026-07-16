@@ -1,0 +1,129 @@
+{
+	"pages": [
+		{
+			"path": "pages/login/index",
+			"style": {
+				"navigationBarTitleText": "登录",
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/task/received",
+			"style": {
+				"navigationBarTitleText": "我的任务",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/task/manage",
+			"style": {
+				"navigationBarTitleText": "任务管理",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/message/index",
+			"style": {
+				"navigationBarTitleText": "消息中心",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/profile/index",
+			"style": {
+				"navigationBarTitleText": "我的",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/task/detail",
+			"style": {
+				"navigationBarTitleText": "任务详情",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/task/form",
+			"style": {
+				"navigationBarTitleText": "新建任务",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/task/complete",
+			"style": {
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/task/review",
+			"style": {
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/task/approve-extension",
+			"style": {
+				"navigationStyle": "custom"
+			}
+		},
+		{
+			"path": "pages/extension/list",
+			"style": {
+				"navigationBarTitleText": "延期申请管理",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/profile/change-password",
+			"style": {
+				"navigationBarTitleText": "修改密码",
+				"navigationBarBackgroundColor": "#409EFF",
+				"navigationBarTextStyle": "white"
+			}
+		}
+	],
+	"tabBar": {
+		"custom": true,
+		"color": "#909399",
+		"selectedColor": "#409EFF",
+		"borderStyle": "black",
+		"backgroundColor": "#ffffff",
+		"list": [
+			{
+				"pagePath": "pages/task/received",
+				"text": "我的任务"
+			},
+			{
+				"pagePath": "pages/task/manage",
+				"text": "任务管理"
+			},
+			{
+				"pagePath": "pages/message/index",
+				"text": "消息"
+			},
+			{
+				"pagePath": "pages/profile/index",
+				"text": "我的"
+			}
+		]
+	},
+	"globalStyle": {
+		"navigationBarTextStyle": "white",
+		"navigationBarTitleText": "任务分配系统",
+		"navigationBarBackgroundColor": "#409EFF",
+		"backgroundColor": "#F8F8F8"
+	},
+	"uniIdRouter": {}
+}

@@ -1,0 +1,611 @@
+<template>
+  <view class="task-manage-container">
+    <!-- 筛选栏 -->
+    <view class="filter-bar">
+      <picker
+        mode="selector"
+        :range="statusOptions"
+        range-key="label"
+        @change="onStatusChange"
+      >
+        <view class="filter-item">
+          <text>{{ currentStatus.label }}</text>
+          <text class="arrow">▼</text>
+        </view>
+      </picker>
+
+      <picker
+        mode="selector"
+        :range="priorityOptions"
+        range-key="label"
+        @change="onPriorityChange"
+      >
+        <view class="filter-item">
+          <text>{{ currentPriority.label }}</text>
+          <text class="arrow">▼</text>
+        </view>
+      </picker>
+    </view>
+
+    <!-- 搜索栏 -->
+    <view class="search-bar">
+      <view class="search-input-wrapper">
+        <text class="search-icon">🔍</text>
+        <input
+          class="search-input"
+          v-model="keyword"
+          placeholder="搜索任务名称"
+          @confirm="handleSearch"
+        />
+        <text v-if="keyword" class="clear-icon" @click="clearSearch">✕</text>
+      </view>
+      <button class="search-btn" @click="handleSearch">搜索</button>
+    </view>
+
+    <view style="padding: 0px 24rpx">
+      <!-- 任务列表 -->
+      <scroll-view
+        class="task-list"
+        scroll-y
+        @scrolltolower="loadMore"
+        :refresher-enabled="true"
+        :refresher-triggered="refreshing"
+        @refresherrefresh="onRefresh"
+      >
+        <view v-if="taskList.length > 0">
+          <view
+            v-for="task in taskList"
+            :key="task._id"
+            class="task-card"
+            @click="goToDetail(task._id)"
+          >
+            <!-- 任务标题 -->
+            <view class="task-header">
+              <text class="task-name">{{ task.taskName }}</text>
+              <view
+                class="task-priority"
+                :style="{ backgroundColor: getPriorityColor(task.priority) }"
+              >
+                <text>{{ getPriorityText(task.priority) }}</text>
+              </view>
+            </view>
+
+            <!-- 任务信息 -->
+            <view class="task-info">
+              <view class="info-item">
+                <text class="label">类型:</text>
+                <text class="value">{{ task.taskType }}</text>
+              </view>
+              <view class="info-item">
+                <text class="label">来源:</text>
+                <text class="value">{{ task.taskSource }}</text>
+              </view>
+            </view>
+
+            <!-- 执行人信息 -->
+            <view class="task-executor">
+              <text class="label">👤 执行人:</text>
+              <text class="value">
+                {{ task.executor?.map((e) => e.name).join("、") || "未分配" }}
+              </text>
+            </view>
+
+            <!-- 任务描述 -->
+            <view v-if="task.description" class="task-desc">
+              <text>{{ task.description }}</text>
+            </view>
+
+            <!-- 任务时间 -->
+            <view class="task-time" :class="{ 'overdue': isTaskOverdue(task.plannedCompletionTime, task.status) }">
+              <text class="time-label">⏰ 计划完成:</text>
+              <text class="time-value">{{
+                formatDate(task.plannedCompletionTime, "YYYY-MM-DD HH:mm")
+              }}</text>
+            </view>
+
+            <!-- 任务状态 -->
+            <view class="task-footer">
+              <view
+                class="task-status"
+                :style="{ backgroundColor: isTaskOverdue(task.plannedCompletionTime, task.status) ? '#F56C6C' : getStatusColor(task.status) }"
+              >
+                <text>{{ isTaskOverdue(task.plannedCompletionTime, task.status) ? '已过期' : getStatusText(task.status) }}</text>
+              </view>
+              <text class="task-creator"
+                >创建人: {{ task.creator?.name || "未知" }}</text
+              >
+            </view>
+          </view>
+        </view>
+
+        <!-- 空状态 -->
+        <view v-else-if="!loading" class="empty-state">
+          <image
+            class="empty-img"
+            src="/static/empty.png"
+            mode="aspectFit"
+          ></image>
+          <text class="empty-text">暂无任务</text>
+        </view>
+
+        <!-- 加载更多 -->
+        <view v-if="hasMore" class="load-more">
+          <text>{{ loading ? "加载中..." : "上拉加载更多" }}</text>
+        </view>
+
+        <view v-else-if="taskList.length > 0" class="load-more">
+          <text>没有更多了</text>
+        </view>
+      </scroll-view>
+    </view>
+
+    <!-- 新建任务按钮 -->
+    <view class="add-btn" @click="goToCreate">
+      <text class="add-icon">+</text>
+    </view>
+    
+    <!-- 自定义 TabBar -->
+    <CustomTabbar />
+  </view>
+</template>
+
+<script>
+import { ref, onMounted } from "vue";
+import { onShow } from "@dcloudio/uni-app";
+import { getAllTasks } from "@/api/index.js";
+import { useUserStore } from "@/stores/user.js";
+import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
+import {
+  formatDate,
+  getTaskStatusText,
+  getTaskStatusColor,
+  getPriorityText,
+  getPriorityColor,
+  isTaskOverdue,
+} from "@/utils/format.js";
+
+export default {
+  name: "TaskManage",
+  components: {
+    CustomTabbar
+  },
+  setup() {
+    const userStore = useUserStore();
+
+    const statusOptions = [
+      { label: "全部状态", value: "" },
+      { label: "待审核", value: "pending_review" },
+      { label: "进行中", value: "in_progress" },
+      { label: "已完成", value: "finished" },
+      { label: "已拒绝", value: "rejected" },
+      { label: "已逾期", value: "overdue" },
+    ];
+
+    const priorityOptions = [
+      { label: "全部优先级", value: "" },
+      { label: "紧急", value: "urgent" },
+      { label: "高", value: "high" },
+      { label: "普通", value: "normal" },
+      { label: "低", value: "low" },
+    ];
+
+    const currentStatus = ref(statusOptions[0]);
+    const currentPriority = ref(priorityOptions[0]);
+    const keyword = ref("");
+    const taskList = ref([]);
+    const loading = ref(false);
+    const refreshing = ref(false);
+    const page = ref(1);
+    const limit = ref(10);
+    const hasMore = ref(true);
+
+    // 页面显示时触发
+    onShow(() => {
+      // 通知 TabBar 更新选中状态
+      uni.$emit('tabbar-update');
+    });
+
+    onMounted(() => {
+      // 检查是否是管理员
+      if (!userStore.isAdmin) {
+        uni.showToast({
+          title: "无权限访问",
+          icon: "none",
+          duration: 2000,
+        });
+        setTimeout(() => {
+          uni.switchTab({
+            url: "/pages/task/received",
+          });
+        }, 2000);
+        return;
+      }
+
+      loadTasks();
+    });
+
+    // 状态筛选变化
+    const onStatusChange = (e) => {
+      const index = e.detail.value;
+      currentStatus.value = statusOptions[index];
+      page.value = 1;
+      taskList.value = [];
+      hasMore.value = true;
+      loadTasks();
+    };
+
+    // 优先级筛选变化
+    const onPriorityChange = (e) => {
+      const index = e.detail.value;
+      currentPriority.value = priorityOptions[index];
+      page.value = 1;
+      taskList.value = [];
+      hasMore.value = true;
+      loadTasks();
+    };
+
+    // 加载任务列表
+    const loadTasks = async () => {
+      if (loading.value) return;
+
+      loading.value = true;
+
+      try {
+        const params = {
+          page: page.value,
+          limit: limit.value,
+        };
+
+        if (currentStatus.value.value) {
+          params.status = currentStatus.value.value;
+        }
+
+        if (currentPriority.value.value) {
+          params.priority = currentPriority.value.value;
+        }
+
+        if (keyword.value) {
+          params.keyword = keyword.value;
+        }
+
+        const res = await getAllTasks(params);
+
+        if (page.value === 1) {
+          taskList.value = res.tasks || [];
+        } else {
+          taskList.value = [...taskList.value, ...(res.tasks || [])];
+        }
+
+        // 判断是否还有更多
+        hasMore.value = taskList.value.length < res.total;
+      } catch (error) {
+        console.error("加载任务失败:", error);
+      } finally {
+        loading.value = false;
+        refreshing.value = false;
+      }
+    };
+
+    // 搜索
+    const handleSearch = () => {
+      page.value = 1;
+      taskList.value = [];
+      hasMore.value = true;
+      loadTasks();
+    };
+
+    // 清空搜索
+    const clearSearch = () => {
+      keyword.value = "";
+      handleSearch();
+    };
+
+    // 下拉刷新
+    const onRefresh = () => {
+      refreshing.value = true;
+      page.value = 1;
+      taskList.value = [];
+      hasMore.value = true;
+      loadTasks();
+    };
+
+    // 加载更多
+    const loadMore = () => {
+      if (loading.value || !hasMore.value) return;
+
+      page.value++;
+      loadTasks();
+    };
+
+    // 跳转到详情页
+    const goToDetail = (taskId) => {
+      uni.navigateTo({
+        url: `/pages/task/detail?id=${taskId}`,
+      });
+    };
+
+    // 跳转到新建任务页
+    const goToCreate = () => {
+      uni.navigateTo({
+        url: "/pages/task/form",
+      });
+    };
+
+    // 格式化方法
+    const getStatusText = (status) => getTaskStatusText(status);
+    const getStatusColor = (status) => getTaskStatusColor(status);
+
+    return {
+      statusOptions,
+      priorityOptions,
+      currentStatus,
+      currentPriority,
+      keyword,
+      taskList,
+      loading,
+      refreshing,
+      hasMore,
+      onStatusChange,
+      onPriorityChange,
+      handleSearch,
+      clearSearch,
+      onRefresh,
+      loadMore,
+      goToDetail,
+      goToCreate,
+      formatDate,
+      getStatusText,
+      getStatusColor,
+      getPriorityText,
+      getPriorityColor,
+      isTaskOverdue,
+    };
+  },
+};
+</script>
+
+<style scoped lang="scss">
+.task-manage-container {
+  min-height: 100vh;
+  background: #f5f7fa;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  box-sizing: border-box;
+  padding-bottom: 100rpx; /* 为TabBar留出空间 */
+}
+
+.filter-bar {
+  display: flex;
+  background: #ffffff;
+  padding: 24rpx;
+  gap: 16rpx;
+
+  .filter-item {
+    flex: 1;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 24rpx;
+    height: 64rpx;
+    background: #f5f7fa;
+    border-radius: 32rpx;
+    font-size: 26rpx;
+    color: #606266;
+
+    .arrow {
+      font-size: 20rpx;
+      color: #909399;
+    }
+  }
+}
+
+.search-bar {
+  display: flex;
+  align-items: center;
+  padding: 24rpx;
+  background: #ffffff;
+  margin-bottom: 16rpx;
+
+  .search-input-wrapper {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    background: #f5f7fa;
+    border-radius: 32rpx;
+    padding: 0 24rpx;
+    margin-right: 16rpx;
+
+    .search-icon {
+      font-size: 32rpx;
+      margin-right: 12rpx;
+    }
+
+    .search-input {
+      flex: 1;
+      height: 64rpx;
+      font-size: 28rpx;
+    }
+
+    .clear-icon {
+      font-size: 28rpx;
+      color: #909399;
+      padding: 8rpx;
+    }
+  }
+
+  .search-btn {
+    padding: 0 32rpx;
+    height: 64rpx;
+    line-height: 64rpx;
+    background: #409eff;
+    color: #ffffff;
+    font-size: 28rpx;
+    border-radius: 32rpx;
+    border: none;
+
+    &::after {
+      border: none;
+    }
+  }
+}
+
+.task-list {
+  flex: 1;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.task-card {
+  background: #ffffff;
+  border-radius: 16rpx;
+  padding: 32rpx;
+  margin-bottom: 24rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.05);
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.task-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20rpx;
+
+  .task-name {
+    flex: 1;
+    font-size: 32rpx;
+    font-weight: bold;
+    color: #303133;
+    margin-right: 16rpx;
+  }
+
+  .task-priority {
+    padding: 6rpx 16rpx;
+    border-radius: 24rpx;
+    font-size: 22rpx;
+    color: #ffffff;
+  }
+}
+
+.task-info {
+  display: flex;
+  margin-bottom: 20rpx;
+
+  .info-item {
+    margin-right: 32rpx;
+    font-size: 24rpx;
+
+    .label {
+      color: #909399;
+      margin-right: 8rpx;
+    }
+
+    .value {
+      color: #606266;
+    }
+  }
+}
+
+.task-executor {
+  font-size: 26rpx;
+  color: #606266;
+  margin-bottom: 20rpx;
+
+  .label {
+    color: #909399;
+    margin-right: 8rpx;
+  }
+}
+
+.task-desc {
+  font-size: 26rpx;
+  color: #606266;
+  line-height: 1.6;
+  margin-bottom: 20rpx;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.task-time {
+  font-size: 24rpx;
+  color: #909399;
+  margin-bottom: 20rpx;
+
+  .time-label {
+    margin-right: 8rpx;
+  }
+  
+  &.overdue {
+    color: #F56C6C;
+    
+    .time-value {
+      font-weight: bold;
+    }
+  }
+}
+
+.task-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+
+  .task-status {
+    padding: 6rpx 16rpx;
+    border-radius: 24rpx;
+    font-size: 22rpx;
+    color: #ffffff;
+  }
+
+  .task-creator {
+    font-size: 24rpx;
+    color: #909399;
+  }
+}
+
+.empty-state {
+  text-align: center;
+  padding: 120rpx 0;
+
+  .empty-img {
+    width: 400rpx;
+    height: 300rpx;
+    margin-bottom: 32rpx;
+  }
+
+  .empty-text {
+    display: block;
+    font-size: 28rpx;
+    color: #909399;
+  }
+}
+
+.load-more {
+  text-align: center;
+  padding: 32rpx 0;
+  font-size: 24rpx;
+  color: #909399;
+}
+
+.add-btn {
+  position: fixed;
+  right: 48rpx;
+  bottom: 220rpx;
+  width: 112rpx;
+  height: 112rpx;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 8rpx 24rpx rgba(102, 126, 234, 0.4);
+
+  .add-icon {
+    font-size: 64rpx;
+    color: #ffffff;
+    font-weight: 300;
+  }
+}
+</style>

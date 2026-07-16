@@ -1,0 +1,1713 @@
+<template>
+	<view class="task-detail-container">
+		<scroll-view class="detail-content" scroll-y>
+			<!-- 任务基本信息 -->
+			<view class="section">
+				<view class="section-title">
+					<text class="title-icon">📋</text>
+					<text>基本信息</text>
+				</view>
+				
+				<view class="info-card">
+					<view class="card-header">
+						<text class="task-name">{{ taskDetail.taskName }}</text>
+						<view class="task-priority" :style="{ backgroundColor: getPriorityColor(taskDetail.priority) }">
+							<text>{{ getPriorityText(taskDetail.priority) }}</text>
+						</view>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">任务类型</text>
+						<text class="value">{{ taskDetail.taskType }}</text>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">任务来源</text>
+						<text class="value">{{ taskDetail.taskSource }}</text>
+					</view>
+					
+				<view class="info-item">
+					<text class="label">任务状态</text>
+					<view class="task-status" :style="{ backgroundColor: getStatusColor(taskDetail.status) }">
+						<text>{{ getStatusText(taskDetail.status) }}</text>
+					</view>
+				</view>
+				
+				<!-- 过期提示 -->
+				<view v-if="isOverdue" class="info-item overdue-warning">
+					<text class="label">⚠️ 任务状态</text>
+					<text class="value overdue-text">已过期（超过计划完成时间）</text>
+				</view>
+				
+				<view class="info-item">
+					<text class="label">任务描述</text>
+					<text class="value desc">{{ taskDetail.description || '无' }}</text>
+				</view>
+				
+				<view class="info-item">
+					<text class="label">计划完成时间</text>
+					<text class="value" :class="{ 'overdue-time': isOverdue }">
+						{{ formatDate(taskDetail.plannedCompletionTime, 'YYYY-MM-DD HH:mm') }}
+					</text>
+				</view>
+					
+					<view v-if="taskDetail.actualCompletionTime" class="info-item">
+						<text class="label">实际完成时间</text>
+						<text class="value">{{ formatDate(taskDetail.actualCompletionTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">创建人</text>
+						<text class="value">{{ taskDetail.creator?.name || '未知' }}</text>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">创建时间</text>
+						<text class="value">{{ formatDate(taskDetail.createdAt, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+				</view>
+				
+				<!-- 任务附件 -->
+				<view v-if="taskDetail.attachments && taskDetail.attachments.length > 0" class="attachments-section">
+					<view class="attachments-title">
+						<text class="title-icon">📎</text>
+						<text>任务附件 ({{ taskDetail.attachments.length }})</text>
+					</view>
+					<view class="attachments-list">
+						<view 
+							v-for="(file, index) in taskDetail.attachments" 
+							:key="index" 
+							class="attachment-item"
+							@click.stop="previewAttachment(file)"
+						>
+							<text class="file-icon">{{ getFileIcon(file.mimetype) }}</text>
+							<view class="file-info">
+								<text class="file-name">{{ file.originalName }}</text>
+								<text class="file-size">{{ formatFileSize(file.size) }}</text>
+							</view>
+							<text class="view-icon">👁</text>
+						</view>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 执行人信息 -->
+			<view class="section">
+				<view class="section-title">
+					<text class="title-icon">👥</text>
+					<text>人员信息</text>
+				</view>
+				
+				<view class="info-card">
+					<view class="info-item">
+						<text class="label">执行人</text>
+						<text class="value">
+							{{ taskDetail.executor?.map(e => e.name).join('、') || '未分配' }}
+						</text>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">主执行人</text>
+						<text class="value">{{ taskDetail.mainExecutor?.name || '未指定' }}</text>
+					</view>
+					
+					<view class="info-item">
+						<text class="label">抄送人</text>
+						<text class="value">
+							{{ taskDetail.ccUsers?.map(u => u.name).join('、') || '无' }}
+						</text>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 子任务列表 -->
+			<view v-if="taskDetail.subTasks && taskDetail.subTasks.length > 0" class="section">
+				<view class="section-title">
+					<text class="title-icon">📝</text>
+					<text>子任务 ({{ taskDetail.subTasks.length }})</text>
+				</view>
+				
+				<view class="subtask-list">
+					<view v-for="(subtask, index) in taskDetail.subTasks" :key="index" class="subtask-item">
+						<view class="subtask-header">
+							<text class="subtask-name">{{ subtask.taskName }}</text>
+							<view class="subtask-status" :style="{ backgroundColor: getStatusColor(subtask.status) }">
+								<text>{{ getStatusText(subtask.status) }}</text>
+							</view>
+						</view>
+						<text v-if="subtask.description" class="subtask-desc">{{ subtask.description }}</text>
+						<view class="subtask-footer">
+							<text class="subtask-executor">执行人: {{ subtask.executor?.name || '未分配' }}</text>
+							<text class="subtask-time">{{ formatDate(subtask.plannedCompletionTime, 'MM-DD HH:mm') }}</text>
+						</view>
+					</view>
+				</view>
+			</view>
+			
+			
+			<!-- 延期申请记录 -->
+			<!-- 当前延期申请状态 -->
+			<view v-if="taskDetail.status === 'extension_pending' && extensionHistory.length > 0" class="section">
+				<view class="section-title">
+					<text class="title-icon">⏰</text>
+					<text>延期申请状态</text>
+				</view>
+				
+				<view class="extension-status-card pending">
+					<view class="status-header">
+						<text class="status-label">待审批</text>
+						<text class="status-time">{{ formatDate(extensionHistory[0].applyTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					<view class="status-info">
+						<text class="label">申请理由:</text>
+						<text class="value">{{ extensionHistory[0].reason }}</text>
+					</view>
+					<view class="status-info">
+						<text class="label">请求延期:</text>
+						<text class="value highlight">{{ extensionHistory[0].requestedDays }} 天</text>
+					</view>
+					<view class="status-info">
+						<text class="label">原完成时间:</text>
+						<text class="value">{{ formatDate(extensionHistory[0].originalCompletionTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					<view class="status-footer">
+						<text>等待管理员审批...</text>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 延期申请结果（已批准） -->
+			<view v-if="extensionHistory.length > 0 && extensionHistory[0].status === 'approved'" class="section">
+				<view class="section-title">
+					<text class="title-icon">✓</text>
+					<text>延期申请结果</text>
+				</view>
+				
+				<view class="extension-status-card approved">
+					<view class="status-header">
+						<text class="status-label">已批准</text>
+						<text class="status-time">{{ formatDate(extensionHistory[0].approvalTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					<view class="status-info">
+						<text class="label">审批人:</text>
+						<text class="value">{{ extensionHistory[0].approver?.name || '管理员' }}</text>
+					</view>
+					<view class="status-info">
+						<text class="label">批准延期:</text>
+						<text class="value highlight">{{ extensionHistory[0].approvedDays }} 天</text>
+					</view>
+					<view class="status-info">
+						<text class="label">新完成时间:</text>
+						<text class="value highlight">{{ formatDate(extensionHistory[0].newCompletionTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					<view v-if="extensionHistory[0].approvalNote" class="status-info">
+						<text class="label">审批意见:</text>
+						<text class="value">{{ extensionHistory[0].approvalNote }}</text>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 延期申请结果（已拒绝） -->
+			<view v-if="extensionHistory.length > 0 && extensionHistory[0].status === 'rejected'" class="section">
+				<view class="section-title">
+					<text class="title-icon">✕</text>
+					<text>延期申请结果</text>
+				</view>
+				
+				<view class="extension-status-card rejected">
+					<view class="status-header">
+						<text class="status-label">已拒绝</text>
+						<text class="status-time">{{ formatDate(extensionHistory[0].approvalTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+					<view class="status-info">
+						<text class="label">审批人:</text>
+						<text class="value">{{ extensionHistory[0].approver?.name || '管理员' }}</text>
+					</view>
+					<view v-if="extensionHistory[0].approvalNote" class="status-info alert">
+						<text class="label">拒绝理由:</text>
+						<text class="value">{{ extensionHistory[0].approvalNote }}</text>
+					</view>
+					<view class="status-footer">
+						<text>延期申请未通过，请按原计划完成时间执行任务</text>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 延期历史记录 -->
+			<view v-if="extensionHistory.length > 1" class="section">
+				<view class="section-title">
+					<text class="title-icon">📜</text>
+					<text>延期历史 ({{ extensionHistory.length }})</text>
+				</view>
+				
+				<view class="extension-list">
+					<view v-for="ext in extensionHistory" :key="ext._id" class="extension-item">
+						<view class="ext-header">
+							<text class="ext-applicant">{{ ext.applicant?.name }}</text>
+							<view class="ext-status" :style="{ backgroundColor: getExtStatusColor(ext.status) }">
+								<text>{{ getExtStatusText(ext.status) }}</text>
+							</view>
+						</view>
+						<view class="ext-info">
+							<text class="label">申请时间:</text>
+							<text class="value">{{ formatDate(ext.applyTime, 'YYYY-MM-DD HH:mm') }}</text>
+						</view>
+						<view class="ext-info">
+							<text class="label">请求延期:</text>
+							<text class="value">{{ ext.requestedDays }} 天</text>
+						</view>
+						<view class="ext-info">
+							<text class="label">原完成时间:</text>
+							<text class="value">{{ formatDate(ext.originalCompletionTime, 'YYYY-MM-DD HH:mm') }}</text>
+						</view>
+						<view v-if="ext.status !== 'pending'" class="ext-info">
+							<text class="label">审批结果:</text>
+							<text class="value" :style="{ color: ext.status === 'approved' ? '#67C23A' : '#F56C6C' }">
+								{{ ext.status === 'approved' ? '已批准' : '已拒绝' }}
+							</text>
+						</view>
+						<view v-if="ext.approvalNote" class="ext-info">
+							<text class="label">审批意见:</text>
+							<text class="value">{{ ext.approvalNote }}</text>
+						</view>
+					</view>
+				</view>
+			</view>
+			
+		<!-- 执行完成记录 - 支持多执行人 -->
+		<view v-if="sortedExecutorCompletions.length > 0" class="section">
+			<view class="section-title">
+				<text class="title-icon">✓</text>
+				<text>执行完成记录 ({{ completedExecutorCount }}/{{ sortedExecutorCompletions.length }})</text>
+			</view>
+			
+			<!-- 每个执行人的完成记录 -->
+			<view 
+				v-for="(completion, index) in sortedExecutorCompletions" 
+				:key="index" 
+				class="completion-card"
+				:class="{ 'pending-completion': completion.status === 'pending' }"
+			>
+				<view class="completion-header">
+					<text class="completer-name">
+						{{ completion.executor?.name || '执行人' }}
+						<text v-if="completion.status === 'pending'" class="pending-badge">待提交</text>
+						<text v-else class="completed-badge">已完成</text>
+					</text>
+					<text v-if="completion.completedAt" class="completion-time">
+						{{ formatDate(completion.completedAt, 'YYYY-MM-DD HH:mm') }}
+					</text>
+				</view>
+				
+				<!-- 已提交的内容 -->
+				<view v-if="completion.status === 'completed'">
+					<text v-if="completion.content" class="completion-note">{{ completion.content }}</text>
+					<text v-else class="completion-note empty">未填写备注</text>
+					
+					<!-- 完成附件 -->
+					<view v-if="completion.attachments && completion.attachments.length > 0" class="completion-attachments">
+						<text class="attachments-title">📎 完成附件 ({{ completion.attachments.length }}):</text>
+						<view class="attachments-list">
+							<view 
+								v-for="(file, fileIndex) in completion.attachments" 
+								:key="fileIndex" 
+								class="attachment-item"
+								@click.stop="previewAttachment(file)"
+							>
+								<text class="file-icon">{{ getFileIcon(file.mimetype) }}</text>
+								<view class="file-info">
+									<text class="file-name">{{ file.originalName }}</text>
+									<text class="file-size">{{ formatFileSize(file.size) }}</text>
+								</view>
+								<text class="view-icon">👁</text>
+							</view>
+						</view>
+					</view>
+				</view>
+				
+				<!-- 未提交的提示 -->
+				<view v-else class="pending-tip">
+					<text>该执行人尚未提交完成记录</text>
+				</view>
+			</view>
+		</view>
+			
+			<!-- 评价记录 -->
+			<view v-if="reviewRecords.length > 0" class="section">
+				<view class="section-title">
+					<text class="title-icon">✓</text>
+					<text>评价记录 ({{ reviewRecords.length }})</text>
+				</view>
+				
+				<view class="review-list">
+					<view v-for="review in reviewRecords" :key="review._id" class="review-item">
+						<view class="review-header">
+							<text class="reviewer-name">{{ review.reviewer?.name }}</text>
+							<view class="review-result" :style="{ color: review.result === 'approved' ? '#67C23A' : '#F56C6C' }">
+								<text>{{ review.result === 'approved' ? '✓ 通过' : '✕ 拒绝' }}</text>
+							</view>
+						</view>
+						<text v-if="review.content" class="review-comment">{{ review.content }}</text>
+						
+						<!-- 审核附件 -->
+						<view v-if="review.attachments && review.attachments.length > 0" class="review-attachments">
+							<text class="attachments-title">📎 审核附件:</text>
+							<view class="review-images" v-if="getReviewImages(review.attachments).length > 0">
+								<image 
+									v-for="(img, idx) in getReviewImages(review.attachments)"
+									:key="idx"
+									:src="getFileUrl(img.path)"
+									mode="aspectFill"
+									class="review-img"
+									@click="previewReviewImage(review.attachments, idx)"
+								></image>
+							</view>
+							<view class="review-files" v-if="getReviewFiles(review.attachments).length > 0">
+								<view 
+									v-for="(file, idx) in getReviewFiles(review.attachments)"
+									:key="idx"
+									class="review-file-item"
+									@click="downloadFile(file)"
+								>
+									<text class="file-icon">📄</text>
+									<text class="file-name">{{ file.originalName }}</text>
+								</view>
+							</view>
+						</view>
+						
+						<text class="review-time">{{ formatDate(review.reviewTime, 'YYYY-MM-DD HH:mm') }}</text>
+					</view>
+				</view>
+			</view>
+
+			<!-- 审核记录（管理员确认）-->
+			<view v-if="taskDetail.status === 'finished' || taskDetail.status === 'pending_confirm'" class="section">
+				<view class="section-title">
+					<text class="title-icon">👑</text>
+					<text>管理员审核</text>
+				</view>
+				
+				<view class="info-card">
+					<view v-if="taskDetail.status === 'finished'" class="admin-review-item">
+						<view class="review-header">
+							<text class="reviewer-name">{{ taskDetail.confirmedBy?.name || taskDetail.creator?.name || '管理员' }}</text>
+							<view class="review-result" style="color: #67C23A;">
+								<text>✓ 已确认通过</text>
+							</view>
+						</view>
+						<text class="review-comment">任务已完成，管理员确认通过</text>
+					</view>
+					
+					<view v-else-if="taskDetail.status === 'pending_confirm'" class="admin-review-item pending">
+						<view class="review-header">
+							<text class="reviewer-name">{{ taskDetail.creator?.name || '管理员' }}</text>
+							<view class="review-result" style="color: #E6A23C;">
+								<text>⏱ 待审核</text>
+							</view>
+						</view>
+						<text class="review-comment">等待管理员确认任务完成</text>
+					</view>
+				</view>
+			</view>
+			
+			<!-- 底部占位 -->
+			<view class="bottom-placeholder"></view>
+		</scroll-view>
+		
+		<!-- 底部操作栏 -->
+		<view class="action-bar">
+			<!-- 执行人：提交完成 -->
+			<button 
+				v-if="canComplete" 
+				class="action-btn primary"
+				@click="handleComplete"
+			>
+				提交完成
+			</button>
+			
+			<!-- 执行人：申请延期 -->
+			<button 
+				v-if="canApplyExtension"
+				class="action-btn warning"
+				@click="handleExtension"
+			>
+				申请延期
+			</button>
+			
+			<!-- 管理员：审批延期 -->
+			<button 
+				v-if="canApproveExtension"
+				class="action-btn success"
+				@click="handleShowApproveDialog"
+			>
+				审批延期
+			</button>
+			
+			<!-- 抄送人：确认任务 -->
+			<button 
+				v-if="canReview" 
+				class="action-btn success"
+				@click="handleReview"
+			>
+				抄送者确认任务
+			</button>
+			
+			<!-- 管理员：审核任务 -->
+			<button 
+				v-if="canConfirm" 
+				class="action-btn success"
+				@click="handleConfirm"
+			>
+				管理者审核任务
+			</button>
+			
+			<!-- 管理员：编辑任务 -->
+			<button 
+				v-if="userStore.isAdmin" 
+				class="action-btn"
+				@click="handleEdit"
+			>
+				编辑任务
+			</button>
+			
+			<!-- 管理员：删除任务 -->
+			<button 
+				v-if="userStore.isAdmin" 
+				class="action-btn danger"
+				@click="handleDelete"
+			>
+				删除任务
+			</button>
+		</view>
+		
+		<!-- 延期申请弹窗 -->
+		<extension-dialog 
+			v-if="showExtensionDialog"
+			:current-time="taskDetail.plannedCompletionTime"
+			@close="showExtensionDialog = false"
+			@confirm="onExtensionConfirm"
+		></extension-dialog>
+	</view>
+</template>
+
+<script>
+import { ref, computed, onMounted } from 'vue'
+import { onShow } from '@dcloudio/uni-app'
+import config from '@/config/index.js'
+import { 
+	getTaskDetail, 
+	getTaskReviews, 
+	getExtensionHistory,
+	completeTask,
+	reviewTask,
+	confirmTask,
+	deleteTask,
+	applyExtension,
+	approveExtension
+} from '@/api/index.js'
+import { useUserStore } from '@/stores/user.js'
+import { 
+	formatDate, 
+	formatFileSize,
+	getTaskStatusText, 
+	getTaskStatusColor, 
+	getPriorityText, 
+	getPriorityColor,
+	getExtensionStatusText,
+	getExtensionStatusColor,
+	isTaskOverdue
+} from '@/utils/format.js'
+import { getFullFileUrl } from '@/utils/path.js'
+import ExtensionDialog from './components/ExtensionDialog.vue'
+
+export default {
+	name: 'TaskDetail',
+	components: {
+		ExtensionDialog
+	},
+	setup() {
+		const userStore = useUserStore()
+		
+		const taskId = ref('')
+		const taskDetail = ref({})
+		const reviewRecords = ref([])
+		const extensionHistory = ref([])
+		const viewType = ref('') // 页面类型：executor-执行人视图, cc-抄送人视图, created-创建人视图
+		
+		const showExtensionDialog = ref(false)
+		
+		onMounted(() => {
+			// 获取页面参数
+			const pages = getCurrentPages()
+			const currentPage = pages[pages.length - 1]
+			taskId.value = currentPage.options.id
+			viewType.value = currentPage.options.type || 'executor' // 默认执行人视图
+			
+			if (taskId.value) {
+				loadTaskDetail()
+				loadReviewRecords()
+				loadExtensionHistory()
+			}
+		})
+		
+		// 页面显示时刷新数据（从complete/review页面返回时）
+		onShow(() => {
+			if (taskId.value) {
+				loadTaskDetail()
+				loadReviewRecords()
+				loadExtensionHistory()
+			}
+		})
+		
+		// 加载任务详情
+		const loadTaskDetail = async () => {
+			try {
+				const res = await getTaskDetail(taskId.value)
+				taskDetail.value = res.task || {}
+				console.log('=== 任务详情加载完成 ===')
+				console.log('attachments:', taskDetail.value.attachments)
+			} catch (error) {
+				console.error('加载任务详情失败:', error)
+			}
+		}
+		
+		// 加载审核记录
+		const loadReviewRecords = async () => {
+			try {
+				const res = await getTaskReviews(taskId.value)
+				reviewRecords.value = res.reviews || []
+			} catch (error) {
+				console.error('加载审核记录失败:', error)
+			}
+		}
+		
+		// 加载延期历史
+		const loadExtensionHistory = async () => {
+			try {
+				const res = await getExtensionHistory(taskId.value)
+				extensionHistory.value = res.history || []
+				console.log('延期历史加载完成:', extensionHistory.value)
+			} catch (error) {
+				console.error('加载延期历史失败:', error)
+			}
+		}
+		
+		// 判断任务是否过期
+		const isOverdue = computed(() => {
+			if (!taskDetail.value._id) return false
+			return isTaskOverdue(taskDetail.value.plannedCompletionTime, taskDetail.value.status)
+		})
+		
+		// 处理执行人完成记录：按提交时间排序
+		const sortedExecutorCompletions = computed(() => {
+			if (!taskDetail.value.executorCompletions || taskDetail.value.executorCompletions.length === 0) {
+				return []
+			}
+			
+			// 复制数组以避免修改原数据，并过滤掉无效数据
+			const completions = taskDetail.value.executorCompletions.filter(c => c && c.executor)
+			
+			if (completions.length === 0) {
+				return []
+			}
+			
+			// 排序：已完成的在前（按完成时间倒序），未完成的在后
+			return completions.sort((a, b) => {
+				// 如果都已完成，按完成时间倒序
+				if (a.status === 'completed' && b.status === 'completed') {
+					return new Date(b.completedAt) - new Date(a.completedAt)
+				}
+				// 已完成的排在前面
+				if (a.status === 'completed') return -1
+				if (b.status === 'completed') return 1
+				// 都未完成，保持原顺序
+				return 0
+			})
+		})
+		
+		// 统计已完成的执行人数量
+		const completedExecutorCount = computed(() => {
+			if (!taskDetail.value.executorCompletions) return 0
+			return taskDetail.value.executorCompletions.filter(ec => ec.status === 'completed').length
+		})
+		
+		// 判断是否可以完成任务（执行人 && 进行中状态 && 执行人视图 && 未过期）
+		const canComplete = computed(() => {
+			if (!taskDetail.value._id) return false
+			if (viewType.value !== 'executor') return false
+			if (isOverdue.value) return false  // 过期的任务不能完成
+			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
+			return isExecutor && taskDetail.value.status === 'in_progress'
+		})
+		
+		// 判断是否可以审核（抄送人 && 待审核状态 && 抄送人视图）
+		const canReview = computed(() => {
+			if (!taskDetail.value._id) return false
+			if (viewType.value !== 'cc') return false
+			const isCc = taskDetail.value.ccUsers?.some(u => u._id === userStore.userInfo?._id)
+			return isCc && taskDetail.value.status === 'pending_review'
+		})
+		
+		// 判断是否可以确认（管理员 && 待确认状态）
+		const canConfirm = computed(() => {
+			if (!taskDetail.value._id) return false
+			return userStore.isAdmin && taskDetail.value.status === 'pending_confirm'
+		})
+		
+		// 判断是否可以申请延期（执行人 && 进行中状态 && 执行人视图 && 未申请过）
+		// 注意：即使任务过期，也可以申请延期
+		const canApplyExtension = computed(() => {
+			if (!taskDetail.value._id) return false
+			if (viewType.value !== 'executor') return false
+			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
+			// 允许过期任务申请延期
+			return isExecutor && taskDetail.value.status === 'in_progress' && !taskDetail.value.hasExtensionRequest
+		})
+		
+		// 判断是否可以审批延期（管理员 && 延期待审批状态）
+		const canApproveExtension = computed(() => {
+			if (!taskDetail.value._id) return false
+			return userStore.isAdmin && taskDetail.value.status === 'extension_pending'
+		})
+		
+		// 提交完成
+		const handleComplete = () => {
+			uni.navigateTo({
+				url: `/pages/task/complete?id=${taskId.value}&name=${encodeURIComponent(taskDetail.value.taskName)}`
+			})
+		}
+		
+		// 审核任务
+		const handleReview = () => {
+			uni.navigateTo({
+				url: `/pages/task/review?id=${taskId.value}&name=${encodeURIComponent(taskDetail.value.taskName)}`
+			})
+		}
+		
+		// 确认任务
+		const handleConfirm = () => {
+			uni.showModal({
+				title: '管理者审核任务',
+				content: '确认该任务已完成？',
+				success: async (res) => {
+					if (res.confirm) {
+						try {
+							await confirmTask(taskId.value)
+							uni.showToast({
+								title: '确认成功',
+								icon: 'success'
+							})
+							loadTaskDetail()
+						} catch (error) {
+							console.error('确认失败:', error)
+						}
+					}
+				}
+			})
+		}
+		
+		// 编辑任务
+		const handleEdit = () => {
+			uni.navigateTo({
+				url: `/pages/task/form?id=${taskId.value}`
+			})
+		}
+		
+		// 删除任务
+		const handleDelete = () => {
+			uni.showModal({
+				title: '删除任务',
+				content: '确认删除该任务？删除后无法恢复',
+				confirmColor: '#F56C6C',
+				success: async (res) => {
+					if (res.confirm) {
+						try {
+							await deleteTask(taskId.value)
+							uni.showToast({
+								title: '删除成功',
+								icon: 'success'
+							})
+							setTimeout(() => {
+								uni.navigateBack()
+							}, 1500)
+						} catch (error) {
+							console.error('删除失败:', error)
+						}
+					}
+				}
+			})
+		}
+		
+		// 申请延期
+		const handleExtension = () => {
+			showExtensionDialog.value = true
+		}
+		
+		const onExtensionConfirm = async (data) => {
+			try {
+				await applyExtension(taskId.value, data)
+				uni.showToast({
+					title: '申请成功',
+					icon: 'success'
+				})
+				showExtensionDialog.value = false
+				loadTaskDetail()
+				loadExtensionHistory()
+			} catch (error) {
+				console.error('申请延期失败:', error)
+			}
+		}
+		
+		// 显示审批弹窗 -> 跳转到审批页面
+		const handleShowApproveDialog = () => {
+			// 获取最新的延期申请
+			if (!extensionHistory.value || extensionHistory.value.length === 0) {
+				uni.showToast({
+					title: '未找到延期申请',
+					icon: 'none'
+				})
+				return
+			}
+			
+			const latestExtension = extensionHistory.value[0]
+			
+			if (latestExtension.status !== 'pending') {
+				uni.showToast({
+					title: '该申请已处理',
+					icon: 'none'
+				})
+				return
+			}
+			
+			// 跳转到审批页面，传递延期申请数据
+			uni.navigateTo({
+				url: `/pages/task/approve-extension?taskId=${taskId.value}&data=${encodeURIComponent(JSON.stringify(latestExtension))}`
+			})
+		}
+		
+		// 获取审核记录中的图片
+		const getReviewImages = (attachments) => {
+			if (!attachments || !Array.isArray(attachments)) return []
+			return attachments.filter(att => {
+				const ext = (att.originalName || '').split('.').pop().toLowerCase()
+				return ['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)
+			})
+		}
+		
+		// 获取审核记录中的文件
+		const getReviewFiles = (attachments) => {
+			if (!attachments || !Array.isArray(attachments)) return []
+			return attachments.filter(att => {
+				const ext = (att.originalName || '').split('.').pop().toLowerCase()
+				return !['jpg', 'jpeg', 'png', 'gif', 'webp'].includes(ext)
+			})
+		}
+		
+		// 获取文件完整URL
+		const getFileUrl = (path) => {
+			return getFullFileUrl(path)
+		}
+		
+		// 预览审核图片
+		const previewReviewImage = (attachments, index) => {
+			const images = getReviewImages(attachments)
+			const urls = images.map(img => getFileUrl(img.path))
+			uni.previewImage({
+				urls: urls,
+				current: index
+			})
+		}
+		
+		// 获取文件图标
+		const getFileIcon = (mimetype) => {
+			if (!mimetype) return '📄'
+			if (mimetype.startsWith('image/')) return '🖼'
+			if (mimetype.startsWith('video/')) return '🎬'
+			if (mimetype.includes('pdf')) return '📕'
+			if (mimetype.includes('word') || mimetype.includes('document')) return '📘'
+			if (mimetype.includes('excel') || mimetype.includes('spreadsheet')) return '📗'
+			if (mimetype.includes('powerpoint') || mimetype.includes('presentation')) return '📙'
+			if (mimetype.includes('zip') || mimetype.includes('rar') || mimetype.includes('7z')) return '📦'
+			return '📄'
+		}
+		
+		// 格式化文件大小
+		const formatFileSize = (bytes) => {
+			if (!bytes || bytes === 0) return '0 B'
+			const k = 1024
+			const sizes = ['B', 'KB', 'MB', 'GB']
+			const i = Math.floor(Math.log(bytes) / Math.log(k))
+			return (bytes / Math.pow(k, i)).toFixed(2) + ' ' + sizes[i]
+		}
+		
+		// 预览附件（通用）
+		const previewAttachment = (file) => {
+			console.log('=== previewAttachment ===')
+			console.log('file:', file)
+			
+			if (!file) {
+				console.error('文件对象为空')
+				uni.showToast({ title: '文件信息错误', icon: 'none' })
+				return
+			}
+			
+			if (!file.path && !file.filePath) {
+				console.error('文件路径为空:', file)
+				uni.showToast({ title: '文件路径错误', icon: 'none' })
+				return
+			}
+			
+			const filePath = file.path || file.filePath
+			const mimetype = file.mimetype || ''
+			
+			console.log('filePath:', filePath)
+			console.log('mimetype:', mimetype)
+			
+			// 如果是图片，使用 uni.previewImage
+			if (mimetype.startsWith('image/')) {
+				const fileUrl = getFileUrl(filePath)
+				console.log('预览图片URL:', fileUrl)
+				uni.previewImage({
+					urls: [fileUrl],
+					current: 0,
+					fail: (err) => {
+						console.error('预览失败:', err)
+						uni.showToast({ title: '预览失败', icon: 'none' })
+					}
+				})
+			} else {
+				// 其他文件，下载查看
+				downloadFile(file)
+			}
+		}
+		
+		// 下载文件
+		const downloadFile = (file) => {
+			const fileUrl = getFileUrl(file.path || file.filePath)
+			
+			uni.showLoading({
+				title: '下载中...',
+				mask: true
+			})
+			
+			uni.downloadFile({
+				url: fileUrl,
+				success: (res) => {
+					uni.hideLoading()
+					if (res.statusCode === 200) {
+						// 检查文件类型，微信小程序支持的文档格式
+						const supportedTypes = ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']
+						const fileName = file.originalName || ''
+						const ext = fileName.split('.').pop()?.toLowerCase()
+						
+						if (supportedTypes.includes(ext)) {
+							// 支持的格式，尝试打开
+							uni.openDocument({
+								filePath: res.tempFilePath,
+								showMenu: true,
+								success: () => {
+									console.log('打开文档成功')
+								},
+								fail: (err) => {
+									console.error('打开文档失败:', err)
+									// 打开失败，提示用户保存
+									uni.showModal({
+										title: '提示',
+										content: '无法预览此文件，文件已下载到临时目录',
+										showCancel: false
+									})
+								}
+							})
+						} else {
+							// 不支持的格式，提示用户
+							uni.showModal({
+								title: '提示',
+								content: `${fileName}\n\n该文件格式（.${ext}）暂不支持在线预览，已下载到临时目录。\n\n您可以通过其他方式查看该文件。`,
+								showCancel: false,
+								confirmText: '知道了'
+							})
+						}
+					}
+				},
+				fail: (err) => {
+					uni.hideLoading()
+					console.error('下载文件失败:', err)
+					uni.showToast({
+						title: '下载失败',
+						icon: 'none'
+					})
+				}
+			})
+		}
+		
+		// 格式化方法
+		const getStatusText = (status) => getTaskStatusText(status)
+		const getStatusColor = (status) => getTaskStatusColor(status)
+		const getExtStatusText = (status) => getExtensionStatusText(status)
+		const getExtStatusColor = (status) => getExtensionStatusColor(status)
+		
+	return {
+		userStore,
+		taskDetail,
+		reviewRecords,
+		extensionHistory,
+		showExtensionDialog,
+		isOverdue,
+		sortedExecutorCompletions,
+		completedExecutorCount,
+		canComplete,
+		canReview,
+		canConfirm,
+		canApplyExtension,
+		canApproveExtension,
+		handleComplete,
+		handleReview,
+		handleConfirm,
+		handleEdit,
+		handleDelete,
+		handleExtension,
+		onExtensionConfirm,
+		handleShowApproveDialog,
+		getFileIcon,
+		getReviewImages,
+		getReviewFiles,
+		getFileUrl,
+		previewReviewImage,
+		previewAttachment,
+		downloadFile,
+		formatDate,
+		formatFileSize,
+		getStatusText,
+		getStatusColor,
+		getPriorityText,
+		getPriorityColor,
+		getExtStatusText,
+		getExtStatusColor
+	}
+	}
+}
+</script>
+
+<style scoped lang="scss">
+.task-detail-container {
+	min-height: 100vh;
+	background: #F5F7FA;
+	display: flex;
+	flex-direction: column;
+	padding-bottom: 120rpx;
+	padding: 24rpx;
+}
+
+.detail-content {
+	flex: 1;
+}
+
+.section {
+	margin-bottom: 24rpx;
+	
+	.section-title {
+		display: flex;
+		align-items: center;
+		margin-bottom: 16rpx;
+		font-size: 32rpx;
+		font-weight: bold;
+		color: #303133;
+		
+		.title-icon {
+			margin-right: 12rpx;
+			font-size: 36rpx;
+		}
+	}
+}
+
+.info-card {
+	background: #ffffff;
+	border-radius: 16rpx;
+	padding: 32rpx;
+	
+	.card-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: flex-start;
+		margin-bottom: 32rpx;
+		padding-bottom: 24rpx;
+		border-bottom: 1px solid #EBEEF5;
+		
+		.task-name {
+			flex: 1;
+			font-size: 36rpx;
+			font-weight: bold;
+			color: #303133;
+			margin-right: 16rpx;
+		}
+		
+		.task-priority {
+			padding: 8rpx 20rpx;
+			border-radius: 24rpx;
+			font-size: 24rpx;
+			color: #ffffff;
+		}
+	}
+	
+	.info-item {
+		display: flex;
+		margin-bottom: 24rpx;
+		
+		&:last-child {
+			margin-bottom: 0;
+		}
+		
+		&.overdue-warning {
+			background: #FEF0F0;
+			padding: 16rpx;
+			border-radius: 8rpx;
+			border-left: 4rpx solid #F56C6C;
+		}
+		
+		.label {
+			min-width: 200rpx;
+			font-size: 28rpx;
+			color: #909399;
+		}
+		
+		.value {
+			flex: 1;
+			font-size: 28rpx;
+			color: #303133;
+			
+			&.desc {
+				line-height: 1.6;
+			}
+			
+			&.overdue-text {
+				color: #F56C6C;
+				font-weight: bold;
+			}
+			
+			&.overdue-time {
+				color: #F56C6C;
+			}
+		}
+		
+		.task-status {
+			padding: 6rpx 16rpx;
+			border-radius: 24rpx;
+			font-size: 22rpx;
+			color: #ffffff;
+		}
+	}
+}
+
+.subtask-list, .extension-list, .review-list, .attachment-list {
+	.subtask-item, .extension-item, .review-item, .attachment-item {
+		background: #ffffff;
+		border-radius: 16rpx;
+		padding: 24rpx;
+		margin-bottom: 16rpx;
+		
+		&:last-child {
+			margin-bottom: 0;
+		}
+	}
+}
+
+.subtask-item {
+	.subtask-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 16rpx;
+		
+		.subtask-name {
+			flex: 1;
+			font-size: 28rpx;
+			font-weight: bold;
+			color: #303133;
+			margin-right: 16rpx;
+		}
+		
+		.subtask-status {
+			padding: 4rpx 12rpx;
+			border-radius: 20rpx;
+			font-size: 20rpx;
+			color: #ffffff;
+		}
+	}
+	
+	.subtask-desc {
+		font-size: 24rpx;
+		color: #606266;
+		line-height: 1.6;
+		margin-bottom: 16rpx;
+	}
+	
+	.subtask-footer {
+		display: flex;
+		justify-content: space-between;
+		font-size: 22rpx;
+		color: #909399;
+	}
+}
+
+.attachment-item {
+	display: flex;
+	align-items: center;
+	
+	.file-icon {
+		font-size: 48rpx;
+		margin-right: 16rpx;
+	}
+	
+	.file-info {
+		flex: 1;
+		
+		.file-name {
+			display: block;
+			font-size: 28rpx;
+			color: #303133;
+			margin-bottom: 8rpx;
+		}
+		
+		.file-size {
+			display: block;
+			font-size: 22rpx;
+			color: #909399;
+		}
+	}
+	
+	.file-arrow {
+		font-size: 28rpx;
+		color: #C0C4CC;
+	}
+}
+
+.extension-item, .review-item {
+	.ext-header, .review-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 16rpx;
+		
+		.ext-applicant, .reviewer-name {
+			font-size: 28rpx;
+			font-weight: bold;
+			color: #303133;
+		}
+		
+		.ext-status {
+			padding: 4rpx 12rpx;
+			border-radius: 20rpx;
+			font-size: 20rpx;
+			color: #ffffff;
+		}
+		
+		.review-result {
+			font-size: 26rpx;
+			font-weight: bold;
+		}
+	}
+	
+	.ext-info {
+		display: flex;
+		font-size: 24rpx;
+		margin-bottom: 8rpx;
+		
+		.label {
+			color: #909399;
+			margin-right: 8rpx;
+		}
+		
+		.value {
+			flex: 1;
+			color: #606266;
+		}
+	}
+	
+	.ext-footer, .review-time {
+		font-size: 22rpx;
+		color: #909399;
+		margin-top: 8rpx;
+	}
+	
+	.review-comment {
+		display: block;
+		font-size: 26rpx;
+		color: #606266;
+		line-height: 1.6;
+		margin-bottom: 8rpx;
+	}
+	
+	.review-attachments {
+		margin-top: 16rpx;
+		margin-bottom: 16rpx;
+		
+		.attachments-title {
+			display: block;
+			font-size: 24rpx;
+			color: #909399;
+			margin-bottom: 12rpx;
+		}
+		
+		.review-images {
+			display: flex;
+			flex-wrap: wrap;
+			gap: 12rpx;
+			margin-bottom: 12rpx;
+			
+			.review-img {
+				width: 160rpx;
+				height: 160rpx;
+				border-radius: 8rpx;
+			}
+		}
+		
+		.review-files {
+			.review-file-item {
+				display: flex;
+				align-items: center;
+				padding: 12rpx 16rpx;
+				background: #F5F7FA;
+				border-radius: 8rpx;
+				margin-bottom: 8rpx;
+				
+				&:last-child {
+					margin-bottom: 0;
+				}
+				
+				.file-icon {
+					font-size: 32rpx;
+					margin-right: 12rpx;
+				}
+				
+				.file-name {
+					flex: 1;
+					font-size: 24rpx;
+					color: #303133;
+					overflow: hidden;
+					text-overflow: ellipsis;
+					white-space: nowrap;
+				}
+			}
+		}
+	}
+}
+
+.admin-review-item {
+	padding: 24rpx 0;
+	
+	&.pending {
+		opacity: 0.7;
+	}
+	
+	.review-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 16rpx;
+		
+		.reviewer-name {
+			font-size: 28rpx;
+			font-weight: bold;
+			color: #303133;
+		}
+		
+		.review-result {
+			font-size: 26rpx;
+			font-weight: bold;
+		}
+	}
+	
+	.review-comment {
+		display: block;
+		font-size: 26rpx;
+		color: #606266;
+		line-height: 1.6;
+		margin-bottom: 16rpx;
+	}
+	
+	.review-time {
+		display: block;
+		font-size: 24rpx;
+		color: #909399;
+	}
+}
+
+// 延期申请状态卡片
+.extension-status-card {
+	background: #ffffff;
+	border-radius: 12rpx;
+	padding: 24rpx;
+	border-left: 4rpx solid #409EFF;
+	
+	&.pending {
+		border-left-color: #E6A23C;
+		background: #FDF6EC;
+	}
+	
+	&.approved {
+		border-left-color: #67C23A;
+		background: #F0F9FF;
+	}
+	
+	&.rejected {
+		border-left-color: #F56C6C;
+		background: #FEF0F0;
+	}
+	
+	.status-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 20rpx;
+		padding-bottom: 16rpx;
+		border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+		
+		.status-label {
+			font-size: 30rpx;
+			font-weight: bold;
+		}
+		
+		.status-time {
+			font-size: 24rpx;
+			color: #909399;
+		}
+	}
+	
+	.pending & .status-label {
+		color: #E6A23C;
+	}
+	
+	.approved & .status-label {
+		color: #67C23A;
+	}
+	
+	.rejected & .status-label {
+		color: #F56C6C;
+	}
+	
+	.status-info {
+		display: flex;
+		margin-bottom: 12rpx;
+		font-size: 26rpx;
+		
+		&:last-child {
+			margin-bottom: 0;
+		}
+		
+		&.alert {
+			padding: 12rpx;
+			background: rgba(245, 108, 108, 0.1);
+			border-radius: 8rpx;
+			flex-direction: column;
+			
+			.label {
+				margin-bottom: 8rpx;
+			}
+		}
+		
+		.label {
+			min-width: 180rpx;
+			color: #909399;
+		}
+		
+		.value {
+			flex: 1;
+			color: #606266;
+			line-height: 1.6;
+			
+			&.highlight {
+				color: #409EFF;
+				font-weight: bold;
+			}
+		}
+	}
+	
+	.status-footer {
+		margin-top: 16rpx;
+		padding-top: 16rpx;
+		border-top: 1px solid rgba(0, 0, 0, 0.05);
+		font-size: 24rpx;
+		color: #909399;
+		text-align: center;
+	}
+}
+
+// 延期历史列表
+.extension-list {
+	.extension-item {
+		background: #ffffff;
+		border-radius: 12rpx;
+		padding: 24rpx;
+		margin-bottom: 16rpx;
+		
+		&:last-child {
+			margin-bottom: 0;
+		}
+		
+		.ext-header {
+			display: flex;
+			justify-content: space-between;
+			align-items: center;
+			margin-bottom: 16rpx;
+			padding-bottom: 12rpx;
+			border-bottom: 1px solid #F5F7FA;
+			
+			.ext-applicant {
+				font-size: 28rpx;
+				font-weight: bold;
+				color: #303133;
+			}
+			
+			.ext-status {
+				padding: 4rpx 12rpx;
+				border-radius: 12rpx;
+				font-size: 22rpx;
+				color: #ffffff;
+			}
+		}
+		
+		.ext-info {
+			display: flex;
+			margin-bottom: 8rpx;
+			font-size: 26rpx;
+			
+			&:last-child {
+				margin-bottom: 0;
+			}
+			
+			.label {
+				min-width: 180rpx;
+				color: #909399;
+			}
+			
+			.value {
+				flex: 1;
+				color: #606266;
+				line-height: 1.6;
+			}
+		}
+	}
+}
+
+.bottom-placeholder {
+	height: 40rpx;
+}
+
+.action-bar {
+	position: fixed;
+	bottom: 0;
+	left: 0;
+	right: 0;
+	display: flex;
+	padding: 16rpx 24rpx;
+	background: #ffffff;
+	border-top: 1px solid #EBEEF5;
+	box-shadow: 0 -2rpx 8rpx rgba(0, 0, 0, 0.05);
+	
+	.action-btn {
+		flex: 1;
+		height: 72rpx;
+		line-height: 72rpx;
+		font-size: 28rpx;
+		border-radius: 8rpx;
+		border: 1px solid #DCDFE6;
+		background: #ffffff;
+		color: #606266;
+		margin: 0 8rpx;
+		
+		&:first-child {
+			margin-left: 0;
+		}
+		
+		&:last-child {
+			margin-right: 0;
+		}
+		
+		&::after {
+			border: none;
+		}
+		
+		&.primary {
+			background: #409EFF;
+			color: #ffffff;
+			border-color: #409EFF;
+		}
+		
+		&.success {
+			background: #67C23A;
+			color: #ffffff;
+			border-color: #67C23A;
+		}
+		
+		&.warning {
+			background: #E6A23C;
+			color: #ffffff;
+			border-color: #E6A23C;
+		}
+		
+		&.danger {
+			background: #F56C6C;
+			color: #ffffff;
+			border-color: #F56C6C;
+		}
+	}
+}
+
+// 任务附件、完成记录样式
+.attachments-section, .completion-card {
+	background: #F5F7FA;
+	border-radius: 12rpx;
+	padding: 20rpx;
+	margin-top: 16rpx;
+	
+	.attachments-title {
+		display: flex;
+		align-items: center;
+		font-size: 24rpx;
+		color: #606266;
+		margin-bottom: 12rpx;
+		
+		.title-icon {
+			margin-right: 8rpx;
+		}
+	}
+}
+
+.attachments-list {
+	.attachment-item {
+		display: flex;
+		align-items: center;
+		background: #ffffff;
+		border-radius: 8rpx;
+		padding: 16rpx;
+		margin-bottom: 12rpx;
+		
+		&:last-child {
+			margin-bottom: 0;
+		}
+		
+		.file-icon {
+			font-size: 36rpx;
+			margin-right: 12rpx;
+		}
+		
+		.file-info {
+			flex: 1;
+			display: flex;
+			flex-direction: column;
+			
+			.file-name {
+				font-size: 26rpx;
+				color: #303133;
+				margin-bottom: 4rpx;
+				overflow: hidden;
+				text-overflow: ellipsis;
+				white-space: nowrap;
+			}
+			
+			.file-size {
+				font-size: 22rpx;
+				color: #909399;
+			}
+		}
+		
+		.view-icon {
+			font-size: 32rpx;
+			color: #409EFF;
+			margin-left: 12rpx;
+		}
+	}
+}
+
+.completion-card {
+	background: #ffffff;
+	border-radius: 12rpx;
+	padding: 24rpx;
+	margin-bottom: 16rpx;
+	
+	&:last-child {
+		margin-bottom: 0;
+	}
+	
+	&.pending-completion {
+		background: #F5F7FA;
+		opacity: 0.8;
+	}
+	
+	.completion-header {
+		display: flex;
+		justify-content: space-between;
+		align-items: center;
+		margin-bottom: 12rpx;
+		
+		.completer-name {
+			font-size: 28rpx;
+			font-weight: bold;
+			color: #303133;
+			display: flex;
+			align-items: center;
+			gap: 12rpx;
+			
+			.completed-badge {
+				display: inline-block;
+				padding: 4rpx 12rpx;
+				background: #67C23A;
+				color: #ffffff;
+				font-size: 20rpx;
+				font-weight: normal;
+				border-radius: 12rpx;
+			}
+			
+			.pending-badge {
+				display: inline-block;
+				padding: 4rpx 12rpx;
+				background: #E6A23C;
+				color: #ffffff;
+				font-size: 20rpx;
+				font-weight: normal;
+				border-radius: 12rpx;
+			}
+		}
+		
+		.completion-time {
+			font-size: 22rpx;
+			color: #909399;
+		}
+	}
+	
+	.completion-note {
+		display: block;
+		font-size: 26rpx;
+		color: #606266;
+		line-height: 1.6;
+		margin-bottom: 12rpx;
+		
+		&.empty {
+			color: #C0C4CC;
+			font-style: italic;
+		}
+	}
+	
+	.pending-tip {
+		padding: 16rpx 0;
+		text-align: center;
+		
+		text {
+			font-size: 24rpx;
+			color: #909399;
+		}
+	}
+	
+	.completion-attachments {
+		margin-top: 16rpx;
+		
+		.attachments-title {
+			display: block;
+			font-size: 24rpx;
+			color: #606266;
+			margin-bottom: 12rpx;
+		}
+	}
+}
+</style>
+
