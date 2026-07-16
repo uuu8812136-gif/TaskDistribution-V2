@@ -44,10 +44,15 @@ test('username normalization is globally unique and preserves legacy fields', as
   assert.equal(first.username, 'Admin');
   assert.equal(first.usernameNormalized, 'admin');
   assert.equal(first.isSuperAdmin, false);
+  assert.equal(first.isSystemAccount, false);
   assert.equal(first.tokenVersion, 0);
   assert.equal(await first.comparePassword('test-password-1'), true);
   assert.equal(await first.comparePassword('wrong-password'), false);
-  assert.equal(first.toJSON().password, undefined);
+  const publicUser = first.toJSON();
+  assert.equal(publicUser.password, undefined);
+  assert.equal(publicUser.isSystemAccount, undefined);
+  assert.equal(publicUser.username, 'Admin');
+  assert.equal(publicUser.name, 'First Admin');
   assert.deepEqual(first.roles, ['admin']);
 
   await assert.rejects(
@@ -58,6 +63,35 @@ test('username normalization is globally unique and preserves legacy fields', as
     }),
     (error) => error?.code === 11000
   );
+});
+
+test('system-account marker remains internal when explicitly enabled', async () => {
+  const systemUser = await User.create({
+    username: 'internal-recovery-user',
+    password: 'test-password-4',
+    name: 'Internal Recovery User',
+    phone: '13800138000',
+    email: 'internal-recovery@example.test',
+    avatar: '/private/internal-recovery.png',
+    isSuperAdmin: true,
+    isSystemAccount: true
+  });
+
+  assert.equal(systemUser.isSystemAccount, true);
+  assert.equal(systemUser.toObject().isSystemAccount, true);
+  assert.equal(systemUser.toObject().phone, '13800138000');
+  const publicSystemUser = systemUser.toJSON();
+  assert.equal(publicSystemUser.name, 'System Maintenance');
+  for (const field of [
+    'isSystemAccount',
+    'username',
+    'usernameNormalized',
+    'phone',
+    'email',
+    'avatar'
+  ]) {
+    assert.equal(Object.hasOwn(publicSystemUser, field), false);
+  }
 });
 
 test('changing username recomputes the normalized identity key', async () => {

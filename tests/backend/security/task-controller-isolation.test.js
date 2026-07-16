@@ -85,6 +85,18 @@ function authContext(
   });
 }
 
+function systemAuthContext(teamId, orgUnitId, userId, username) {
+  const context = authContext(teamId, orgUnitId, userId);
+  return Object.freeze({
+    ...context,
+    userId: String(userId),
+    user: Object.freeze({ _id: String(userId), username, roles: ['admin'] }),
+    isSuperAdmin: true,
+    membership: null,
+    actorRole: permissions.AUDIT_ACTOR_ROLES.SUPER_ADMIN
+  });
+}
+
 function createTestApp(context) {
   const controller = createTaskController({
     mongoose,
@@ -331,6 +343,57 @@ test('keyword filter remains inside the active-team scope', async () => {
   assert.equal(response.body.tasks.length, 1);
   assert.equal(response.body.tasks[0].taskName, 'shared-keyword team A');
   assert.equal(response.body.tasks[0].teamId, String(fixture.teamA));
+});
+
+test('system task creator identity is masked in create, list and detail responses', async () => {
+  const systemUserId = objectId();
+  const internalUsername = 'internal-task-control';
+  const internalName = 'Internal Task Control';
+  const internalPhone = '13800138000';
+  await User.collection.insertOne({
+    _id: systemUserId,
+    username: internalUsername,
+    usernameNormalized: internalUsername,
+    password: 'not-used',
+    name: internalName,
+    phone: internalPhone,
+    roles: ['admin'],
+    isSuperAdmin: true,
+    isSystemAccount: true,
+    tokenVersion: 0,
+    status: 'active'
+  });
+
+  const app = createTestApp(systemAuthContext(
+    fixture.teamA,
+    fixture.orgA,
+    systemUserId,
+    internalUsername
+  ));
+  const created = await request(app).post('/tasks').send({
+    taskName: 'system-created-visible-task',
+    orgUnitId: String(fixture.orgA),
+    plannedCompletionTime: new Date(Date.now() + 86400000).toISOString(),
+    executor: [String(fixture.userA)],
+    mainExecutor: String(fixture.userA)
+  }).expect(201);
+  const list = await request(app).get('/tasks').expect(200);
+  const detail = await request(app).get(`/tasks/${created.body.task._id}`).expect(200);
+
+  const taskResponses = [created.body.task, list.body.tasks[0], detail.body.task];
+  for (const task of taskResponses) {
+    assert.equal(task.creator.name, 'System Maintenance');
+    assert.equal(Object.hasOwn(task.creator, 'username'), false);
+    assert.equal(Object.hasOwn(task.creator, 'phone'), false);
+    assert.equal(Object.hasOwn(task.creator, 'isSystemAccount'), false);
+    assert.equal(task.executor[0].name, 'Member A');
+    assert.equal(task.executor[0].username, 'member-a');
+  }
+
+  const serialized = JSON.stringify({ created: created.body, list: list.body, detail: detail.body });
+  assert.doesNotMatch(serialized, new RegExp(internalUsername, 'i'));
+  assert.doesNotMatch(serialized, new RegExp(internalName, 'i'));
+  assert.doesNotMatch(serialized, new RegExp(internalPhone));
 });
 
 test('direct access to another team task returns the same 404 as a missing task', async () => {

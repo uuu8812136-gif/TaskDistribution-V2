@@ -19,6 +19,7 @@
     "init:clear": "node init-db.js --clear",
     "check": "node check-db.js",
     "migrate:legacy-tenant": "node script/migrateLegacyTenant.js",
+    "provision:developer-account": "node script/provisionDeveloperAccount.js",
     "seed:v2-demo": "node script/seedV2Demo.js",
     "start:v2-e2e": "node script/startV2LocalE2E.js"
   },

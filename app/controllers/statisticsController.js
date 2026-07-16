@@ -6,6 +6,7 @@ const User = require('../models/User');
 const TaskReview = require('../models/TaskReview');
 const ExtensionRequest = require('../models/ExtensionRequest');
 const TeamMembership = require('../models/TeamMembership');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../config/systemAccount');
 const {
   DATA_SCOPES,
   MEMBERSHIP_STATUSES,
@@ -192,17 +193,22 @@ async function loadTeamUserNames({ TeamMembershipModel, UserModel, tasks, review
   }).select('teamId userId').lean();
   const allowedUserIds = [...new Set(memberships.map((item) => idOf(item.userId)))];
   const users = await UserModel.find({ _id: { $in: allowedUserIds } })
-    .select('_id name username')
+    .select('_id name username isSystemAccount')
     .lean();
-  const usersById = new Map(users.map((user) => [idOf(user._id), user]));
+  const displayNamesById = new Map(users.map((user) => [
+    idOf(user._id),
+    user.isSystemAccount === true
+      ? SYSTEM_ACCOUNT_DISPLAY_NAME
+      : user.name || user.username || ''
+  ]));
   const namesByTeamAndUser = new Map();
 
   for (const membership of memberships) {
-    const user = usersById.get(idOf(membership.userId));
-    if (user) {
+    const name = displayNamesById.get(idOf(membership.userId));
+    if (name !== undefined) {
       namesByTeamAndUser.set(
         pairKey(membership.teamId, membership.userId),
-        user.name || user.username || ''
+        name
       );
     }
   }

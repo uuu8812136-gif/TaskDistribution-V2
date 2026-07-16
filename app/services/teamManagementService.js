@@ -51,6 +51,7 @@ const DEFAULT_PROJECT_ADMIN_PERMISSIONS = Object.freeze([
 
 const PRIVILEGE_FIELDS = new Set([
   'isSuperAdmin',
+  'isSystemAccount',
   'tokenVersion',
   'moduleDataScopes',
   'positionLevel',
@@ -698,6 +699,11 @@ function createTeamManagementService({
       throw inputError('page and limit are invalid');
     }
 
+    const systemUserIds = await UserModel.distinct('_id', { isSystemAccount: true });
+    if (systemUserIds.length > 0) {
+      query.userId = { $nin: systemUserIds };
+    }
+
     const [memberships, total] = await Promise.all([
       TeamMembershipModel.find(query)
         .populate({ path: 'userId', select: '_id username name phone email avatar status' })
@@ -778,7 +784,11 @@ function createTeamManagementService({
       let createdUser = false;
       if (input.existingUserId !== undefined) {
         const existingUserId = normalizeObjectId(input.existingUserId, 'User');
-        user = await UserModel.findOne({ _id: existingUserId, status: 'active' }).session(session);
+        user = await UserModel.findOne({
+          _id: existingUserId,
+          status: 'active',
+          isSystemAccount: { $ne: true }
+        }).session(session);
         if (!user) throw notFound('User');
       } else {
         const username = requiredString(input.username, 'username', { min: 3, max: 50 });
@@ -792,6 +802,7 @@ function createTeamManagementService({
           email: optionalString(input.email, 'email', { max: 254 }),
           roles: ['executor'],
           isSuperAdmin: false,
+          isSystemAccount: false,
           tokenVersion: 0,
           status: 'active'
         });
@@ -868,8 +879,11 @@ function createTeamManagementService({
       }).session(session);
       if (!membership) throw notFound('Team membership');
       assertManageMember(authContext, membership, requestedRole);
-      const user = await UserModel.findById(membership.userId).session(session);
-      if (!user) throw notFound('User');
+      const user = await UserModel.findOne({
+        _id: membership.userId,
+        isSystemAccount: { $ne: true }
+      }).session(session);
+      if (!user) throw notFound('Team membership');
       const before = memberAuditSnapshot(membership, user);
       let orgUnit = null;
       if (input.orgUnitId !== undefined) {

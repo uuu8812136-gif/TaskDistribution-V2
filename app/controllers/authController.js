@@ -3,6 +3,7 @@
 const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
 const User = require('../models/User');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../config/systemAccount');
 const {
   AUDIT_ACTIONS,
   AUDIT_ACTOR_ROLES,
@@ -90,13 +91,18 @@ async function recordLoginFailure(req, usernameNormalized, failureReason) {
 }
 
 function serializeUser(user, overrides = {}) {
+  const identity = user.isSystemAccount === true
+    ? { name: SYSTEM_ACCOUNT_DISPLAY_NAME }
+    : {
+        username: user.username,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        avatar: user.avatar
+      };
   return {
     _id: normalizeId(user._id),
-    username: user.username,
-    name: user.name,
-    phone: user.phone,
-    email: user.email,
-    avatar: user.avatar,
+    ...identity,
     roles: Array.isArray(user.roles) ? [...user.roles] : [],
     status: user.status,
     isSuperAdmin: user.isSuperAdmin === true,

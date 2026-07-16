@@ -223,6 +223,7 @@ async function loadSnapshot(db, session = null) {
       username: 1,
       usernameNormalized: 1,
       isSuperAdmin: 1,
+      isSystemAccount: 1,
       tokenVersion: 1,
       roles: 1,
       status: 1,
@@ -610,7 +611,11 @@ function inspectUserIdentity(snapshot, collector, requestedSuperAdminUsername) {
 
   if (selectedUser) {
     for (const user of snapshot.users) {
-      if (user.isSuperAdmin === true && !sameId(user._id, selectedUser._id)) {
+      if (
+        user.isSuperAdmin === true &&
+        user.isSystemAccount !== true &&
+        !sameId(user._id, selectedUser._id)
+      ) {
         addAnomaly(
           collector,
           'UNEXPECTED_EXISTING_SUPER_ADMIN',
@@ -1282,9 +1287,11 @@ function createMigrationPlan({
     if (canonical && user.usernameNormalized !== canonical) {
       set.usernameNormalized = canonical;
     }
-    const desiredSuperAdmin = selectedUserId
-      ? userId === selectedUserId
-      : user.isSuperAdmin === true;
+    const desiredSuperAdmin = user.isSystemAccount === true
+      ? user.isSuperAdmin === true
+      : selectedUserId
+        ? userId === selectedUserId
+        : user.isSuperAdmin === true;
     if (user.isSuperAdmin !== desiredSuperAdmin) {
       set.isSuperAdmin = desiredSuperAdmin;
     }
@@ -1293,6 +1300,24 @@ function createMigrationPlan({
     }
     if (Object.keys(set).length > 0) {
       userUpdates.push({ _id: user._id, set });
+    }
+
+    if (user.isSystemAccount === true) {
+      const existingSystemMembership = membershipInspection.targetMemberships.get(userId) || null;
+      if (
+        existingSystemMembership &&
+        existingSystemMembership.status !== MEMBERSHIP_STATUSES.DISABLED
+      ) {
+        membershipWrites.push({
+          existing: existingSystemMembership,
+          _id: existingSystemMembership._id,
+          teamId: target.teamId,
+          userId: user._id,
+          set: { status: MEMBERSHIP_STATUSES.DISABLED },
+          joinedAt: existingSystemMembership.joinedAt || safeDate(user.createdAt, now)
+        });
+      }
+      continue;
     }
 
     const existing = membershipInspection.targetMemberships.get(userId) || null;

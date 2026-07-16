@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../config/systemAccount');
 
 function normalizeUsername(value) {
   return typeof value === 'string'
@@ -58,6 +59,13 @@ const userSchema = new mongoose.Schema({
 
   // V2 global identity. Team-level roles live in TeamMembership.
   isSuperAdmin: {
+    type: Boolean,
+    default: false,
+    required: true
+  },
+
+  // Internal recovery identities are never exposed through application APIs.
+  isSystemAccount: {
     type: Boolean,
     default: false,
     required: true
@@ -141,6 +149,15 @@ userSchema.methods.comparePassword = async function(candidatePassword) {
 userSchema.methods.toJSON = function() {
   const user = this.toObject();
   delete user.password;
+  if (user.isSystemAccount === true) {
+    user.name = SYSTEM_ACCOUNT_DISPLAY_NAME;
+    delete user.username;
+    delete user.usernameNormalized;
+    delete user.phone;
+    delete user.email;
+    delete user.avatar;
+  }
+  delete user.isSystemAccount;
   return user;
 };
 

@@ -16,8 +16,19 @@ const {
 const {
   COLLECTIONS,
   ROLE_PERMISSION_MAP,
+  TARGET_ROOT_ORG,
+  TARGET_TEAM,
   createLegacyTenantMigrationService
 } = require('../../../app/services/legacyTenantMigrationService');
+const {
+  MEMBERSHIP_ROLES,
+  MEMBERSHIP_STATUSES,
+  ORG_UNIT_STATUSES,
+  POSITION_KEYS,
+  POSITION_LEVEL_BY_KEY,
+  TEAM_STATUSES,
+  deriveModuleDataScopes
+} = require('../../../app/config/permissions');
 
 const TEST_DATABASE_NAME = `legacy_migration_${randomUUID().replaceAll('-', '')}_v2_test`;
 const TEST_DATA_ROOT = path.resolve(
@@ -233,6 +244,97 @@ test('default mode performs a complete dry-run without database writes', async (
   const afterTask = await mongoose.connection.db.collection(COLLECTIONS.tasks)
     .findOne({ _id: fixture.taskId });
   assert.deepEqual(afterTask, beforeTask);
+});
+
+test('system super administrator is preserved while its existing membership is disabled', async () => {
+  const systemUserId = objectId();
+  const systemMembershipId = objectId();
+  const now = new Date('2026-07-16T04:30:00.000Z');
+  await mongoose.connection.db.collection(COLLECTIONS.users).insertOne({
+    _id: systemUserId,
+    username: 'InternalMigrationControl',
+    usernameNormalized: 'internalmigrationcontrol',
+    password: 'legacy-hash',
+    name: 'Internal Migration Control',
+    roles: ['admin'],
+    isSuperAdmin: true,
+    isSystemAccount: true,
+    tokenVersion: 7,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now
+  });
+  await mongoose.connection.db.collection(COLLECTIONS.projectteams).insertOne({
+    _id: fixture.plannedTeamId,
+    code: TARGET_TEAM.code,
+    name: TARGET_TEAM.name,
+    status: TEAM_STATUSES.ACTIVE,
+    settings: { timeZone: 'Asia/Shanghai' },
+    createdBy: fixture.adminId,
+    createdAt: now,
+    updatedAt: now
+  });
+  await mongoose.connection.db.collection(COLLECTIONS.orgunits).insertOne({
+    _id: fixture.plannedRootOrgId,
+    teamId: fixture.plannedTeamId,
+    parentId: null,
+    type: TARGET_ROOT_ORG.type,
+    code: TARGET_ROOT_ORG.code,
+    name: TARGET_ROOT_ORG.name,
+    status: ORG_UNIT_STATUSES.ACTIVE,
+    sortOrder: 0,
+    level: TARGET_ROOT_ORG.level,
+    path: TARGET_ROOT_ORG.path,
+    createdAt: now,
+    updatedAt: now
+  });
+  await mongoose.connection.db.collection(COLLECTIONS.teammemberships).insertOne({
+    _id: systemMembershipId,
+    teamId: fixture.plannedTeamId,
+    userId: systemUserId,
+    orgUnitId: fixture.plannedRootOrgId,
+    role: MEMBERSHIP_ROLES.PROJECT_ADMIN,
+    positionKey: POSITION_KEYS.EMPLOYEE,
+    positionLevel: POSITION_LEVEL_BY_KEY[POSITION_KEYS.EMPLOYEE],
+    functionalRoleKeys: [],
+    permissionKeys: ['member.view'],
+    moduleDataScopes: deriveModuleDataScopes({
+      positionLevel: POSITION_LEVEL_BY_KEY[POSITION_KEYS.EMPLOYEE],
+      functionalRoleKeys: []
+    }),
+    status: MEMBERSHIP_STATUSES.ACTIVE,
+    joinedAt: now,
+    createdAt: now,
+    updatedAt: now
+  });
+
+  const dryRun = await migrationService().run(runOptions());
+  assert.equal(dryRun.status, 'DRY_RUN_READY');
+  assert.equal(dryRun.before.anomalies.counts.UNEXPECTED_EXISTING_SUPER_ADMIN, undefined);
+  assert.equal(dryRun.plan.changes.membershipsCreated, 2);
+  assert.equal(dryRun.plan.changes.membershipsUpdated, 1);
+
+  const manifestPath = await createBackupManifest('system-account-preservation');
+  const report = await migrationService().run(runOptions({
+    execute: true,
+    confirmDatabase: TEST_DATABASE_NAME,
+    backupManifestPath: manifestPath
+  }));
+  assert.equal(report.status, 'EXECUTED');
+  assert.equal(report.actualModifications.membershipsCreated, 2);
+  assert.equal(report.actualModifications.membershipsUpdated, 1);
+
+  const storedSystemUser = await mongoose.connection.db.collection(COLLECTIONS.users)
+    .findOne({ _id: systemUserId });
+  assert.equal(storedSystemUser.isSuperAdmin, true);
+  assert.equal(storedSystemUser.isSystemAccount, true);
+  assert.equal(storedSystemUser.tokenVersion, 7);
+  const storedSystemMembership = await mongoose.connection.db.collection(COLLECTIONS.teammemberships)
+    .findOne({ _id: systemMembershipId, userId: systemUserId });
+  assert.ok(storedSystemMembership);
+  assert.equal(storedSystemMembership.status, MEMBERSHIP_STATUSES.DISABLED);
+  assert.equal(storedSystemMembership.role, MEMBERSHIP_ROLES.PROJECT_ADMIN);
+  assert.deepEqual(storedSystemMembership.permissionKeys, ['member.view']);
 });
 
 test('execute mode rejects every missing or mismatched safety parameter before writes', async () => {

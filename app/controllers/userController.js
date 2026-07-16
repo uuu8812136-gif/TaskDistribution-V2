@@ -176,6 +176,7 @@ function createUserController(overrides = {}) {
       const memberships = await TeamMembershipModel.find(membershipScopeFilter(req))
         .populate({
           path: 'userId',
+          match: { isSystemAccount: { $ne: true } },
           select: '_id username name phone email roles status avatar lastLoginAt createdAt updatedAt'
         })
         .populate({ path: 'orgUnitId', select: '_id teamId name' })
@@ -216,6 +217,7 @@ function createUserController(overrides = {}) {
       })
         .populate({
           path: 'userId',
+          match: { isSystemAccount: { $ne: true } },
           select: '_id username name phone email roles status avatar lastLoginAt createdAt updatedAt'
         })
         .populate({ path: 'orgUnitId', select: '_id teamId name' })
@@ -224,7 +226,10 @@ function createUserController(overrides = {}) {
 
       // A second scoped lookup prevents a custom populate implementation from
       // substituting an unrelated global identity.
-      const userExists = await UserModel.exists({ _id: userId });
+      const userExists = await UserModel.exists({
+        _id: userId,
+        isSystemAccount: { $ne: true }
+      });
       if (!userExists || !sameId(membership.userId._id, userId)) return notFound(res);
       return res.json({ user: serializeLegacyUser(membership) });
     } catch (error) {

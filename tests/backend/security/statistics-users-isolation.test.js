@@ -12,6 +12,7 @@ const XLSX = appRequire('xlsx');
 const { MongoMemoryReplSet } = appRequire('mongodb-memory-server');
 
 const permissions = require('../../../app/config/permissions');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../../../app/config/systemAccount');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const TeamMembership = require('../../../app/models/TeamMembership');
@@ -126,6 +127,7 @@ function userDocument(_id, username, name, options = {}) {
     name,
     roles: options.roles || ['executor'],
     isSuperAdmin: options.isSuperAdmin === true,
+    isSystemAccount: options.isSystemAccount === true,
     tokenVersion: 0,
     status: options.status || 'active',
     createdAt: new Date('2030-01-01T00:00:00.000Z'),
@@ -631,7 +633,80 @@ test('task and personnel XLSX exports contain no team B cell values', async () =
   assert.equal(colleague['已审核任务数'], 1);
 });
 
+test('task XLSX export redacts a disabled system member used as creator and reviewer', async () => {
+  const systemUserId = objectId();
+  const internalUsername = 'internal-statistics-identity';
+  const internalName = 'INTERNAL_STATISTICS_IDENTITY';
+  await User.collection.insertOne(userDocument(
+    systemUserId,
+    internalUsername,
+    internalName,
+    { roles: ['admin'], isSuperAdmin: true, isSystemAccount: true }
+  ));
+  const systemMembership = membershipDocument({
+    teamId: fixture.teamA,
+    userId: systemUserId,
+    orgUnitId: fixture.orgA,
+    role: permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN
+  });
+  systemMembership.status = permissions.MEMBERSHIP_STATUSES.DISABLED;
+  await TeamMembership.collection.insertOne(systemMembership);
+
+  const systemTask = taskDocument({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'SYSTEM_REFERENCE_TASK',
+    status: 'finished',
+    priority: 'normal'
+  });
+  systemTask.creator = systemUserId;
+  await Task.collection.insertOne(systemTask);
+  await TaskReview.collection.insertOne({
+    _id: objectId(),
+    teamId: fixture.teamA,
+    task: systemTask._id,
+    reviewer: systemUserId,
+    content: 'System account review',
+    result: 'approved',
+    reviewTime: new Date('2030-01-03T00:00:00.000Z')
+  });
+
+  const response = await request(createTestApp(
+    teamContext(fixture.teamA, fixture.orgA, fixture.userA)
+  ))
+    .get('/statistics/export/tasks')
+    .buffer(true)
+    .parse(binaryParser)
+    .expect(200);
+  const row = workbookRows(response.body).find(
+    (candidate) => Object.values(candidate).includes('SYSTEM_REFERENCE_TASK')
+  );
+  assert.ok(row);
+  const serialized = JSON.stringify(row);
+  assert.equal(serialized.includes(internalName), false);
+  assert.equal(serialized.includes(internalUsername), false);
+  assert.equal(
+    (serialized.match(new RegExp(SYSTEM_ACCOUNT_DISPLAY_NAME, 'g')) || []).length,
+    2
+  );
+});
+
 test('legacy users list and detail expose current-team memberships only', async () => {
+  const systemUserId = objectId();
+  await User.collection.insertOne(userDocument(
+    systemUserId,
+    'internal-directory-identity',
+    'INTERNAL_DIRECTORY_IDENTITY',
+    { roles: ['admin'], isSuperAdmin: true, isSystemAccount: true }
+  ));
+  await TeamMembership.collection.insertOne(membershipDocument({
+    teamId: fixture.teamA,
+    userId: systemUserId,
+    orgUnitId: fixture.orgA,
+    role: permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN
+  }));
+
   const app = createTestApp(teamContext(fixture.teamA, fixture.orgA, fixture.userA));
   const list = await request(app).get('/users').query({
     limit: 1000,
@@ -646,15 +721,19 @@ test('legacy users list and detail expose current-team memberships only', async 
   assert.equal(JSON.stringify(list.body).includes('B_SECRET'), false);
   assert.equal(Object.hasOwn(list.body.users[0], 'isSuperAdmin'), false);
   assert.equal(Object.hasOwn(list.body.users[0], 'tokenVersion'), false);
+  assert.equal(JSON.stringify(list.body).includes('INTERNAL_DIRECTORY_IDENTITY'), false);
 
   const detail = await request(app).get(`/users/${fixture.userAColleague}`).expect(200);
   assert.equal(detail.body.user.username, 'colleague-a');
   assert.equal(detail.body.user.membership.teamId, String(fixture.teamA));
 
   const crossTeam = await request(app).get(`/users/${fixture.userB}`).expect(404);
+  const systemAccount = await request(app).get(`/users/${systemUserId}`).expect(404);
   const missing = await request(app).get(`/users/${objectId()}`).expect(404);
   assert.equal(crossTeam.body.code, missing.body.code);
   assert.equal(crossTeam.body.message, missing.body.message);
+  assert.equal(systemAccount.body.code, missing.body.code);
+  assert.equal(systemAccount.body.message, missing.body.message);
 });
 
 test('legacy write endpoints cannot mutate User or TeamMembership state', async () => {

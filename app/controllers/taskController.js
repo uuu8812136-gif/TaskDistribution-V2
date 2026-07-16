@@ -323,7 +323,9 @@ function createTaskController(overrides = {}) {
 
   async function populateTask(task, { detail = false } = {}) {
     if (!task) return task;
-    const userFields = detail ? 'name username phone realName' : 'name username';
+    const userFields = detail
+      ? 'name username phone realName isSystemAccount'
+      : 'name username isSystemAccount';
     const populate = [
       { path: 'creator', select: userFields },
       { path: 'executor', select: userFields },
@@ -342,7 +344,7 @@ function createTaskController(overrides = {}) {
         {
           path: 'subTasks',
           match: { teamId: task.teamId, orgUnitId: task.orgUnitId },
-          populate: { path: 'executor', select: 'name username' }
+          populate: { path: 'executor', select: 'name username isSystemAccount' }
         }
       );
     }
@@ -536,10 +538,10 @@ function createTaskController(overrides = {}) {
 
       const [tasks, total] = await Promise.all([
         TaskModel.find(query)
-          .populate('creator', 'name username')
-          .populate('executor', 'name username')
-          .populate('mainExecutor', 'name username')
-          .populate('ccUsers', 'name username')
+          .populate('creator', 'name username isSystemAccount')
+          .populate('executor', 'name username isSystemAccount')
+          .populate('mainExecutor', 'name username isSystemAccount')
+          .populate('ccUsers', 'name username isSystemAccount')
           .populate({
             path: 'subTasks',
             match: (parent) => ({
@@ -908,10 +910,10 @@ function createTaskController(overrides = {}) {
         status ? { status } : null
       ]);
       const tasks = await TaskModel.find(scopedListFilter(req, userFilter))
-        .populate('creator', 'name username')
-        .populate('executor', 'name username')
-        .populate('mainExecutor', 'name username')
-        .populate('ccUsers', 'name username')
+        .populate('creator', 'name username isSystemAccount')
+        .populate('executor', 'name username isSystemAccount')
+        .populate('mainExecutor', 'name username isSystemAccount')
+        .populate('ccUsers', 'name username isSystemAccount')
         .populate({
           path: 'parentTask',
           select: 'taskName teamId orgUnitId',
@@ -939,11 +941,11 @@ function createTaskController(overrides = {}) {
         dateConstraint(startDate, endDate, true)
       ]);
       const mainTasks = await TaskModel.find(scopedListFilter(req, userFilter))
-        .populate('creator', 'name username')
-        .populate('executor', 'name username')
-        .populate('mainExecutor', 'name username')
-        .populate('ccUsers', 'name username')
-        .populate('completedBy', 'name username')
+        .populate('creator', 'name username isSystemAccount')
+        .populate('executor', 'name username isSystemAccount')
+        .populate('mainExecutor', 'name username isSystemAccount')
+        .populate('ccUsers', 'name username isSystemAccount')
+        .populate('completedBy', 'name username isSystemAccount')
         .sort({ createdAt: 1 });
 
       const excelData = [];
@@ -955,9 +957,9 @@ function createTaskController(overrides = {}) {
             teamId: taskTeamId,
             orgUnitId: task.orgUnitId,
             parentTask: task._id
-          }).populate('executor', 'name username').sort({ createdAt: 1 }),
+          }).populate('executor', 'name username isSystemAccount').sort({ createdAt: 1 }),
           TaskReviewModel.find({ teamId: taskTeamId, task: task._id })
-            .populate('reviewer', 'name username')
+            .populate('reviewer', 'name username isSystemAccount')
             .sort({ createdAt: 1 }),
           ExtensionRequestModel.find({ teamId: taskTeamId, task: task._id })
             .sort({ applyTime: 1 })

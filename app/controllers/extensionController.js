@@ -220,8 +220,8 @@ exports.applyExtension = async (req, res) => {
     }
 
     await mutation.extensionRequest.populate([
-      { path: 'applicant', select: 'name username' },
-      { path: 'approver', select: 'name username' },
+      { path: 'applicant', select: 'name username isSystemAccount' },
+      { path: 'approver', select: 'name username isSystemAccount' },
       { path: 'task', select: 'taskName' }
     ]);
     return res.status(201).json({
@@ -341,8 +341,8 @@ exports.approveExtension = async (req, res) => {
     }
 
     await mutation.extensionRequest.populate([
-      { path: 'applicant', select: 'name username' },
-      { path: 'approver', select: 'name username' }
+      { path: 'applicant', select: 'name username isSystemAccount' },
+      { path: 'approver', select: 'name username isSystemAccount' }
     ]);
     return res.json({
       message: status === 'approved' ? 'Extension approved' : 'Extension rejected',
@@ -382,8 +382,8 @@ exports.getExtensionRequests = async (req, res) => {
 
     const requests = await ExtensionRequest.find(query)
       .populate('task', 'taskName status teamId orgUnitId')
-      .populate('applicant', 'name username')
-      .populate('approver', 'name username')
+      .populate('applicant', 'name username isSystemAccount')
+      .populate('approver', 'name username isSystemAccount')
       .sort({ applyTime: -1 });
     return res.json({ requests });
   } catch (error) {
@@ -398,8 +398,8 @@ exports.getExtensionRequestById = async (req, res) => {
     if (!scoped) throw notFound();
     await scoped.extensionRequest.populate([
       { path: 'task' },
-      { path: 'applicant', select: 'name username phone' },
-      { path: 'approver', select: 'name username phone' }
+      { path: 'applicant', select: 'name username phone isSystemAccount' },
+      { path: 'approver', select: 'name username phone isSystemAccount' }
     ]);
     return res.json({ request: scoped.extensionRequest });
   } catch (error) {
@@ -415,8 +415,8 @@ exports.getTaskExtensionHistory = async (req, res) => {
     const history = await ExtensionRequest.find({
       teamId: task.teamId,
       task: task._id
-    }).populate('applicant', 'name username')
-      .populate('approver', 'name username')
+    }).populate('applicant', 'name username isSystemAccount')
+      .populate('approver', 'name username isSystemAccount')
       .sort({ applyTime: -1 });
     return res.json({ history });
   } catch (error) {

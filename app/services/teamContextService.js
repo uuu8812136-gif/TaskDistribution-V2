@@ -13,6 +13,7 @@ const {
   SESSION_MODES,
   TEAM_STATUSES
 } = require('../config/permissions');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../config/systemAccount');
 const { executeQuery, normalizeId } = require('./authSessionService');
 const {
   AUTH_ERROR_CODES,
@@ -51,13 +52,18 @@ function freezeArray(values) {
 }
 
 function safeUser(user) {
+  const identity = user.isSystemAccount === true
+    ? { name: SYSTEM_ACCOUNT_DISPLAY_NAME }
+    : {
+        username: user.username,
+        name: user.name,
+        phone: user.phone,
+        email: user.email,
+        avatar: user.avatar
+      };
   return Object.freeze({
     _id: normalizeId(user._id),
-    username: user.username,
-    name: user.name,
-    phone: user.phone,
-    email: user.email,
-    avatar: user.avatar,
+    ...identity,
     roles: freezeArray(Array.isArray(user.roles) ? user.roles : []),
     status: user.status,
     isSuperAdmin: user.isSuperAdmin === true,
@@ -374,7 +380,7 @@ function createTeamContextService({
   const userFinder = findUserById || (User
     ? (userId) => executeQuery(
       User.findById(userId),
-      { select: '_id username name phone email avatar roles status isSuperAdmin tokenVersion' }
+      { select: '_id username name phone email avatar roles status isSuperAdmin isSystemAccount tokenVersion' }
     )
     : null);
   const teamFinder = findTeamById || (ProjectTeam

@@ -21,6 +21,7 @@ const request = appRequire('supertest');
 const { MongoMemoryServer } = appRequire('mongodb-memory-server');
 
 const permissions = require('../../../app/config/permissions');
+const { SYSTEM_ACCOUNT_DISPLAY_NAME } = require('../../../app/config/systemAccount');
 const AuditLog = require('../../../app/models/AuditLog');
 const AuthSession = require('../../../app/models/AuthSession');
 const OrgUnit = require('../../../app/models/OrgUnit');
@@ -44,6 +45,13 @@ function responseHasSecretKeys(value) {
   return Object.entries(value).some(([key, child]) => (
     key === 'password' || key === 'jtiHash' || responseHasSecretKeys(child)
   ));
+}
+
+function assertSystemAccountPresentation(user) {
+  assert.equal(user.name, SYSTEM_ACCOUNT_DISPLAY_NAME);
+  for (const field of ['username', 'phone', 'email', 'avatar', 'isSystemAccount']) {
+    assert.equal(Object.hasOwn(user, field), false, `${field} must not be exposed`);
+  }
 }
 
 function createTestApp() {
@@ -149,6 +157,8 @@ test('super administrator login starts in GLOBAL_READ_ONLY without leaking secre
   assert.equal(response.body.mode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
   assert.equal(response.body.activeTeamId, null);
   assert.equal(response.body.user.isSuperAdmin, true);
+  assert.equal(response.body.user.username, 'Root.Admin');
+  assert.equal(response.body.user.name, 'Root Admin');
   assert.equal(response.body.teams.length, 1);
   assert.equal(responseHasSecretKeys(response.body), false);
 
@@ -158,7 +168,54 @@ test('super administrator login starts in GLOBAL_READ_ONLY without leaking secre
     .expect(200);
   assert.equal(current.body.context.mode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
   assert.equal(current.body.context.readOnly, true);
+  assert.equal(current.body.user.username, 'Root.Admin');
+  assert.equal(current.body.user.name, 'Root Admin');
   assert.equal(responseHasSecretKeys(current.body), false);
+});
+
+test('system super administrator identity stays redacted through login and team switching', async () => {
+  const systemAccount = await createUser({
+    username: 'internal.system.account',
+    name: 'Internal Operator Identity',
+    phone: '13800000000',
+    email: 'internal-operator@example.test',
+    avatar: 'https://example.test/private-avatar.png',
+    isSuperAdmin: true,
+    isSystemAccount: true,
+    roles: ['admin']
+  });
+  const { team } = await createTeam({ createdBy: systemAccount._id });
+
+  assert.equal(await TeamMembership.countDocuments({ userId: systemAccount._id }), 0);
+
+  const signedIn = await login(systemAccount.username).expect(200);
+  assert.equal(signedIn.body.mode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
+  assertSystemAccountPresentation(signedIn.body.user);
+  assert.equal(JSON.stringify(signedIn.body).includes('Internal Operator Identity'), false);
+
+  const globalCurrent = await request(app)
+    .get('/api/auth/me')
+    .set(bearer(signedIn.body.token))
+    .expect(200);
+  assert.equal(globalCurrent.body.context.membership, null);
+  assertSystemAccountPresentation(globalCurrent.body.user);
+
+  const switched = await request(app)
+    .post('/api/auth/switch-team')
+    .set(bearer(signedIn.body.token))
+    .send({ teamId: team.id })
+    .expect(200);
+  assert.equal(switched.body.mode, permissions.SESSION_MODES.TEAM);
+  assert.equal(JSON.stringify(switched.body).includes(systemAccount.username), false);
+  assert.equal(JSON.stringify(switched.body).includes('Internal Operator Identity'), false);
+
+  const teamCurrent = await request(app)
+    .get('/api/auth/me')
+    .set(bearer(switched.body.token))
+    .expect(200);
+  assert.equal(teamCurrent.body.context.membership, null);
+  assert.equal(teamCurrent.body.context.readOnly, false);
+  assertSystemAccountPresentation(teamCurrent.body.user);
 });
 
 test('ordinary login with one active team enters TEAM directly', async () => {

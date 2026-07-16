@@ -224,6 +224,58 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
     assert.equal((await OrgUnit.findById(seeded.rootB._id).lean()).name, 'Team B Root');
   });
 
+  await t.test('system identities stay outside membership listing and mutation paths', async () => {
+    const systemUser = await createUser('internal-control-identity', true);
+    systemUser.isSystemAccount = true;
+    await systemUser.save();
+    const systemMembership = await TeamMembership.create({
+      teamId: seeded.teamA._id,
+      userId: systemUser._id,
+      orgUnitId: seeded.rootA._id,
+      role: MEMBERSHIP_ROLES.PROJECT_ADMIN,
+      positionKey: POSITION_KEYS.DEPARTMENT_MANAGER,
+      positionLevel: 1,
+      permissionKeys: ['member.view', 'member.manage']
+    });
+
+    try {
+      const listResponse = await request(app)
+        .get('/api/team-members')
+        .query({ page: 1, limit: 1 })
+        .set('Authorization', `Bearer ${seeded.adminAToken}`)
+        .expect(200);
+      assert.equal(listResponse.body.pagination.total, 2);
+      assert.equal(listResponse.body.pagination.pages, 2);
+      assert.equal(listResponse.body.members.length, 1);
+      assert.ok(!listResponse.body.members.some(
+        (member) => member.userId === systemUser._id.toString()
+      ));
+
+      const createResponse = await request(app)
+        .post('/api/team-members')
+        .set('Authorization', `Bearer ${seeded.teamSuperToken}`)
+        .send({
+          existingUserId: systemUser._id.toString(),
+          orgUnitId: seeded.rootA._id.toString()
+        })
+        .expect(404);
+      assert.equal(createResponse.body.code, 'MANAGEMENT_RESOURCE_NOT_FOUND');
+
+      const updateResponse = await request(app)
+        .patch(`/api/team-members/${systemMembership._id}`)
+        .set('Authorization', `Bearer ${seeded.teamSuperToken}`)
+        .send({ permissionKeys: ['task.view'] })
+        .expect(404);
+      assert.equal(updateResponse.body.code, 'MANAGEMENT_RESOURCE_NOT_FOUND');
+
+      const unchanged = await TeamMembership.findById(systemMembership._id).lean();
+      assert.deepEqual(unchanged.permissionKeys.sort(), ['member.manage', 'member.view']);
+    } finally {
+      await TeamMembership.deleteOne({ _id: systemMembership._id });
+      await User.deleteOne({ _id: systemUser._id });
+    }
+  });
+
   await t.test('a project administrator cannot create an administrator or inject derived privilege fields', async () => {
     await request(app)
       .post('/api/team-members')
@@ -249,8 +301,22 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       })
       .expect(403);
 
+    await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'forbidden-system-account',
+        password: 'test-password-123',
+        name: 'Forbidden System Account',
+        orgUnitId: seeded.rootA._id.toString(),
+        isSystemAccount: true
+      })
+      .expect(403);
+
     assert.equal(await User.countDocuments({
-      usernameNormalized: { $in: ['forbidden-project-admin', 'forbidden-data-scope'] }
+      usernameNormalized: {
+        $in: ['forbidden-project-admin', 'forbidden-data-scope', 'forbidden-system-account']
+      }
     }), 0);
   });
 
@@ -270,8 +336,9 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
 
     assert.equal(createResponse.body.member.role, MEMBERSHIP_ROLES.MEMBER);
     assert.equal(createResponse.body.member.user.username, 'New-Team-Member');
-    assert.equal((await User.findById(createResponse.body.member.userId).lean()).usernameNormalized,
-      'new-team-member');
+    const storedUser = await User.findById(createResponse.body.member.userId).lean();
+    assert.equal(storedUser.usernameNormalized, 'new-team-member');
+    assert.equal(storedUser.isSystemAccount, false);
 
     const duplicateResponse = await request(app)
       .post('/api/team-members')

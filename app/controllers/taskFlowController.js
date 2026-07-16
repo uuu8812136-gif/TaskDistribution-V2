@@ -391,7 +391,7 @@ exports.reviewTask = async (req, res) => {
       console.error('Task review notification failed:', notificationError);
     }
 
-    await mutation.review.populate('reviewer', 'name username');
+    await mutation.review.populate('reviewer', 'name username isSystemAccount');
     return res.json({ message: 'Task reviewed', ...mutation });
   } catch (error) {
     return handleError(res, error, 'reviewTask');
@@ -512,7 +512,7 @@ exports.getTaskReviews = async (req, res) => {
     const reviews = await TaskReview.find({
       teamId: task.teamId,
       task: task._id
-    }).populate('reviewer', 'name username').sort({ reviewTime: -1 });
+    }).populate('reviewer', 'name username isSystemAccount').sort({ reviewTime: -1 });
     return res.json({ reviews });
   } catch (error) {
     return handleError(res, error, 'getTaskReviews');
