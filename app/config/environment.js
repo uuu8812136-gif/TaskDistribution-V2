@@ -90,6 +90,8 @@ function loadEnvironment(env = process.env) {
     mongodbUri: env.MONGODB_URI,
     jwtSecret: env.JWT_SECRET,
     jwtExpire: env.JWT_EXPIRE || '8h',
+    jwtIssuer: env.JWT_ISSUER || 'task-distribution-v2',
+    jwtAudience: env.JWT_AUDIENCE || 'task-distribution-v2-clients',
     uploadPath: path.resolve(process.cwd(), env.UPLOAD_PATH || '../.test-data/uploads'),
     maxFileSize: parsePositiveInteger(env.MAX_FILE_SIZE, 10 * 1024 * 1024, 'MAX_FILE_SIZE'),
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:3101')
@@ -103,6 +105,9 @@ function loadEnvironment(env = process.env) {
     throw new Error('MONGODB_URI is required');
   }
   assertSecret(config.jwtSecret, appEnv);
+  if (!config.jwtIssuer || !config.jwtAudience) {
+    throw new Error('JWT_ISSUER and JWT_AUDIENCE are required');
+  }
 
   if (appEnv !== 'production') {
     assertNonProductionIsolation(config);

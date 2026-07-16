@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const extensionRequestSchema = new mongoose.Schema({
+  teamId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectTeam',
+    required: true,
+    immutable: true
+  },
   // 关联任务
   task: {
     type: mongoose.Schema.Types.ObjectId,
@@ -86,10 +92,10 @@ const extensionRequestSchema = new mongoose.Schema({
 });
 
 // 索引
-extensionRequestSchema.index({ task: 1 });
-extensionRequestSchema.index({ applicant: 1 });
-extensionRequestSchema.index({ approver: 1, status: 1 });
-extensionRequestSchema.index({ applyTime: -1 });
+extensionRequestSchema.index({ teamId: 1, task: 1 });
+extensionRequestSchema.index({ teamId: 1, applicant: 1 });
+extensionRequestSchema.index({ teamId: 1, approver: 1, status: 1 });
+extensionRequestSchema.index({ teamId: 1, applyTime: -1 });
 
 module.exports = mongoose.model('ExtensionRequest', extensionRequestSchema);
 

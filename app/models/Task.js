@@ -1,6 +1,17 @@
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema({
+  teamId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectTeam',
+    required: true,
+    immutable: true
+  },
+  orgUnitId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'OrgUnit',
+    required: true
+  },
   // 任务基本信息
   taskName: {
     type: String,
@@ -203,17 +214,19 @@ const taskSchema = new mongoose.Schema({
 });
 
 // 索引
-taskSchema.index({ creator: 1, status: 1 });
-taskSchema.index({ executor: 1, status: 1 });
-taskSchema.index({ ccUsers: 1 });
-taskSchema.index({ parentTask: 1 });
-taskSchema.index({ plannedCompletionTime: 1 });
+taskSchema.index({ teamId: 1, creator: 1, status: 1 });
+taskSchema.index({ teamId: 1, orgUnitId: 1, status: 1 });
+taskSchema.index({ teamId: 1, executor: 1, status: 1 });
+taskSchema.index({ teamId: 1, ccUsers: 1 });
+taskSchema.index({ teamId: 1, parentTask: 1 });
+taskSchema.index({ teamId: 1, plannedCompletionTime: 1 });
 
 // 虚拟字段：获取子任务
 taskSchema.virtual('subTasks', {
   ref: 'Task',
   localField: '_id',
-  foreignField: 'parentTask'
+  foreignField: 'parentTask',
+  match: (parentTask) => ({ teamId: parentTask.teamId })
 });
 
 // 启用虚拟字段

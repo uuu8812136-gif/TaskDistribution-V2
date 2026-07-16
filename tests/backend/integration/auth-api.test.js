@@ -1,0 +1,384 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const { randomUUID } = require('node:crypto');
+const { after, before, beforeEach, test } = require('node:test');
+const appRequire = require('../helpers/appRequire');
+
+const TEST_DATABASE_NAME = `auth_api_${randomUUID().replaceAll('-', '')}_v2_test`;
+const JWT_ENV = Object.freeze({
+  JWT_SECRET: 'auth-api-test-secret-0123456789abcdef0123456789',
+  JWT_EXPIRE: '15m',
+  JWT_ISSUER: 'task-distribution-v2-auth-api-test',
+  JWT_AUDIENCE: 'task-distribution-v2-auth-api-test-client'
+});
+
+Object.assign(process.env, JWT_ENV);
+
+const express = appRequire('express');
+const mongoose = appRequire('mongoose');
+const request = appRequire('supertest');
+const { MongoMemoryServer } = appRequire('mongodb-memory-server');
+
+const permissions = require('../../../app/config/permissions');
+const AuthSession = require('../../../app/models/AuthSession');
+const OrgUnit = require('../../../app/models/OrgUnit');
+const ProjectTeam = require('../../../app/models/ProjectTeam');
+const TeamMembership = require('../../../app/models/TeamMembership');
+const User = require('../../../app/models/User');
+const authRouter = require('../../../app/routes/auth');
+
+const MODELS = [AuthSession, TeamMembership, OrgUnit, ProjectTeam, User];
+
+let app;
+let mongoServer;
+let sequence = 0;
+
+function bearer(token) {
+  return { Authorization: `Bearer ${token}` };
+}
+
+function responseHasSecretKeys(value) {
+  if (!value || typeof value !== 'object') return false;
+  return Object.entries(value).some(([key, child]) => (
+    key === 'password' || key === 'jtiHash' || responseHasSecretKeys(child)
+  ));
+}
+
+function createTestApp() {
+  const testApp = express();
+  testApp.use(express.json());
+  testApp.use('/api/auth', authRouter);
+  testApp.use((error, req, res, next) => {
+    if (res.headersSent) return next(error);
+    return res.status(error.status || 500).json({
+      message: error.message,
+      code: error.code || 'TEST_UNEXPECTED_ERROR'
+    });
+  });
+  return testApp;
+}
+
+async function createUser(overrides = {}) {
+  sequence += 1;
+  return User.create({
+    username: `authuser${sequence}`,
+    password: 'initial-password',
+    name: `Auth User ${sequence}`,
+    ...overrides
+  });
+}
+
+async function createTeam({ createdBy, member = null, membership = {} } = {}) {
+  sequence += 1;
+  const suffix = String(sequence).padStart(3, '0');
+  const team = await ProjectTeam.create({
+    code: `AUTH_TEAM_${suffix}`,
+    name: `Auth Team ${suffix}`,
+    createdBy
+  });
+  const orgUnit = await OrgUnit.create({
+    teamId: team._id,
+    type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+    code: `AUTH_ORG_${suffix}`,
+    name: `Auth Org ${suffix}`,
+    level: 1,
+    path: '/'
+  });
+
+  let membershipDocument = null;
+  if (member) {
+    membershipDocument = await TeamMembership.create({
+      teamId: team._id,
+      userId: member._id,
+      orgUnitId: orgUnit._id,
+      permissionKeys: ['task.view'],
+      ...membership
+    });
+  }
+
+  return { team, orgUnit, membership: membershipDocument };
+}
+
+function login(username, password = 'initial-password') {
+  return request(app)
+    .post('/api/auth/login')
+    .send({ username, password });
+}
+
+before(async () => {
+  assert.match(TEST_DATABASE_NAME, /_v2_test$/);
+  mongoServer = await MongoMemoryServer.create({
+    instance: { dbName: TEST_DATABASE_NAME }
+  });
+  await mongoose.connect(mongoServer.getUri(TEST_DATABASE_NAME), {
+    dbName: TEST_DATABASE_NAME
+  });
+  assert.equal(mongoose.connection.name, TEST_DATABASE_NAME);
+
+  for (const model of MODELS) await model.syncIndexes();
+  app = createTestApp();
+});
+
+beforeEach(async () => {
+  assert.equal(mongoose.connection.name, TEST_DATABASE_NAME);
+  for (const model of MODELS) await model.collection.deleteMany({});
+  sequence = 0;
+});
+
+after(async () => {
+  if (mongoose.connection.readyState !== 0) {
+    assert.equal(mongoose.connection.name, TEST_DATABASE_NAME);
+    await mongoose.disconnect();
+  }
+  if (mongoServer) await mongoServer.stop();
+});
+
+test('super administrator login starts in GLOBAL_READ_ONLY without leaking secrets', async () => {
+  const superAdmin = await createUser({
+    username: 'Root.Admin',
+    name: 'Root Admin',
+    isSuperAdmin: true,
+    roles: ['executor']
+  });
+  await createTeam({ createdBy: superAdmin._id });
+
+  const response = await login('  ROOT.ADMIN  ').expect(200);
+
+  assert.equal(response.body.mode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
+  assert.equal(response.body.activeTeamId, null);
+  assert.equal(response.body.user.isSuperAdmin, true);
+  assert.equal(response.body.teams.length, 1);
+  assert.equal(responseHasSecretKeys(response.body), false);
+
+  const current = await request(app)
+    .get('/api/auth/me')
+    .set(bearer(response.body.token))
+    .expect(200);
+  assert.equal(current.body.context.mode, permissions.SESSION_MODES.GLOBAL_READ_ONLY);
+  assert.equal(current.body.context.readOnly, true);
+  assert.equal(responseHasSecretKeys(current.body), false);
+});
+
+test('ordinary login with one active team enters TEAM directly', async () => {
+  const user = await createUser({ username: 'single.team' });
+  const { team } = await createTeam({ createdBy: user._id, member: user });
+
+  const response = await login('SINGLE.TEAM').expect(200);
+
+  assert.equal(response.body.mode, permissions.SESSION_MODES.TEAM);
+  assert.equal(response.body.activeTeamId, team.id);
+  assert.equal(response.body.teams.length, 1);
+
+  const current = await request(app)
+    .get('/api/auth/me')
+    .set(bearer(response.body.token))
+    .expect(200);
+  assert.equal(current.body.context.activeTeamId, team.id);
+  assert.equal(current.body.context.readOnly, false);
+  assert.equal(current.body.context.permissionKeys.includes('task.view'), true);
+});
+
+test('ordinary login with multiple active teams starts in TEAM_SELECTION', async () => {
+  const user = await createUser({ username: 'many.teams' });
+  const first = await createTeam({ createdBy: user._id, member: user });
+  const second = await createTeam({ createdBy: user._id, member: user });
+
+  const response = await login(user.username).expect(200);
+
+  assert.equal(response.body.mode, permissions.SESSION_MODES.TEAM_SELECTION);
+  assert.equal(response.body.activeTeamId, null);
+  assert.deepEqual(
+    new Set(response.body.teams.map(({ _id }) => _id)),
+    new Set([first.team.id, second.team.id])
+  );
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(response.body.token))
+    .expect(200)
+    .expect(({ body }) => {
+      assert.equal(body.context.canAccessBusiness, false);
+    });
+});
+
+test('ordinary login rejects users with no active team and creates no session', async () => {
+  const user = await createUser({ username: 'no.team' });
+
+  const response = await login(user.username).expect(403);
+
+  assert.equal(response.body.code, 'AUTH_TEAM_ACCESS_REQUIRED');
+  assert.equal(await AuthSession.countDocuments(), 0);
+});
+
+test('unknown username and wrong password have the same failure response', async () => {
+  const user = await createUser({ username: 'known.user' });
+
+  const wrongPassword = await login(user.username, 'wrong-password').expect(401);
+  const unknownUser = await login('unknown.user', 'wrong-password').expect(401);
+
+  assert.deepEqual(unknownUser.body, wrongPassword.body);
+  assert.equal(wrongPassword.body.code, 'AUTH_CREDENTIALS_INVALID');
+});
+
+test('switch-team rotates the session and invalidates the old token', async () => {
+  const user = await createUser({ username: 'switch.user' });
+  const first = await createTeam({ createdBy: user._id, member: user });
+  const second = await createTeam({ createdBy: user._id, member: user });
+  const signedIn = await login(user.username).expect(200);
+
+  const switched = await request(app)
+    .post('/api/auth/switch-team')
+    .set(bearer(signedIn.body.token))
+    .send({ teamId: second.team.id })
+    .expect(200);
+
+  assert.equal(switched.body.mode, permissions.SESSION_MODES.TEAM);
+  assert.equal(switched.body.activeTeamId, second.team.id);
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(signedIn.body.token))
+    .expect(401);
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(switched.body.token))
+    .expect(200)
+    .expect(({ body }) => {
+      assert.equal(body.context.activeTeamId, second.team.id);
+    });
+
+  assert.equal(await AuthSession.countDocuments({ revokedAt: null }), 1);
+  assert.equal(
+    await AuthSession.countDocuments({ revokeReason: permissions.SESSION_REVOKE_REASONS.TEAM_SWITCH }),
+    1
+  );
+  assert.notEqual(first.team.id, second.team.id);
+});
+
+test('concurrent team switches allow exactly one successor session', async () => {
+  const user = await createUser({ username: 'race.user' });
+  await createTeam({ createdBy: user._id, member: user });
+  const target = await createTeam({ createdBy: user._id, member: user });
+  const signedIn = await login(user.username).expect(200);
+
+  const attempts = await Promise.all([
+    request(app)
+      .post('/api/auth/switch-team')
+      .set(bearer(signedIn.body.token))
+      .send({ teamId: target.team.id }),
+    request(app)
+      .post('/api/auth/switch-team')
+      .set(bearer(signedIn.body.token))
+      .send({ teamId: target.team.id })
+  ]);
+
+  assert.deepEqual(attempts.map(({ status }) => status).sort(), [200, 401]);
+  assert.equal(await AuthSession.countDocuments({ revokedAt: null }), 1);
+  assert.equal(
+    await AuthSession.countDocuments({ revokeReason: permissions.SESSION_REVOKE_REASONS.TEAM_SWITCH }),
+    1
+  );
+});
+
+test('global-readonly rejects ordinary users without rotating their session', async () => {
+  const user = await createUser({ username: 'ordinary.user' });
+  await createTeam({ createdBy: user._id, member: user });
+  const signedIn = await login(user.username).expect(200);
+
+  const denied = await request(app)
+    .post('/api/auth/global-readonly')
+    .set(bearer(signedIn.body.token))
+    .expect(403);
+
+  assert.equal(denied.body.code, 'AUTH_SUPER_ADMIN_REQUIRED');
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(signedIn.body.token))
+    .expect(200);
+  assert.equal(await AuthSession.countDocuments({ revokedAt: null }), 1);
+});
+
+test('logout revokes only the current session', async () => {
+  const user = await createUser({ username: 'logout.user' });
+  await createTeam({ createdBy: user._id, member: user });
+  const first = await login(user.username).expect(200);
+  const second = await login(user.username).expect(200);
+
+  await request(app)
+    .post('/api/auth/logout')
+    .set(bearer(first.body.token))
+    .expect(200);
+
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(first.body.token))
+    .expect(401);
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(second.body.token))
+    .expect(200);
+  assert.equal(await AuthSession.countDocuments({ revokedAt: null }), 1);
+  assert.equal(
+    await AuthSession.countDocuments({ revokeReason: permissions.SESSION_REVOKE_REASONS.LOGOUT }),
+    1
+  );
+});
+
+test('change-password increments tokenVersion and revokes every active session', async () => {
+  const user = await createUser({ username: 'password.user' });
+  await createTeam({ createdBy: user._id, member: user });
+  const first = await login(user.username).expect(200);
+  const second = await login(user.username).expect(200);
+
+  await request(app)
+    .post('/api/auth/change-password')
+    .set(bearer(first.body.token))
+    .send({
+      oldPassword: 'initial-password',
+      newPassword: 'replacement-password'
+    })
+    .expect(200);
+
+  const storedUser = await User.findById(user._id);
+  assert.equal(storedUser.tokenVersion, 1);
+  assert.equal(await storedUser.comparePassword('replacement-password'), true);
+  assert.equal(await AuthSession.countDocuments({ revokedAt: null }), 0);
+  assert.equal(
+    await AuthSession.countDocuments({
+      revokeReason: permissions.SESSION_REVOKE_REASONS.PASSWORD_CHANGED
+    }),
+    2
+  );
+
+  await request(app).get('/api/auth/me').set(bearer(first.body.token)).expect(401);
+  await request(app).get('/api/auth/me').set(bearer(second.body.token)).expect(401);
+  await login(user.username, 'initial-password').expect(401);
+  await login(user.username, 'replacement-password').expect(200);
+});
+
+test('legacy register is team-scoped and cannot create a global identity', async () => {
+  const projectAdmin = await createUser({
+    username: 'project.admin',
+    roles: ['executor']
+  });
+  await createTeam({
+    createdBy: projectAdmin._id,
+    member: projectAdmin,
+    membership: { role: permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN }
+  });
+  const signedIn = await login(projectAdmin.username).expect(200);
+
+  const response = await request(app)
+    .post('/api/auth/register')
+    .set(bearer(signedIn.body.token))
+    .send({
+      username: 'must.not.exist',
+      password: 'some-password',
+      name: 'Must Not Exist',
+      roles: ['admin'],
+      isSuperAdmin: true
+    })
+    .expect(501);
+
+  assert.equal(response.body.code, 'AUTH_REGISTRATION_MOVED');
+  assert.equal(await User.exists({ usernameNormalized: 'must.not.exist' }), null);
+});

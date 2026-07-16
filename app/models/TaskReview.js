@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const taskReviewSchema = new mongoose.Schema({
+  teamId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectTeam',
+    required: true,
+    immutable: true
+  },
   // 关联任务
   task: {
     type: mongoose.Schema.Types.ObjectId,
@@ -55,12 +61,12 @@ const taskReviewSchema = new mongoose.Schema({
 });
 
 // 索引
-taskReviewSchema.index({ task: 1 });
-taskReviewSchema.index({ reviewer: 1 });
-taskReviewSchema.index({ reviewTime: -1 });
+taskReviewSchema.index({ teamId: 1, task: 1 });
+taskReviewSchema.index({ teamId: 1, reviewer: 1 });
+taskReviewSchema.index({ teamId: 1, reviewTime: -1 });
 
 // 一个任务的同一个抄送人只能评价一次
-taskReviewSchema.index({ task: 1, reviewer: 1 }, { unique: true });
+taskReviewSchema.index({ teamId: 1, task: 1, reviewer: 1 }, { unique: true });
 
 module.exports = mongoose.model('TaskReview', taskReviewSchema);
 

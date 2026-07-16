@@ -48,6 +48,9 @@ function createApp(config) {
   });
 
   app.use('/api/auth', require('./routes/auth'));
+  app.use('/api/teams', require('./routes/teams'));
+  app.use('/api/org-units', require('./routes/orgUnits'));
+  app.use('/api/team-members', require('./routes/teamMembers'));
   app.use('/api/users', require('./routes/users'));
   app.use('/api/tasks', require('./routes/tasks'));
   app.use('/api/extensions', require('./routes/extensions'));

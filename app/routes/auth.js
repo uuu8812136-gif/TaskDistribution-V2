@@ -1,19 +1,26 @@
+'use strict';
+
 const express = require('express');
-const router = express.Router();
 const authController = require('../controllers/authController');
-const { authenticate, isAdmin } = require('../middlewares/auth');
+const { authenticate, isAdmin, requireTeamContext } = require('../middlewares/auth');
 
-// 用户注册
-router.post('/register', authenticate, isAdmin, authController.register);
+const router = express.Router();
 
-// 用户登录
 router.post('/login', authController.login);
-
-// 获取当前用户信息（需要登录）
+router.get('/teams', authenticate, authController.listTeams);
+router.post('/switch-team', authenticate, authController.switchTeam);
+router.post('/global-readonly', authenticate, authController.enterGlobalReadOnly);
 router.get('/me', authenticate, authController.getCurrentUser);
-
-// 修改密码（需要登录）
+router.post('/logout', authenticate, authController.logout);
 router.post('/change-password', authenticate, authController.changePassword);
 
-module.exports = router;
+// Legacy registration can no longer create global identities or assign roles.
+router.post(
+  '/register',
+  authenticate,
+  requireTeamContext,
+  isAdmin,
+  authController.register
+);
 
+module.exports = router;

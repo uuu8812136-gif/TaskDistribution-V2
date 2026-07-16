@@ -1,10 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const messageController = require('../controllers/messageController');
-const { authenticate } = require('../middlewares/auth');
+const {
+  authenticateContext,
+  requireBusinessContext
+} = require('../middlewares/authContext');
+const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 
 // 所有消息路由都需要认证
-router.use(authenticate);
+router.use(authenticateContext, requireBusinessContext, businessWriteGuard);
 
 /**
  * @route   GET /api/messages

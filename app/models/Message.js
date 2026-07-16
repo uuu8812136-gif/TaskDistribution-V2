@@ -1,10 +1,23 @@
 const mongoose = require('mongoose');
 
+function requireTeamId(teamId) {
+  if (!teamId || !mongoose.isValidObjectId(teamId)) {
+    throw new TypeError('A trusted teamId is required for message operations');
+  }
+  return teamId;
+}
+
 /**
  * 消息模型
  * 用于系统内消息通知
  */
 const messageSchema = new mongoose.Schema({
+  teamId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectTeam',
+    required: true,
+    immutable: true
+  },
   // 消息类型
   type: {
     type: String,
@@ -42,8 +55,7 @@ const messageSchema = new mongoose.Schema({
   recipient: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
-    required: true,
-    index: true
+    required: true
   },
 
   // 发送人（可选，系统消息可能没有发送人）
@@ -67,8 +79,7 @@ const messageSchema = new mongoose.Schema({
   // 是否已读
   isRead: {
     type: Boolean,
-    default: false,
-    index: true
+    default: false
   },
 
   // 读取时间
@@ -85,9 +96,9 @@ const messageSchema = new mongoose.Schema({
 });
 
 // 索引优化
-messageSchema.index({ recipient: 1, isRead: 1 });
-messageSchema.index({ recipient: 1, createdAt: -1 });
-messageSchema.index({ type: 1, recipient: 1 });
+messageSchema.index({ teamId: 1, recipient: 1, isRead: 1 });
+messageSchema.index({ teamId: 1, recipient: 1, createdAt: -1 });
+messageSchema.index({ teamId: 1, type: 1, recipient: 1 });
 
 // 虚拟字段：格式化创建时间
 messageSchema.virtual('createdAtFormatted').get(function() {
@@ -105,21 +116,33 @@ messageSchema.methods.markAsRead = async function() {
 };
 
 // 静态方法：批量标记已读
-messageSchema.statics.markMultipleAsRead = async function(messageIds, userId) {
+messageSchema.statics.markMultipleAsRead = async function(messageIds, userId, teamId) {
   return await this.updateMany(
-    { _id: { $in: messageIds }, recipient: userId, isRead: false },
+    {
+      teamId: requireTeamId(teamId),
+      _id: { $in: messageIds },
+      recipient: userId,
+      isRead: false
+    },
     { $set: { isRead: true, readAt: new Date() } }
   );
 };
 
 // 静态方法：获取用户未读消息数量
-messageSchema.statics.getUnreadCount = async function(userId) {
-  return await this.countDocuments({ recipient: userId, isRead: false });
+messageSchema.statics.getUnreadCount = async function(userId, teamId) {
+  return await this.countDocuments({
+    teamId: requireTeamId(teamId),
+    recipient: userId,
+    isRead: false
+  });
 };
 
 // 静态方法：删除用户的所有消息
-messageSchema.statics.deleteUserMessages = async function(userId) {
-  return await this.deleteMany({ recipient: userId });
+messageSchema.statics.deleteUserMessages = async function(userId, teamId) {
+  return await this.deleteMany({
+    teamId: requireTeamId(teamId),
+    recipient: userId
+  });
 };
 
 const Message = mongoose.model('Message', messageSchema);

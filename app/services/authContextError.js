@@ -1,0 +1,58 @@
+'use strict';
+
+const AUTH_ERROR_CODES = Object.freeze({
+  TOKEN_REQUIRED: 'AUTH_TOKEN_REQUIRED',
+  TOKEN_INVALID: 'AUTH_TOKEN_INVALID',
+  TOKEN_CLAIMS_INVALID: 'AUTH_TOKEN_CLAIMS_INVALID',
+  TOKEN_VERSION_MISMATCH: 'AUTH_TOKEN_VERSION_MISMATCH',
+  SESSION_NOT_FOUND: 'AUTH_SESSION_NOT_FOUND',
+  SESSION_REVOKED: 'AUTH_SESSION_REVOKED',
+  SESSION_EXPIRED: 'AUTH_SESSION_EXPIRED',
+  SESSION_MISMATCH: 'AUTH_SESSION_MISMATCH',
+  USER_NOT_FOUND: 'AUTH_USER_NOT_FOUND',
+  USER_DISABLED: 'AUTH_USER_DISABLED',
+  SUPER_ADMIN_REQUIRED: 'AUTH_SUPER_ADMIN_REQUIRED',
+  TEAM_NOT_FOUND: 'AUTH_TEAM_NOT_FOUND',
+  TEAM_DISABLED: 'AUTH_TEAM_DISABLED',
+  MEMBERSHIP_REQUIRED: 'AUTH_MEMBERSHIP_REQUIRED',
+  MEMBERSHIP_DISABLED: 'AUTH_MEMBERSHIP_DISABLED',
+  MEMBERSHIP_INVALID: 'AUTH_MEMBERSHIP_INVALID',
+  ORG_UNIT_INVALID: 'AUTH_ORG_UNIT_INVALID',
+  CONTEXT_REQUIRED: 'AUTH_CONTEXT_REQUIRED',
+  BUSINESS_CONTEXT_REQUIRED: 'BUSINESS_CONTEXT_REQUIRED',
+  TEAM_CONTEXT_REQUIRED: 'TEAM_CONTEXT_REQUIRED',
+  GLOBAL_READ_ONLY: 'GLOBAL_READ_ONLY',
+  PERMISSION_KEY_UNKNOWN: 'PERMISSION_KEY_UNKNOWN',
+  PERMISSION_DENIED: 'PERMISSION_DENIED',
+  DATA_SCOPE_MODULE_UNKNOWN: 'DATA_SCOPE_MODULE_UNKNOWN',
+  DATA_SCOPE_INVALID: 'DATA_SCOPE_INVALID',
+  CONTROL_PLANE_OPERATION_DENIED: 'CONTROL_PLANE_OPERATION_DENIED'
+});
+
+class AuthContextError extends Error {
+  constructor(status, code, message, options = {}) {
+    super(message, options.cause ? { cause: options.cause } : undefined);
+    this.name = 'AuthContextError';
+    this.status = status;
+    this.code = code;
+    this.expose = true;
+  }
+}
+
+function isAuthContextError(error) {
+  return error instanceof AuthContextError;
+}
+
+function sendAuthContextError(res, error) {
+  return res.status(error.status).json({
+    message: error.message,
+    code: error.code
+  });
+}
+
+module.exports = {
+  AUTH_ERROR_CODES,
+  AuthContextError,
+  isAuthContextError,
+  sendAuthContextError
+};
