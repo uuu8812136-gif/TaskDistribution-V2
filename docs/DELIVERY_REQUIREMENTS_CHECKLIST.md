@@ -134,5 +134,5 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Browser automation verifies login, both teams, global read-only/team switching, equipment and photos, transport, production, attendance, inventory, inspection, repair, status applications, generated daily reports, and audit pages. At a 390px viewport, primary controls stay inside the DOM boundary and wide tables scroll inside their own containers.
 - [x] Database and file reconciliation confirms 143 equipment, 44 production, 7 transport, 7 attendance, 243 FileAssets, and 243 upload files totaling 117,731,236 bytes.
 - [x] Local API and Web development servers run the latest code. Web `3101` proxies to API `18110`; the API was restarted after the database-readiness patch and passed live disconnect-503, recovery-200, login, and page smoke checks.
-- [ ] Changes are committed and pushed to the private GitHub repository without customer source files.
+- [x] Current source is committed and pushed to the private GitHub repository; implementation commit `6d8d1ee` contains no customer source files, local data, uploads, backups, environment files, or generated build output.
 - [ ] Execute and archive the release/rollback drill on the selected staging host; the documentation itself is not deployment evidence.
