@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import {
   IMPORT_DECISION_ACTIONS,
+  appendChecklistItem,
   buildRoutineRecordPayload,
   buildRoutineRulePayload,
   buildRuntimeReadingPayload,
@@ -13,11 +14,13 @@ import {
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
   isEquipmentImportDecisionComplete,
+  moveChecklistItem,
   normalizeRuntimeHours,
   optionForValue,
   routineAbnormalNotesComplete,
   routineItemResultOptions,
   routineScheduleLabel,
+  removeChecklistItemAt,
   EQUIPMENT_STATUS_OPTIONS
 } from '../src/utils/equipment.js'
 
@@ -65,6 +68,28 @@ test('category tree and labels are deterministic', () => {
   assert.deepEqual(tree[0].children.map((item) => item._id), ['child-a', 'child-b'])
   assert.equal(entityName([{ _id: 'org-1', name: '一分部' }], 'org-1'), '一分部')
   assert.equal(optionForValue(EQUIPMENT_STATUS_OPTIONS, 'IN_USE').label, '在用')
+})
+
+test('checklist editor supports repeated additions, stable ordering and a one-item minimum', () => {
+  const first = { _localKey: 'item-1', name: '检查制动' }
+  const second = { _localKey: 'item-2', name: '检查轮胎' }
+  const third = { _localKey: 'item-3', name: '检查灯光' }
+  const items = [first]
+
+  assert.equal(appendChecklistItem(items, second), 2)
+  assert.equal(appendChecklistItem(items, third), 3)
+  assert.deepEqual(items, [first, second, third])
+
+  assert.equal(moveChecklistItem(items, 2, -1), true)
+  assert.deepEqual(items, [first, third, second])
+  assert.equal(moveChecklistItem(items, 0, -1), false)
+  assert.deepEqual(items, [first, third, second])
+
+  assert.equal(removeChecklistItemAt(items, 1), true)
+  assert.equal(removeChecklistItemAt(items, 1), true)
+  assert.deepEqual(items, [first])
+  assert.equal(removeChecklistItemAt(items, 0), false)
+  assert.deepEqual(items, [first])
 })
 
 test('equipment import decisions expose only actions accepted by the backend', () => {

@@ -326,6 +326,76 @@ after(async () => {
   if (replicaSet) await replicaSet.stop();
 });
 
+test('routine rules persist and return more than two checklist items after additions and reordering', async () => {
+  const routineService = service();
+  const initialItems = [
+    'Emergency stop',
+    'Safety guard',
+    'Lubrication level',
+    'Electrical cabinet',
+    'Fasteners',
+    'Abnormal noise'
+  ].map((name, index) => ({ ...item(name), sortOrder: index * 10 }));
+
+  const created = await createRule(
+    routineService,
+    fixture.contextA,
+    fixture.categoryA1._id,
+    {
+      name: 'Multi-item inspection rule',
+      checklistItems: initialItems
+    }
+  );
+  assert.equal(created.checklistItems.length, 6);
+  assert.deepEqual(created.checklistItems.map((entry) => entry.name), initialItems.map((entry) => entry.name));
+  assert.equal(new Set(created.checklistItems.map((entry) => entry.key)).size, 6);
+
+  const persistedAfterCreate = await EquipmentRoutineRule.findById(created._id).lean();
+  assert.equal(persistedAfterCreate.checklistItems.length, 6);
+
+  const updatedItems = [
+    { key: created.checklistItems[5].key, ...item('Abnormal noise'), sortOrder: 0 },
+    { ...item('Hydraulic pressure'), sortOrder: 10 },
+    { key: created.checklistItems[0].key, ...item('Emergency stop'), sortOrder: 20 },
+    { key: created.checklistItems[2].key, ...item('Lubrication level'), sortOrder: 30 },
+    { ...item('Cooling system'), sortOrder: 40 },
+    { key: created.checklistItems[3].key, ...item('Electrical cabinet'), sortOrder: 50 },
+    { key: created.checklistItems[4].key, ...item('Fasteners'), sortOrder: 60 },
+    { ...item('Work area cleanliness'), sortOrder: 70 }
+  ];
+  const updated = await routineService.updateRule({
+    authContext: fixture.contextA,
+    ruleId: created._id,
+    input: { checklistItems: updatedItems }
+  });
+  const expectedNames = updatedItems.map((entry) => entry.name);
+  assert.equal(updated.version, 2);
+  assert.equal(updated.checklistItems.length, 8);
+  assert.deepEqual(updated.checklistItems.map((entry) => entry.name), expectedNames);
+  assert.ok(!updated.checklistItems.some((entry) => entry.name === 'Safety guard'));
+  assert.equal(new Set(updated.checklistItems.map((entry) => entry.key)).size, 8);
+
+  const persistedAfterUpdate = await EquipmentRoutineRule.findById(created._id).lean();
+  assert.equal(persistedAfterUpdate.checklistItems.length, 8);
+  assert.deepEqual(persistedAfterUpdate.checklistItems.map((entry) => entry.name), expectedNames);
+
+  const detail = await routineService.getRule({
+    authContext: fixture.contextA,
+    ruleId: created._id
+  });
+  assert.deepEqual(detail.checklistItems, updated.checklistItems);
+
+  const listed = await routineService.listRules({ authContext: fixture.contextA });
+  assert.equal(listed.total, 1);
+  assert.deepEqual(listed.rules[0].checklistItems, updated.checklistItems);
+
+  const schedule = await routineService.getSchedule({
+    authContext: fixture.contextA,
+    equipmentId: String(fixture.assetA1._id)
+  });
+  assert.deepEqual(schedule.schedules[0].rule.checklistItems, updated.checklistItems);
+});
+
 test('dynamic checklist, photo policy, version snapshot, and next calendar due stay consistent', async () => {
   const routineService = service();
   const rule = await createRule(routineService, fixture.contextA, fixture.categoryA1._id, {

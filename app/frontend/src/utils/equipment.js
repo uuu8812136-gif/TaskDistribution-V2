@@ -137,6 +137,32 @@ export function entityName(items, id, fallback = '-') {
   return items.find((item) => item._id === id)?.name || fallback
 }
 
+export function appendChecklistItem(items, item) {
+  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  items.push(item)
+  return items.length
+}
+
+export function removeChecklistItemAt(items, index) {
+  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  if (!Number.isInteger(index) || index < 0 || index >= items.length || items.length <= 1) {
+    return false
+  }
+  items.splice(index, 1)
+  return true
+}
+
+export function moveChecklistItem(items, index, direction) {
+  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  if (!Number.isInteger(index) || ![-1, 1].includes(direction)) return false
+  const target = index + direction
+  if (index < 0 || index >= items.length || target < 0 || target >= items.length) return false
+
+  const [item] = items.splice(index, 1)
+  items.splice(target, 0, item)
+  return true
+}
+
 export function buildEquipmentPayload(form) {
   return {
     orgUnitId: form.orgUnitId,

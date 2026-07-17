@@ -56,9 +56,14 @@
             <h3>检查项目</h3>
             <p>同一规则内的项目使用相同周期，执行时逐项填写结果。</p>
           </div>
-          <el-button v-if="!readOnly" type="primary" plain @click="addChecklistItem">
+          <el-button
+            v-if="!readOnly"
+            type="primary"
+            class="add-checklist-button"
+            @click="addChecklistItem"
+          >
             <el-icon><Plus /></el-icon>
-            添加项目
+            添加检查项
           </el-button>
         </div>
 
@@ -215,8 +220,11 @@ import {
   ROUTINE_PHOTO_POLICY_OPTIONS,
   ROUTINE_SCHEDULE_MODE_OPTIONS,
   ROUTINE_TYPE_OPTIONS,
+  appendChecklistItem as appendChecklistItemToList,
   buildCategoryTree,
-  buildRoutineRulePayload
+  buildRoutineRulePayload,
+  moveChecklistItem,
+  removeChecklistItemAt
 } from '@/utils/equipment'
 
 const props = defineProps({
@@ -347,18 +355,15 @@ function resetForm() {
 }
 
 function addChecklistItem() {
-  form.checklistItems.push(createChecklistItem())
+  appendChecklistItemToList(form.checklistItems, createChecklistItem())
 }
 
 function removeChecklistItem(index) {
-  if (form.checklistItems.length > 1) form.checklistItems.splice(index, 1)
+  removeChecklistItemAt(form.checklistItems, index)
 }
 
 function moveItem(index, direction) {
-  const target = index + direction
-  if (target < 0 || target >= form.checklistItems.length) return
-  const [item] = form.checklistItems.splice(index, 1)
-  form.checklistItems.splice(target, 0, item)
+  moveChecklistItem(form.checklistItems, index, direction)
 }
 
 function handleScheduleModeChange(mode) {
@@ -397,6 +402,7 @@ watch(() => props.modelValue, (visible) => {
 .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
 .section-heading h3 { margin-bottom: 4px; }
 .section-heading p { margin: 0 0 14px; color: var(--zl-muted); font-size: 13px; }
+.add-checklist-button { flex: 0 0 auto; min-width: 126px; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .span-full { grid-column: 1 / -1; }
 .full-width { width: 100%; }
@@ -422,6 +428,7 @@ watch(() => props.modelValue, (visible) => {
   .form-grid { grid-template-columns: 1fr; }
   .span-full { grid-column: auto; }
   .section-heading { align-items: stretch; flex-direction: column; }
+  .add-checklist-button { width: 100%; }
   .checklist-editor { overflow-x: auto; }
 }
 </style>
