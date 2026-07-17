@@ -134,6 +134,14 @@ function serializeTeam(team, membership = null) {
   };
 }
 
+function serializeLoginTeam(team) {
+  return {
+    _id: normalizeId(team._id),
+    code: team.code,
+    name: team.name
+  };
+}
+
 async function findAccessibleTeams({ userId, isSuperAdmin }) {
   if (isSuperAdmin) {
     const teams = await ProjectTeam.find({ status: TEAM_STATUSES.ACTIVE })
@@ -191,9 +199,21 @@ function serializeRotatedSession(issued) {
   };
 }
 
+exports.listLoginTeams = async (req, res, next) => {
+  try {
+    const teams = await ProjectTeam.find({ status: TEAM_STATUSES.ACTIVE })
+      .select('_id code name')
+      .sort({ name: 1, _id: 1 })
+      .lean();
+    return res.json({ teams: teams.map(serializeLoginTeam) });
+  } catch (error) {
+    return handleError(res, next, error);
+  }
+};
+
 exports.login = async (req, res, next) => {
   try {
-    const { username, password } = req.body || {};
+    const { username, password, teamId } = req.body || {};
     if (typeof username !== 'string' || typeof password !== 'string' || !username.trim() || !password) {
       return sendError(
         res,
@@ -223,6 +243,19 @@ exports.login = async (req, res, next) => {
       );
     }
 
+    let requestedTeamId = null;
+    if (teamId !== undefined && teamId !== null) {
+      if (typeof teamId !== 'string' || !OBJECT_ID_PATTERN.test(teamId.trim())) {
+        return sendError(
+          res,
+          400,
+          API_ERROR_CODES.INPUT_INVALID,
+          'teamId must be a valid project team identifier'
+        );
+      }
+      requestedTeamId = teamId.trim().toLowerCase();
+    }
+
     const teams = await findAccessibleTeams({
       userId: user._id,
       isSuperAdmin: user.isSuperAdmin === true
@@ -230,7 +263,20 @@ exports.login = async (req, res, next) => {
 
     let mode;
     let activeTeamId = null;
-    if (user.isSuperAdmin === true) {
+    if (requestedTeamId) {
+      const selectedTeam = teams.find(({ _id }) => _id === requestedTeamId);
+      if (!selectedTeam) {
+        await recordLoginFailure(req, usernameNormalized, 'SELECTED_TEAM_UNAVAILABLE');
+        return sendError(
+          res,
+          403,
+          API_ERROR_CODES.TEAM_ACCESS_REQUIRED,
+          'The selected team is unavailable for this account'
+        );
+      }
+      mode = SESSION_MODES.TEAM;
+      activeTeamId = selectedTeam._id;
+    } else if (user.isSuperAdmin === true) {
       mode = SESSION_MODES.GLOBAL_READ_ONLY;
     } else if (teams.length === 0) {
       await recordLoginFailure(req, usernameNormalized, 'NO_ACTIVE_TEAM');

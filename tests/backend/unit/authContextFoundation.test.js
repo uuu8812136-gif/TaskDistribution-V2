@@ -299,6 +299,7 @@ test('GLOBAL_READ_ONLY permits configured reads but blocks business writes', asy
   });
 
   assert.doesNotThrow(() => assertPermission(context, 'task.view'));
+  assert.doesNotThrow(() => assertPermission(context, 'equipment.inventory'));
   assert.throws(
     () => assertPermission(context, 'task.create'),
     (error) => error.code === 'PERMISSION_DENIED'

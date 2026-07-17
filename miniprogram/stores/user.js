@@ -3,6 +3,7 @@ import {
   enterGlobalReadOnly as enterGlobalReadOnlyRequest,
   getAccessibleTeams,
   getCurrentUser,
+  getLoginTeams as getLoginTeamsRequest,
   login as loginRequest,
   logout as logoutRequest,
   switchTeam as switchTeamRequest
@@ -32,6 +33,7 @@ import {
   normalizeSessionContext,
   normalizeSessionMode
 } from '@/utils/sessionPolicy.js'
+import { normalizeLoginTeams } from '@/utils/loginTeams.js'
 
 let bootstrapPromise = null
 
@@ -145,6 +147,11 @@ export const useUserStore = defineStore('user', {
       this.commitRotatedSession(payload, 'login', { replaceTeams: true })
       await this.bootstrap({ force: true })
       return payload
+    },
+
+    async loadLoginTeams() {
+      const payload = await getLoginTeamsRequest()
+      return normalizeLoginTeams(payload?.teams)
     },
 
     async refreshTeams() {

@@ -5,6 +5,7 @@
     width="min(1180px, 97vw)"
     append-to-body
     :destroy-on-close="false"
+    :before-close="requestClose"
   >
     <div class="import-content">
       <template v-if="!importJob">
@@ -32,6 +33,15 @@
             生成导入预览
           </el-button>
         </section>
+        <section v-if="previewing" class="processing-band" aria-live="polite">
+          <el-progress :percentage="uploadPercentage" :status="uploadPercentage === 100 ? 'success' : ''" />
+          <el-steps :active="processingStep" finish-status="success" align-center>
+            <el-step title="上传" />
+            <el-step title="解析" />
+            <el-step title="写入" />
+          </el-steps>
+          <strong>{{ processingLabel }}</strong>
+        </section>
       </template>
 
       <template v-else>
@@ -49,7 +59,7 @@
                 <el-icon><Refresh /></el-icon>
               </el-button>
             </el-tooltip>
-            <el-button @click="resetWorkflow">
+            <el-button :loading="cancelling" @click="startNewImport">
               <el-icon><Plus /></el-icon>
               新建导入
             </el-button>
@@ -87,8 +97,15 @@
 
         <el-tabs v-model="activeTab" class="import-tabs">
           <el-tab-pane label="预览数据" name="rows">
-            <div class="table-shell">
-              <el-table v-loading="rowsLoading" :data="importJob.rows || []" row-key="rowId" stripe empty-text="暂无预览行">
+            <div class="table-shell preview-table-shell">
+              <el-table
+                v-loading="rowsLoading"
+                :data="importJob.rows || []"
+                class="preview-table"
+                row-key="rowId"
+                stripe
+                empty-text="暂无预览行"
+              >
                 <el-table-column prop="sheetName" label="Sheet" min-width="120" fixed="left" show-overflow-tooltip />
                 <el-table-column prop="rowNumber" label="行号" width="72" />
                 <el-table-column label="校验" width="84">
@@ -98,13 +115,27 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column prop="candidate.assetCode" label="资产编号" min-width="125" show-overflow-tooltip />
-                <el-table-column prop="candidate.name" label="设备名称" min-width="150" show-overflow-tooltip />
-                <el-table-column prop="candidate.categoryName" label="分类" min-width="120" show-overflow-tooltip />
-                <el-table-column prop="candidate.orgUnitName" label="所属组织" min-width="130" show-overflow-tooltip />
-                <el-table-column prop="candidate.quantity" label="数量" width="82" align="right" />
-                <el-table-column prop="candidate.unit" label="单位" width="72" />
-                <el-table-column prop="candidate.location" label="存放地点" min-width="140" show-overflow-tooltip />
+                <el-table-column
+                  v-for="column in IMPORT_PREVIEW_COLUMNS"
+                  :key="column.key"
+                  :label="column.label"
+                  :width="column.width"
+                  :min-width="column.minWidth"
+                  :align="column.align || 'left'"
+                  show-overflow-tooltip
+                >
+                  <template #default="{ row }">
+                    <el-tag
+                      v-if="column.key === 'issueCount' && previewFieldValue(row, column.key) > 0"
+                      type="warning"
+                      effect="plain"
+                      size="small"
+                    >
+                      {{ previewFieldValue(row, column.key) }}
+                    </el-tag>
+                    <span v-else>{{ previewFieldValue(row, column.key) }}</span>
+                  </template>
+                </el-table-column>
               </el-table>
             </div>
             <el-pagination
@@ -269,15 +300,16 @@
     </div>
 
     <template #footer>
-      <el-button @click="visible = false">关闭</el-button>
+      <el-button :loading="cancelling" @click="closeDialog">关闭</el-button>
     </template>
   </el-dialog>
 </template>
 
 <script setup>
-import { computed, reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  cancelEquipmentImport,
   confirmEquipmentImport,
   createEquipmentImportPreview,
   getEquipmentImportExceptions,
@@ -294,6 +326,36 @@ import {
   isEquipmentImportDecisionComplete,
   optionForValue
 } from '@/utils/equipment'
+import {
+  equipmentFieldValue,
+  equipmentImportCandidate
+} from '@/utils/equipmentAssetDisplay'
+
+const IMPORT_PREVIEW_COLUMNS = Object.freeze([
+  { key: 'sourceSequence', label: '序号', width: 72, align: 'center' },
+  { key: 'assetType', label: '资产类型', minWidth: 125 },
+  { key: 'assetCode', label: '资产编码', minWidth: 135 },
+  { key: 'sourceAssetCode', label: '原资产编码', minWidth: 135 },
+  { key: 'name', label: '名称', minWidth: 150 },
+  { key: 'productCode', label: '产品编码/SN/PN', minWidth: 160 },
+  { key: 'plateNumber', label: '车牌号', minWidth: 115 },
+  { key: 'serialNumber', label: '序列号', minWidth: 130 },
+  { key: 'brand', label: '品牌', minWidth: 105 },
+  { key: 'brandSerialNumber', label: '品牌编号', minWidth: 125 },
+  { key: 'specification', label: '型号规格', minWidth: 145 },
+  { key: 'manufacturer', label: '生产厂家', minWidth: 140 },
+  { key: 'bookQuantity', label: '账存数量', width: 96, align: 'right' },
+  { key: 'physicalQuantity', label: '实盘数量', width: 96, align: 'right' },
+  { key: 'unit', label: '单位', width: 72 },
+  { key: 'activationDate', label: '启用日期', minWidth: 120 },
+  { key: 'custodianDisplayName', label: '使用人', minWidth: 105 },
+  { key: 'orgUnitNameSnapshot', label: '所在部室', minWidth: 125 },
+  { key: 'location', label: '存放地点', minWidth: 125 },
+  { key: 'conditionText', label: '状态', minWidth: 90 },
+  { key: 'photoCount', label: '照片', width: 72, align: 'center' },
+  { key: 'issueCount', label: '异常', width: 72, align: 'center' }
+])
+const IMPORT_JOB_STORAGE_KEY = 'equipmentImportPreviewJobId'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
@@ -316,6 +378,10 @@ const refreshing = ref(false)
 const rowsLoading = ref(false)
 const exceptionsLoading = ref(false)
 const publishing = ref(false)
+const cancelling = ref(false)
+const restoring = ref(false)
+const processingStage = ref('IDLE')
+const uploadPercentage = ref(0)
 const activeTab = ref('rows')
 const rowPage = ref(1)
 const rowPageSize = 20
@@ -337,6 +403,12 @@ const canPublish = computed(() => (
   reviewConfirmed.value
 ))
 const scopeLabel = computed(() => importJob.value?.dataScope === 'ORG_UNIT' ? '组织范围' : '团队范围')
+const processingStep = computed(() => ({ UPLOADING: 0, PARSING: 1, WRITING: 2 }[processingStage.value] ?? 0))
+const processingLabel = computed(() => ({
+  UPLOADING: `上传 Excel ${uploadPercentage.value}%`,
+  PARSING: '上传完成，服务端正在解析工作簿和图片',
+  WRITING: '解析完成，正在写入并加载预览数据'
+}[processingStage.value] || ''))
 
 const rowStatusOption = (value) => optionForValue([
   { value: 'VALID', label: '有效', type: 'success' },
@@ -350,6 +422,10 @@ const formatFileSize = (size) => {
   const value = Number(size) || 0
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
   return `${(value / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function previewFieldValue(row, key) {
+  return equipmentFieldValue(equipmentImportCandidate(row), key)
 }
 
 function handleFileChange(file, fileList) {
@@ -370,9 +446,19 @@ function handleFileExceed() {
 async function createPreview() {
   if (!selectedFile.value) return
   previewing.value = true
+  uploadPercentage.value = 0
+  processingStage.value = 'UPLOADING'
   try {
-    const result = await createEquipmentImportPreview(selectedFile.value)
+    const result = await createEquipmentImportPreview(selectedFile.value, {
+      onUploadProgress(event) {
+        if (!event.total) return
+        uploadPercentage.value = Math.min(100, Math.round((event.loaded / event.total) * 100))
+        if (event.loaded >= event.total) processingStage.value = 'PARSING'
+      }
+    })
+    processingStage.value = 'WRITING'
     importJob.value = result.importJob
+    localStorage.setItem(IMPORT_JOB_STORAGE_KEY, importJob.value._id)
     rowPage.value = 1
     exceptionPage.value = 1
     await Promise.all([loadRows(), loadExceptions()])
@@ -380,6 +466,7 @@ async function createPreview() {
     ElMessage.success('导入预览已生成')
   } finally {
     previewing.value = false
+    processingStage.value = 'IDLE'
   }
 }
 
@@ -471,6 +558,7 @@ async function publishImport() {
   try {
     const result = await confirmEquipmentImport(importJob.value._id, payload)
     importJob.value = result.importJob
+    localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
     reviewConfirmed.value = false
     await loadExceptions()
     emit('published', importJob.value)
@@ -493,12 +581,97 @@ function resetWorkflow() {
   rowPage.value = 1
   exceptionPage.value = 1
 }
+
+async function cancelCurrentPreview(reason) {
+  if (importJob.value?.status !== 'PREVIEW_READY') return
+  cancelling.value = true
+  try {
+    await cancelEquipmentImport(importJob.value._id, {
+      expectedVersion: importJob.value.version,
+      reason
+    })
+    localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+    resetWorkflow()
+    ElMessage.success('导入预览已取消，暂存文件已进入清理流程')
+  } finally {
+    cancelling.value = false
+  }
+}
+
+async function confirmAndCancel(reason) {
+  if (previewing.value) {
+    ElMessage.warning('Excel 正在上传或解析，请等待预览任务返回后再关闭')
+    return false
+  }
+  if (importJob.value?.status !== 'PREVIEW_READY') return true
+  try {
+    await ElMessageBox.confirm(
+      '当前预览尚未发布。继续将取消任务并删除暂存的 Excel 和图片，且无法恢复。',
+      '取消当前导入预览',
+      { confirmButtonText: '取消预览', cancelButtonText: '继续处理', type: 'warning' }
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return false
+    throw error
+  }
+  await cancelCurrentPreview(reason)
+  return true
+}
+
+async function startNewImport() {
+  if (!await confirmAndCancel('User started a new equipment import')) return
+  resetWorkflow()
+}
+
+async function closeDialog() {
+  if (!await confirmAndCancel('User closed the equipment import preview')) return
+  visible.value = false
+}
+
+function requestClose(done) {
+  confirmAndCancel('User closed the equipment import preview')
+    .then((allowed) => { if (allowed) done() })
+    .catch(() => {})
+}
+
+async function restorePreview() {
+  if (restoring.value || importJob.value) return
+  const jobId = localStorage.getItem(IMPORT_JOB_STORAGE_KEY)
+  if (!jobId) return
+  restoring.value = true
+  try {
+    const result = await getEquipmentImportJob(jobId, { page: 1, pageSize: rowPageSize })
+    if (result.importJob?.status !== 'PREVIEW_READY') {
+      localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+      return
+    }
+    importJob.value = result.importJob
+    await loadExceptions()
+    activeTab.value = exceptionTotal.value > 0 ? 'exceptions' : 'rows'
+    ElMessage.info('已恢复上次未发布的设备导入预览')
+  } catch (error) {
+    if (error?.response?.status === 404 || error?.response?.status === 409) {
+      localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+      return
+    }
+    throw error
+  } finally {
+    restoring.value = false
+  }
+}
+
+watch(() => props.modelValue, (value) => {
+  if (value) restorePreview()
+}, { immediate: true })
 </script>
 
 <style scoped lang="scss">
 .import-content { max-height: 72vh; overflow-y: auto; padding-right: 4px; }
 .upload-band, .job-heading, .job-actions, .sheet-row, .confirm-band { display: flex; align-items: center; }
 .upload-band { min-height: 160px; justify-content: center; gap: 18px; border-block: 1px solid #e4e7ed; }
+.processing-band { max-width: 680px; margin: 18px auto; text-align: center; }
+.processing-band .el-progress { margin-bottom: 18px; }
+.processing-band strong { display: block; margin-top: 12px; color: #606266; font-size: 14px; }
 .job-heading { justify-content: space-between; gap: 18px; margin-bottom: 14px; }
 .job-heading h3 { margin: 0 0 5px; font-size: 18px; letter-spacing: 0; overflow-wrap: anywhere; }
 .job-heading p { margin: 0; color: #909399; }
@@ -515,6 +688,8 @@ function resetWorkflow() {
 .sheet-row > span { margin-right: 4px; color: #606266; font-size: 13px; }
 .import-tabs { margin-top: 8px; }
 .table-shell { overflow: hidden; border: 1px solid #e4e7ed; border-radius: 6px; }
+.preview-table-shell { overflow-x: auto; }
+.preview-table { min-width: 3000px; }
 .exception-table { overflow-x: auto; }
 .table-pagination { justify-content: flex-end; margin-top: 12px; }
 .decision-select, .resolved-editor { width: 100%; }

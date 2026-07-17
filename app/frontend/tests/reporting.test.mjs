@@ -1,20 +1,66 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
 import test from 'node:test'
+import { fileURLToPath } from 'node:url'
 
 import {
+  ATTENDANCE_NAMED_FIELDS,
   DAILY_SCHEDULE_FIELDS,
   MONTHLY_SCHEDULE_FIELDS,
   TRANSPORT_LOAD_FIELDS,
   aggregateDriverMonthly,
+  attendanceNamesText,
+  buildAttendancePayload,
   buildDailySchedulePayload,
   buildMonthlySchedulePayload,
   buildTransportPayload,
   createDailyTemplate,
+  copyPlainText,
+  dailyReportSourceSummary,
   dailyCountText,
   emptyTransportLoadDetails,
   naturalMonthRange,
   transportChangedFields
 } from '../src/utils/reporting.js'
+
+test('attendance payload keeps the fixed two-shift template and normalized names', () => {
+  const payload = buildAttendancePayload({
+    orgUnitId: 'org-1',
+    reportDate: '2026-07-14',
+    authorizedHeadcount: '12',
+    registeredHeadcount: 13,
+    dayShift: {
+      actualAttendanceCount: '11',
+      leave: { count: '2', names: '张三、 李四，张三' }
+    },
+    nightShift: {},
+    support: { destination: ' 物流技术部 ', count: '1', names: '测试人员乙' },
+    otherRemark: ' 测试 ',
+    reason: ' 修正 '
+  })
+
+  assert.equal(payload.authorizedHeadcount, 12)
+  assert.equal(payload.dayShift.actualAttendanceCount, 11)
+  assert.deepEqual(payload.dayShift.leave, { count: 2, names: ['张三', '李四'] })
+  assert.equal(Object.keys(payload.dayShift).length, ATTENDANCE_NAMED_FIELDS.length + 1)
+  assert.equal(payload.nightShift.pendingDeparture.count, 0)
+  assert.deepEqual(payload.support.names, ['测试人员乙'])
+  assert.equal(payload.otherRemark, '测试')
+  assert.equal('teamId' in payload, false)
+  assert.equal(attendanceNamesText(payload.dayShift.leave.names), '张三、李四')
+})
+
+test('attendance monthly view downloads the reviewed-only fixed A:R workbook', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const apiSource = fs.readFileSync(`${root}/src/api/reporting.js`, 'utf8')
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/AttendanceReports.vue`, 'utf8')
+
+  assert.match(apiSource, /attendance-submissions\/summary\/monthly\/export/)
+  assert.match(apiSource, /responseType:\s*'blob'/)
+  assert.match(viewSource, /导出 A:R 月报/)
+  assert.match(viewSource, /exportAttendanceMonthlySummary/)
+  assert.match(viewSource, /仅包含已审核日报/)
+})
 
 test('transport payload emits only the fixed form and opaque photo ids', () => {
   const loadDetails = emptyTransportLoadDetails()
@@ -26,7 +72,7 @@ test('transport payload emits only the fixed form and opaque photo ids', () => {
     tripLabel: ' 第1趟 ',
     route: ' 工厂至仓库 ',
     dispatchType: '配送',
-    vehiclePlate: ' 鲁A12345 ',
+    vehiclePlate: ' TEST-PLATE-02 ',
     vehicleType: ' 4.2米厢货 ',
     driverName: ' 张三 ',
     loadDetails,
@@ -110,4 +156,55 @@ test('transport history labels only changed business fields', () => {
     before: { route: '北线', remark: '', updatedAt: 'old' },
     after: { route: '南线', remark: '', updatedAt: 'new' }
   }), ['路线'])
+})
+
+test('production daily report exposes traceable sources and copies final text only', async () => {
+  const source = dailyReportSourceSummary({
+    ruleVersion: 'fallback',
+    sourceSnapshot: {
+      rule: { version: 'production-daily-text-v1-2026-07-17' },
+      attendance: {
+        currentDate: {
+          reviewId: 'review-today',
+          reviewedAt: '2026-07-15T01:00:00.000Z',
+          submissions: Array.from({ length: 7 }, (_, index) => ({ submissionId: `today-${index}` }))
+        },
+        previousNaturalDate: {
+          reviewId: 'review-yesterday',
+          reviewedAt: '2026-07-14T01:00:00.000Z',
+          submissions: Array.from({ length: 7 }, (_, index) => ({ submissionId: `yesterday-${index}` }))
+        }
+      },
+      production: {
+        previousNaturalDate: '2026-07-14',
+        requiredMonths: ['2025-01', '2026-07'],
+        schedules: [{ scheduleId: 'schedule-1' }]
+      }
+    }
+  })
+  assert.equal(source.ruleVersion, 'production-daily-text-v1-2026-07-17')
+  assert.equal(source.attendanceRecordCount, 14)
+  assert.equal(source.productionScheduleCount, 1)
+  assert.equal(source.previousNaturalDate, '2026-07-14')
+
+  let copied = ''
+  await copyPlainText('最终日报文字', {
+    clipboard: { async writeText(value) { copied = value } }
+  })
+  assert.equal(copied, '最终日报文字')
+})
+
+test('production daily report page wires fixed generation, versions, tracing and copy controls', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const apiSource = fs.readFileSync(`${root}/src/api/reporting.js`, 'utf8')
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/GeneratedDailyReports.vue`, 'utf8')
+  const routerSource = fs.readFileSync(`${root}/src/router/index.js`, 'utf8')
+
+  assert.match(apiSource, /generated-daily-reports/)
+  assert.match(apiSource, /generateDailyReport/)
+  assert.match(viewSource, /report\.daily\.generate/)
+  assert.match(viewSource, /复制文字/)
+  assert.match(viewSource, /来源追溯/)
+  assert.match(viewSource, /availableVersions/)
+  assert.match(routerSource, /GeneratedDailyReports/)
 })

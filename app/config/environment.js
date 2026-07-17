@@ -98,8 +98,20 @@ function loadEnvironment(env = process.env) {
       .split(',')
       .map((origin) => origin.trim())
       .filter(Boolean),
-    enableLegacyPublicUploads: parseBoolean(env.ENABLE_LEGACY_PUBLIC_UPLOADS, false)
+    enableLegacyPublicUploads: parseBoolean(env.ENABLE_LEGACY_PUBLIC_UPLOADS, false),
+    equipmentRoutineWorkerEnabled: parseBoolean(
+      env.EQUIPMENT_ROUTINE_WORKER_ENABLED,
+      appEnv === 'production'
+    ),
+    equipmentRoutineWorkerIntervalMs: parsePositiveInteger(
+      env.EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS,
+      5 * 60 * 1000,
+      'EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS'
+    )
   };
+  if (config.equipmentRoutineWorkerIntervalMs < 1000) {
+    throw new Error('EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS must be at least 1000');
+  }
 
   if (!config.mongodbUri) {
     throw new Error('MONGODB_URI is required');

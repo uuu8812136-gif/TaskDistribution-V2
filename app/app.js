@@ -1,8 +1,10 @@
 const { randomUUID } = require('node:crypto');
 const express = require('express');
 const cors = require('cors');
+const mongoose = require('mongoose');
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const MONGOOSE_CONNECTED_STATE = 1;
 
 function requestIdMiddleware(req, res, next) {
   const supplied = req.get('x-request-id');
@@ -28,7 +30,11 @@ function createCorsOptions(config) {
   };
 }
 
-function createApp(config) {
+function isDatabaseConnected(connection) {
+  return connection?.readyState === MONGOOSE_CONNECTED_STATE;
+}
+
+function createApp(config, { databaseConnection = mongoose.connection } = {}) {
   if (!config) {
     throw new Error('createApp requires validated environment configuration');
   }
@@ -57,6 +63,13 @@ function createApp(config) {
   });
 
   app.get('/health', (req, res) => {
+    if (!isDatabaseConnected(databaseConnection)) {
+      return res.status(503).json({
+        status: 'degraded',
+        instance: config.instanceName,
+        database: 'unavailable'
+      });
+    }
     res.json({ status: 'ok', instance: config.instanceName });
   });
 
@@ -71,7 +84,10 @@ function createApp(config) {
   app.use('/api/messages', require('./routes/messages'));
   app.use('/api/equipment', require('./routes/equipment'));
   app.use('/api/transport-records', require('./routes/transportRecords'));
+  app.use('/api/attendance-submissions', require('./routes/attendanceSubmissions'));
   app.use('/api/production-schedules', require('./routes/productionSchedules'));
+  app.use('/api/generated-daily-reports', require('./routes/generatedDailyReports'));
+  app.use('/api/audit-logs', require('./routes/auditLogs'));
   const { createFilesRouter } = require('./routes/files');
   app.use('/api/files', createFilesRouter({
     storageRoot: config.uploadPath,
@@ -104,4 +120,4 @@ function createApp(config) {
   return app;
 }
 
-module.exports = { createApp, requestIdMiddleware };
+module.exports = { createApp, isDatabaseConnected, requestIdMiddleware };

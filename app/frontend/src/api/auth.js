@@ -13,6 +13,17 @@ export function login(data) {
 }
 
 /**
+ * 获取登录页可选择的活动项目团队，无需登录。
+ */
+export function getLoginTeams() {
+  return request({
+    url: '/auth/login-teams',
+    method: 'get',
+    contextScoped: false
+  })
+}
+
+/**
  * 获取当前用户可进入的项目团队
  */
 export function getAccessibleTeams() {

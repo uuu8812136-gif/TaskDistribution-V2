@@ -1,5 +1,7 @@
 const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i
 const QR_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,86}$/
+const QR_PAYLOAD_KEYS = Object.freeze(['token', 'type', 'v'])
+const QR_URL_TOKEN_KEYS = Object.freeze(['token', 'qrToken', 'qr_token'])
 
 export const ROUTINE_TYPES = Object.freeze({
   INSPECTION: 'INSPECTION',
@@ -41,24 +43,107 @@ function normalizedPhotoIds(value) {
   return ids
 }
 
-export function parseEquipmentQrPayload(rawValue) {
-  let payload
+function invalidQrPayload() {
+  return new TypeError('无法识别设备二维码')
+}
+
+function decodeQrPart(value) {
   try {
-    payload = typeof rawValue === 'string' ? JSON.parse(rawValue) : rawValue
+    return decodeURIComponent(String(value || '').replace(/\+/g, '%20')).trim()
   } catch {
-    throw new TypeError('无法识别设备二维码')
+    throw invalidQrPayload()
   }
-  if (
-    !payload ||
-    payload.v !== 1 ||
-    payload.type !== 'EQUIPMENT_ASSET' ||
-    typeof payload.token !== 'string' ||
-    !QR_TOKEN_PATTERN.test(payload.token) ||
-    Object.keys(payload).some((key) => !['v', 'type', 'token'].includes(key))
-  ) {
-    throw new TypeError('无法识别设备二维码')
+}
+
+function tokenFromEquipmentUrl(rawValue) {
+  const source = String(rawValue || '').trim()
+  if (!/^(?:https?:\/\/|\/)/i.test(source) || source.length > 4096) return ''
+
+  const candidates = []
+  const parameterPattern = /[?&#]([^=&#]+)=([^&#]*)/g
+  let match
+  while ((match = parameterPattern.exec(source)) !== null) {
+    const key = decodeQrPart(match[1])
+    if (QR_URL_TOKEN_KEYS.includes(key)) candidates.push(decodeQrPart(match[2]))
   }
-  return { token: payload.token }
+
+  const pathPattern = /\/(?:equipment\/(?:qr|scan)|equipment-scan)\/([A-Za-z0-9_-]{43,86})(?:[/?#]|$)/ig
+  while ((match = pathPattern.exec(source)) !== null) candidates.push(match[1])
+
+  if (candidates.length === 0 || candidates.some((value) => !QR_TOKEN_PATTERN.test(value))) return ''
+  const validTokens = [...new Set(candidates)]
+  return validTokens.length === 1 ? validTokens[0] : ''
+}
+
+export function parseEquipmentQrPayload(rawValue) {
+  if (rawValue && typeof rawValue === 'object') {
+    const keys = Object.keys(rawValue).sort()
+    if (
+      rawValue.v === 1 &&
+      rawValue.type === 'EQUIPMENT_ASSET' &&
+      typeof rawValue.token === 'string' &&
+      QR_TOKEN_PATTERN.test(rawValue.token) &&
+      keys.length === QR_PAYLOAD_KEYS.length &&
+      keys.every((key, index) => key === QR_PAYLOAD_KEYS[index])
+    ) {
+      return { token: rawValue.token }
+    }
+    throw invalidQrPayload()
+  }
+
+  const source = String(rawValue || '').trim()
+  if (!source || source.length > 4096) throw invalidQrPayload()
+  if (QR_TOKEN_PATTERN.test(source)) return { token: source }
+
+  if (source.startsWith('{')) {
+    try {
+      return parseEquipmentQrPayload(JSON.parse(source))
+    } catch (error) {
+      if (error instanceof TypeError) throw error
+      throw invalidQrPayload()
+    }
+  }
+
+  const urlToken = tokenFromEquipmentUrl(source)
+  if (urlToken) return { token: urlToken }
+  throw invalidQrPayload()
+}
+
+export function equipmentScanFailureMessage(error) {
+  const outcome = classifyEquipmentScanFailure(error)
+  return outcome.status === 'cancelled' ? '' : outcome.message
+}
+
+export function classifyEquipmentScanFailure(error) {
+  const text = String(error?.errMsg || error?.message || error || '').toLowerCase()
+  if (text.includes('cancel')) {
+    return {
+      status: 'cancelled',
+      message: '已取消扫码',
+      permissionDenied: false
+    }
+  }
+  const permissionDenied = (
+    text.includes('auth deny') ||
+    text.includes('denied') ||
+    text.includes('authorize') ||
+    text.includes('permission') ||
+    text.includes('camera') ||
+    text.includes('相机')
+  )
+  return {
+    status: 'error',
+    message: permissionDenied
+      ? '无法使用相机，请在微信设置中允许相机权限'
+      : '扫码失败，请重试或手动粘贴二维码内容',
+    permissionDenied
+  }
+}
+
+export function equipmentLookupFailureMessage(error) {
+  if (Number(error?.statusCode) === 404) return '未找到设备，或该设备不属于当前团队'
+  if (Number(error?.statusCode) === 403) return '当前账号无权查看该设备'
+  return error?.message || '设备查询失败，请检查网络后重试'
 }
 
 export function routineTypeLabel(value) {
@@ -109,6 +194,77 @@ export function normalizeRoutineSchedules(response = {}) {
   }).filter((entry) => entry.ruleId)
 }
 
+export function equipmentBusinessMonthRange(now = new Date()) {
+  const date = now instanceof Date ? now : new Date(now)
+  if (Number.isNaN(date.getTime())) throw new TypeError('Invalid date')
+  const shanghai = new Date(date.getTime() + (8 * 60 * 60 * 1000))
+  const year = shanghai.getUTCFullYear()
+  const month = shanghai.getUTCMonth() + 1
+  const lastDay = new Date(Date.UTC(year, month, 0)).getUTCDate()
+  const pad = (value) => String(value).padStart(2, '0')
+  return {
+    month: `${year}-${pad(month)}`,
+    from: `${year}-${pad(month)}-01T00:00:00+08:00`,
+    to: `${year}-${pad(month)}-${pad(lastDay)}T23:59:59.999+08:00`
+  }
+}
+
+export async function loadEquipmentMonthlyActivity(equipmentId, {
+  teamId = '',
+  fetchRecords,
+  fetchRepairs,
+  now = new Date()
+} = {}) {
+  if (typeof fetchRecords !== 'function' || typeof fetchRepairs !== 'function') {
+    throw new TypeError('Monthly activity APIs are required')
+  }
+  const range = equipmentBusinessMonthRange(now)
+  const common = {
+    ...(teamId ? { teamId } : {}),
+    equipmentId,
+    page: 1,
+    pageSize: 20
+  }
+  const [routineResult, repairResult] = await Promise.all([
+    fetchRecords({ ...common, from: range.from, to: range.to }),
+    fetchRepairs({ ...common, startDate: range.from, endDate: range.to })
+  ])
+  return {
+    month: range.month,
+    routineRecords: routineResult?.records || [],
+    routineTotal: Number(routineResult?.total) || 0,
+    repairs: repairResult?.repairs || [],
+    repairTotal: Number(repairResult?.total) || 0
+  }
+}
+
+export async function lookupEquipmentFromQr(rawValue, {
+  teamId = '',
+  fetchEquipment,
+  fetchSchedule
+} = {}) {
+  if (typeof fetchEquipment !== 'function' || typeof fetchSchedule !== 'function') {
+    throw new TypeError('Equipment QR lookup dependencies are required')
+  }
+  const { token } = parseEquipmentQrPayload(rawValue)
+  const params = teamId ? { teamId } : {}
+  const response = await fetchEquipment(token, params, {
+    showLoading: false,
+    silentError: true
+  })
+  if (!response?.equipment?._id) {
+    throw Object.assign(new Error('设备不存在'), { statusCode: 404 })
+  }
+  const scheduleResponse = await fetchSchedule(response.equipment._id, params, {
+    showLoading: false,
+    silentError: true
+  })
+  return {
+    equipment: response.equipment,
+    schedules: normalizeRoutineSchedules(scheduleResponse)
+  }
+}
+
 export function resultOptionsFor(routineType, item = null) {
   const values = ROUTINE_RESULT_OPTIONS[routineType] || ROUTINE_RESULT_OPTIONS.INSPECTION
   return item?.required === false
@@ -120,9 +276,11 @@ export function buildRoutineRecordPayload({
   rule,
   results,
   abnormalSummary = '',
-  runtimeHours = null,
-  photoFileIds = [],
-  idempotencyKey = ''
+    runtimeHours = null,
+    photoFileIds = [],
+    photoEvidence = null,
+    planId = '',
+    idempotencyKey = ''
 }) {
   const ruleId = requiredObjectId(rule?._id, 'ruleId')
   const routineType = rule?.routineType
@@ -184,8 +342,24 @@ export function buildRoutineRecordPayload({
     if (!Number.isFinite(hours) || hours < 0) throw new TypeError('运行小时必须是非负数字')
     payload.runtimeHours = hours
   }
-  if (idempotencyKey) payload.idempotencyKey = String(idempotencyKey).slice(0, 128)
-  return payload
+    if (idempotencyKey) payload.idempotencyKey = String(idempotencyKey).slice(0, 128)
+    if (planId) payload.planId = requiredObjectId(planId, 'planId')
+    if (Array.isArray(photoEvidence)) {
+      if (photoEvidence.length !== photos.length) {
+        throw new TypeError('现场照片与拍摄信息数量不一致')
+      }
+      payload.photoEvidence = photoEvidence.map((evidence, index) => ({
+        fileId: photos[index],
+        sourceType: 'CAMERA',
+        capturedAt: evidence.capturedAt || null,
+        locationStatus: evidence.locationStatus || 'PENDING_CONFIRMATION',
+        longitude: evidence.longitude ?? null,
+        latitude: evidence.latitude ?? null,
+        accuracyMeters: evidence.accuracyMeters ?? null,
+        address: String(evidence.address || '').trim()
+      }))
+    }
+    return payload
 }
 
 export function buildRuntimeReadingPayload({ hours, reason = '' }) {

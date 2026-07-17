@@ -2,6 +2,7 @@
 
 const mongoose = require('mongoose');
 const {
+  FUNCTIONAL_ROLE_KEYS,
   MEMBERSHIP_ROLES,
   MEMBERSHIP_ROLE_VALUES,
   MEMBERSHIP_STATUSES,
@@ -174,6 +175,17 @@ teamMembershipSchema.index(
 teamMembershipSchema.index(
   { teamId: 1, orgUnitId: 1, status: 1 },
   { name: 'ix_team_membership_team_org_status' }
+);
+teamMembershipSchema.index(
+  { teamId: 1, orgUnitId: 1 },
+  {
+    unique: true,
+    name: 'uq_team_membership_active_attendance_reporter_per_org',
+    partialFilterExpression: {
+      status: MEMBERSHIP_STATUSES.ACTIVE,
+      functionalRoleKeys: FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER
+    }
+  }
 );
 teamMembershipSchema.index(
   { teamId: 1, role: 1, status: 1 },

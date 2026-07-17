@@ -30,7 +30,9 @@ const allTeamDataScopes = Object.freeze(Object.fromEntries(
   DATA_SCOPE_MODULE_VALUES.map((moduleKey) => [moduleKey, DATA_SCOPES.TEAM])
 ));
 const defaultGlobalReadPermissionKeys = Object.freeze(
-  PERMISSION_KEYS.filter((permissionKey) => permissionKey.endsWith('.view'))
+  PERMISSION_KEYS.filter((permissionKey) => (
+    permissionKey.endsWith('.view') || permissionKey === 'equipment.inventory'
+  ))
 );
 
 function contextError(status, code, message) {

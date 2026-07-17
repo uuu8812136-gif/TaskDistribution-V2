@@ -182,6 +182,16 @@ export default {
             msg.relatedTask._id || msg.relatedTask
           }`,
         });
+      } else if (msg.extraData?.resourceType === 'EQUIPMENT_ROUTINE_EXCEPTION') {
+        uni.navigateTo({
+          url: `/pages/equipment/routine-exception?exceptionId=${msg.extraData.exceptionId}`,
+        });
+      } else if (msg.extraData?.resourceType === 'EQUIPMENT_ROUTINE_PLAN') {
+        uni.navigateTo({ url: '/pages/equipment/routine-workbench' });
+      } else if (msg.extraData?.statusApplicationId) {
+        uni.navigateTo({
+          url: `/pages/equipment/status-application-detail?applicationId=${msg.extraData.statusApplicationId}`,
+        });
       }
     };
 

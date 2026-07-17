@@ -8,6 +8,7 @@ const User = require('../models/User');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
+  FUNCTIONAL_ROLE_KEYS,
   FUNCTIONAL_ROLE_KEY_VALUES,
   MEMBERSHIP_ROLES,
   MEMBERSHIP_ROLE_VALUES,
@@ -315,6 +316,13 @@ function memberAuditSnapshot(membership, user = null) {
 
 function duplicateError(error) {
   if (error?.code !== 11000) return error;
+  if (error.keyPattern?.orgUnitId && !error.keyPattern?.userId) {
+    return managementError(
+      409,
+      'ATTENDANCE_REPORTER_EXISTS',
+      'This division already has an active attendance reporter'
+    );
+  }
   const key = Object.keys(error.keyPattern || error.keyValue || {})[0] || 'value';
   const messages = {
     username: ['USERNAME_EXISTS', 'The username already exists'],
@@ -751,6 +759,64 @@ function createTeamManagementService({
     return orgUnit;
   }
 
+  function changesAttendanceReporterAssignment(
+    beforeRoles = [],
+    afterRoles = [],
+    beforeStatus = null,
+    afterStatus = null,
+    beforeOrgUnitId = null,
+    afterOrgUnitId = null
+  ) {
+    const role = FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER;
+    const beforeAssigned = beforeRoles.includes(role);
+    const afterAssigned = afterRoles.includes(role);
+    const beforeEffective = beforeAssigned && beforeStatus === MEMBERSHIP_STATUSES.ACTIVE;
+    const afterEffective = afterAssigned && afterStatus === MEMBERSHIP_STATUSES.ACTIVE;
+    const effectiveOrgChanged = (
+      beforeEffective &&
+      afterEffective &&
+      normalizeId(beforeOrgUnitId) !== normalizeId(afterOrgUnitId)
+    );
+    return (
+      beforeAssigned !== afterAssigned ||
+      beforeEffective !== afterEffective ||
+      effectiveOrgChanged
+    );
+  }
+
+  function assertAttendanceReporterAssignment({
+    context,
+    beforeRoles,
+    afterRoles,
+    beforeStatus,
+    afterStatus,
+    beforeOrgUnitId,
+    afterOrgUnitId,
+    orgUnit
+  }) {
+    const afterAssigned = afterRoles.includes(FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER);
+    if (afterAssigned && orgUnit?.type !== ORG_UNIT_TYPES.SUB_DEPARTMENT) {
+      throw inputError(
+        'An attendance reporter must be assigned to a sub-department',
+        'ATTENDANCE_REPORTER_ORG_REQUIRED'
+      );
+    }
+    if (
+      changesAttendanceReporterAssignment(
+        beforeRoles,
+        afterRoles,
+        beforeStatus,
+        afterStatus,
+        beforeOrgUnitId,
+        afterOrgUnitId
+      ) &&
+      context.isSuperAdmin !== true &&
+      !context.permissionKeys?.includes('reporter.assign')
+    ) {
+      throw permissionDenied('The reporter.assign permission is required');
+    }
+  }
+
   async function createMember({ authContext, req, input } = {}) {
     rejectPrivilegeFields(input);
     assertAllowedKeys(input, new Set([
@@ -780,6 +846,16 @@ function createTeamManagementService({
 
     return transaction(async (session) => {
       const orgUnit = await findActiveOrgUnit(teamId, input.orgUnitId, session);
+      assertAttendanceReporterAssignment({
+        context: authContext,
+        beforeRoles: [],
+        afterRoles: functionalRoleKeys,
+        beforeStatus: null,
+        afterStatus: input.status || MEMBERSHIP_STATUSES.ACTIVE,
+        beforeOrgUnitId: null,
+        afterOrgUnitId: orgUnit._id,
+        orgUnit
+      });
       let user;
       let createdUser = false;
       if (input.existingUserId !== undefined) {
@@ -895,11 +971,26 @@ function createTeamManagementService({
       if (functionalRoleKeys !== undefined) membership.functionalRoleKeys = functionalRoleKeys;
       if (permissionKeys !== undefined) membership.permissionKeys = permissionKeys;
       if (input.status !== undefined) membership.status = input.status;
+      if (!orgUnit) {
+        orgUnit = await OrgUnitModel.findOne({
+          _id: membership.orgUnitId,
+          teamId,
+          status: ORG_UNIT_STATUSES.ACTIVE
+        }).session(session);
+      }
+      if (!orgUnit) throw notFound('Organization unit');
+      assertAttendanceReporterAssignment({
+        context: authContext,
+        beforeRoles: before.functionalRoleKeys,
+        afterRoles: membership.functionalRoleKeys,
+        beforeStatus: before.status,
+        afterStatus: membership.status,
+        beforeOrgUnitId: before.orgUnitId,
+        afterOrgUnitId: membership.orgUnitId,
+        orgUnit
+      });
       applyDerivedMembershipFields(membership);
       await membership.save({ session });
-      if (!orgUnit) {
-        orgUnit = await OrgUnitModel.findOne({ _id: membership.orgUnitId, teamId }).session(session);
-      }
       const after = memberAuditSnapshot(membership, user);
 
       const auditEntries = [];

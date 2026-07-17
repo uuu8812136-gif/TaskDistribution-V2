@@ -35,6 +35,20 @@ export const MONTHLY_SCHEDULE_FIELDS = Object.freeze([
   { key: 'bLineNight', label: 'B线（夜班）' }
 ])
 
+export const ATTENDANCE_NAMED_FIELDS = Object.freeze([
+  { key: 'leave', label: '请假' },
+  { key: 'rest', label: '休班' },
+  { key: 'sickLeave', label: '病假' },
+  { key: 'absenteeism', label: '旷工' },
+  { key: 'notYetEmployed', label: '未入职' },
+  { key: 'pendingDeparture', label: '待离职' }
+])
+
+export const ATTENDANCE_QUALITY_STATUSES = Object.freeze({
+  CONFIRMED: 'CONFIRMED',
+  PENDING_CONFIRMATION: 'PENDING_CONFIRMATION'
+})
+
 const TRANSPORT_FIELD_LABELS = Object.freeze({
   orgUnitId: '所属组织',
   reportDate: '提报日期',
@@ -59,6 +73,81 @@ function nullableInteger(value) {
   if (value === '' || value === null || value === undefined) return null
   const parsed = Number(value)
   return Number.isInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function splitNames(value) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/)
+  return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
+}
+
+function attendanceNamedValue(value = {}) {
+  return {
+    count: integerOrZero(value.count),
+    names: splitNames(value.names)
+  }
+}
+
+function attendanceShiftValue(value = {}) {
+  return {
+    actualAttendanceCount: integerOrZero(value.actualAttendanceCount),
+    ...Object.fromEntries(ATTENDANCE_NAMED_FIELDS.map(({ key }) => [
+      key,
+      attendanceNamedValue(value[key])
+    ]))
+  }
+}
+
+export function emptyAttendanceShift() {
+  return {
+    actualAttendanceCount: 0,
+    ...Object.fromEntries(ATTENDANCE_NAMED_FIELDS.map(({ key }) => [
+      key,
+      { count: 0, names: '' }
+    ]))
+  }
+}
+
+export function emptyAttendanceForm(reportDate = '') {
+  return {
+    orgUnitId: '',
+    reportDate,
+    authorizedHeadcount: 0,
+    registeredHeadcount: 0,
+    dayShift: emptyAttendanceShift(),
+    nightShift: emptyAttendanceShift(),
+    support: { destination: '', count: 0, names: '' },
+    otherRemark: '',
+    reason: ''
+  }
+}
+
+export function buildAttendancePayload(form) {
+  return {
+    orgUnitId: form.orgUnitId,
+    reportDate: form.reportDate,
+    authorizedHeadcount: integerOrZero(form.authorizedHeadcount),
+    registeredHeadcount: integerOrZero(form.registeredHeadcount),
+    dayShift: attendanceShiftValue(form.dayShift),
+    nightShift: attendanceShiftValue(form.nightShift),
+    support: {
+      destination: String(form.support?.destination || '').trim(),
+      count: integerOrZero(form.support?.count),
+      names: splitNames(form.support?.names)
+    },
+    otherRemark: String(form.otherRemark || '').trim(),
+    reason: String(form.reason || '').trim() || null
+  }
+}
+
+export function attendanceNamesText(value) {
+  return splitNames(value).join('、') || '-'
+}
+
+export function attendanceShiftSummary(shift = {}) {
+  return ATTENDANCE_NAMED_FIELDS.reduce((result, { key }) => {
+    result[key] = integerOrZero(shift[key]?.count)
+    return result
+  }, { actualAttendanceCount: integerOrZero(shift.actualAttendanceCount) })
 }
 
 export function emptyTransportLoadDetails() {
@@ -200,4 +289,49 @@ export function saveBlob(blob, fileName) {
   link.download = fileName
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+export function dailyReportSourceSummary(report) {
+  const source = report?.sourceSnapshot || {}
+  const attendance = source.attendance || {}
+  const production = source.production || {}
+  return {
+    ruleVersion: source.rule?.version || report?.ruleVersion || '-',
+    currentReviewId: attendance.currentDate?.reviewId || '',
+    currentReviewedAt: attendance.currentDate?.reviewedAt || null,
+    previousReviewId: attendance.previousNaturalDate?.reviewId || '',
+    previousReviewedAt: attendance.previousNaturalDate?.reviewedAt || null,
+    attendanceRecordCount: (
+      (attendance.currentDate?.submissions?.length || 0) +
+      (attendance.previousNaturalDate?.submissions?.length || 0)
+    ),
+    productionScheduleCount: production.schedules?.length || 0,
+    requiredMonths: production.requiredMonths || [],
+    previousNaturalDate: production.previousNaturalDate || ''
+  }
+}
+
+export async function copyPlainText(value, dependencies = {}) {
+  const text = String(value || '')
+  if (!text) throw new TypeError('copy text cannot be empty')
+  const clipboard = dependencies.clipboard || globalThis.navigator?.clipboard
+  if (clipboard?.writeText) {
+    await clipboard.writeText(text)
+    return true
+  }
+  const documentRef = dependencies.document || globalThis.document
+  if (!documentRef?.createElement || !documentRef.body) {
+    throw new Error('Clipboard is unavailable')
+  }
+  const textarea = documentRef.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  documentRef.body.appendChild(textarea)
+  textarea.select()
+  const copied = documentRef.execCommand?.('copy') === true
+  textarea.remove()
+  if (!copied) throw new Error('Clipboard copy failed')
+  return true
 }

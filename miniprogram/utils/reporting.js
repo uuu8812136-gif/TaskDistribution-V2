@@ -6,6 +6,15 @@ export const REPORTING_MODULE_SCOPES = Object.freeze({
 export const TRANSPORT_SHIFT_OPTIONS = Object.freeze(['白班', '夜班', '中班'])
 export const TRANSPORT_DISPATCH_OPTIONS = Object.freeze(['配送', '返架'])
 
+export const ATTENDANCE_NAMED_FIELDS = Object.freeze([
+  { key: 'leave', label: '请假' },
+  { key: 'rest', label: '休班' },
+  { key: 'sickLeave', label: '病假' },
+  { key: 'absenteeism', label: '旷工' },
+  { key: 'notYetEmployed', label: '未入职' },
+  { key: 'pendingDeparture', label: '待离职' }
+])
+
 export const TRANSPORT_LOAD_FIELDS = Object.freeze([
   Object.freeze({ key: 'standardPlasticPallet', label: '标准*塑料托盘' }),
   Object.freeze({ key: 'standardIronPallet', label: '标准*铁托盘' }),
@@ -82,6 +91,79 @@ export function createEmptyTransportLoad() {
   return Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, '']))
 }
 
+function attendanceNames(value) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/)
+  return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
+}
+
+export function createEmptyAttendanceShift() {
+  return {
+    actualAttendanceCount: '',
+    ...Object.fromEntries(ATTENDANCE_NAMED_FIELDS.map(({ key }) => [
+      key,
+      { count: '', names: '' }
+    ]))
+  }
+}
+
+export function createEmptyAttendanceForm(reportDate = businessNaturalDate()) {
+  return {
+    orgUnitId: '',
+    reportDate,
+    authorizedHeadcount: '',
+    registeredHeadcount: '',
+    dayShift: createEmptyAttendanceShift(),
+    nightShift: createEmptyAttendanceShift(),
+    support: { destination: '', count: '', names: '' },
+    otherRemark: '',
+    reason: ''
+  }
+}
+
+function attendanceShiftPayload(value = {}, label) {
+  return {
+    actualAttendanceCount: quantity(value.actualAttendanceCount, `${label}实际出勤`),
+    ...Object.fromEntries(ATTENDANCE_NAMED_FIELDS.map(({ key, label: itemLabel }) => [
+      key,
+      {
+        count: quantity(value[key]?.count, `${label}${itemLabel}`),
+        names: attendanceNames(value[key]?.names)
+      }
+    ]))
+  }
+}
+
+export function buildAttendancePayload(form) {
+  const reportDate = requiredText(form?.reportDate, '提报日期')
+  if (!isNaturalDate(reportDate)) throw new TypeError('提报日期格式不正确')
+  return {
+    orgUnitId: requiredText(form?.orgUnitId, '所属分部'),
+    reportDate,
+    authorizedHeadcount: quantity(form.authorizedHeadcount, '编制人数'),
+    registeredHeadcount: quantity(form.registeredHeadcount, '在册人数'),
+    dayShift: attendanceShiftPayload(form.dayShift, '白班'),
+    nightShift: attendanceShiftPayload(form.nightShift, '夜班'),
+    support: {
+      destination: typeof form.support?.destination === 'string'
+        ? form.support.destination.trim()
+        : '',
+      count: quantity(form.support?.count, '帮产人数'),
+      names: attendanceNames(form.support?.names)
+    },
+    otherRemark: typeof form.otherRemark === 'string' ? form.otherRemark.trim() : '',
+    reason: typeof form.reason === 'string' && form.reason.trim() ? form.reason.trim() : null
+  }
+}
+
+export function attendanceNamesText(value) {
+  return attendanceNames(value).join('、') || '无'
+}
+
+export function attendanceSupportText(support = {}) {
+  if (!support.count && !(support.names || []).length) return '无帮产'
+  return `${support.destination || '未填写去向'} ${support.count || 0}人（${attendanceNamesText(support.names)}）`
+}
+
 export function scopedReportingParams(mode, selectedTeamId, params = {}) {
   const scoped = { ...params }
   delete scoped.teamId
@@ -90,6 +172,25 @@ export function scopedReportingParams(mode, selectedTeamId, params = {}) {
     throw new TypeError('请先选择要查看的项目团队')
   }
   return { ...scoped, teamId: selectedTeamId.toLowerCase() }
+}
+
+export function dailyReportSourceSummary(report = {}) {
+  const source = report.sourceSnapshot || {}
+  const attendance = source.attendance || {}
+  const production = source.production || {}
+  return {
+    ruleVersion: source.rule?.version || report.ruleVersion || '-',
+    currentReviewId: attendance.currentDate?.reviewId || '',
+    currentReviewedAt: attendance.currentDate?.reviewedAt || null,
+    previousReviewId: attendance.previousNaturalDate?.reviewId || '',
+    previousReviewedAt: attendance.previousNaturalDate?.reviewedAt || null,
+    attendanceRecordCount: (
+      (attendance.currentDate?.submissions?.length || 0) +
+      (attendance.previousNaturalDate?.submissions?.length || 0)
+    ),
+    productionScheduleCount: production.schedules?.length || 0,
+    requiredMonths: production.requiredMonths || []
+  }
 }
 
 export function buildTransportFields(form) {

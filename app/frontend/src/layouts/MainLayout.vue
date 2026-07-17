@@ -99,15 +99,30 @@
             <template #title>项目团队控制</template>
           </el-menu-item>
 
-          <el-sub-menu v-if="session.hasPermission('equipment.view')" index="/equipment-module">
+          <el-sub-menu
+            v-if="session.hasPermission('equipment.view') || session.hasPermission('equipment.inventory')"
+            index="/equipment-module"
+          >
             <template #title>
               <el-icon><Tools /></el-icon>
               <span>设备管理</span>
             </template>
-            <el-menu-item index="/equipment">设备台账</el-menu-item>
-            <el-menu-item index="/equipment/categories">设备分类</el-menu-item>
-            <el-menu-item index="/equipment/rules">
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment">设备台账</el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment/categories">设备分类</el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment/rules">
               点检保养规则
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment/routines">
+              点检保养工作台
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.inventory')" index="/equipment/inventories">
+              设备盘点
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment/repairs">
+              设备维修
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('equipment.view')" index="/equipment/status-applications">
+              状态申请
             </el-menu-item>
           </el-sub-menu>
 
@@ -117,7 +132,9 @@
               <span>数据提报</span>
             </template>
             <el-menu-item index="/reporting/transport">运输提报</el-menu-item>
+            <el-menu-item index="/reporting/attendance">出勤日报</el-menu-item>
             <el-menu-item index="/reporting/production">生产排产</el-menu-item>
+            <el-menu-item index="/reporting/daily-report">生产日报</el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="session.hasPermission('task.view')" index="/tasks">
@@ -136,6 +153,11 @@
           >
             <el-icon><Clock /></el-icon>
             <template #title>延期管理</template>
+          </el-menu-item>
+
+          <el-menu-item v-if="canViewAuditLogs" index="/audit-logs">
+            <el-icon><DocumentChecked /></el-icon>
+            <template #title>审计日志</template>
           </el-menu-item>
 
           <el-menu-item index="/messages">
@@ -203,6 +225,7 @@ import TeamSwitcher from '@/components/TeamSwitcher.vue'
 import { changePassword } from '@/api/auth'
 import { useMessageStore } from '@/stores/message'
 import { useSessionStore } from '@/stores/session'
+import { canViewAudit } from '@/utils/auditLog'
 
 const route = useRoute()
 const router = useRouter()
@@ -213,6 +236,13 @@ const canManageOrganization = computed(() => (
   session.hasPermission('org.manage') &&
   (session.isSuperAdmin || session.context.membership?.role === 'PROJECT_ADMIN')
 ))
+const canViewAuditLogs = computed(() => canViewAudit({
+  isSuperAdmin: session.isSuperAdmin,
+  isTeamMode: session.isTeamMode,
+  isGlobalReadOnly: session.isGlobalReadOnly,
+  membershipRole: session.context.membership?.role,
+  permissionKeys: session.permissionKeys
+}))
 const initialMobile = typeof window !== 'undefined'
   && typeof window.matchMedia === 'function'
   && window.matchMedia('(max-width: 768px)').matches

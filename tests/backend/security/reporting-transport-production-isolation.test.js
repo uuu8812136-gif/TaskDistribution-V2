@@ -279,7 +279,7 @@ function transportInput({ orgUnitId, route, photoFileIds = [] }) {
     tripLabel: '第1车',
     route,
     dispatchType: '配送',
-    vehiclePlate: '鲁AV1515',
+    vehiclePlate: 'TEST-PLATE-04',
     vehicleType: '大厢式翼开车（9.6米）',
     driverName: '司机A',
     loadDetails: { standardPlasticPallet: 2, other: 1 },

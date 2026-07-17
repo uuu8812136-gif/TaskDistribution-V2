@@ -207,7 +207,7 @@ function transportInput(orgUnitId, photoFiles, overrides = {}) {
     tripLabel: '第1车',
     route: '仓库-总部',
     dispatchType: '配送',
-    vehiclePlate: '鲁A00001',
+    vehiclePlate: 'TEST-PLATE-03',
     vehicleType: '厢式货车',
     driverName: '=DRIVER',
     loadDetails: { standardPlasticPallet: 2 },

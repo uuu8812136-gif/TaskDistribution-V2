@@ -12,10 +12,10 @@ import {
   managementErrorMessage
 } from '../src/utils/teamManagement.js'
 
-test('fixed permission catalog exposes the 30 backend permission keys without duplicates', () => {
+test('fixed permission catalog exposes the 31 backend permission keys without duplicates', () => {
   const keys = PERMISSION_GROUPS.flatMap((group) => group.options.map((option) => option.value))
-  assert.equal(keys.length, 30)
-  assert.equal(new Set(keys).size, 30)
+  assert.equal(keys.length, 31)
+  assert.equal(new Set(keys).size, 31)
   assert.deepEqual(PERMISSION_GROUPS.map((group) => group.key), [
     'task',
     'equipment',

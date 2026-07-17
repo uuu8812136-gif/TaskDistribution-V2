@@ -81,6 +81,7 @@ export const PERMISSION_GROUPS = Object.freeze([
       ['report.correct', '纠正'],
       ['report.export', '导出'],
       ['report.schedule.manage', '计划维护'],
+      ['report.daily.generate', '生产日报生成'],
       ['report.monthly.generate', '月报生成']
     ]
   },
@@ -203,6 +204,8 @@ export function managementErrorMessage(error, fallback = '操作失败') {
     USERNAME_EXISTS: '该用户名已被使用，用户名在全系统必须唯一',
     CODE_EXISTS: '该编码已被使用，请更换编码',
     MEMBERSHIP_EXISTS: '该用户已经属于当前团队',
+    ATTENDANCE_REPORTER_EXISTS: '该分部已有一名有效考勤提报人，请先取消原提报人的职能角色',
+    ATTENDANCE_REPORTER_ORG_REQUIRED: '考勤提报人只能指定到分部组织',
     ORG_UNIT_HAS_ACTIVE_DEPENDENCIES: '请先停用该组织下的成员和子组织',
     MANAGEMENT_CONCURRENT_UPDATE: '数据已被其他人修改，请刷新后重试',
     MANAGEMENT_RESOURCE_NOT_FOUND: '记录不存在或不属于当前团队'

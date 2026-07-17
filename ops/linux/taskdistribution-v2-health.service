@@ -1,0 +1,22 @@
+[Unit]
+Description=TaskDistribution V2 operations health terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taskdistribution
+Group=taskdistribution
+WorkingDirectory=/opt/taskdistribution-v2/current
+EnvironmentFile=/etc/taskdistribution-v2/operations.env
+ExecStart=/usr/bin/node /opt/taskdistribution-v2/current/ops/health-terminal.js --watch
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/taskdistribution-v2/current /srv/taskdistribution-v2/uploads
+ReadWritePaths=/srv/taskdistribution-v2/backups
+
+[Install]
+WantedBy=multi-user.target

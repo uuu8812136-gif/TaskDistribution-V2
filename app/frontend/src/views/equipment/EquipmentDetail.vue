@@ -11,6 +11,14 @@
         </div>
       </div>
       <div class="heading-actions">
+        <el-button v-if="canApplyStatus && equipment && equipment.status !== 'SCRAPPED'" @click="createStatusApplication">
+          <el-icon><Switch /></el-icon>
+          状态申请
+        </el-button>
+        <el-button v-if="canRepair && equipment" @click="createRepair">
+          <el-icon><Tools /></el-icon>
+          发起维修
+        </el-button>
         <el-button v-if="canQr && equipment" @click="showQrCode">
           <el-icon><FullScreen /></el-icon>
           二维码
@@ -34,21 +42,112 @@
         <div><span>保管人</span><strong>{{ custodianName }}</strong></div>
       </section>
 
-      <section class="detail-section">
-        <h2>台账信息</h2>
+      <el-alert
+        v-if="qualityIssueViews.length"
+        class="quality-alert"
+        :title="`该设备有 ${qualityIssueViews.length} 项数据异常，当前记录按原表值展示`"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+
+      <section v-for="group in EQUIPMENT_DETAIL_GROUPS" :key="group.title" class="detail-section">
+        <h2>{{ group.title }}</h2>
         <el-descriptions :column="descriptionColumns" border>
-          <el-descriptions-item label="资产编号">{{ equipment.assetCode }}</el-descriptions-item>
-          <el-descriptions-item label="设备名称">{{ equipment.name }}</el-descriptions-item>
-          <el-descriptions-item label="规格型号">{{ equipment.specification || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="生产厂家">{{ equipment.manufacturer || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="数量">{{ equipment.quantity }} {{ equipment.unit }}</el-descriptions-item>
-          <el-descriptions-item label="购置日期">{{ displayDate(equipment.acquisitionDate) }}</el-descriptions-item>
+          <el-descriptions-item
+            v-for="field in group.fields"
+            :key="field.key"
+            :label="field.label"
+            :span="field.span ? descriptionColumns : 1"
+          >
+            {{ detailFieldValue(field.key) }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </section>
+
+      <section v-if="sourceRawEntries.length" class="detail-section">
+        <h2>原始表格字段</h2>
+        <el-descriptions :column="descriptionColumns" border>
+          <el-descriptions-item
+            v-for="entry in sourceRawEntries"
+            :key="entry.key"
+            :label="entry.label"
+          >
+            {{ displayRawValue(entry.value) }}
+          </el-descriptions-item>
+        </el-descriptions>
+      </section>
+
+      <section class="detail-section">
+        <h2>系统记录</h2>
+        <el-descriptions :column="descriptionColumns" border>
+          <el-descriptions-item label="所属组织">{{ orgUnitName }}</el-descriptions-item>
+          <el-descriptions-item label="设备分类">{{ categoryName }}</el-descriptions-item>
+          <el-descriptions-item label="系统购置日期">{{ displayDate(equipment.acquisitionDate) }}</el-descriptions-item>
           <el-descriptions-item label="原值">{{ displayMoney(equipment.originalValue) }}</el-descriptions-item>
-          <el-descriptions-item label="存放地点">{{ equipment.location || '-' }}</el-descriptions-item>
-          <el-descriptions-item label="备注" :span="descriptionColumns">{{ equipment.remark || '-' }}</el-descriptions-item>
           <el-descriptions-item label="创建时间">{{ displayTime(equipment.createdAt) }}</el-descriptions-item>
           <el-descriptions-item label="更新时间">{{ displayTime(equipment.updatedAt) }}</el-descriptions-item>
         </el-descriptions>
+      </section>
+
+      <section class="detail-section">
+        <div class="section-heading">
+          <div>
+            <h2>设备照片</h2>
+            <p class="section-note">共 {{ equipmentPhotoIds.length }} 张，点击可查看原图</p>
+          </div>
+          <el-button
+            v-if="equipmentPhotoIds.length"
+            :loading="photosLoading"
+            circle
+            aria-label="刷新设备照片"
+            @click="loadEquipmentPhotos"
+          >
+            <el-icon><Refresh /></el-icon>
+          </el-button>
+        </div>
+        <div v-loading="photosLoading" class="photo-grid" :class="{ 'is-empty': !equipmentPhotoIds.length }">
+          <el-empty v-if="!equipmentPhotoIds.length" description="该设备暂无照片" :image-size="64" />
+          <figure v-for="(photo, index) in equipmentPhotos" :key="photo.fileId" class="photo-item">
+            <el-image
+              :src="photo.url"
+              :alt="photo.name"
+              :preview-src-list="photoPreviewUrls"
+              :initial-index="index"
+              fit="cover"
+              preview-teleported
+            />
+            <figcaption :title="photo.name">{{ photo.name }}</figcaption>
+          </figure>
+          <div v-for="failure in photoFailures" :key="failure.fileId" class="photo-failure">
+            <el-icon><WarningFilled /></el-icon>
+            <span>照片加载失败</span>
+            <small>{{ failure.fileId }}</small>
+          </div>
+        </div>
+      </section>
+
+      <section v-if="qualityIssueViews.length" class="detail-section">
+        <h2>数据异常标记</h2>
+        <div class="table-shell quality-table">
+          <el-table :data="qualityIssueViews" row-key="key" empty-text="暂无数据异常">
+            <el-table-column label="级别" width="86">
+              <template #default="{ row }">
+                <el-tag :type="qualityIssueTagType(row.severity)" effect="plain" size="small">
+                  {{ row.severity === 'ERROR' ? '错误' : '警告' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column prop="field" label="字段" min-width="120" show-overflow-tooltip />
+            <el-table-column prop="title" label="异常说明" min-width="230" show-overflow-tooltip />
+            <el-table-column prop="detail" label="处理提示" min-width="220" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.detail || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="原始值" min-width="140" show-overflow-tooltip>
+              <template #default="{ row }">{{ displayRawValue(row.originalValue) }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
       </section>
 
       <section v-if="canViewRoutine" class="detail-section routine-section">
@@ -256,13 +355,14 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import QRCode from 'qrcode'
 import { ElMessage } from 'element-plus'
 import RoutineExecutionDialog from './components/RoutineExecutionDialog.vue'
 import RuntimeReadingDialog from './components/RuntimeReadingDialog.vue'
+import { downloadFileBlob, getFileMetadata } from '@/api/file'
 import {
   createEquipmentRoutineRecord,
   createEquipmentRuntimeReading,
@@ -284,6 +384,14 @@ import {
   optionForValue,
   routineScheduleLabel
 } from '@/utils/equipment'
+import {
+  EQUIPMENT_DETAIL_GROUPS,
+  equipmentFieldValue,
+  equipmentQualityIssues,
+  equipmentQualityIssueView,
+  equipmentSourceRawEntries,
+  normalizeEquipmentPhotoIds
+} from '@/utils/equipmentAssetDisplay'
 
 const route = useRoute()
 const router = useRouter()
@@ -299,6 +407,9 @@ const historyPageSize = 20
 const historyTotal = ref(0)
 const qrVisible = ref(false)
 const qrImage = ref('')
+const photosLoading = ref(false)
+const equipmentPhotos = ref([])
+const photoFailures = ref([])
 const routineLoading = ref(false)
 const routineSchedules = ref([])
 const currentRuntimeHours = ref(null)
@@ -323,19 +434,39 @@ const requestParams = computed(() => (
 ))
 const canEdit = computed(() => session.can('equipment.edit', { write: true, teamRequired: true }))
 const canQr = computed(() => session.can('equipment.qrcode', { write: true, teamRequired: true }))
+const canRepair = computed(() => session.can('equipment.repair', { write: true, teamRequired: true }))
+const canApplyStatus = computed(() => (
+  session.can('equipment.status.apply', { write: true, teamRequired: true }) &&
+  session.context.membership?.functionalRoleKeys?.includes('ASSET_ADMIN')
+))
 const canViewRoutine = computed(() => session.hasPermission('equipment.view'))
 const canRecordRuntime = computed(() => (
   session.can('equipment.edit', { write: true, teamRequired: true })
 ))
+const createRepair = () => router.push({
+  name: 'EquipmentRepairs',
+  query: { create: '1', equipmentId: equipment.value?._id }
+})
+const createStatusApplication = () => router.push({
+  name: 'EquipmentStatusApplications',
+  query: { create: '1', equipmentId: equipment.value?._id }
+})
 const statusOption = computed(() => optionForValue(EQUIPMENT_STATUS_OPTIONS, equipment.value?.status))
-const orgUnitName = computed(() => entityName(options.value.orgUnits, equipment.value?.orgUnitId))
+const orgUnitName = computed(() => (
+  equipment.value?.orgUnitNameSnapshot || entityName(options.value.orgUnits, equipment.value?.orgUnitId)
+))
 const categoryName = computed(() => entityName(categories.value, equipment.value?.categoryId))
 const custodianName = computed(() => (
-  equipment.value?.custodianUserId
+  equipment.value?.custodianDisplayName || (equipment.value?.custodianUserId
     ? entityName(options.value.custodians, equipment.value.custodianUserId)
-    : '-'
+    : '-')
 ))
 const descriptionColumns = computed(() => window.innerWidth < 720 ? 1 : 2)
+const equipmentPhotoIds = computed(() => normalizeEquipmentPhotoIds(equipment.value?.photoFileIds))
+const photoPreviewUrls = computed(() => equipmentPhotos.value.map((item) => item.url))
+const qualityIssueViews = computed(() => equipmentQualityIssues(equipment.value)
+  .map((issue, index) => equipmentQualityIssueView(issue, index)))
+const sourceRawEntries = computed(() => equipmentSourceRawEntries(equipment.value))
 const currentRuntimeLabel = computed(() => (
   currentRuntimeHours.value === null || currentRuntimeHours.value === undefined
     ? '待录入'
@@ -349,6 +480,61 @@ const displayMoney = (value) => value === null || value === undefined
   : new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'CNY' }).format(value)
 const changeTypeLabel = (value) => ({ CREATE: '创建', UPDATE: '编辑', STATUS_CHANGE: '状态变更' }[value] || value)
 const operatorName = (id) => entityName(options.value.custodians, id, id ? `用户 ${id.slice(-6)}` : '-')
+
+function detailFieldValue(key) {
+  if (key === 'status') return statusOption.value.label
+  if (key === 'custodianDisplayName') {
+    return equipment.value?.custodianDisplayName || custodianName.value
+  }
+  if (key === 'orgUnitNameSnapshot') {
+    return equipment.value?.orgUnitNameSnapshot || orgUnitName.value
+  }
+  if (key === 'acquisitionDate') return displayDate(equipment.value?.acquisitionDate)
+  return equipmentFieldValue(equipment.value, key)
+}
+
+function qualityIssueTagType(severity) {
+  return severity === 'ERROR' ? 'danger' : 'warning'
+}
+
+function displayRawValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  return typeof value === 'object' ? JSON.stringify(value) : String(value)
+}
+
+function releaseEquipmentPhotos() {
+  equipmentPhotos.value.forEach((photo) => photo.url && URL.revokeObjectURL(photo.url))
+  equipmentPhotos.value = []
+}
+
+async function loadEquipmentPhotos() {
+  releaseEquipmentPhotos()
+  photoFailures.value = []
+  if (!equipmentPhotoIds.value.length) return
+  photosLoading.value = true
+  try {
+    const results = await Promise.all(equipmentPhotoIds.value.map(async (fileId) => {
+      try {
+        const [metadata, blob] = await Promise.all([
+          getFileMetadata(fileId, requestParams.value.teamId),
+          downloadFileBlob(fileId, requestParams.value.teamId)
+        ])
+        return {
+          ok: true,
+          fileId,
+          name: metadata.file?.originalName || metadata.file?.name || `设备照片-${fileId.slice(-6)}`,
+          url: URL.createObjectURL(blob)
+        }
+      } catch (error) {
+        return { ok: false, fileId, error }
+      }
+    }))
+    equipmentPhotos.value = results.filter((item) => item.ok)
+    photoFailures.value = results.filter((item) => !item.ok)
+  } finally {
+    photosLoading.value = false
+  }
+}
 
 function canExecuteRoutine(routineType) {
   const permission = routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect'
@@ -518,6 +704,7 @@ async function initialize() {
     options.value = optionResult
     await Promise.all([
       loadHistory(),
+      loadEquipmentPhotos(),
       canViewRoutine.value ? loadRoutineSchedule() : Promise.resolve()
     ])
   } finally {
@@ -556,6 +743,7 @@ function printQr() {
 }
 
 onMounted(initialize)
+onBeforeUnmount(releaseEquipmentPhotos)
 </script>
 
 <style lang="scss">
@@ -575,8 +763,11 @@ onMounted(initialize)
 .summary-band > div:last-child { border-right: 0; }
 .summary-band span { display: block; margin-bottom: 7px; color: #909399; font-size: 12px; }
 .summary-band strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-alert { margin-top: 18px; }
 .detail-section { margin-top: 24px; }
 .detail-section h2 { margin: 0 0 12px; font-size: 17px; letter-spacing: 0; }
+.detail-section .section-heading h2 { margin-bottom: 3px; }
+.section-note { margin: 0; color: var(--zl-muted); font-size: 13px; }
 .section-heading { justify-content: space-between; }
 .routine-heading { gap: 16px; }
 .routine-heading h2 { margin-bottom: 3px; }
@@ -589,6 +780,14 @@ onMounted(initialize)
 .runtime-band small { color: var(--zl-muted); text-align: right; }
 .routine-table { margin-top: 12px; border-radius: 8px; }
 .table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+.quality-table { overflow-x: auto; }
+.photo-grid { min-height: 132px; display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 12px; }
+.photo-grid.is-empty { display: block; border-block: 1px solid var(--zl-border-soft); }
+.photo-item { min-width: 0; margin: 0; border: 1px solid var(--zl-border-soft); border-radius: 8px; overflow: hidden; background: var(--zl-surface); }
+.photo-item :deep(.el-image) { width: 100%; aspect-ratio: 4 / 3; display: block; }
+.photo-item figcaption { padding: 8px 10px; overflow: hidden; color: #606266; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.photo-failure { min-height: 132px; padding: 14px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--el-color-warning); border: 1px dashed var(--el-color-warning-light-5); border-radius: 8px; }
+.photo-failure small { max-width: 100%; overflow: hidden; color: var(--zl-muted); text-overflow: ellipsis; white-space: nowrap; }
 .history-pagination { justify-content: flex-end; margin-top: 14px; }
 .records-toolbar { gap: 8px; margin-bottom: 14px; }
 .records-toolbar .toolbar-spacer { flex: 1; }

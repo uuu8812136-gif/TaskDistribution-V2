@@ -1,0 +1,19 @@
+[Unit]
+Description=TaskDistribution V2 database and uploads backup
+After=network-online.target mongod.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=taskdistribution
+Group=taskdistribution
+WorkingDirectory=/opt/taskdistribution-v2/current
+EnvironmentFile=/etc/taskdistribution-v2/operations.env
+ExecStart=/usr/bin/node /opt/taskdistribution-v2/current/ops/backup.js
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/taskdistribution-v2/current /srv/taskdistribution-v2/uploads
+ReadWritePaths=/srv/taskdistribution-v2/backups
+UMask=0077

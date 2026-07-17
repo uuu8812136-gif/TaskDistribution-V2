@@ -162,6 +162,13 @@ export const put = (url, data = {}, options = {}) => request({
   ...options
 })
 
+export const patch = (url, data = {}, options = {}) => request({
+  url,
+  method: 'PATCH',
+  data,
+  ...options
+})
+
 export const del = (url, data = {}, options = {}) => request({
   url,
   method: 'DELETE',

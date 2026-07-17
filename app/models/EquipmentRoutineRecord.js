@@ -25,6 +25,16 @@ const EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES = Object.freeze(
   Object.values(EQUIPMENT_ROUTINE_OVERALL_RESULTS)
 );
 
+const EQUIPMENT_ROUTINE_LOCATION_STATUSES = Object.freeze({
+  GRANTED: 'GRANTED',
+  DENIED: 'DENIED',
+  UNAVAILABLE: 'UNAVAILABLE',
+  PENDING_CONFIRMATION: 'PENDING_CONFIRMATION'
+});
+const EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES = Object.freeze(
+  Object.values(EQUIPMENT_ROUTINE_LOCATION_STATUSES)
+);
+
 const itemResultSchema = new mongoose.Schema({
   itemKey: {
     type: String,
@@ -45,6 +55,72 @@ const itemResultSchema = new mongoose.Schema({
     trim: true,
     maxlength: 2000,
     default: '',
+    immutable: true
+  }
+}, {
+  _id: false,
+  strict: 'throw'
+});
+
+const photoEvidenceSchema = new mongoose.Schema({
+  fileId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'FileAsset',
+    required: true,
+    immutable: true
+  },
+  sourceType: {
+    type: String,
+    enum: ['CAMERA'],
+    required: true,
+    default: 'CAMERA',
+    immutable: true
+  },
+  capturedAt: {
+    type: Date,
+    default: null,
+    immutable: true
+  },
+  locationStatus: {
+    type: String,
+    enum: EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES,
+    required: true,
+    default: EQUIPMENT_ROUTINE_LOCATION_STATUSES.PENDING_CONFIRMATION,
+    immutable: true
+  },
+  longitude: {
+    type: Number,
+    min: -180,
+    max: 180,
+    default: null,
+    immutable: true
+  },
+  latitude: {
+    type: Number,
+    min: -90,
+    max: 90,
+    default: null,
+    immutable: true
+  },
+  accuracyMeters: {
+    type: Number,
+    min: 0,
+    max: 100000,
+    default: null,
+    immutable: true
+  },
+  address: {
+    type: String,
+    trim: true,
+    maxlength: 500,
+    default: '',
+    immutable: true
+  },
+  watermarkText: {
+    type: String,
+    trim: true,
+    maxlength: 1000,
+    required: true,
     immutable: true
   }
 }, {
@@ -95,6 +171,12 @@ const equipmentRoutineRecordSchema = new mongoose.Schema({
   },
   ruleSnapshot: {
     type: mongoose.Schema.Types.Mixed,
+    default: null,
+    immutable: true
+  },
+  planId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'EquipmentRoutinePlan',
     default: null,
     immutable: true
   },
@@ -201,6 +283,23 @@ const equipmentRoutineRecordSchema = new mongoose.Schema({
       }
     ]
   },
+  photoEvidence: {
+    type: [photoEvidenceSchema],
+    default: [],
+    immutable: true,
+    validate: [
+      {
+        validator: (values) => Array.isArray(values) && values.length <= 50,
+        message: 'photoEvidence cannot contain more than 50 items'
+      },
+      {
+        validator: (values) => (
+          Array.isArray(values) && new Set(values.map(({ fileId }) => String(fileId))).size === values.length
+        ),
+        message: 'photoEvidence must not contain duplicate files'
+      }
+    ]
+  },
   idempotencyKey: {
     type: String,
     trim: true,
@@ -279,3 +378,5 @@ module.exports.EQUIPMENT_ROUTINE_ITEM_RESULTS = EQUIPMENT_ROUTINE_ITEM_RESULTS;
 module.exports.EQUIPMENT_ROUTINE_ITEM_RESULT_VALUES = EQUIPMENT_ROUTINE_ITEM_RESULT_VALUES;
 module.exports.EQUIPMENT_ROUTINE_OVERALL_RESULTS = EQUIPMENT_ROUTINE_OVERALL_RESULTS;
 module.exports.EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES = EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES;
+module.exports.EQUIPMENT_ROUTINE_LOCATION_STATUSES = EQUIPMENT_ROUTINE_LOCATION_STATUSES;
+module.exports.EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES = EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES;

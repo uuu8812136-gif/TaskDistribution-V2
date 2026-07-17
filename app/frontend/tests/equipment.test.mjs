@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import {
   IMPORT_DECISION_ACTIONS,
@@ -23,6 +26,26 @@ import {
   removeChecklistItemAt,
   EQUIPMENT_STATUS_OPTIONS
 } from '../src/utils/equipment.js'
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+
+test('equipment import UI exposes progress, isolated timeout, cancellation, and local job recovery', () => {
+  const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
+  const dialog = fs.readFileSync(
+    path.join(root, 'src/views/equipment/components/EquipmentImportDialog.vue'),
+    'utf8'
+  )
+  assert.match(api, /timeout: 15 \* 60 \* 1000/)
+  assert.match(api, /onUploadProgress/)
+  assert.match(api, /\/imports\/\$\{importJobId\}\/cancel/)
+  assert.match(dialog, /equipmentImportPreviewJobId/)
+  assert.match(dialog, /localStorage\.setItem/)
+  assert.match(dialog, /restorePreview/)
+  assert.match(dialog, /cancelEquipmentImport/)
+  assert.match(dialog, /<el-step title="上传"/)
+  assert.match(dialog, /<el-step title="解析"/)
+  assert.match(dialog, /<el-step title="写入"/)
+})
 
 test('equipment payload contains only normalized fixed fields', () => {
   const payload = buildEquipmentPayload({

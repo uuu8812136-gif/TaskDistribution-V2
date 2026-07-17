@@ -40,6 +40,14 @@
       >
         <template #prefix><el-icon><Search /></el-icon></template>
       </el-input>
+      <el-select v-model="filters.assetType" clearable placeholder="资产类型" @change="applyFilters">
+        <el-option
+          v-for="item in EQUIPMENT_ASSET_TYPE_OPTIONS"
+          :key="item.value"
+          :label="item.label"
+          :value="item.value"
+        />
+      </el-select>
       <el-select v-model="filters.status" clearable placeholder="设备状态">
         <el-option v-for="item in EQUIPMENT_STATUS_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
@@ -61,29 +69,36 @@
       </el-button>
     </section>
 
-    <section class="table-shell">
-      <el-table v-loading="loading" :data="assets" row-key="_id" stripe empty-text="暂无设备数据">
-        <el-table-column prop="assetCode" label="资产编号" min-width="130" fixed="left" />
-        <el-table-column prop="name" label="设备名称" min-width="160" show-overflow-tooltip />
-        <el-table-column label="分类" min-width="120" show-overflow-tooltip>
-          <template #default="{ row }">{{ categoryName(row.categoryId) }}</template>
-        </el-table-column>
-        <el-table-column label="所属组织" min-width="130" show-overflow-tooltip>
-          <template #default="{ row }">{{ orgUnitName(row.orgUnitId) }}</template>
-        </el-table-column>
-        <el-table-column prop="specification" label="规格型号" min-width="140" show-overflow-tooltip />
-        <el-table-column label="数量" width="100" align="right">
-          <template #default="{ row }">{{ row.quantity }} {{ row.unit }}</template>
-        </el-table-column>
-        <el-table-column label="保管人" min-width="110">
-          <template #default="{ row }">{{ custodianName(row.custodianUserId) }}</template>
-        </el-table-column>
-        <el-table-column prop="location" label="存放地点" min-width="150" show-overflow-tooltip />
-        <el-table-column label="状态" width="92">
+    <section class="table-shell asset-table-shell">
+      <el-table
+        v-loading="loading"
+        :data="assets"
+        :style="{ minWidth: `${tableMinWidth}px` }"
+        class="asset-table"
+        row-key="_id"
+        stripe
+        empty-text="暂无设备数据"
+      >
+        <el-table-column
+          v-for="column in tableColumns"
+          :key="column.key"
+          :label="column.label"
+          :width="column.width"
+          :min-width="column.minWidth"
+          :align="column.align || 'left'"
+          :fixed="['sourceSequence', 'assetCode', 'name'].includes(column.key) ? 'left' : undefined"
+          show-overflow-tooltip
+        >
           <template #default="{ row }">
-            <el-tag :type="statusOption(row.status).type" effect="plain" size="small">
-              {{ statusOption(row.status).label }}
+            <el-tag
+              v-if="column.key === 'issueCount' && tableCellValue(row, column) > 0"
+              type="warning"
+              effect="plain"
+              size="small"
+            >
+              {{ tableCellValue(row, column) }}
             </el-tag>
+            <span v-else>{{ tableCellValue(row, column) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="150" fixed="right" align="center">
@@ -216,6 +231,12 @@ import {
   optionForValue,
   saveBlob
 } from '@/utils/equipment'
+import {
+  EQUIPMENT_ASSET_TYPE_OPTIONS,
+  equipmentAssetTableColumns,
+  equipmentFieldValue,
+  equipmentTableMinWidth
+} from '@/utils/equipmentAssetDisplay'
 
 const route = useRoute()
 const router = useRouter()
@@ -234,6 +255,7 @@ const selectedTeamId = ref(String(route.query.teamId || ''))
 const options = reactive({ orgUnits: [], custodians: [] })
 const filters = reactive({
   keyword: '',
+  assetType: '',
   status: '',
   orgUnitId: '',
   categoryId: '',
@@ -247,6 +269,8 @@ const canEdit = computed(() => session.can('equipment.edit', { write: true, team
 const canImport = computed(() => session.can('equipment.import', { write: true, teamRequired: true }))
 const activeCategories = computed(() => categories.value.filter((item) => item.status === 'ACTIVE'))
 const formCustodians = computed(() => options.custodians.filter((item) => item.orgUnitId === form.orgUnitId))
+const tableColumns = computed(() => equipmentAssetTableColumns(filters.assetType))
+const tableMinWidth = computed(() => equipmentTableMinWidth(tableColumns.value))
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
@@ -288,6 +312,22 @@ const categoryName = (id) => entityName(categories.value, id)
 const orgUnitName = (id) => entityName(options.orgUnits, id)
 const custodianName = (id) => id ? entityName(options.custodians, id) : '-'
 
+function tableCellValue(row, column) {
+  if (column.key === 'categoryName') {
+    return row.categoryName || categoryName(row.categoryId)
+  }
+  if (column.key === 'custodianDisplayName') {
+    return row.custodianDisplayName || custodianName(row.custodianUserId)
+  }
+  if (column.key === 'orgUnitNameSnapshot') {
+    return row.orgUnitNameSnapshot || orgUnitName(row.orgUnitId)
+  }
+  if (column.key === 'conditionText') {
+    return row.conditionText || statusOption(row.status).label
+  }
+  return equipmentFieldValue(row, column.key)
+}
+
 async function loadReferenceData() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   const [categoryResult, optionResult] = await Promise.all([
@@ -307,6 +347,7 @@ async function loadAssets() {
       ...requestTeamParams.value,
       ...filters,
       keyword: filters.keyword.trim() || undefined,
+      assetType: filters.assetType || undefined,
       status: filters.status || undefined,
       orgUnitId: filters.orgUnitId || undefined,
       categoryId: filters.categoryId || undefined
@@ -336,13 +377,13 @@ function applyFilters() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { keyword: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
+  Object.assign(filters, { keyword: '', assetType: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
   loadAssets()
 }
 
 async function handleTeamChange(teamId) {
   await router.replace({ query: { ...route.query, teamId, edit: undefined } })
-  Object.assign(filters, { keyword: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
+  Object.assign(filters, { keyword: '', assetType: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
   await Promise.all([loadReferenceData(), loadAssets()])
 }
 
@@ -393,6 +434,7 @@ async function handleExport() {
     const blob = await exportEquipment({
       ...requestTeamParams.value,
       keyword: filters.keyword.trim() || undefined,
+      assetType: filters.assetType || undefined,
       status: filters.status || undefined,
       orgUnitId: filters.orgUnitId || undefined,
       categoryId: filters.categoryId || undefined
@@ -431,6 +473,8 @@ onMounted(initialize)
 .keyword-input { width: min(320px, 100%); }
 .toolbar-spacer { flex: 1; }
 .table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+.asset-table-shell { overflow-x: auto; }
+.asset-table { width: 100%; }
 .table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }

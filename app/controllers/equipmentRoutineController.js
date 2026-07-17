@@ -1,8 +1,18 @@
 'use strict';
 
 const { createEquipmentRoutineService } = require('../services/equipmentRoutineService');
+const {
+  createEquipmentRoutineWorkflowService
+} = require('../services/equipmentRoutineWorkflowService');
+const {
+  createEquipmentRoutineWorkerService
+} = require('../services/equipmentRoutineWorkerService');
 
-function createEquipmentRoutineController({ service = createEquipmentRoutineService() } = {}) {
+function createEquipmentRoutineController({
+  service = createEquipmentRoutineService(),
+  workflowService = createEquipmentRoutineWorkflowService(),
+  workerService = createEquipmentRoutineWorkerService()
+} = {}) {
   return Object.freeze({
     async listRules(req, res, next) {
       try {
@@ -95,6 +105,92 @@ function createEquipmentRoutineController({ service = createEquipmentRoutineServ
           method: req.method,
           query: req.query
         }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async exportRecords(req, res, next) {
+      try {
+        const exported = await workflowService.exportRecords({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          query: req.query
+        });
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="${exported.fileName}"`);
+        res.setHeader('X-Export-Count', String(exported.count));
+        return res.send(exported.buffer);
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async listPlans(req, res, next) {
+      try {
+        return res.json(await workflowService.listPlans({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          query: req.query
+        }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async listExceptions(req, res, next) {
+      try {
+        return res.json(await workflowService.listExceptions({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          query: req.query
+        }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async getException(req, res, next) {
+      try {
+        const exception = await workflowService.getException({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          exceptionId: req.params.exceptionId,
+          query: req.query
+        });
+        return res.json({ exception });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async transitionException(req, res, next) {
+      try {
+        const exception = await workflowService.transitionException({
+          authContext: req.authContext,
+          req,
+          exceptionId: req.params.exceptionId,
+          input: req.body || {}
+        });
+        return res.json({ message: 'Routine exception updated', exception });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async runWorker(req, res, next) {
+      try {
+        const input = req.body || {};
+        const now = process.env.NODE_ENV === 'production' ? undefined : input.now;
+        const result = await workerService.runOnce({
+          teamId: req.authContext.activeTeamId,
+          ...(now ? { now } : {})
+        });
+        return res.json({ message: 'Routine worker completed', result });
       } catch (error) {
         return next(error);
       }

@@ -354,6 +354,121 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
     assert.equal(await User.countDocuments({ usernameNormalized: 'new-team-member' }), 1);
   });
 
+  await t.test('attendance reporter assignment is permissioned, division-only, and unique while active', async () => {
+    const division = await OrgUnit.create({
+      teamId: seeded.teamA._id,
+      parentId: seeded.rootA._id,
+      type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'ATTENDANCE_DIVISION',
+      name: 'Attendance Division',
+      level: 2,
+      path: `/${seeded.rootA._id}/`
+    });
+    const otherDivision = await OrgUnit.create({
+      teamId: seeded.teamA._id,
+      parentId: seeded.rootA._id,
+      type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'ATTENDANCE_DIVISION_OTHER',
+      name: 'Attendance Division Other',
+      level: 2,
+      path: `/${seeded.rootA._id}/`
+    });
+    const reporterRole = 'ATTENDANCE_REPORTER';
+    const denied = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-denied',
+        password: 'test-password-123',
+        name: 'Attendance Reporter Denied',
+        orgUnitId: division._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(403);
+    assert.equal(denied.body.code, 'PERMISSION_DENIED');
+    assert.equal(await User.countDocuments({ usernameNormalized: 'attendance-reporter-denied' }), 0);
+
+    seeded.adminMembershipA.permissionKeys.push('reporter.assign');
+    await seeded.adminMembershipA.save();
+
+    const rootAssignment = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-root',
+        password: 'test-password-123',
+        name: 'Attendance Reporter Root',
+        orgUnitId: seeded.rootA._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(400);
+    assert.equal(rootAssignment.body.code, 'ATTENDANCE_REPORTER_ORG_REQUIRED');
+
+    const first = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-first',
+        password: 'test-password-123',
+        name: 'Attendance Reporter First',
+        orgUnitId: division._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(201);
+
+    seeded.adminMembershipA.permissionKeys = seeded.adminMembershipA.permissionKeys.filter(
+      (permissionKey) => permissionKey !== 'reporter.assign'
+    );
+    await seeded.adminMembershipA.save();
+    await request(app)
+      .patch(`/api/team-members/${first.body.member._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ orgUnitId: otherDivision._id.toString() })
+      .expect(403);
+    seeded.adminMembershipA.permissionKeys.push('reporter.assign');
+    await seeded.adminMembershipA.save();
+
+    const duplicate = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-duplicate',
+        password: 'test-password-123',
+        name: 'Attendance Reporter Duplicate',
+        orgUnitId: division._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(409);
+    assert.equal(duplicate.body.code, 'ATTENDANCE_REPORTER_EXISTS');
+    assert.equal(await User.countDocuments({ usernameNormalized: 'attendance-reporter-duplicate' }), 0);
+
+    await request(app)
+      .patch(`/api/team-members/${first.body.member._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ status: MEMBERSHIP_STATUSES.DISABLED, reason: '更换分部提报人' })
+      .expect(200);
+
+    const replacement = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-replacement',
+        password: 'test-password-123',
+        name: 'Attendance Reporter Replacement',
+        orgUnitId: division._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(201);
+    assert.equal(replacement.body.member.status, MEMBERSHIP_STATUSES.ACTIVE);
+
+    const reenable = await request(app)
+      .patch(`/api/team-members/${first.body.member._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ status: MEMBERSHIP_STATUSES.ACTIVE, reason: '验证唯一有效约束' })
+      .expect(409);
+    assert.equal(reenable.body.code, 'ATTENDANCE_REPORTER_EXISTS');
+  });
+
   let createdTeam;
   await t.test('a global super administrator creates a team through the explicit control plane', async () => {
     const response = await request(app)

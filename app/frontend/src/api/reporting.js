@@ -43,6 +43,61 @@ export const exportTransportSummary = (params) => request({
   responseType: 'blob'
 })
 
+export const getAttendanceOptions = (params) => request({
+  url: '/attendance-submissions/options',
+  method: 'get',
+  params
+})
+
+export const getAttendanceSubmissions = (params) => request({
+  url: '/attendance-submissions',
+  method: 'get',
+  params
+})
+
+export const getAttendanceSubmission = (attendanceSubmissionId, params) => request({
+  url: `/attendance-submissions/${attendanceSubmissionId}`,
+  method: 'get',
+  params
+})
+
+export const createAttendanceSubmission = (data) => request({
+  url: '/attendance-submissions',
+  method: 'post',
+  data
+})
+
+export const updateAttendanceSubmission = (attendanceSubmissionId, data) => request({
+  url: `/attendance-submissions/${attendanceSubmissionId}`,
+  method: 'patch',
+  data
+})
+
+export const getAttendanceDailySummary = (params) => request({
+  url: '/attendance-submissions/summary/daily',
+  method: 'get',
+  params
+})
+
+export const getAttendanceMonthlySummary = (params) => request({
+  url: '/attendance-submissions/summary/monthly',
+  method: 'get',
+  params
+})
+
+export const exportAttendanceMonthlySummary = (params) => request({
+  url: '/attendance-submissions/summary/monthly/export',
+  method: 'get',
+  params,
+  responseType: 'blob'
+})
+
+export const reviewAttendanceDailySummary = (date, data = {}) => request({
+  url: `/attendance-submissions/summary/daily/${date}/review`,
+  method: 'post',
+  data
+})
+
 export const getProductionOptions = (params) => request({
   url: '/production-schedules/options',
   method: 'get',
@@ -85,4 +140,22 @@ export const exportMonthlyProductionSchedules = (params) => request({
   method: 'get',
   params,
   responseType: 'blob'
+})
+
+export const getGeneratedDailyReports = (params) => request({
+  url: '/generated-daily-reports',
+  method: 'get',
+  params
+})
+
+export const getGeneratedDailyReport = (date, params) => request({
+  url: `/generated-daily-reports/${date}`,
+  method: 'get',
+  params
+})
+
+export const generateDailyReport = (date) => request({
+  url: `/generated-daily-reports/${date}/generate`,
+  method: 'post',
+  data: {}
 })

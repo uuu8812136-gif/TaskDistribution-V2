@@ -76,6 +76,14 @@
 			}
 		},
 		{
+			"path": "pages/equipment/scan",
+			"style": {
+				"navigationBarTitleText": "扫码查设备",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/equipment/detail",
 			"style": {
 				"navigationBarTitleText": "设备详情",
@@ -92,11 +100,97 @@
 			}
 		},
 		{
+			"path": "pages/equipment/routine-workbench",
+			"style": {
+				"navigationBarTitleText": "点检保养提醒",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/routine-exception",
+			"style": {
+				"navigationBarTitleText": "设备异常处理",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/equipment/runtime-reading",
 			"style": {
 				"navigationBarTitleText": "运行小时",
 				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/inventory-list",
+			"style": {
+				"navigationBarTitleText": "设备盘点",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/inventory-detail",
+			"style": {
+				"navigationBarTitleText": "盘点批次",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/repair-list",
+			"style": {
+				"navigationBarTitleText": "设备维修",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/repair-form",
+			"style": {
+				"navigationBarTitleText": "发起设备维修",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/repair-detail",
+			"style": {
+				"navigationBarTitleText": "维修单详情",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/status-application-list",
+			"style": {
+				"navigationBarTitleText": "设备状态申请",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/status-application-form",
+			"style": {
+				"navigationBarTitleText": "发起状态申请",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/status-application-detail",
+			"style": {
+				"navigationBarTitleText": "状态申请详情",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
 			}
 		},
 		{
@@ -133,6 +227,32 @@
 				"enablePullDownRefresh": true
 			}
 		},
+		{
+			"path": "pages/reporting/attendance",
+			"style": {
+				"navigationBarTitleText": "出勤日报",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+			{
+				"path": "pages/reporting/attendance-form",
+			"style": {
+				"navigationBarTitleText": "出勤填报",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+				}
+			},
+			{
+				"path": "pages/reporting/daily-report",
+				"style": {
+					"navigationBarTitleText": "生产日报",
+					"navigationBarBackgroundColor": "#4096FF",
+					"navigationBarTextStyle": "white",
+					"enablePullDownRefresh": true
+				}
+			},
 		{
 			"path": "pages/task/detail",
 			"style": {

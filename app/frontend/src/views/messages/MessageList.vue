@@ -33,7 +33,10 @@
         </el-table-column>
         <el-table-column label="标题" min-width="200">
           <template #default="{ row }">
-            <div :class="{ 'unread-title': !row.isRead }">{{ row.title }}</div>
+            <div
+              :class="{ 'unread-title': !row.isRead, 'clickable-title': row.extraData?.statusApplicationId }"
+              @click="openRelatedResource(row)"
+            >{{ row.title }}</div>
           </template>
         </el-table-column>
         <el-table-column prop="content" label="内容" min-width="300" show-overflow-tooltip />
@@ -70,6 +73,7 @@
 
 <script setup>
 import { computed, ref, reactive, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { useMessageStore } from '@/stores/message'
 import { useSessionStore } from '@/stores/session'
 import {
@@ -84,6 +88,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 
 const messageStore = useMessageStore()
 const session = useSessionStore()
+const router = useRouter()
 const canModifyMessages = computed(() => session.isTeamMode && !session.isReadOnly)
 
 const loading = ref(false)
@@ -117,6 +122,14 @@ const fetchData = async () => {
 const handleTabChange = () => {
   pagination.page = 1
   fetchData()
+}
+
+const openRelatedResource = (row) => {
+  if (!row.extraData?.statusApplicationId) return
+  router.push({
+    name: 'EquipmentStatusApplicationDetail',
+    params: { applicationId: row.extraData.statusApplicationId }
+  })
 }
 
 const handleMarkRead = async (row) => {
@@ -203,6 +216,11 @@ onMounted(() => {
   .unread-title {
     font-weight: 600;
     color: #303133;
+  }
+
+  .clickable-title {
+    color: var(--el-color-primary);
+    cursor: pointer;
   }
 
   .table-actions {

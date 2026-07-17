@@ -333,7 +333,7 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
     const unsupportedOwner = await request(app)
       .patch(`/api/files/${fileId}/bind`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
-      .send({ ownerType: 'EQUIPMENT', ownerId: seeded.taskA._id.toString() })
+      .send({ ownerType: 'ATTENDANCE_REPORT', ownerId: seeded.taskA._id.toString() })
       .expect(400);
     assert.equal(unsupportedOwner.body.code, 'FILE_OWNER_TYPE_UNSUPPORTED');
 

@@ -1,10 +1,13 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
 const mongoose = require('mongoose');
 const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentCategory = require('../models/EquipmentCategory');
 const EquipmentChangeRecord = require('../models/EquipmentChangeRecord');
+const FileAsset = require('../models/FileAsset');
 const ImportException = require('../models/ImportException');
 const ImportJob = require('../models/ImportJob');
 const OrgUnit = require('../models/OrgUnit');
@@ -27,7 +30,14 @@ const {
   textValue
 } = require('./equipmentImportParser');
 const {
+  JPEG_TRAILING_DATA_SANITIZATION,
+  extractEquipmentWorkbookMedia,
+  rowKey
+} = require('./equipmentWorkbookMediaExtractor');
+const {
+  createStorageKey,
   normalizeOriginalName,
+  resolveStoragePath,
   validateFileContent,
   validatedExtension
 } = require('./fileStorageService');
@@ -39,13 +49,27 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const {
+  createEquipmentImportStagingCleanupService
+} = require('./equipmentImportStagingCleanupService');
 
 const MAX_EQUIPMENT_IMPORT_FILE_SIZE = 128 * 1024 * 1024;
+const MAX_STAGED_MEDIA_BYTES = 256 * 1024 * 1024;
 const EXCEL_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
 
 const { EQUIPMENT_CHANGE_TYPES } = EquipmentChangeRecord;
+const { FILE_OWNER_TYPES, FILE_STATUSES } = FileAsset;
+
+// Import publication is the only client-reachable internal path allowed to seed
+// a non-IN_USE status. Interactive writes must use the status-approval service.
+function trustedImportEquipmentStatus(value) {
+  if (!EquipmentAsset.EQUIPMENT_STATUS_VALUES.includes(value)) {
+    throw confirmationInvalid('Imported equipment status is invalid');
+  }
+  return value;
+}
 const {
   IMPORT_CUSTOMER_DECISIONS,
   IMPORT_EXCEPTION_SEVERITIES,
@@ -62,6 +86,11 @@ const CANDIDATE_FIELDS = new Set([
   'quantity',
   'unit',
   'acquisitionDate',
+  'productionDate',
+  'activationDate',
+  'idlePlacedAt',
+  'bookQuantity',
+  'physicalQuantity',
   'originalValue',
   'orgUnitId',
   'custodianUserId',
@@ -122,22 +151,58 @@ function serializeCandidate(candidate) {
   const value = plain(candidate) || {};
   return {
     assetCode: value.assetCode || '',
+    sourceAssetCode: value.sourceAssetCode || '',
+    sourceSequence: value.sourceSequence || '',
+    assetType: value.assetType || '',
+    sourceSheetName: value.sourceSheetName || '',
+    sourceRowNumber: value.sourceRowNumber ?? null,
+    sourceRawValues: value.sourceRawValues || null,
+    sourceImageRefs: Array.isArray(value.sourceImageRefs) ? [...value.sourceImageRefs] : [],
+    productCode: value.productCode || '',
+    plateNumber: value.plateNumber || '',
+    serialNumber: value.serialNumber || '',
+    brandSerialNumber: value.brandSerialNumber || '',
     name: value.name || '',
     categoryId: normalizeId(value.categoryId),
     categoryName: value.categoryName || '',
     specification: value.specification || '',
     manufacturer: value.manufacturer || '',
+    brand: value.brand || '',
+    vehicleLength: value.vehicleLength || '',
+    ratedCapacityText: value.ratedCapacityText || '',
     quantity: value.quantity,
+    bookQuantity: value.bookQuantity ?? null,
+    physicalQuantity: value.physicalQuantity ?? null,
     unit: value.unit || '',
     acquisitionDate: value.acquisitionDate || null,
+    productionDate: value.productionDate || null,
+    productionDatePrecision: value.productionDatePrecision || null,
+    productionDateRaw: value.productionDateRaw || '',
+    productionDateDisplay: value.productionDateDisplay || '',
+    activationDate: value.activationDate || null,
+    activationDatePrecision: value.activationDatePrecision || null,
+    activationDateRaw: value.activationDateRaw || '',
+    activationDateDisplay: value.activationDateDisplay || '',
+    idlePlacedAt: value.idlePlacedAt || null,
+    idlePlacedAtRaw: value.idlePlacedAtRaw || '',
+    idlePlacedAtDisplay: value.idlePlacedAtDisplay || '',
     originalValue: value.originalValue ?? null,
     orgUnitId: normalizeId(value.orgUnitId),
     orgUnitName: value.orgUnitName || '',
     custodianUserId: normalizeId(value.custodianUserId),
     custodianName: value.custodianName || '',
+    custodianDisplayName: value.custodianDisplayName || '',
+    orgUnitNameSnapshot: value.orgUnitNameSnapshot || '',
     location: value.location || '',
     status: value.status,
-    remark: value.remark || ''
+    conditionText: value.conditionText || '',
+    forkliftPosition: value.forkliftPosition || '',
+    environmentalRegistrationCode: value.environmentalRegistrationCode || '',
+    remark: value.remark || '',
+    photoFileIds: Array.isArray(value.photoFileIds)
+      ? value.photoFileIds.map(normalizeId).filter(Boolean)
+      : [],
+    dataQuality: value.dataQuality || {}
   };
 }
 
@@ -166,6 +231,7 @@ function serializeJob(document, { includeRows = false, page = 1, pageSize = DEFA
     sourceFileSize: value.sourceFileSize,
     sourceSha256: value.sourceSha256,
     sourceSheetNames: value.sourceSheetNames || [],
+    mediaSummary: value.mediaSummary || null,
     dataScope: value.dataScope,
     scopeOrgUnitId: normalizeId(value.scopeOrgUnitId),
     status: value.status,
@@ -179,6 +245,15 @@ function serializeJob(document, { includeRows = false, page = 1, pageSize = DEFA
     confirmedBy: normalizeId(value.confirmedBy),
     confirmedAt: value.confirmedAt || null,
     publishedAt: value.publishedAt || null,
+    cancelledBy: normalizeId(value.cancelledBy),
+    cancelledAt: value.cancelledAt || null,
+    cancelReason: value.cancelReason || null,
+    expiredAt: value.expiredAt || null,
+    stagingCleanupStatus: value.stagingCleanupStatus,
+    stagingCleanupAttempts: value.stagingCleanupAttempts || 0,
+    stagingCleanupLastAttemptAt: value.stagingCleanupLastAttemptAt || null,
+    stagingCleanupCompletedAt: value.stagingCleanupCompletedAt || null,
+    stagingCleanupLastError: value.stagingCleanupLastError || null,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     version: document?.__v ?? value.__v ?? 0
@@ -256,6 +331,7 @@ function createEquipmentImportService({
   EquipmentAssetModel = EquipmentAsset,
   EquipmentCategoryModel = EquipmentCategory,
   EquipmentChangeRecordModel = EquipmentChangeRecord,
+  FileAssetModel = FileAsset,
   ImportExceptionModel = ImportException,
   ImportJobModel = ImportJob,
   OrgUnitModel = OrgUnit,
@@ -263,8 +339,33 @@ function createEquipmentImportService({
   UserModel = User,
   auditService = createAuditService(),
   connection = mongoose.connection,
-  parseWorkbook = parseEquipmentWorkbook
+  parseWorkbook = parseEquipmentWorkbook,
+  extractWorkbookMedia = extractEquipmentWorkbookMedia,
+  storageRoot = process.env.UPLOAD_PATH,
+  stagingCleanupService = null
 } = {}) {
+  const resolvedStorageRoot = typeof storageRoot === 'string' && storageRoot.trim()
+    ? path.resolve(storageRoot)
+    : null;
+
+  function requireStorageRoot() {
+    if (!resolvedStorageRoot) {
+      throw importError(
+        500,
+        'EQUIPMENT_IMPORT_STORAGE_UNAVAILABLE',
+        'Private equipment import storage is not configured'
+      );
+    }
+    return resolvedStorageRoot;
+  }
+  const cleanupService = stagingCleanupService || createEquipmentImportStagingCleanupService({
+    FileAssetModel,
+    ImportExceptionModel,
+    ImportJobModel,
+    auditService,
+    connection,
+    storageRoot
+  });
   function contextAndScope(authContext) {
     const context = assertTeamContext(authContext);
     assertPermission(context, 'equipment.import');
@@ -468,6 +569,47 @@ function createEquipmentImportService({
       candidate.custodianUserId = custodian?._id || null;
     }
 
+    const sourceIdentityOwners = new Map();
+    for (const row of rows) {
+      const sourceIdentifiers = [
+        ['productCode', row.candidate.productCode],
+        ['serialNumber', row.candidate.serialNumber],
+        ['brandSerialNumber', row.candidate.brandSerialNumber]
+      ];
+      for (const [field, value] of sourceIdentifiers) {
+        const normalized = normalizeLookupText(value);
+        if (!normalized || ['无', '暂无', '不详', '/', '-', '--'].includes(normalized)) continue;
+        const first = sourceIdentityOwners.get(normalized);
+        if (!first) {
+          sourceIdentityOwners.set(normalized, {
+            rowId: String(row.rowId),
+            field,
+            sheetName: row.sheetName,
+            rowNumber: row.rowNumber,
+            value
+          });
+          continue;
+        }
+        if (String(first.rowId) === String(row.rowId)) continue;
+        if (row.sheetName === '闲置' && first.sheetName !== '闲置') {
+          addException(row, {
+            field: '_sourceIdentity',
+            exceptionType: 'DUPLICATE_SOURCE_IDENTIFIER_IN_FILE',
+            originalValue: {
+              field,
+              value,
+              duplicateOf: {
+                field: first.field,
+                sheetName: first.sheetName,
+                rowNumber: first.rowNumber
+              }
+            },
+            message: 'The idle-register row matches an earlier active-register source identifier; skip or confirm it before publishing'
+          });
+        }
+      }
+    }
+
     for (const row of rows) {
       if (row.candidate.assetCode && codeCounts.get(row.candidate.assetCode) > 1) {
         addException(row, {
@@ -477,6 +619,10 @@ function createEquipmentImportService({
           message: 'Choose a unique asset code or skip this row'
         });
       }
+      row.candidate.dataQuality = {
+        ...(row.candidate.dataQuality || {}),
+        exceptionTypes: [...new Set(row.exceptions.map(({ exceptionType }) => exceptionType))]
+      };
       row.validationStatus = row.exceptions.some(({ severity }) => (
         severity === IMPORT_EXCEPTION_SEVERITIES.ERROR
       ))
@@ -511,6 +657,239 @@ function createEquipmentImportService({
     return { originalName, mimeType };
   }
 
+  function mediaOriginalName(row, image, imageIndex) {
+    const extension = image.extension === '.jpeg' ? '.jpg' : image.extension;
+    if (!['.jpg', '.png'].includes(extension)) {
+      throw new TypeError(`Unsupported equipment import image extension: ${extension}`);
+    }
+    return `equipment-import-${row.rowNumber}-${imageIndex + 1}${extension}`;
+  }
+
+  function filePlan({
+    context,
+    jobId,
+    ownerType,
+    originalName,
+    mimeType,
+    buffer
+  }) {
+    validateFileContent(buffer, mimeType);
+    const _id = new mongoose.Types.ObjectId();
+    const storageKey = createStorageKey({
+      teamId: context.activeTeamId,
+      originalName,
+      mimeType
+    });
+    return {
+      _id,
+      buffer,
+      storagePath: resolveStoragePath(requireStorageRoot(), storageKey),
+      document: {
+        _id,
+        teamId: context.activeTeamId,
+        ownerType,
+        ownerId: jobId,
+        storageKey,
+        originalName,
+        mimeType,
+        size: buffer.length,
+        sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
+        uploaderId: context.userId,
+        status: FILE_STATUSES.ACTIVE
+      }
+    };
+  }
+
+  function prepareWorkbookFiles({
+    parsed,
+    extractedMedia,
+    context,
+    jobId,
+    upload,
+    originalName
+  }) {
+    if (!extractedMedia || !(extractedMedia.imagesByRow instanceof Map)) {
+      throw new TypeError('Equipment workbook media extractor returned an invalid row map');
+    }
+    const parsedRowKeys = new Set(parsed.rows.map((row) => rowKey(row.sheetName, row.rowNumber)));
+    const unmatchedMediaRows = [...extractedMedia.imagesByRow.keys()].filter(
+      (key) => !parsedRowKeys.has(key)
+    );
+    if (unmatchedMediaRows.length > 0) {
+      throw new TypeError('One or more workbook images do not map to a recognized equipment row');
+    }
+
+    const plans = [filePlan({
+      context,
+      jobId,
+      ownerType: FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE,
+      originalName,
+      mimeType: EXCEL_MIME_TYPE,
+      buffer: upload.buffer
+    })];
+    let stagedMediaBytes = 0;
+    let stagedMediaFiles = 0;
+
+    for (const row of parsed.rows) {
+      const images = extractedMedia.imagesByRow.get(rowKey(row.sheetName, row.rowNumber)) || [];
+      const validImages = images.filter(({ isValid, buffer }) => (
+        isValid !== false && Buffer.isBuffer(buffer)
+      ));
+      const invalidImages = images.filter(({ isValid, buffer }) => (
+        isValid === false || !Buffer.isBuffer(buffer)
+      ));
+      const sanitizedImages = validImages.filter(
+        ({ sanitizationType }) => sanitizationType === JPEG_TRAILING_DATA_SANITIZATION
+      );
+      const expectedWpsRefs = [...new Set(row.candidate.sourceImageRefs || [])].sort();
+      const mappedWpsRefs = [...new Set(images
+        .filter(({ sourceKind }) => sourceKind === 'WPS_CELL_IMAGE')
+        .map(({ imageRef }) => imageRef))].sort();
+      const refsMatch = expectedWpsRefs.length === mappedWpsRefs.length &&
+        expectedWpsRefs.every((value, index) => value === mappedWpsRefs[index]);
+
+      const resolvedPhotoIssues = row.exceptions.filter(
+        ({ exceptionType }) => exceptionType === 'PHOTO_MAPPING_PENDING'
+      );
+      row.exceptions = row.exceptions.filter(
+        ({ exceptionType }) => exceptionType !== 'PHOTO_MAPPING_PENDING'
+      );
+      if (!refsMatch) {
+        row.exceptions.push(buildException({
+          field: '_photos',
+          exceptionType: 'PHOTO_MAPPING_COUNT_MISMATCH',
+          originalValue: { expectedWpsRefs, mappedWpsRefs },
+          message: 'Workbook image references do not match the parsed equipment row'
+        }));
+      }
+      if (invalidImages.length > 0) {
+        row.exceptions.push(buildException({
+          field: '_photos',
+          exceptionType: 'INVALID_WORKBOOK_MEDIA',
+          originalValue: invalidImages.map((image) => ({
+            imageRef: image.imageRef,
+            mediaPath: image.mediaPath,
+            mimeType: image.mimeType,
+            byteLength: image.byteLength ?? null,
+            validationError: image.validationError || 'Media bytes are unavailable'
+          })),
+          message: 'One or more embedded images failed content validation and were not staged'
+        }));
+      }
+
+      const photoFileIds = [];
+      validImages.forEach((image, imageIndex) => {
+        stagedMediaBytes += image.buffer.length;
+        stagedMediaFiles += 1;
+        if (stagedMediaBytes > MAX_STAGED_MEDIA_BYTES) {
+          throw new RangeError('Workbook row image associations exceed the safe staging limit');
+        }
+        const plan = filePlan({
+          context,
+          jobId,
+          ownerType: FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA,
+          originalName: mediaOriginalName(row, image, imageIndex),
+          mimeType: image.mimeType,
+          buffer: image.buffer
+        });
+        plans.push(plan);
+        photoFileIds.push(plan._id);
+      });
+      row.candidate.photoFileIds = photoFileIds;
+      const existingMediaNotices = Array.isArray(row.candidate.dataQuality?.mediaNotices)
+        ? row.candidate.dataQuality.mediaNotices
+        : [];
+      const sanitizationNotices = sanitizedImages.map((image) => ({
+        code: 'SANITIZED_WORKBOOK_MEDIA',
+        sanitizationType: image.sanitizationType,
+        imageRef: image.imageRef,
+        sourceKind: image.sourceKind,
+        mediaPath: image.mediaPath,
+        mimeType: image.mimeType,
+        originalByteLength: image.originalByteLength,
+        normalizedByteLength: image.normalizedByteLength,
+        removedTrailingBytes: image.removedTrailingBytes
+      }));
+      row.candidate.dataQuality = {
+        ...(row.candidate.dataQuality || {}),
+        photoMappingStatus: invalidImages.length > 0
+          ? validImages.length > 0 ? 'PARTIALLY_STAGED' : 'INVALID_SOURCE_MEDIA'
+          : validImages.length > 0 ? 'STAGED' : 'NO_SOURCE_PHOTO',
+        photoCount: validImages.length,
+        sourcePhotoCount: images.length,
+        invalidPhotoCount: invalidImages.length,
+        sanitizedPhotoCount: sanitizedImages.length,
+        photoSourceKinds: [...new Set(images.map(({ sourceKind }) => sourceKind))],
+        mediaNotices: [...existingMediaNotices, ...sanitizationNotices],
+        resolvedPhotoMappingIssues: resolvedPhotoIssues.map(({ exceptionType }) => exceptionType)
+      };
+    }
+
+    return {
+      plans,
+      sourceFileId: plans[0]._id,
+      mediaSummary: {
+        ...(extractedMedia.summary || {}),
+        stagedMediaFiles,
+        stagedMediaBytes
+      }
+    };
+  }
+
+  async function writeFilePlans(plans) {
+    const written = [];
+    try {
+      for (const plan of plans) {
+        await fs.promises.mkdir(path.dirname(plan.storagePath), {
+          recursive: true,
+          mode: 0o700
+        });
+        await fs.promises.writeFile(plan.storagePath, plan.buffer, {
+          flag: 'wx',
+          mode: 0o600
+        });
+        written.push(plan);
+      }
+      return written;
+    } catch (error) {
+      await Promise.all(written.map((plan) => (
+        fs.promises.rm(plan.storagePath, { force: true }).catch(() => {})
+      )));
+      throw error;
+    }
+  }
+
+  async function removeFilePlans(plans) {
+    await Promise.all(plans.map((plan) => (
+      fs.promises.rm(plan.storagePath, { force: true }).catch(() => {})
+    )));
+  }
+
+  async function cleanupFailedPreview({ context, jobId, plans }) {
+    await Promise.all([
+      typeof FileAssetModel.deleteMany === 'function'
+        ? FileAssetModel.deleteMany({
+          _id: { $in: plans.map(({ _id }) => _id) },
+          teamId: context.activeTeamId,
+          ownerId: jobId
+        }).catch(() => {})
+        : Promise.resolve(),
+      typeof ImportExceptionModel.deleteMany === 'function'
+        ? ImportExceptionModel.deleteMany({
+          teamId: context.activeTeamId,
+          importJobId: jobId
+        }).catch(() => {})
+        : Promise.resolve(),
+      typeof ImportJobModel.deleteOne === 'function'
+        ? ImportJobModel.deleteOne({
+          _id: jobId,
+          teamId: context.activeTeamId
+        }).catch(() => {})
+        : Promise.resolve()
+    ]);
+    await removeFilePlans(plans);
+  }
+
   async function createPreview({ authContext, req, upload, input = {} }) {
     const { context, scope } = contextAndScope(authContext);
     assertNoClientTeamId(input);
@@ -528,82 +907,124 @@ function createEquipmentImportService({
       throw importError(413, 'EQUIPMENT_IMPORT_ROW_LIMIT', `Import limit is ${MAX_IMPORT_ROWS} rows`);
     }
     const sourceSha256 = crypto.createHash('sha256').update(upload.buffer).digest('hex');
+    let extractedMedia;
+    try {
+      extractedMedia = extractWorkbookMedia(upload.buffer, { workbook: parsed.workbook || null });
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw importError(413, 'EQUIPMENT_IMPORT_MEDIA_LIMIT', error.message);
+      }
+      throw importError(400, 'EQUIPMENT_IMPORT_MEDIA_INVALID', error.message);
+    }
 
-    return runWithOptionalTransaction(async (session) => {
-      const rows = await enrichRows({ parsed, context, scope, session });
-      const counters = {
-        totalRows: rows.length,
-        validRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.VALID).length,
-        warningRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.WARNING).length,
-        errorRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.ERROR).length
-      };
-      const job = new ImportJobModel({
-        teamId: context.activeTeamId,
-        type: IMPORT_TYPES.EQUIPMENT_ASSET,
-        sourceFileName: originalName,
-        sourceFileSize: upload.size,
-        sourceSha256,
-        sourceSheetNames: parsed.sheetNames,
-        dataScope: scope.scope,
-        scopeOrgUnitId: scope.scope === DATA_SCOPES.ORG_UNIT ? scope.orgUnitId : null,
-        status: IMPORT_JOB_STATUSES.PREVIEW_READY,
-        ...counters,
-        stagedRows: rows.map((row) => ({
-          rowId: row.rowId,
+    const jobId = new mongoose.Types.ObjectId();
+    let staging;
+    try {
+      staging = prepareWorkbookFiles({
+        parsed,
+        extractedMedia,
+        context,
+        jobId,
+        upload,
+        originalName
+      });
+      await writeFilePlans(staging.plans);
+    } catch (error) {
+      if (error instanceof EquipmentImportError) throw error;
+      if (error instanceof RangeError) {
+        throw importError(413, 'EQUIPMENT_IMPORT_MEDIA_LIMIT', error.message);
+      }
+      throw importError(500, 'EQUIPMENT_IMPORT_STORAGE_WRITE_FAILED', error.message);
+    }
+
+    try {
+      return await runWithOptionalTransaction(async (session) => {
+        const rows = await enrichRows({ parsed, context, scope, session });
+        const counters = {
+          totalRows: rows.length,
+          validRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.VALID).length,
+          warningRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.WARNING).length,
+          errorRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.ERROR).length
+        };
+        const job = new ImportJobModel({
+          _id: jobId,
+          teamId: context.activeTeamId,
+          type: IMPORT_TYPES.EQUIPMENT_ASSET,
+          sourceFileId: staging.sourceFileId,
+          sourceFileName: originalName,
+          sourceFileSize: upload.size,
+          sourceSha256,
+          sourceSheetNames: parsed.sheetNames,
+          mediaSummary: staging.mediaSummary,
+          dataScope: scope.scope,
+          scopeOrgUnitId: scope.scope === DATA_SCOPES.ORG_UNIT ? scope.orgUnitId : null,
+          status: IMPORT_JOB_STATUSES.PREVIEW_READY,
+          ...counters,
+          stagedRows: rows.map((row) => ({
+            rowId: row.rowId,
+            sheetName: row.sheetName,
+            rowNumber: row.rowNumber,
+            rawAssetCode: row.rawAssetCode,
+            rawValues: row.rawValues,
+            candidate: row.candidate,
+            validationStatus: row.validationStatus
+          })),
+          createdBy: context.userId
+        });
+        await job.save({ session: session || undefined });
+        await FileAssetModel.insertMany(
+          staging.plans.map(({ document }) => document),
+          { ordered: true, session: session || undefined }
+        );
+
+        const exceptions = rows.flatMap((row) => row.exceptions.map((exception) => ({
+          teamId: context.activeTeamId,
+          importJobId: job._id,
+          importRowId: row.rowId,
+          orgUnitId: row.candidate.orgUnitId || null,
           sheetName: row.sheetName,
           rowNumber: row.rowNumber,
-          rawAssetCode: row.rawAssetCode,
-          rawValues: row.rawValues,
-          candidate: row.candidate,
-          validationStatus: row.validationStatus
-        })),
-        createdBy: context.userId
-      });
-      await job.save({ session: session || undefined });
-
-      const exceptions = rows.flatMap((row) => row.exceptions.map((exception) => ({
-        teamId: context.activeTeamId,
-        importJobId: job._id,
-        importRowId: row.rowId,
-        orgUnitId: row.candidate.orgUnitId || null,
-        sheetName: row.sheetName,
-        rowNumber: row.rowNumber,
-        assetCode: row.candidate.assetCode || '',
-        field: exception.field,
-        exceptionType: exception.exceptionType,
-        severity: exception.severity,
-        originalValue: exception.originalValue,
-        suggestedAction: exception.message || exception.exceptionType,
-        hasSuggestedValue: exception.hasSuggestedValue,
-        suggestedValue: exception.hasSuggestedValue ? exception.suggestedValue : null
-      })));
-      if (exceptions.length > 0) {
-        await ImportExceptionModel.insertMany(exceptions, {
-          ordered: true,
-          session: session || undefined
+          assetCode: row.candidate.assetCode || '',
+          field: exception.field,
+          exceptionType: exception.exceptionType,
+          severity: exception.severity,
+          originalValue: exception.originalValue,
+          suggestedAction: exception.message || exception.exceptionType,
+          hasSuggestedValue: exception.hasSuggestedValue,
+          suggestedValue: exception.hasSuggestedValue ? exception.suggestedValue : null
+        })));
+        if (exceptions.length > 0) {
+          await ImportExceptionModel.insertMany(exceptions, {
+            ordered: true,
+            session: session || undefined
+          });
+        }
+        await auditService.record({
+          req,
+          authContext: context,
+          action: AUDIT_ACTIONS.IMPORT,
+          resourceType: AUDIT_RESOURCE_TYPES.IMPORT_JOB,
+          resourceId: job._id,
+          after: {
+            phase: 'PREVIEW',
+            sourceFileName: originalName,
+            sourceSha256,
+            ...counters,
+            exceptionCount: exceptions.length,
+            stagedMediaFiles: staging.mediaSummary.stagedMediaFiles
+          },
+          targetTeamId: context.activeTeamId,
+          session
         });
-      }
-      await auditService.record({
-        req,
-        authContext: context,
-        action: AUDIT_ACTIONS.IMPORT,
-        resourceType: AUDIT_RESOURCE_TYPES.IMPORT_JOB,
-        resourceId: job._id,
-        after: {
-          phase: 'PREVIEW',
-          sourceFileName: originalName,
-          sourceSha256,
-          ...counters,
+        return {
+          importJob: serializeJob(job, { includeRows: true }),
           exceptionCount: exceptions.length
-        },
-        targetTeamId: context.activeTeamId,
-        session
-      });
-      return {
-        importJob: serializeJob(job, { includeRows: true }),
-        exceptionCount: exceptions.length
-      };
-    }, connection);
+        };
+      }, connection);
+    } catch (error) {
+      await cleanupFailedPreview({ context, jobId, plans: staging.plans });
+      throw error;
+    }
   }
 
   async function findVisibleJob({ authContext, importJobId, session = null, version }) {
@@ -759,6 +1180,45 @@ function createEquipmentImportService({
     return value.trim();
   }
 
+  function optionalCandidateDate(value, field) {
+    if (value === null || value === undefined || value === '') return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw confirmationInvalid(`${field} must be a valid date`);
+    return date;
+  }
+
+  function optionalCandidateNumber(value, field, fallback = null) {
+    if (value === null || value === undefined || value === '') return fallback;
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0) {
+      throw confirmationInvalid(`${field} must be a non-negative number`);
+    }
+    return number;
+  }
+
+  function optionalDatePrecision(value, field) {
+    if (value === null || value === undefined || value === '') return null;
+    if (!EquipmentAsset.DATE_PRECISION_VALUES.includes(value)) {
+      throw confirmationInvalid(`${field} must be a supported date precision`);
+    }
+    return value;
+  }
+
+  function sourceImageRefs(value) {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map((item) => optionalText(item, 'sourceImageRefs', 200)).filter(Boolean))]
+      .slice(0, 500);
+  }
+
+  function photoFileIds(value) {
+    if (!Array.isArray(value)) return [];
+    const ids = value.map((item) => normalizeRelatedId(item, 'photoFileIds'));
+    if (ids.length > 500 || new Set(ids.map(String)).size !== ids.length) {
+      throw confirmationInvalid('photoFileIds must contain at most 500 unique file ids');
+    }
+    return ids;
+  }
+
   async function finalAssetPayloads({ context, scope, rows, skippedRowIds, job, session }) {
     const activeRows = [...rows.entries()].filter(([rowId]) => !skippedRowIds.has(rowId));
     const codes = new Set();
@@ -790,39 +1250,111 @@ function createEquipmentImportService({
       if (!EquipmentAsset.EQUIPMENT_STATUS_VALUES.includes(candidate.status)) {
         throw confirmationInvalid('status must be a supported equipment status');
       }
-      let acquisitionDate = null;
-      if (candidate.acquisitionDate) {
-        acquisitionDate = new Date(candidate.acquisitionDate);
-        if (Number.isNaN(acquisitionDate.getTime())) {
-          throw confirmationInvalid('acquisitionDate must be a valid date');
-        }
-      }
-      let originalValue = null;
-      if (candidate.originalValue !== null && candidate.originalValue !== undefined && candidate.originalValue !== '') {
-        originalValue = Number(candidate.originalValue);
-        if (!Number.isFinite(originalValue) || originalValue < 0) {
-          throw confirmationInvalid('originalValue must be a non-negative number');
-        }
-      }
+      const acquisitionDate = optionalCandidateDate(candidate.acquisitionDate, 'acquisitionDate');
+      const productionDate = optionalCandidateDate(candidate.productionDate, 'productionDate');
+      const activationDate = optionalCandidateDate(candidate.activationDate, 'activationDate');
+      const idlePlacedAt = optionalCandidateDate(candidate.idlePlacedAt, 'idlePlacedAt');
+      const originalValue = optionalCandidateNumber(candidate.originalValue, 'originalValue');
+      const bookQuantity = optionalCandidateNumber(candidate.bookQuantity, 'bookQuantity');
+      const physicalQuantity = optionalCandidateNumber(
+        candidate.physicalQuantity,
+        'physicalQuantity',
+        quantity
+      );
       return {
         rowId,
         payload: {
           teamId: context.activeTeamId,
           orgUnitId,
           assetCode,
+          sourceAssetCode: optionalText(candidate.sourceAssetCode, 'sourceAssetCode', 500),
+          sourceSequence: optionalText(candidate.sourceSequence, 'sourceSequence', 100),
+          assetType: optionalText(candidate.assetType, 'assetType', 100),
+          sourceSheetName: optionalText(state.row.sheetName, 'sourceSheetName', 100),
+          sourceRowNumber: state.row.rowNumber,
+          sourceRawValues: state.row.rawValues || null,
+          sourceImageRefs: sourceImageRefs(candidate.sourceImageRefs),
+          productCode: optionalText(candidate.productCode, 'productCode', 500),
+          plateNumber: optionalText(candidate.plateNumber, 'plateNumber', 100),
+          serialNumber: optionalText(candidate.serialNumber, 'serialNumber', 500),
+          brandSerialNumber: optionalText(candidate.brandSerialNumber, 'brandSerialNumber', 500),
           name: requiredText(candidate.name, 'name', 200),
           categoryId,
           specification: optionalText(candidate.specification, 'specification', 500),
           manufacturer: optionalText(candidate.manufacturer, 'manufacturer', 200),
+          brand: optionalText(candidate.brand, 'brand', 200),
+          vehicleLength: optionalText(candidate.vehicleLength, 'vehicleLength', 100),
+          ratedCapacityText: optionalText(candidate.ratedCapacityText, 'ratedCapacityText', 100),
           quantity,
+          bookQuantity,
+          physicalQuantity,
           unit: optionalText(candidate.unit, 'unit', 50),
           acquisitionDate,
+          productionDate,
+          productionDatePrecision: optionalDatePrecision(
+            candidate.productionDatePrecision,
+            'productionDatePrecision'
+          ),
+          productionDateRaw: optionalText(candidate.productionDateRaw, 'productionDateRaw', 200),
+          productionDateDisplay: optionalText(
+            candidate.productionDateDisplay,
+            'productionDateDisplay',
+            200
+          ),
+          activationDate,
+          activationDatePrecision: optionalDatePrecision(
+            candidate.activationDatePrecision,
+            'activationDatePrecision'
+          ),
+          activationDateRaw: optionalText(candidate.activationDateRaw, 'activationDateRaw', 200),
+          activationDateDisplay: optionalText(
+            candidate.activationDateDisplay,
+            'activationDateDisplay',
+            200
+          ),
+          idlePlacedAt,
+          idlePlacedAtRaw: optionalText(candidate.idlePlacedAtRaw, 'idlePlacedAtRaw', 200),
+          idlePlacedAtDisplay: optionalText(
+            candidate.idlePlacedAtDisplay,
+            'idlePlacedAtDisplay',
+            200
+          ),
           originalValue,
           custodianUserId,
+          custodianDisplayName: optionalText(
+            candidate.custodianDisplayName || candidate.custodianName,
+            'custodianDisplayName',
+            200
+          ),
+          orgUnitNameSnapshot: optionalText(
+            candidate.orgUnitNameSnapshot || candidate.orgUnitName,
+            'orgUnitNameSnapshot',
+            200
+          ),
           location: optionalText(candidate.location, 'location', 500),
-          status: candidate.status,
+          status: trustedImportEquipmentStatus(candidate.status),
+          conditionText: optionalText(candidate.conditionText, 'conditionText', 200),
+          forkliftPosition: optionalText(candidate.forkliftPosition, 'forkliftPosition', 100),
+          environmentalRegistrationCode: optionalText(
+            candidate.environmentalRegistrationCode,
+            'environmentalRegistrationCode',
+            200
+          ),
           sourceImportJobId: job._id,
           remark: optionalText(candidate.remark, 'remark', 2000),
+          photoFileIds: photoFileIds(candidate.photoFileIds),
+          dataQuality: candidate.dataQuality && typeof candidate.dataQuality === 'object'
+            ? {
+              ...candidate.dataQuality,
+              photoMappingStatus: Number(candidate.dataQuality.invalidPhotoCount || 0) > 0
+                ? Array.isArray(candidate.photoFileIds) && candidate.photoFileIds.length > 0
+                  ? 'PARTIALLY_MAPPED_CONFIRMED'
+                  : 'INVALID_SOURCE_MEDIA_CONFIRMED'
+                : Array.isArray(candidate.photoFileIds) && candidate.photoFileIds.length > 0
+                  ? 'MAPPED'
+                  : 'NO_SOURCE_PHOTO'
+            }
+            : {},
           createdBy: context.userId,
           updatedBy: context.userId
         }
@@ -883,6 +1415,110 @@ function createEquipmentImportService({
     return normalized;
   }
 
+  async function assertStagedImportFiles({ context, job, rows, session }) {
+    const expectedMediaIds = [];
+    for (const { candidate } of rows.values()) {
+      expectedMediaIds.push(...(candidate.photoFileIds || []).map(String));
+    }
+    if (new Set(expectedMediaIds).size !== expectedMediaIds.length) {
+      throw confirmationInvalid('A staged equipment image is referenced by more than one row');
+    }
+    const files = await execute(FileAssetModel.find({
+      teamId: context.activeTeamId,
+      ownerId: job._id,
+      ownerType: {
+        $in: [
+          FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE,
+          FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA
+        ]
+      },
+      status: FILE_STATUSES.ACTIVE
+    }).lean(), session);
+    const sourceFiles = files.filter(
+      ({ ownerType }) => ownerType === FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE
+    );
+    const mediaFiles = files.filter(
+      ({ ownerType }) => ownerType === FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA
+    );
+    if (
+      sourceFiles.length !== 1 ||
+      !job.sourceFileId ||
+      !sameId(sourceFiles[0]._id, job.sourceFileId)
+    ) {
+      throw confirmationInvalid('The staged source workbook is missing or has changed');
+    }
+    const actualMediaIds = new Set(mediaFiles.map(({ _id }) => String(_id)));
+    if (
+      actualMediaIds.size !== expectedMediaIds.length ||
+      expectedMediaIds.some((fileId) => !actualMediaIds.has(fileId))
+    ) {
+      throw confirmationInvalid('One or more staged equipment images are missing or have changed');
+    }
+  }
+
+  async function bindPublishedMedia({
+    context,
+    job,
+    rows,
+    skippedRowIds,
+    createdByRowId,
+    resolvedAt,
+    session
+  }) {
+    const operations = [];
+    for (const [rowId, state] of rows.entries()) {
+      const ids = state.candidate.photoFileIds || [];
+      if (skippedRowIds.has(rowId)) {
+        ids.forEach((fileId) => operations.push({
+          updateOne: {
+            filter: {
+              _id: fileId,
+              teamId: context.activeTeamId,
+              ownerType: FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA,
+              ownerId: job._id,
+              status: FILE_STATUSES.ACTIVE
+            },
+            update: {
+              $set: {
+                status: FILE_STATUSES.DELETED,
+                deletedAt: resolvedAt,
+                deletedBy: context.userId
+              }
+            }
+          }
+        }));
+        continue;
+      }
+      const equipment = createdByRowId.get(rowId);
+      if (!equipment) throw confirmationInvalid('Published equipment media lost its target asset');
+      ids.forEach((fileId) => operations.push({
+        updateOne: {
+          filter: {
+            _id: fileId,
+            teamId: context.activeTeamId,
+            ownerType: FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA,
+            ownerId: job._id,
+            status: FILE_STATUSES.ACTIVE
+          },
+          update: {
+            $set: {
+              ownerType: FILE_OWNER_TYPES.EQUIPMENT,
+              ownerId: equipment._id
+            }
+          }
+        }
+      }));
+    }
+    if (operations.length === 0) return;
+    const result = await FileAssetModel.bulkWrite(operations, {
+      ordered: true,
+      session: session || undefined
+    });
+    if (result.matchedCount !== operations.length) {
+      throw confirmationInvalid('One or more staged equipment images changed during publication');
+    }
+  }
+
   async function confirmImport({ authContext, req, importJobId, input = {} }) {
     assertNoClientTeamId(input);
     const expectedVersion = integer(input.expectedVersion, 'expectedVersion', { min: 0 });
@@ -915,7 +1551,15 @@ function createEquipmentImportService({
         }
         const { context, scope, job } = visible;
         if (job.status !== IMPORT_JOB_STATUSES.PREVIEW_READY) {
-          throw importError(409, 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED', 'Equipment import is already published');
+          throw importError(
+            409,
+            job.status === IMPORT_JOB_STATUSES.CANCELLED
+              ? 'EQUIPMENT_IMPORT_CANCELLED'
+              : 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED',
+            job.status === IMPORT_JOB_STATUSES.CANCELLED
+              ? 'Equipment import has been cancelled'
+              : 'Equipment import is already published'
+          );
         }
         const exceptions = await execute(ImportExceptionModel.find({
           teamId: context.activeTeamId,
@@ -923,6 +1567,12 @@ function createEquipmentImportService({
           status: IMPORT_EXCEPTION_STATUSES.PENDING
         }), session);
         const decisionState = applyDecisions({ job, exceptions, input });
+        await assertStagedImportFiles({
+          context,
+          job,
+          rows: decisionState.rows,
+          session
+        });
         const payloads = await finalAssetPayloads({
           context,
           scope,
@@ -962,6 +1612,15 @@ function createEquipmentImportService({
         }
 
         const resolvedAt = new Date();
+        await bindPublishedMedia({
+          context,
+          job,
+          rows: decisionState.rows,
+          skippedRowIds: decisionState.skippedRowIds,
+          createdByRowId,
+          resolvedAt,
+          session
+        });
         if (decisionState.exceptionUpdates.length > 0) {
           const resolutionResult = await ImportExceptionModel.bulkWrite(
             decisionState.exceptionUpdates.map((update) => ({
@@ -1000,6 +1659,7 @@ function createEquipmentImportService({
           stagedRow.publishedEquipmentId = equipment._id;
         }
         job.status = IMPORT_JOB_STATUSES.PUBLISHED;
+        job.stagingCleanupStatus = ImportJob.IMPORT_STAGING_CLEANUP_STATUSES.RETAINED;
         job.skippedRows = decisionState.skippedRowIds.size;
         job.publishedRows = created.length;
         job.confirmedBy = context.userId;
@@ -1045,11 +1705,163 @@ function createEquipmentImportService({
     }
   }
 
+  async function cancelImport({ authContext, req, importJobId, input = {} }) {
+    assertNoClientTeamId(input);
+    const expectedVersion = integer(input.expectedVersion, 'expectedVersion', { min: 0 });
+    if (typeof input.reason !== 'string' || !input.reason.trim() || input.reason.trim().length > 2000) {
+      throw importError(
+        400,
+        'EQUIPMENT_IMPORT_INPUT_INVALID',
+        'reason must contain between 1 and 2000 characters'
+      );
+    }
+    const reason = input.reason.trim();
+    const cancelled = await runWithOptionalTransaction(async (session) => {
+      let visible;
+      try {
+        visible = await findVisibleJob({
+          authContext,
+          importJobId,
+          session,
+          version: expectedVersion
+        });
+      } catch (error) {
+        if (error.code !== 'EQUIPMENT_IMPORT_NOT_FOUND') throw error;
+        const unversioned = await findVisibleJob({ authContext, importJobId, session });
+        if (unversioned.job.status === IMPORT_JOB_STATUSES.CANCELLED) {
+          throw importError(409, 'EQUIPMENT_IMPORT_ALREADY_CANCELLED', 'Equipment import is already cancelled');
+        }
+        if (unversioned.job.status === IMPORT_JOB_STATUSES.PUBLISHED) {
+          throw importError(409, 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED', 'Published imports cannot be cancelled');
+        }
+        throw importError(409, 'EQUIPMENT_IMPORT_VERSION_CONFLICT', 'Equipment import preview has changed');
+      }
+      const { context, job } = visible;
+      if (job.status !== IMPORT_JOB_STATUSES.PREVIEW_READY) {
+        throw importError(
+          409,
+          job.status === IMPORT_JOB_STATUSES.CANCELLED
+            ? 'EQUIPMENT_IMPORT_ALREADY_CANCELLED'
+            : 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED',
+          job.status === IMPORT_JOB_STATUSES.CANCELLED
+            ? 'Equipment import is already cancelled'
+            : 'Published imports cannot be cancelled'
+        );
+      }
+      const cancelledAt = new Date();
+      await FileAssetModel.updateMany({
+        teamId: context.activeTeamId,
+        ownerId: job._id,
+        ownerType: {
+          $in: [
+            FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE,
+            FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA
+          ]
+        },
+        status: FILE_STATUSES.ACTIVE
+      }, {
+        $set: {
+          status: FILE_STATUSES.DELETED,
+          deletedAt: cancelledAt,
+          deletedBy: context.userId
+        }
+      }, { session: session || undefined });
+      await ImportExceptionModel.updateMany({
+        teamId: context.activeTeamId,
+        importJobId: job._id,
+        status: IMPORT_EXCEPTION_STATUSES.PENDING
+      }, {
+        $set: {
+          customerDecision: IMPORT_CUSTOMER_DECISIONS.SKIP_ROW,
+          status: IMPORT_EXCEPTION_STATUSES.SKIPPED,
+          resolvedBy: context.userId,
+          resolvedAt: cancelledAt
+        }
+      }, { session: session || undefined });
+      job.status = IMPORT_JOB_STATUSES.CANCELLED;
+      job.cancelledBy = context.userId;
+      job.cancelledAt = cancelledAt;
+      job.cancelReason = reason;
+      await auditService.record({
+        req,
+        authContext: context,
+        action: AUDIT_ACTIONS.STATUS_CHANGE,
+        resourceType: AUDIT_RESOURCE_TYPES.IMPORT_JOB,
+        resourceId: job._id,
+        before: { status: IMPORT_JOB_STATUSES.PREVIEW_READY },
+        after: { status: IMPORT_JOB_STATUSES.CANCELLED },
+        reason,
+        targetTeamId: context.activeTeamId,
+        session
+      });
+      await job.save({ session: session || undefined });
+      return {
+        context,
+        jobId: job._id,
+        teamId: job.teamId
+      };
+    }, connection);
+    let finalized;
+    try {
+      finalized = await cleanupService.finalizeCleanup({
+        jobId: cancelled.jobId,
+        teamId: cancelled.teamId,
+        req,
+        authContext: cancelled.context
+      });
+    } catch {
+      const job = await ImportJobModel.findOne({
+        _id: cancelled.jobId,
+        teamId: cancelled.teamId,
+        status: IMPORT_JOB_STATUSES.CANCELLED
+      }).lean();
+      if (!job) throw importNotFound();
+      return {
+        importJob: serializeJob(job),
+        stagingCleanup: {
+          status: job.stagingCleanupStatus,
+          retryRequired: true
+        }
+      };
+    }
+    return {
+      importJob: serializeJob(finalized.job),
+      stagingCleanup: finalized.cleanup
+    };
+  }
+
+  async function retryImportCleanup({ authContext, req, importJobId }) {
+    const { context, job } = await findVisibleJob({ authContext, importJobId });
+    if (![IMPORT_JOB_STATUSES.CANCELLED, IMPORT_JOB_STATUSES.EXPIRED].includes(job.status)) {
+      throw importError(
+        409,
+        job.status === IMPORT_JOB_STATUSES.PUBLISHED
+          ? 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED'
+          : 'EQUIPMENT_IMPORT_NOT_CLEANABLE',
+        job.status === IMPORT_JOB_STATUSES.PUBLISHED
+          ? 'Published imports cannot be cleaned'
+          : 'The import preview must be cancelled before cleanup'
+      );
+    }
+    const finalized = await cleanupService.finalizeCleanup({
+      jobId: job._id,
+      teamId: job.teamId,
+      req,
+      authContext: context
+    });
+    return {
+      importJob: serializeJob(finalized.job),
+      stagingCleanup: finalized.cleanup
+    };
+  }
+
   return Object.freeze({
+    cancelImport,
     confirmImport,
     createPreview,
     getImportJob,
-    listExceptions
+    listExceptions,
+    retryImportCleanup
   });
 }
 

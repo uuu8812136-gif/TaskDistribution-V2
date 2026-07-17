@@ -6,6 +6,9 @@ const {
   databaseNameFromUri,
   loadEnvironment
 } = require('../../../app/config/environment');
+const {
+  startEquipmentRoutineScheduler
+} = require('../../../app/services/equipmentRoutineWorkerService');
 
 const SAFE_SECRET = '0123456789abcdef0123456789abcdef';
 
@@ -39,7 +42,35 @@ test('accepts an isolated non-production configuration', () => {
   assert.equal(config.appEnv, 'test');
   assert.equal(config.port, 18099);
   assert.equal(config.enableLegacyPublicUploads, false);
+  assert.equal(config.equipmentRoutineWorkerEnabled, false);
+  assert.equal(config.equipmentRoutineWorkerIntervalMs, 300000);
   assert.ok(Object.isFrozen(config));
+});
+
+test('routine worker defaults on in production and can be explicitly disabled', async () => {
+  const production = loadEnvironment(validEnvironment({
+    APP_ENV: 'production',
+    NODE_ENV: 'production',
+    MONGODB_URI: 'mongodb://127.0.0.1:27017/task_distribution_v2_production'
+  }));
+  const disabled = loadEnvironment(validEnvironment({
+    APP_ENV: 'production',
+    NODE_ENV: 'production',
+    MONGODB_URI: 'mongodb://127.0.0.1:27017/task_distribution_v2_production',
+    EQUIPMENT_ROUTINE_WORKER_ENABLED: 'false'
+  }));
+  assert.equal(production.equipmentRoutineWorkerEnabled, true);
+  assert.equal(disabled.equipmentRoutineWorkerEnabled, false);
+
+  let calls = 0;
+  const scheduler = startEquipmentRoutineScheduler({
+    enabled: false,
+    worker: { runOnce: async () => { calls += 1; } }
+  });
+  assert.equal(scheduler.enabled, false);
+  scheduler.stop();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(calls, 0);
 });
 
 test('rejects the existing production database name outside production', () => {

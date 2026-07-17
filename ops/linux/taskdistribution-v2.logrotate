@@ -1,0 +1,10 @@
+/var/log/taskdistribution-v2/*.log {
+    daily
+    rotate 14
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0640 taskdistribution taskdistribution
+}

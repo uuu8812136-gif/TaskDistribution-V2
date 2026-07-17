@@ -14,7 +14,11 @@
         <view><text>累计运行</text><strong>{{ currentRuntimeHours == null ? '待录入' : `${currentRuntimeHours} h` }}</strong></view>
         <view><text>更新时间</text><strong>{{ formatDate(equipment.runtimeHoursUpdatedAt || equipment.updatedAt, 'YYYY-MM-DD HH:mm') || '-' }}</strong></view>
       </view>
-      <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
+      <view class="asset-actions">
+        <button v-if="canApplyStatus && equipment.status !== 'SCRAPPED'" class="status-button" @click="openStatusApplication">状态申请</button>
+        <button v-if="canRepair" class="repair-button" @click="openRepair">发起维修</button>
+        <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
+      </view>
     </view>
 
     <view class="section-heading">
@@ -42,21 +46,50 @@
       </view>
     </view>
     <view v-if="!loading && schedules.length === 0" class="empty-state">当前设备类型尚未配置点检或保养规则</view>
+
+    <view class="section-heading">
+      <text>本月稽查情况</text>
+      <text class="section-count">{{ monthlyActivity.routineTotal + monthlyActivity.repairTotal }} 条</text>
+    </view>
+    <view class="activity-list">
+      <view v-for="record in monthlyActivity.routineRecords" :key="record._id" class="activity-row">
+        <view class="schedule-copy">
+          <text class="schedule-name">{{ routineTypeLabel(record.routineType) }} · {{ resultLabel(record.overallResult) }}</text>
+          <text class="schedule-meta">{{ formatDate(record.performedAt, 'YYYY-MM-DD HH:mm') || '-' }}</text>
+        </view>
+        <text class="activity-status">{{ record.exception?.status === 'OPEN' ? '异常处理中' : record.overallResult === 'ABNORMAL' ? '异常' : '正常' }}</text>
+      </view>
+      <view v-for="repair in monthlyActivity.repairs" :key="repair._id" class="activity-row">
+        <view class="schedule-copy">
+          <text class="schedule-name">维修 · {{ repairTypeLabel(repair.type) }}</text>
+          <text class="schedule-meta">{{ formatDate(repair.createdAt, 'YYYY-MM-DD HH:mm') || '-' }}</text>
+        </view>
+        <text class="activity-status">{{ repairStatusLabel(repair.status) }}</text>
+      </view>
+      <view v-if="!loading && monthlyActivity.routineTotal + monthlyActivity.repairTotal === 0" class="empty-activity">{{ monthlyActivity.month || '本月' }}暂无点检、保养或维修记录</view>
+    </view>
   </view>
 </template>
 
 <script>
 import { computed, ref } from 'vue'
 import { onLoad, onShow } from '@dcloudio/uni-app'
-import { getEquipmentDetail, getEquipmentRoutineSchedule } from '@/api/index.js'
+import {
+  getEquipmentDetail,
+  getEquipmentRepairs,
+  getEquipmentRoutineRecords,
+  getEquipmentRoutineSchedule
+} from '@/api/index.js'
 import { formatDate } from '@/utils/format.js'
 import {
   dueStateLabel,
   dueStateTone,
+  loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
   routineTypeLabel,
   scheduleDescription
 } from '@/utils/equipment.js'
+import { repairStatusLabel, repairTypeLabel } from '@/utils/equipmentRepair.js'
 import { useUserStore } from '@/stores/user.js'
 
 export default {
@@ -67,12 +100,20 @@ export default {
     const teamId = ref('')
     const equipment = ref(null)
     const schedules = ref([])
+    const monthlyActivity = ref({ month: '', routineRecords: [], routineTotal: 0, repairs: [], repairTotal: 0 })
     const currentRuntimeHours = ref(null)
     const loading = ref(false)
-    const requestParams = () => teamId.value ? { teamId: teamId.value } : {}
+    const requestParams = () => userStore.isGlobalReadOnly && teamId.value ? { teamId: teamId.value } : {}
 
     const canRecordHours = computed(() => (
       userStore.can('equipment.edit', { write: true, teamRequired: true })
+    ))
+    const canRepair = computed(() => (
+      userStore.can('equipment.repair', { write: true, teamRequired: true })
+    ))
+    const canApplyStatus = computed(() => (
+      userStore.can('equipment.status.apply', { write: true, teamRequired: true }) &&
+      userStore.context.membership?.functionalRoleKeys?.includes('ASSET_ADMIN')
     ))
     const canExecute = (entry) => userStore.isTeamMode && userStore.can(
       entry.routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect',
@@ -82,9 +123,14 @@ export default {
       if (!equipmentId.value || loading.value) return
       loading.value = true
       try {
-        const [detail, schedule] = await Promise.all([
+        const [detail, schedule, activity] = await Promise.all([
           getEquipmentDetail(equipmentId.value, requestParams()),
-          getEquipmentRoutineSchedule(equipmentId.value, requestParams())
+          getEquipmentRoutineSchedule(equipmentId.value, requestParams()),
+          loadEquipmentMonthlyActivity(equipmentId.value, {
+            teamId: requestParams().teamId || '',
+            fetchRecords: getEquipmentRoutineRecords,
+            fetchRepairs: getEquipmentRepairs
+          })
         ])
         equipment.value = {
           ...detail.equipment,
@@ -92,6 +138,7 @@ export default {
           runtimeHoursUpdatedAt: schedule.equipment?.runtimeHoursUpdatedAt ?? detail.equipment?.runtimeHoursUpdatedAt ?? null
         }
         schedules.value = normalizeRoutineSchedules(schedule)
+        monthlyActivity.value = activity
         currentRuntimeHours.value = equipment.value.currentRuntimeHours
       } finally {
         loading.value = false
@@ -103,9 +150,16 @@ export default {
     const openRuntimeReading = () => uni.navigateTo({
       url: `/pages/equipment/runtime-reading?equipmentId=${equipmentId.value}`
     })
+    const openRepair = () => uni.navigateTo({
+      url: `/pages/equipment/repair-form?equipmentId=${equipmentId.value}`
+    })
+    const openStatusApplication = () => uni.navigateTo({
+      url: `/pages/equipment/status-application-form?equipmentId=${equipmentId.value}`
+    })
     const statusLabel = (value) => ({
       IN_USE: '在用', IDLE: '闲置', STOPPED: '停用', SCRAPPED: '报废'
     }[value] || value || '-')
+    const resultLabel = (value) => ({ NORMAL: '正常', COMPLETED: '完成', ABNORMAL: '异常' }[value] || value || '-')
 
     onLoad((options) => {
       equipmentId.value = options.id || ''
@@ -113,9 +167,9 @@ export default {
     })
     onShow(load)
     return {
-      userStore, equipment, schedules, currentRuntimeHours, loading, canRecordHours,
-      canExecute, openExecute, openRuntimeReading, statusLabel, formatDate,
-      dueStateLabel, dueStateTone, routineTypeLabel, scheduleDescription
+      userStore, equipment, schedules, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
+      canExecute, openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
+      resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
     }
   }
 }
@@ -123,7 +177,7 @@ export default {
 
 <style scoped lang="scss">
 .detail-page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #eef3fb; }
-.asset-band, .schedule-list { background: #fff; border: 1px solid #dce4ee; border-radius: 8rpx; }
+.asset-band, .schedule-list, .activity-list { background: #fff; border: 1px solid #dce4ee; border-radius: 8rpx; }
 .asset-band { padding: 24rpx; }
 .asset-heading, .schedule-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 18rpx; }
 .asset-copy, .schedule-copy { min-width: 0; flex: 1; }
@@ -135,8 +189,12 @@ export default {
 .asset-grid text, .asset-grid strong { display: block; overflow-wrap: anywhere; }
 .asset-grid text { color: #64748b; font-size: 22rpx; }
 .asset-grid strong { margin-top: 7rpx; color: #1f2733; font-size: 25rpx; font-weight: 600; }
-.hours-button, .execute-button { height: 72rpx; line-height: 72rpx; margin: 22rpx 0 0; border-radius: 8rpx; font-size: 25rpx; }
+.asset-actions { display: flex; gap: 12rpx; margin-top: 22rpx; }
+.hours-button, .repair-button, .status-button, .execute-button { height: 72rpx; line-height: 72rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
+.asset-actions .hours-button, .asset-actions .repair-button, .asset-actions .status-button { flex: 1; min-width: 0; }
 .hours-button { color: #245d3f; background: #eaf7ef; }
+.repair-button { color: #fff; background: #4096ff; }
+.status-button { color: #8a4b08; background: #fff5e6; }
 .section-heading { display: flex; justify-content: space-between; margin: 30rpx 0 14rpx; color: #1f2733; font-size: 29rpx; font-weight: 600; }
 .section-count { color: #64748b; font-size: 23rpx; font-weight: 400; }
 .schedule-list { overflow: hidden; }
@@ -150,6 +208,11 @@ export default {
 .tone-success { color: #2f855a; background: #eaf7ef; }
 .tone-info { color: #52606d; background: #edf2f7; }
 .due-grid { display: flex; flex-wrap: wrap; gap: 10rpx 24rpx; margin-top: 16rpx; color: #64748b; font-size: 22rpx; }
-.execute-button { color: #fff; background: #4096ff; }
+.execute-button { margin-top: 22rpx; color: #fff; background: #4096ff; }
 .empty-state { padding: 140rpx 20rpx; color: #909399; text-align: center; font-size: 25rpx; }
+.activity-list { overflow: hidden; }
+.activity-row { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; padding: 22rpx 24rpx; border-bottom: 1px solid #e8edf3; }
+.activity-row:last-child { border-bottom: 0; }
+.activity-status { flex: 0 0 auto; max-width: 240rpx; color: #52606d; font-size: 21rpx; text-align: right; overflow-wrap: anywhere; }
+.empty-activity { padding: 50rpx 20rpx; color: #909399; text-align: center; font-size: 23rpx; }
 </style>

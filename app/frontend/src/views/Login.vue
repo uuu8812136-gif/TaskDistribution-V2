@@ -21,6 +21,42 @@
           class="login-form"
           @submit.prevent="handleLogin"
         >
+          <el-form-item prop="teamId">
+            <div class="form-control">
+              <label for="login-team">项目团队</label>
+              <el-select
+                id="login-team"
+                v-model="loginForm.teamId"
+                :disabled="teamsLoading || Boolean(teamsError) || loginTeams.length === 0"
+                :loading="teamsLoading"
+                :placeholder="teamsLoading ? '正在加载项目团队' : '请选择项目团队'"
+                size="large"
+                class="team-select"
+              >
+                <el-option
+                  v-for="team in loginTeams"
+                  :key="team._id"
+                  :label="team.name"
+                  :value="team._id"
+                />
+              </el-select>
+              <div v-if="teamsError" class="team-state team-state--error" role="alert">
+                <span>{{ teamsError }}</span>
+                <el-button
+                  link
+                  type="primary"
+                  native-type="button"
+                  :disabled="teamsLoading"
+                  @click="loadLoginTeams"
+                >
+                  重新加载
+                </el-button>
+              </div>
+              <p v-else-if="!teamsLoading && loginTeams.length === 0" class="team-state" role="status">
+                暂无可登录的项目团队，请联系超级管理员
+              </p>
+            </div>
+          </el-form-item>
           <el-form-item prop="username">
             <div class="form-control">
               <label for="login-username">用户名</label>
@@ -54,6 +90,7 @@
               type="primary"
               size="large"
               :loading="loading"
+              :disabled="!canSubmit"
               class="login-button"
               native-type="submit"
             >
@@ -67,34 +104,69 @@
 </template>
 
 <script setup>
-import { reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import { getLoginTeams } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
+import { defaultLoginTeamId, normalizeLoginTeams } from '@/utils/loginTeams'
 
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const loginFormRef = ref(null)
 const loading = ref(false)
+const teamsLoading = ref(true)
+const teamsError = ref('')
+const loginTeams = ref([])
 
-const loginForm = reactive({ username: '', password: '' })
+const loginForm = reactive({ teamId: '', username: '', password: '' })
 const loginRules = {
+  teamId: [{ required: true, message: '请选择项目团队', trigger: 'change' }],
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [
     { required: true, message: '请输入密码', trigger: 'blur' },
     { min: 6, message: '密码长度至少6位', trigger: 'blur' }
   ]
 }
+const canSubmit = computed(() => (
+  Boolean(loginForm.teamId) &&
+  !teamsLoading.value &&
+  !teamsError.value &&
+  loginTeams.value.length > 0
+))
+
+const loadLoginTeams = async () => {
+  teamsLoading.value = true
+  teamsError.value = ''
+  try {
+    const payload = await getLoginTeams()
+    const teams = normalizeLoginTeams(payload?.teams)
+    loginTeams.value = teams
+    if (!teams.some((team) => team._id === loginForm.teamId)) {
+      loginForm.teamId = defaultLoginTeamId(teams)
+    }
+  } catch {
+    loginTeams.value = []
+    loginForm.teamId = ''
+    teamsError.value = '项目团队加载失败，请检查网络后重试'
+  } finally {
+    teamsLoading.value = false
+  }
+}
 
 const handleLogin = async () => {
-  if (!loginFormRef.value || loading.value) return
+  if (!loginFormRef.value || loading.value || !canSubmit.value) return
   const valid = await loginFormRef.value.validate().catch(() => false)
   if (!valid) return
 
   loading.value = true
   try {
-    await session.login(loginForm)
+    await session.login({
+      username: loginForm.username.trim(),
+      password: loginForm.password,
+      teamId: loginForm.teamId
+    })
     ElMessage.success('登录成功')
     if (session.isTeamSelection) {
       await router.replace({ name: 'TeamSelect' })
@@ -112,6 +184,8 @@ const handleLogin = async () => {
     loading.value = false
   }
 }
+
+onMounted(loadLoginTeams)
 </script>
 
 <style scoped lang="scss">
@@ -210,6 +284,23 @@ const handleLogin = async () => {
     box-shadow: 0 0 0 1px #d7e2f1 inset;
   }
 
+  :deep(.el-select__wrapper) {
+    width: 100%;
+    min-height: 46px;
+    padding-inline: 14px;
+    background: rgb(255 255 255 / 88%);
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px #d7e2f1 inset;
+  }
+
+  :deep(.el-select__wrapper:hover) {
+    box-shadow: 0 0 0 1px #a9cfff inset;
+  }
+
+  :deep(.el-select__wrapper.is-focused) {
+    box-shadow: 0 0 0 1px var(--zl-primary) inset, 0 0 0 3px rgb(64 150 255 / 12%);
+  }
+
   :deep(.el-input__wrapper:hover) {
     box-shadow: 0 0 0 1px #a9cfff inset;
   }
@@ -224,6 +315,34 @@ const handleLogin = async () => {
 
   .form-control {
     width: 100%;
+    min-width: 0;
+  }
+
+  .team-select {
+    width: 100%;
+  }
+
+  .team-state {
+    margin: 8px 0 0;
+    color: var(--zl-muted);
+    font-size: 13px;
+    line-height: 20px;
+  }
+
+  .team-state--error {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: var(--el-color-danger);
+
+    span {
+      min-width: 0;
+    }
+
+    :deep(.el-button) {
+      flex: 0 0 auto;
+    }
   }
 
   label {

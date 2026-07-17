@@ -22,6 +22,8 @@ app/script/backup_task_distribution_*/
 
 # Test data and local state
 .test-data/
+customer-data/
+references/
 .cache/
 tools/runtime/
 .DS_Store

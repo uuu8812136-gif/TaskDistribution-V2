@@ -4,15 +4,43 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
 import {
+  ATTENDANCE_NAMED_FIELDS,
   DAILY_SCHEDULE_FIELDS,
   MONTHLY_SCHEDULE_FIELDS,
   TRANSPORT_LOAD_FIELDS,
   buildOrgUnitOptions,
+  buildAttendancePayload,
   buildTransportFields,
   buildTransportPayload,
   businessNaturalDate,
+  dailyReportSourceSummary,
   scopedReportingParams
 } from '../utils/reporting.js'
+
+test('attendance form emits the fixed two-shift payload and keeps named exceptions', () => {
+  const payload = buildAttendancePayload({
+    orgUnitId: '64b000000000000000000010',
+    reportDate: '2026-07-14',
+    authorizedHeadcount: '12',
+    registeredHeadcount: '13',
+    dayShift: {
+      actualAttendanceCount: '11',
+      pendingDeparture: { count: '1', names: '测试人员甲、测试人员甲' }
+    },
+    nightShift: {},
+    support: { destination: '物流技术部', count: '1', names: '测试人员乙' },
+    otherRemark: ' 测试 ',
+    reason: ' 补报 '
+  })
+
+  assert.equal(Object.keys(payload.dayShift).length, ATTENDANCE_NAMED_FIELDS.length + 1)
+  assert.deepEqual(payload.dayShift.pendingDeparture, { count: 1, names: ['测试人员甲'] })
+  assert.equal(payload.nightShift.sickLeave.count, 0)
+  assert.deepEqual(payload.support.names, ['测试人员乙'])
+  assert.equal(payload.otherRemark, '测试')
+  assert.equal(payload.reason, '补报')
+  assert.equal(payload.teamId, undefined)
+})
 
 const FILE_IDS = [
   '64b000000000000000000001',
@@ -28,7 +56,7 @@ function validForm() {
     tripLabel: '第1车',
     route: '仓库-工厂',
     dispatchType: '配送',
-    vehiclePlate: '鲁A12345',
+    vehiclePlate: 'TEST-PLATE-01',
     vehicleType: '厢式货车',
     driverName: '测试司机',
     loadDetails: {
@@ -109,11 +137,41 @@ test('organization options are scoped, active and deduplicated', () => {
   ])
 })
 
+test('production daily source summary keeps review and schedule trace counts', () => {
+  const source = dailyReportSourceSummary({
+    sourceSnapshot: {
+      rule: { version: 'production-daily-text-v1-2026-07-17' },
+      attendance: {
+        currentDate: {
+          reviewId: 'today-review',
+          submissions: Array.from({ length: 7 }, (_, index) => ({ id: index }))
+        },
+        previousNaturalDate: {
+          reviewId: 'previous-review',
+          submissions: Array.from({ length: 7 }, (_, index) => ({ id: index }))
+        }
+      },
+      production: {
+        requiredMonths: ['2025-01', '2026-07'],
+        schedules: [{ scheduleId: 'schedule-1' }, { scheduleId: 'schedule-2' }]
+      }
+    }
+  })
+  assert.equal(source.ruleVersion, 'production-daily-text-v1-2026-07-17')
+  assert.equal(source.currentReviewId, 'today-review')
+  assert.equal(source.attendanceRecordCount, 14)
+  assert.equal(source.productionScheduleCount, 2)
+})
+
 test('mini-program reporting pages use authenticated file APIs and are registered', () => {
   const root = fileURLToPath(new URL('..', import.meta.url))
   const apiSource = fs.readFileSync(`${root}/api/index.js`, 'utf8')
   const formSource = fs.readFileSync(`${root}/pages/reporting/transport-form.vue`, 'utf8')
   const detailSource = fs.readFileSync(`${root}/pages/reporting/transport-detail.vue`, 'utf8')
+  const reportingIndexSource = fs.readFileSync(`${root}/pages/reporting/index.vue`, 'utf8')
+  const attendanceSource = fs.readFileSync(`${root}/pages/reporting/attendance.vue`, 'utf8')
+  const attendanceFormSource = fs.readFileSync(`${root}/pages/reporting/attendance-form.vue`, 'utf8')
+  const dailyReportSource = fs.readFileSync(`${root}/pages/reporting/daily-report.vue`, 'utf8')
   const pages = JSON.parse(fs.readFileSync(`${root}/pages.json`, 'utf8'))
   const registered = new Set(pages.pages.map(({ path }) => path))
 
@@ -124,4 +182,20 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   assert.equal(registered.has('pages/reporting/transport-form'), true)
   assert.equal(registered.has('pages/reporting/transport-detail'), true)
   assert.equal(registered.has('pages/reporting/schedule'), true)
+  assert.equal(registered.has('pages/reporting/attendance'), true)
+  assert.equal(registered.has('pages/reporting/attendance-form'), true)
+  assert.equal(registered.has('pages/reporting/daily-report'), true)
+  assert.match(reportingIndexSource, /openAttendance/)
+  assert.match(attendanceSource, /getAttendanceDailySummary/)
+  assert.match(attendanceSource, /reviewAttendanceDailySummary/)
+  assert.match(attendanceSource, /setClipboardData/)
+  assert.match(attendanceFormSource, /buildAttendancePayload/)
+  assert.match(attendanceFormSource, /createAttendanceSubmission/)
+  assert.match(attendanceFormSource, /updateAttendanceSubmission/)
+  assert.match(reportingIndexSource, /openDailyReport/)
+  assert.match(apiSource, /generated-daily-reports/)
+  assert.match(dailyReportSource, /report\.daily\.generate/)
+  assert.match(dailyReportSource, /setClipboardData/)
+  assert.match(dailyReportSource, /availableVersions/)
+  assert.match(dailyReportSource, /来源追溯/)
 })

@@ -267,6 +267,39 @@ function createEquipmentController({
       } catch (error) {
         return next(error);
       }
+    },
+
+    async cancelImport(req, res, next) {
+      try {
+        const result = await importService.cancelImport({
+          authContext: req.authContext,
+          req,
+          importJobId: req.params.importJobId,
+          input: req.body || {}
+        });
+        return res.json({
+          message: 'Equipment import cancelled',
+          ...result
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async retryImportCleanup(req, res, next) {
+      try {
+        const result = await importService.retryImportCleanup({
+          authContext: req.authContext,
+          req,
+          importJobId: req.params.importJobId
+        });
+        return res.json({
+          message: 'Equipment import staging cleanup retried',
+          ...result
+        });
+      } catch (error) {
+        return next(error);
+      }
     }
   });
 }

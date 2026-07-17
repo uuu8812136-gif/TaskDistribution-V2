@@ -95,6 +95,7 @@ test('fixed permissions and module-specific data scopes match the design', () =>
     'report.correct',
     'report.export',
     'report.schedule.manage',
+    'report.daily.generate',
     'report.monthly.generate',
     'member.view',
     'member.manage',
@@ -279,6 +280,42 @@ test('TeamMembership has one membership per team and user', async () => {
 
   await assert.rejects(
     TeamMembership.create({ teamId, userId, orgUnitId }),
+    isDuplicateKeyError
+  );
+});
+
+test('TeamMembership permits only one active attendance reporter per division', async () => {
+  const teamId = objectId();
+  const divisionId = objectId();
+  const role = permissions.FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER;
+
+  await TeamMembership.create({
+    teamId,
+    userId: objectId(),
+    orgUnitId: divisionId,
+    functionalRoleKeys: [role]
+  });
+  await TeamMembership.create({
+    teamId,
+    userId: objectId(),
+    orgUnitId: divisionId,
+    status: permissions.MEMBERSHIP_STATUSES.DISABLED,
+    functionalRoleKeys: [role]
+  });
+  await TeamMembership.create({
+    teamId,
+    userId: objectId(),
+    orgUnitId: divisionId,
+    functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN]
+  });
+
+  await assert.rejects(
+    TeamMembership.create({
+      teamId,
+      userId: objectId(),
+      orgUnitId: divisionId,
+      functionalRoleKeys: [role]
+    }),
     isDuplicateKeyError
   );
 });

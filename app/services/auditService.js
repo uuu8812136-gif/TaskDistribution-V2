@@ -414,6 +414,18 @@ function boundedString(value, maxLength) {
   return String(value).slice(0, maxLength);
 }
 
+function redactSensitiveText(value, maxLength) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const redacted = String(value)
+    .replace(/\b(Bearer\s+)[A-Za-z0-9._~+\/=:-]+/gi, '$1[REDACTED]')
+    .replace(
+      /\b(password|passwd|pwd|token|authorization|cookie|secret|api[_-]?key|credential)\s*([:=])\s*([^\r\n,;&]*)/gi,
+      '$1$2[REDACTED]'
+    );
+  return boundedString(redacted, maxLength);
+}
+
 function readHeader(req, headerName) {
   if (!req) return null;
   if (typeof req.get === 'function') {
@@ -511,11 +523,11 @@ function buildAuditContext({
     actorMode,
     activeTeamId,
     targetTeamId: resolvedTargetTeamId,
-    requestId: boundedString(requestId, 128),
+    requestId: redactSensitiveText(requestId, 128),
     requestMethod: method,
     requestPath: boundedString(requestPath(req), 1000),
     ip: boundedString(ip, 64),
-    userAgent: boundedString(readHeader(req, 'user-agent'), 1000)
+    userAgent: redactSensitiveText(readHeader(req, 'user-agent'), 1000)
   });
 }
 
@@ -559,9 +571,9 @@ function createAuditService(options = {}) {
       ...contextFields,
       action,
       resourceType,
-      resourceId: boundedString(normalizeId(resourceId), 128),
+      resourceId: redactSensitiveText(normalizeId(resourceId), 128),
       ...snapshots,
-      reason: boundedString(reason, 2000)
+      reason: redactSensitiveText(reason, 2000)
     };
 
     // Mongoose requires an array form when create options (notably session)

@@ -53,6 +53,9 @@
         <view class="photo-grid">
           <view v-for="(photo, index) in photos" :key="photo.path" class="photo-item">
             <image :src="photo.path" mode="aspectFill" />
+            <view class="photo-watermark">
+              <text>{{ photo.watermarkPreview }}</text>
+            </view>
             <button class="remove-photo" :disabled="submitting" @click="removePhoto(index)">×</button>
           </view>
           <button v-if="!submitting && photos.length < 10" class="add-photo" @click="takePhoto">拍照</button>
@@ -64,11 +67,17 @@
       </view>
       <button class="submit-button" :loading="submitting" :disabled="submitting" @click="submit">提交{{ routineTypeLabel(rule.routineType) }}</button>
     </view>
+    <canvas
+      canvas-id="routineWatermarkCanvas"
+      id="routineWatermarkCanvas"
+      class="watermark-canvas"
+      :style="{ width: `${canvasWidth}px`, height: `${canvasHeight}px` }"
+    />
   </view>
 </template>
 
 <script>
-import { computed, reactive, ref } from 'vue'
+import { computed, getCurrentInstance, nextTick, reactive, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import {
   createEquipmentRoutineRecord,
@@ -89,9 +98,11 @@ import { useUserStore } from '@/stores/user.js'
 export default {
   name: 'EquipmentRoutineExecute',
   setup() {
+    const componentInstance = getCurrentInstance()
     const userStore = useUserStore()
     const equipmentId = ref('')
     const ruleId = ref('')
+    const planId = ref('')
     const rule = ref(null)
     const results = reactive({})
     const runtimeHours = ref('')
@@ -99,6 +110,8 @@ export default {
     const photos = ref([])
     const submitting = ref(false)
     const idempotencyKey = ref('')
+    const canvasWidth = ref(2)
+    const canvasHeight = ref(2)
     const needsRuntime = computed(() => ['RUNTIME_HOURS', 'COMBINED'].includes(rule.value?.schedule?.mode))
     const photoRuleLabel = computed(() => ({
       ALWAYS: '必须上传', ON_ABNORMAL: '异常时必须上传', NONE: '无需上传'
@@ -123,25 +136,151 @@ export default {
         return
       }
       rule.value = entry.rule
+      const currentPlan = (entry.plans || []).find(({ status }) => status === 'IN_WINDOW') ||
+        (entry.plans || []).find(({ status }) => status === 'OVERDUE') || null
+      planId.value = currentPlan?._id || ''
       runtimeHours.value = response.equipment?.currentRuntimeHours == null
         ? ''
         : String(response.equipment.currentRuntimeHours)
       rule.value.checklistItems.forEach((item) => itemResult(item))
     }
+    const formatWatermarkTime = (date) => {
+      const pad = (value) => String(value).padStart(2, '0')
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    }
+    const locationEvidence = () => new Promise((resolve) => {
+      uni.getLocation({
+        type: 'gcj02',
+        isHighAccuracy: true,
+        highAccuracyExpireTime: 5000,
+        success: (location) => resolve({
+          locationStatus: 'GRANTED',
+          longitude: Number(location.longitude),
+          latitude: Number(location.latitude),
+          accuracyMeters: Number(location.accuracy) || null,
+          address: ''
+        }),
+        fail: (error) => {
+          const message = String(error?.errMsg || '').toLowerCase()
+          resolve({
+            locationStatus: /auth|deny|permission/.test(message) ? 'DENIED' : 'UNAVAILABLE',
+            longitude: null,
+            latitude: null,
+            accuracyMeters: null,
+            address: ''
+          })
+        }
+      })
+    })
+    const imageInfo = (src) => new Promise((resolve, reject) => {
+      uni.getImageInfo({ src, success: resolve, fail: reject })
+    })
+    const burnWatermark = async (sourcePath, { timeText, locationText }) => {
+      const image = await imageInfo(sourcePath)
+      if (!(image.width > 0) || !(image.height > 0)) throw new Error('无法读取现场照片尺寸')
+      const scale = Math.min(1, 1600 / Math.max(image.width, image.height))
+      const width = Math.max(2, Math.round(image.width * scale))
+      const height = Math.max(2, Math.round(image.height * scale))
+      canvasWidth.value = width
+      canvasHeight.value = height
+      await nextTick()
+      await new Promise((resolve) => setTimeout(resolve, 40))
+      const canvasContext = uni.createCanvasContext(
+        'routineWatermarkCanvas',
+        componentInstance?.proxy
+      )
+      if (!canvasContext) throw new Error('无法创建水印画布')
+      canvasContext.setFillStyle('#ffffff')
+      canvasContext.fillRect(0, 0, width, height)
+      canvasContext.drawImage(sourcePath, 0, 0, width, height)
+      const fontSize = Math.max(18, Math.round(width / 42))
+      const lineHeight = Math.round(fontSize * 1.45)
+      const padding = Math.max(12, Math.round(fontSize * 0.7))
+      const bandHeight = lineHeight * 2 + padding * 2
+      canvasContext.setGlobalAlpha(0.68)
+      canvasContext.setFillStyle('#000000')
+      canvasContext.fillRect(0, height - bandHeight, width, bandHeight)
+      canvasContext.setGlobalAlpha(1)
+      canvasContext.setFillStyle('#ffffff')
+      canvasContext.setFontSize(fontSize)
+      canvasContext.setTextBaseline('top')
+      canvasContext.fillText(timeText, padding, height - bandHeight + padding, width - padding * 2)
+      canvasContext.fillText(locationText, padding, height - bandHeight + padding + lineHeight, width - padding * 2)
+      return new Promise((resolve, reject) => {
+        canvasContext.draw(false, () => {
+          uni.canvasToTempFilePath({
+            canvasId: 'routineWatermarkCanvas',
+            x: 0,
+            y: 0,
+            width,
+            height,
+            destWidth: width,
+            destHeight: height,
+            fileType: 'jpg',
+            quality: 0.92,
+            success: ({ tempFilePath }) => {
+              if (!tempFilePath) return reject(new Error('水印照片生成失败'))
+              return resolve(tempFilePath)
+            },
+            fail: reject
+          }, componentInstance?.proxy)
+        })
+      })
+    }
     const takePhoto = () => {
       if (submitting.value) return
       uni.chooseMedia({
-      count: Math.min(10 - photos.value.length, 9),
-      mediaType: ['image'],
-      sourceType: ['camera'],
-      success: ({ tempFiles }) => {
-        const selected = (tempFiles || []).map((file, index) => ({
-          path: file.tempFilePath,
-          name: `equipment-${Date.now()}-${index + 1}.jpg`,
-          fileId: ''
-        }))
-        photos.value = [...photos.value, ...selected].slice(0, 10)
-      }
+        count: Math.min(10 - photos.value.length, 9),
+        mediaType: ['image'],
+        sourceType: ['camera'],
+        success: async ({ tempFiles }) => {
+          const location = await locationEvidence()
+          const policy = rule.value?.executionConfig?.locationPolicy || 'PENDING_CONFIRMATION'
+          const precision = Number(rule.value?.executionConfig?.locationPrecisionMeters || 0)
+          const precisionExceeded = precision > 0 && location.accuracyMeters > precision
+          if (policy === 'REQUIRED' && (location.locationStatus !== 'GRANTED' || precisionExceeded)) {
+            uni.showModal({
+              title: '无法保存现场照片',
+              content: location.locationStatus === 'DENIED'
+                ? '当前规则要求定位，请在设置中允许位置权限后重试。'
+                : '当前规则要求有效定位，请到可定位位置后重试。',
+              confirmText: location.locationStatus === 'DENIED' ? '去设置' : '知道了',
+              showCancel: location.locationStatus === 'DENIED',
+              success: ({ confirm }) => {
+                if (confirm && location.locationStatus === 'DENIED') uni.openSetting({})
+              }
+            })
+            return
+          }
+          const capturedAt = new Date()
+          const locationText = location.locationStatus === 'GRANTED'
+            ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`
+            : `定位状态：${location.locationStatus}`
+          try {
+            const selected = []
+            for (const [index, file] of (tempFiles || []).entries()) {
+              const watermarkedPath = await burnWatermark(file.tempFilePath, {
+                timeText: formatWatermarkTime(capturedAt),
+                locationText
+              })
+              selected.push({
+                path: watermarkedPath,
+                name: `equipment-watermarked-${Date.now()}-${index + 1}.jpg`,
+                fileId: '',
+                capturedAt: capturedAt.toISOString(),
+                ...location,
+                watermarkPreview: `${formatWatermarkTime(capturedAt)} | ${locationText}`
+              })
+            }
+            photos.value = [...photos.value, ...selected].slice(0, 10)
+          } catch (error) {
+            uni.showModal({
+              title: '水印照片生成失败',
+              content: error.message || '未生成水印照片，请重新拍摄。',
+              showCancel: false
+            })
+          }
+        }
       })
     }
     const inspectUploadedPhoto = async (photo, deleteTemporary = false) => {
@@ -209,6 +348,15 @@ export default {
           abnormalSummary: abnormalSummary.value,
           runtimeHours: runtimeHours.value,
           photoFileIds: uploadedFileIds,
+          photoEvidence: photos.value.map((photo) => ({
+            capturedAt: photo.capturedAt,
+            locationStatus: photo.locationStatus,
+            longitude: photo.longitude,
+            latitude: photo.latitude,
+            accuracyMeters: photo.accuracyMeters,
+            address: photo.address
+          })),
+          planId: planId.value,
           idempotencyKey: idempotencyKey.value
         })
         await createEquipmentRoutineRecord(equipmentId.value, payload)
@@ -234,7 +382,8 @@ export default {
       load().catch((error) => uni.showToast({ title: error.message || '加载失败', icon: 'none' }))
     })
     return {
-      rule, results, runtimeHours, abnormalSummary, photos, submitting, resultOptions, needsRuntime,
+      rule, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,
+      resultOptions, needsRuntime,
       photoRuleLabel, itemResult, selectResult, takePhoto, removePhoto, submit,
       routineTypeLabel, scheduleDescription
     }
@@ -277,8 +426,10 @@ export default {
 .photo-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12rpx; }
 .photo-item, .add-photo { position: relative; width: 100%; aspect-ratio: 1; border-radius: 8rpx; overflow: hidden; }
 .photo-item image { width: 100%; height: 100%; }
+.photo-watermark { position: absolute; right: 0; bottom: 0; left: 0; padding: 7rpx 8rpx; color: #fff; background: rgba(0, 0, 0, .62); font-size: 17rpx; line-height: 1.35; overflow-wrap: anywhere; }
 .remove-photo { position: absolute; top: 4rpx; right: 4rpx; width: 42rpx; height: 42rpx; line-height: 40rpx; margin: 0; padding: 0; border-radius: 50%; color: #fff; background: rgba(0,0,0,.64); font-size: 28rpx; }
 .add-photo { display: flex; align-items: center; justify-content: center; margin: 0; border: 1px dashed #94a3b8; color: #52606d; background: #f7f9fb; font-size: 25rpx; }
 .overall-note { min-height: 170rpx; padding: 16rpx; }
 .submit-button { height: 82rpx; line-height: 82rpx; margin: 0; border-radius: 8rpx; color: #fff; background: #4096ff; font-size: 27rpx; }
+.watermark-canvas { position: fixed; top: 0; left: -10000px; z-index: -1; pointer-events: none; }
 </style>

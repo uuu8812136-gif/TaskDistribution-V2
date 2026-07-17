@@ -19,6 +19,9 @@
     "init:clear": "node init-db.js --clear",
     "check": "node check-db.js",
     "migrate:legacy-tenant": "node script/migrateLegacyTenant.js",
+    "import:customer-test-data": "node script/importCustomerRealTestData.js",
+    "import:customer-attendance-test-data": "node script/importCustomerAttendanceTestData.js",
+    "cleanup:equipment-imports": "node script/cleanupEquipmentImportPreviews.js",
     "provision:developer-account": "node script/provisionDeveloperAccount.js",
     "seed:v2-demo": "node script/seedV2Demo.js",
     "start:v2-e2e": "node script/startV2LocalE2E.js"
@@ -35,7 +38,8 @@
     "cors": "^2.8.5",
     "multer": "^2.2.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
-    "express-validator": "^7.0.1"
+    "express-validator": "^7.0.1",
+    "fast-xml-parser": "^5.10.1"
   },
   "overrides": {
     "brace-expansion": "^1.1.16",
@@ -50,4 +54,3 @@
     "nodemon": "^3.0.2"
   }
 }
-

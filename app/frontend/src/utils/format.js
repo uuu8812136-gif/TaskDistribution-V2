@@ -99,6 +99,7 @@ export const messageTypeMap = {
   extension_applied: '延期申请',
   extension_approved: '延期通过',
   extension_rejected: '延期拒绝',
+  equipment_status: '设备状态审批',
   system: '系统通知'
 }
 
@@ -115,6 +116,7 @@ export const messageTypeIcon = {
   extension_applied: 'Clock',
   extension_approved: 'SuccessFilled',
   extension_rejected: 'CircleClose',
+  equipment_status: 'Switch',
   system: 'Bell'
 }
 

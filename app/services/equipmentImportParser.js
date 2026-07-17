@@ -9,20 +9,16 @@ const MAX_RAW_VALUE_LENGTH = 500;
 
 const HEADER_ALIASES = Object.freeze({
   sequence: ['序号', 'No.', 'No'],
-  assetCode: [
-    '资产编码',
-    '资产编号',
-    'Asset Code',
-    '产品编码SN/PN',
-    '产品编码',
-    '编号/牌号',
-    '品牌编号',
-    '车牌号'
-  ],
+  assetCode: ['资产编码', '资产编号', 'Asset Code'],
+  productCode: ['产品编码SN/PN', '产品编码'],
+  plateNumber: ['车牌号'],
+  serialNumber: ['编号/牌号'],
+  brandSerialNumber: ['品牌编号'],
   name: ['名称', '设备名称', 'Name'],
   category: ['资产类别', 'Category'],
   specification: ['型号规格', 'Specification'],
-  manufacturer: ['生产厂家', '品牌', 'Manufacturer'],
+  manufacturer: ['生产厂家', 'Manufacturer'],
+  brand: ['品牌'],
   quantity: ['实盘数量', '数量', 'Quantity'],
   accountQuantity: ['账存数量'],
   unit: ['单位', 'Unit'],
@@ -35,10 +31,14 @@ const HEADER_ALIASES = Object.freeze({
   custodianUserId: ['Custodian User ID'],
   location: ['存放地点', '所在部室', 'Location'],
   status: ['状态', '当前状态', 'Status'],
+  condition: ['当前状态', '状态'],
   remark: ['备注', '备注1', '备注2', 'Remark'],
   productionDate: ['出厂日期'],
-  extraSpecification: ['吨位', '车长'],
-  plateNumber: ['车牌号']
+  vehicleLength: ['车长'],
+  ratedCapacityText: ['吨位'],
+  idlePlacedAt: ['放置日期'],
+  forkliftPosition: ['叉车是否高低位', '高低位'],
+  environmentalRegistrationCode: ['叉车环保编号']
 });
 
 const HEADER_KEYS = new Set(
@@ -58,6 +58,15 @@ const CATEGORY_ALIASES = Object.freeze({
   物流信息设备: '物流信息装备',
   辅助设施设备: '辅助设施',
   闲置设备: '闲置设备'
+});
+
+const ASSET_TYPE_BY_SHEET = Object.freeze({
+  运输装备: 'TRANSPORT_EQUIPMENT',
+  装卸装备: 'HANDLING_EQUIPMENT',
+  物流信息装备: 'LOGISTICS_INFORMATION_EQUIPMENT',
+  辅助设施设备: 'AUXILIARY_FACILITY',
+  辅助设施: 'AUXILIARY_FACILITY',
+  闲置: 'IDLE'
 });
 
 const STATUS_BY_TEXT = Object.freeze({
@@ -137,13 +146,26 @@ function readAllAliases(row, headerMap, aliases) {
   return values;
 }
 
+function readCellMetadata(worksheet, rowNumber, headerMap, aliases) {
+  for (const alias of aliases) {
+    const columnIndex = headerMap.get(normalizeHeader(alias));
+    if (columnIndex === undefined) continue;
+    const cell = worksheet['!data']?.[rowNumber - 1]?.[columnIndex];
+    if (!cell) return { display: '', numberFormat: '' };
+    return {
+      display: textValue(cell.w, 200),
+      numberFormat: textValue(cell.z, 200)
+    };
+  }
+  return { display: '', numberFormat: '' };
+}
+
 function rawValuesForRow(row, headerRow) {
   const result = {};
   headerRow.forEach((header, index) => {
-    const key = textValue(header, 100);
+    const key = textValue(header, 100) || `__column_${XLSX.utils.encode_col(index)}`;
     const value = row[index];
     if (
-      !key ||
       key === '__proto__' ||
       key === 'prototype' ||
       key === 'constructor' ||
@@ -158,7 +180,41 @@ function rawValuesForRow(row, headerRow) {
         : value;
     if (!Object.prototype.hasOwnProperty.call(result, key)) result[key] = normalizedValue;
   });
+  for (let index = headerRow.length; index < row.length; index += 1) {
+    const value = row[index];
+    if (value === null || value === undefined || textValue(value) === '') continue;
+    const key = `__column_${XLSX.utils.encode_col(index)}`;
+    result[key] = typeof value === 'string'
+      ? value.slice(0, MAX_RAW_VALUE_LENGTH)
+      : value instanceof Date ? value.toISOString() : value;
+  }
   return result;
+}
+
+function worksheetRawRows(worksheet) {
+  const denseRows = worksheet['!data'];
+  if (!Array.isArray(denseRows)) {
+    return XLSX.utils.sheet_to_json(worksheet, {
+      header: 1,
+      defval: null,
+      raw: true,
+      blankrows: true
+    });
+  }
+  return denseRows.map((cells) => {
+    if (!Array.isArray(cells)) return [];
+    const row = [];
+    cells.forEach((cell, index) => {
+      if (!cell) {
+        row[index] = null;
+        return;
+      }
+      row[index] = cell.v !== undefined
+        ? cell.v
+        : cell.f ? `=${cell.f}` : null;
+    });
+    return row;
+  });
 }
 
 function buildException(input) {
@@ -191,69 +247,168 @@ function validDateParts(year, month, day) {
     : null;
 }
 
-function parseDateValue(value) {
+function formatDateDisplay(date, precision) {
+  if (!date || !precision) return '';
+  const year = String(date.getUTCFullYear()).padStart(4, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  if (precision === EquipmentAsset.DATE_PRECISIONS.YEAR) return year;
+  if (precision === EquipmentAsset.DATE_PRECISIONS.MONTH) return `${year}-${month}`;
+  return `${year}-${month}-${day}`;
+}
+
+function dateResult({
+  date = null,
+  precision = null,
+  raw = '',
+  display = '',
+  exception = null
+}) {
+  return {
+    value: date,
+    precision,
+    raw,
+    display: display || formatDateDisplay(date, precision),
+    exception
+  };
+}
+
+function dateException({ field, exceptionType, originalValue, severity = 'WARNING' }) {
+  return buildException({
+    field,
+    exceptionType,
+    originalValue,
+    suggestedValue: null,
+    severity
+  });
+}
+
+function inferDatePrecision(numberFormat, display, fallback) {
+  const format = textValue(numberFormat, 200).toLowerCase();
+  const shown = textValue(display, 200);
+  if (/[d日号]/.test(format) || /\d{1,2}(?:日|号)$/.test(shown)) {
+    return EquipmentAsset.DATE_PRECISIONS.DAY;
+  }
+  if (/[m月]/.test(format) || /^\d{4}(?:年|[-/.])\d{1,2}月?$/.test(shown)) {
+    return EquipmentAsset.DATE_PRECISIONS.MONTH;
+  }
+  if (/[y年]/.test(format) || /^\d{4}年?$/.test(shown)) {
+    return EquipmentAsset.DATE_PRECISIONS.YEAR;
+  }
+  return fallback;
+}
+
+function parseSourceDateValue(value, {
+  field = 'acquisitionDate',
+  display = '',
+  numberFormat = ''
+} = {}) {
+  const sourceDisplay = textValue(display, 200);
   if (value === null || value === undefined || value === '') {
-    return { value: null, exception: null };
+    return dateResult({ display: sourceDisplay });
   }
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    return {
-      value: validDateParts(value.getFullYear(), value.getMonth() + 1, value.getDate()),
-      exception: null
-    };
+    const date = validDateParts(value.getFullYear(), value.getMonth() + 1, value.getDate());
+    return dateResult({
+      date,
+      precision: EquipmentAsset.DATE_PRECISIONS.DAY,
+      raw: value.toISOString(),
+      display: sourceDisplay
+    });
   }
   if (typeof value === 'number' && Number.isFinite(value)) {
     if (value >= 10000) {
       const parsed = XLSX.SSF.parse_date_code(value);
       const date = parsed && validDateParts(parsed.y, parsed.m, parsed.d);
+      const precision = inferDatePrecision(
+        numberFormat,
+        sourceDisplay,
+        EquipmentAsset.DATE_PRECISIONS.DAY
+      );
       return date
-        ? { value: date, exception: null }
-        : { value: null, exception: buildException({
-          field: 'acquisitionDate',
-          exceptionType: 'DATE_INVALID',
-          originalValue: value,
-          suggestedValue: null,
-          severity: 'WARNING'
-        }) };
+        ? dateResult({
+          date,
+          precision,
+          raw: String(value),
+          display: sourceDisplay
+        })
+        : dateResult({
+          raw: String(value),
+          display: sourceDisplay,
+          exception: dateException({ field, exceptionType: 'DATE_INVALID', originalValue: value })
+        });
     }
-    return {
-      value: null,
-      exception: buildException({
-        field: 'acquisitionDate',
-        exceptionType: 'PARTIAL_DATE',
-        originalValue: value,
-        suggestedValue: null,
-        severity: 'WARNING'
-      })
-    };
+    const raw = String(value);
+    const displayYearMonth = /^(\d{4})[.\-/年](\d{1,2})月?$/.exec(sourceDisplay);
+    const yearMonth = displayYearMonth || /^(\d{4})\.(\d{1,2})$/.exec(raw);
+    if (yearMonth) {
+      const date = validDateParts(Number(yearMonth[1]), Number(yearMonth[2]), 1);
+      if (date) return dateResult({
+        date,
+        precision: EquipmentAsset.DATE_PRECISIONS.MONTH,
+        raw,
+        display: sourceDisplay,
+        exception: dateException({ field, exceptionType: 'PARTIAL_DATE', originalValue: value })
+      });
+    }
+    if (Number.isInteger(value) && value >= 1900 && value <= 9999) {
+      return dateResult({
+        date: validDateParts(value, 1, 1),
+        precision: EquipmentAsset.DATE_PRECISIONS.YEAR,
+        raw,
+        display: sourceDisplay,
+        exception: dateException({ field, exceptionType: 'PARTIAL_DATE', originalValue: value })
+      });
+    }
+    return dateResult({
+      raw,
+      display: sourceDisplay,
+      exception: dateException({ field, exceptionType: 'DATE_INVALID', originalValue: value })
+    });
   }
 
   const text = textValue(value);
   const fullMatch = /^(\d{4})[年\-/\.](\d{1,2})[月\-/\.](\d{1,2})(?:日|号)?$/.exec(text);
   if (fullMatch) {
     const date = validDateParts(Number(fullMatch[1]), Number(fullMatch[2]), Number(fullMatch[3]));
-    if (date) return { value: date, exception: null };
+    if (date) return dateResult({
+      date,
+      precision: EquipmentAsset.DATE_PRECISIONS.DAY,
+      raw: text,
+      display: sourceDisplay
+    });
   }
-  if (/^\d{4}年?$/.test(text) || /^\d{4}[\.\-/]\d{1,2}$/.test(text)) {
-    return {
-      value: null,
-      exception: buildException({
-        field: 'acquisitionDate',
-        exceptionType: 'PARTIAL_DATE',
-        originalValue: text,
-        suggestedValue: null,
-        severity: 'WARNING'
-      })
-    };
+  const monthMatch = /^(\d{4})(?:年|[\.\-/])(\d{1,2})月?$/.exec(text);
+  if (monthMatch) {
+    const date = validDateParts(Number(monthMatch[1]), Number(monthMatch[2]), 1);
+    if (date) return dateResult({
+      date,
+      precision: EquipmentAsset.DATE_PRECISIONS.MONTH,
+      raw: text,
+      display: sourceDisplay,
+      exception: dateException({ field, exceptionType: 'PARTIAL_DATE', originalValue: text })
+    });
   }
+  const yearMatch = /^(\d{4})年?$/.exec(text);
+  if (yearMatch) return dateResult({
+    date: validDateParts(Number(yearMatch[1]), 1, 1),
+    precision: EquipmentAsset.DATE_PRECISIONS.YEAR,
+    raw: text,
+    display: sourceDisplay,
+    exception: dateException({ field, exceptionType: 'PARTIAL_DATE', originalValue: text })
+  });
+  return dateResult({
+    raw: text,
+    display: sourceDisplay,
+    exception: dateException({ field, exceptionType: 'DATE_INVALID', originalValue: text })
+  });
+}
+
+function parseDateValue(value) {
+  const parsed = parseSourceDateValue(value, { field: 'acquisitionDate' });
   return {
-    value: null,
-    exception: buildException({
-      field: 'acquisitionDate',
-      exceptionType: 'DATE_INVALID',
-      originalValue: text,
-      suggestedValue: null,
-      severity: 'WARNING'
-    })
+    value: parsed.precision === EquipmentAsset.DATE_PRECISIONS.DAY ? parsed.value : null,
+    exception: parsed.exception
   };
 }
 
@@ -277,12 +432,47 @@ function parseNumber(value, { fallback, field, min = 0, severity = 'ERROR' }) {
   return { value: parsed, exception: null };
 }
 
-function chooseAssetCode(row, headerMap) {
-  for (const alias of HEADER_ALIASES.assetCode) {
-    const value = readAlias(row, headerMap, [alias]);
-    if (!isPlaceholder(value)) return textValue(value, 500);
+function parseQuantity(value, { field }) {
+  if (value === null || value === undefined || textValue(value) === '') {
+    return { value: null, embeddedUnit: '', exception: null };
   }
-  return '';
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return { value, embeddedUnit: '', exception: null };
+  }
+  const text = textValue(value, 200).replace(/,/g, '');
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    return { value: Number(text), embeddedUnit: '', exception: null };
+  }
+  const embedded = /^(\d+(?:\.\d+)?)\s*(\D.+|\D)$/.exec(text);
+  if (embedded) {
+    const parsed = Number(embedded[1]);
+    const embeddedUnit = textValue(embedded[2], 50);
+    return {
+      value: parsed,
+      embeddedUnit,
+      exception: buildException({
+        field,
+        exceptionType: 'QUANTITY_UNIT_EMBEDDED',
+        severity: 'WARNING',
+        originalValue: value,
+        suggestedValue: parsed,
+        message: `Quantity contains an embedded unit: ${embeddedUnit}`
+      })
+    };
+  }
+  const exceptionType = field === 'bookQuantity'
+    ? 'BOOK_QUANTITY_INVALID'
+    : 'PHYSICAL_QUANTITY_INVALID';
+  return {
+    value: null,
+    embeddedUnit: '',
+    exception: buildException({
+      field,
+      exceptionType,
+      originalValue: value,
+      suggestedValue: null
+    })
+  };
 }
 
 function canonicalCategory(sheetName, explicitCategory) {
@@ -327,11 +517,49 @@ function isFooterRow(row) {
   return row.some((value) => /盘点人|分部经理|部门副经理|部门经理\/日期/.test(textValue(value)));
 }
 
-function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
+function mergedSourceCells({ worksheet, headerRow, rowNumber }) {
+  const zeroBasedRow = rowNumber - 1;
+  return (worksheet['!merges'] || [])
+    .filter((range) => (
+      range.s.r !== range.e.r && zeroBasedRow >= range.s.r && zeroBasedRow <= range.e.r
+    ))
+    .map((range) => {
+      const anchor = worksheet['!data']?.[range.s.r]?.[range.s.c];
+      return {
+        range: XLSX.utils.encode_range(range),
+        header: textValue(headerRow[range.s.c], 100),
+        column: XLSX.utils.encode_col(range.s.c),
+        columnIndex: range.s.c,
+        anchorRowNumber: range.s.r + 1,
+        rawValue: anchor?.v ?? null,
+        displayValue: textValue(anchor?.w, 500)
+      };
+    });
+}
+
+function parseDataRow({
+  row,
+  rowNumber,
+  headerRow,
+  headerMap,
+  sheetName,
+  worksheet,
+  mergedCells = []
+}) {
+  row = [...row];
+  for (const mergedCell of mergedCells) {
+    if (row[mergedCell.columnIndex] === null || row[mergedCell.columnIndex] === undefined) {
+      row[mergedCell.columnIndex] = mergedCell.rawValue;
+    }
+  }
   if (isFooterRow(row)) return null;
   const name = textValue(readAlias(row, headerMap, HEADER_ALIASES.name), 500);
   const sequence = readAlias(row, headerMap, HEADER_ALIASES.sequence);
-  const assetCode = chooseAssetCode(row, headerMap);
+  const sourceAssetCode = textValue(
+    readAlias(row, headerMap, HEADER_ALIASES.assetCode),
+    500
+  );
+  const assetCode = isPlaceholder(sourceAssetCode) ? '' : sourceAssetCode;
   if (!name && !assetCode && (sequence === null || sequence === undefined || sequence === '')) {
     return null;
   }
@@ -359,29 +587,43 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
       originalValue: name
     }));
   }
+  for (const mergedCell of mergedCells) {
+    const isAssetCode = HEADER_ALIASES.assetCode.some((alias) => (
+      normalizeHeader(alias) === normalizeHeader(mergedCell.header)
+    ));
+    exceptions.push(buildException({
+      field: isAssetCode ? 'assetCode' : '_source',
+      exceptionType: 'MERGED_SOURCE_CELL',
+      severity: isAssetCode ? 'ERROR' : 'WARNING',
+      originalValue: mergedCell,
+      message: `Source cell ${mergedCell.range} spans multiple equipment rows and requires confirmation`
+    }));
+  }
 
   const categoryName = canonicalCategory(
     sheetName,
     readAlias(row, headerMap, HEADER_ALIASES.category)
   );
+  const assetType = ASSET_TYPE_BY_SHEET[textValue(sheetName, 100)] || textValue(sheetName, 100);
   const orgUnitName = textValue(readAlias(row, headerMap, HEADER_ALIASES.orgUnit), 200);
   const custodianName = textValue(readAlias(row, headerMap, HEADER_ALIASES.custodian), 200);
-  const quantityResult = parseNumber(
+  const quantityResult = parseQuantity(
     readAlias(row, headerMap, HEADER_ALIASES.quantity),
-    { fallback: 1, field: 'quantity' }
+    { field: 'physicalQuantity' }
   );
   if (quantityResult.exception) exceptions.push(quantityResult.exception);
-  const accountQuantityResult = parseNumber(
+  const accountQuantityResult = parseQuantity(
     readAlias(row, headerMap, HEADER_ALIASES.accountQuantity),
-    { fallback: null, field: 'accountQuantity', severity: 'WARNING' }
+    { field: 'bookQuantity' }
   );
   if (accountQuantityResult.exception) exceptions.push(accountQuantityResult.exception);
   if (
     accountQuantityResult.value !== null &&
+    quantityResult.value !== null &&
     quantityResult.value !== accountQuantityResult.value
   ) {
     exceptions.push(buildException({
-      field: 'quantity',
+      field: 'physicalQuantity',
       exceptionType: 'QUANTITY_MISMATCH',
       severity: 'WARNING',
       originalValue: {
@@ -391,19 +633,52 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
       suggestedValue: quantityResult.value
     }));
   }
-  if (quantityResult.value > 1 || /[\/～~至]/.test(assetCode)) {
+  const compatibilityQuantity = quantityResult.value ?? accountQuantityResult.value ?? 1;
+  if (compatibilityQuantity > 1 || /[\/～~至]/.test(assetCode)) {
     exceptions.push(buildException({
       field: 'quantity',
       exceptionType: 'MULTI_ASSET_ROW',
       severity: 'WARNING',
-      originalValue: { assetCode, quantity: quantityResult.value }
+      originalValue: { assetCode, quantity: compatibilityQuantity }
     }));
   }
 
-  const acquisitionResult = parseDateValue(
-    readAlias(row, headerMap, HEADER_ALIASES.acquisitionDate)
+  const activationMetadata = readCellMetadata(
+    worksheet,
+    rowNumber,
+    headerMap,
+    HEADER_ALIASES.acquisitionDate
   );
-  if (acquisitionResult.exception) exceptions.push(acquisitionResult.exception);
+  const activationResult = parseSourceDateValue(
+    readAlias(row, headerMap, HEADER_ALIASES.acquisitionDate),
+    { field: 'acquisitionDate', ...activationMetadata }
+  );
+  if (activationResult.exception) exceptions.push(activationResult.exception);
+  const acquisitionDate = activationResult.precision === EquipmentAsset.DATE_PRECISIONS.DAY
+    ? activationResult.value
+    : null;
+  const productionMetadata = readCellMetadata(
+    worksheet,
+    rowNumber,
+    headerMap,
+    HEADER_ALIASES.productionDate
+  );
+  const productionResult = parseSourceDateValue(
+    readAlias(row, headerMap, HEADER_ALIASES.productionDate),
+    { field: 'productionDate', ...productionMetadata }
+  );
+  if (productionResult.exception) exceptions.push(productionResult.exception);
+  const idlePlacedMetadata = readCellMetadata(
+    worksheet,
+    rowNumber,
+    headerMap,
+    HEADER_ALIASES.idlePlacedAt
+  );
+  const idlePlacedResult = parseSourceDateValue(
+    readAlias(row, headerMap, HEADER_ALIASES.idlePlacedAt),
+    { field: 'idlePlacedAt', ...idlePlacedMetadata }
+  );
+  if (idlePlacedResult.exception) exceptions.push(idlePlacedResult.exception);
   const originalValueResult = parseNumber(
     readAlias(row, headerMap, HEADER_ALIASES.originalValue),
     { fallback: null, field: 'originalValue' }
@@ -416,7 +691,7 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
   if (statusResult.exception) exceptions.push(statusResult.exception);
 
   const rawUnit = textValue(readAlias(row, headerMap, HEADER_ALIASES.unit), 100);
-  let unit = rawUnit;
+  let unit = rawUnit || quantityResult.embeddedUnit || accountQuantityResult.embeddedUnit;
   if (/部$/.test(rawUnit) || rawUnit === '变速箱物流部') {
     const suggestedUnit = /运输|装卸/.test(categoryName) ? '辆' : '台';
     exceptions.push(buildException({
@@ -429,8 +704,17 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
     unit = rawUnit;
   }
 
-  const formulas = Object.values(rawValuesForRow(row, headerRow))
+  const sourceRawValues = rawValuesForRow(row, headerRow);
+  for (const mergedCell of mergedCells) {
+    if (mergedCell.header && mergedCell.displayValue) {
+      sourceRawValues[`__display_${mergedCell.header}`] = mergedCell.displayValue;
+    }
+  }
+  const formulas = Object.values(sourceRawValues)
     .filter((value) => typeof value === 'string' && /DISPIMG\s*\(/i.test(value));
+  const sourceImageRefs = [...new Set(formulas.flatMap((formula) => (
+    [...formula.matchAll(/DISPIMG\s*\(\s*["']([^"']+)["']/gi)].map((match) => match[1])
+  )))];
   if (formulas.length > 0) {
     exceptions.push(buildException({
       field: '_photos',
@@ -445,33 +729,68 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
     readAlias(row, headerMap, HEADER_ALIASES.specification),
     500
   );
-  const extraSpecification = readAllAliases(
-    row,
-    headerMap,
-    HEADER_ALIASES.extraSpecification
-  ).map((value) => textValue(value, 100)).filter(Boolean);
   const remarks = readAllAliases(row, headerMap, HEADER_ALIASES.remark)
     .map((value) => textValue(value, 1000))
     .filter((value) => value && !/DISPIMG\s*\(/i.test(value));
-  if (extraSpecification.length > 0) {
-    remarks.unshift(`补充规格: ${extraSpecification.join(' / ')}`);
-  }
+
+  const dataQuality = {
+    source: 'EXCEL_IMPORT',
+    photoMappingStatus: sourceImageRefs.length > 0
+      ? 'PENDING_WPS_CELL_IMAGE'
+      : 'UNVERIFIED',
+    exceptionTypes: [...new Set(exceptions.map(({ exceptionType }) => exceptionType))],
+    mergedSourceRanges: [...new Set(mergedCells.map(({ range }) => range))],
+    mergedSourceCells: mergedCells.map((cell) => ({ ...cell }))
+  };
 
   return {
     sheetName,
     rowNumber,
-    rawAssetCode: assetCode,
-    rawValues: rawValuesForRow(row, headerRow),
+    rawAssetCode: sourceAssetCode,
+    rawValues: sourceRawValues,
     candidate: {
       assetCode,
+      sourceAssetCode,
+      sourceSequence: textValue(sequence, 100),
+      assetType,
+      sourceSheetName: textValue(sheetName, 100),
+      sourceRowNumber: rowNumber,
+      sourceRawValues,
+      sourceImageRefs,
+      productCode: textValue(readAlias(row, headerMap, HEADER_ALIASES.productCode), 500),
+      plateNumber: textValue(readAlias(row, headerMap, HEADER_ALIASES.plateNumber), 100),
+      serialNumber: textValue(readAlias(row, headerMap, HEADER_ALIASES.serialNumber), 500),
+      brandSerialNumber: textValue(
+        readAlias(row, headerMap, HEADER_ALIASES.brandSerialNumber),
+        500
+      ),
       name,
       categoryId: textValue(readAlias(row, headerMap, HEADER_ALIASES.categoryId), 100) || null,
       categoryName,
       specification,
       manufacturer: textValue(readAlias(row, headerMap, HEADER_ALIASES.manufacturer), 200),
-      quantity: quantityResult.value,
+      brand: textValue(readAlias(row, headerMap, HEADER_ALIASES.brand), 200),
+      vehicleLength: textValue(readAlias(row, headerMap, HEADER_ALIASES.vehicleLength), 100),
+      ratedCapacityText: textValue(
+        readAlias(row, headerMap, HEADER_ALIASES.ratedCapacityText),
+        100
+      ),
+      quantity: compatibilityQuantity,
+      bookQuantity: accountQuantityResult.value,
+      physicalQuantity: quantityResult.value,
       unit,
-      acquisitionDate: acquisitionResult.value,
+      acquisitionDate,
+      productionDate: productionResult.value,
+      productionDatePrecision: productionResult.precision,
+      productionDateRaw: productionResult.raw,
+      productionDateDisplay: productionResult.display,
+      activationDate: activationResult.value,
+      activationDatePrecision: activationResult.precision,
+      activationDateRaw: activationResult.raw,
+      activationDateDisplay: activationResult.display,
+      idlePlacedAt: idlePlacedResult.value,
+      idlePlacedAtRaw: idlePlacedResult.raw,
+      idlePlacedAtDisplay: idlePlacedResult.display,
       originalValue: originalValueResult.value,
       orgUnitId: textValue(readAlias(row, headerMap, HEADER_ALIASES.orgUnitId), 100) || null,
       orgUnitName,
@@ -480,9 +799,22 @@ function parseDataRow({ row, rowNumber, headerRow, headerMap, sheetName }) {
         100
       ) || null,
       custodianName,
+      custodianDisplayName: custodianName,
+      orgUnitNameSnapshot: orgUnitName,
       location: textValue(readAlias(row, headerMap, HEADER_ALIASES.location), 500),
       status: statusResult.value,
-      remark: remarks.join('\n').slice(0, 2000)
+      conditionText: textValue(readAlias(row, headerMap, HEADER_ALIASES.condition), 200),
+      forkliftPosition: textValue(
+        readAlias(row, headerMap, HEADER_ALIASES.forkliftPosition),
+        100
+      ),
+      environmentalRegistrationCode: textValue(
+        readAlias(row, headerMap, HEADER_ALIASES.environmentalRegistrationCode),
+        200
+      ),
+      remark: remarks.join('\n').slice(0, 2000),
+      photoFileIds: [],
+      dataQuality
     },
     exceptions
   };
@@ -494,8 +826,9 @@ function parseEquipmentWorkbook(buffer) {
   }
   const workbook = XLSX.read(buffer, {
     type: 'buffer',
-    cellDates: true,
+    cellDates: false,
     cellFormula: true,
+    cellNF: true,
     dense: true,
     sheetRows: MAX_IMPORT_ROWS + 22
   });
@@ -507,12 +840,7 @@ function parseEquipmentWorkbook(buffer) {
   const sheetErrors = [];
   for (const sheetName of workbook.SheetNames) {
     const worksheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(worksheet, {
-      header: 1,
-      defval: null,
-      raw: true,
-      blankrows: false
-    });
+    const rows = worksheetRawRows(worksheet);
     if (rows.length === 0) continue;
     const headerIndex = locateHeaderRow(rows);
     if (headerIndex < 0) {
@@ -527,7 +855,13 @@ function parseEquipmentWorkbook(buffer) {
         rowNumber: headerIndex + index + 2,
         headerRow,
         headerMap,
-        sheetName
+        sheetName,
+        worksheet,
+        mergedCells: mergedSourceCells({
+          worksheet,
+          headerRow,
+          rowNumber: headerIndex + index + 2
+        })
       });
       if (parsed) parsedRows.push(parsed);
     });
@@ -546,7 +880,8 @@ function parseEquipmentWorkbook(buffer) {
   return {
     sheetNames: [...workbook.SheetNames],
     rows: parsedRows,
-    sheetErrors
+    sheetErrors,
+    workbook
   };
 }
 
@@ -558,5 +893,6 @@ module.exports = {
   normalizeHeader,
   parseDateValue,
   parseEquipmentWorkbook,
+  parseSourceDateValue,
   textValue
 };

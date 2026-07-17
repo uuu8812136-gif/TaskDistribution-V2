@@ -35,6 +35,24 @@
         </view>
         <text class="module-arrow">〉</text>
       </view>
+
+      <view v-if="canViewAttendance || canSubmitAttendance" class="module-row" @click="openAttendance">
+        <view class="module-icon attendance-icon">勤</view>
+        <view class="module-copy">
+          <text class="module-title">出勤日报</text>
+          <text class="module-meta">分部填报、部门汇总与审核</text>
+        </view>
+        <text class="module-arrow">〉</text>
+      </view>
+
+      <view v-if="canViewDailyReport" class="module-row" @click="openDailyReport">
+        <view class="module-icon daily-report-icon">报</view>
+        <view class="module-copy">
+          <text class="module-title">生产日报</text>
+          <text class="module-meta">生成记录与来源追溯</text>
+        </view>
+        <text class="module-arrow">〉</text>
+      </view>
     </view>
 
     <view v-else class="empty-state">
@@ -71,8 +89,19 @@ export default {
       teamRequired: true
     }))
     const canViewSchedule = computed(() => userStore.can('report.view'))
+    const canViewAttendance = computed(() => userStore.can('report.view'))
+    const canViewDailyReport = computed(() => userStore.can('report.view'))
+    const canSubmitAttendance = computed(() => userStore.can('report.submit', {
+      write: true,
+      teamRequired: true
+    }))
     const canUseReporting = computed(() => (
-      canViewTransport.value || canSubmitTransport.value || canViewSchedule.value
+      canViewTransport.value ||
+      canSubmitTransport.value ||
+      canViewSchedule.value ||
+      canViewAttendance.value ||
+      canViewDailyReport.value ||
+      canSubmitAttendance.value
     ))
 
     onShow(() => {
@@ -114,6 +143,16 @@ export default {
       uni.navigateTo({ url: `/pages/reporting/schedule${teamQuery()}` })
     }
 
+    const openAttendance = () => {
+      if (!requireGlobalTeam()) return
+      uni.navigateTo({ url: `/pages/reporting/attendance${teamQuery()}` })
+    }
+
+    const openDailyReport = () => {
+      if (!requireGlobalTeam()) return
+      uni.navigateTo({ url: `/pages/reporting/daily-report${teamQuery()}` })
+    }
+
     return {
       userStore,
       teamOptions,
@@ -122,10 +161,15 @@ export default {
       canViewTransport,
       canSubmitTransport,
       canViewSchedule,
+      canViewAttendance,
+      canViewDailyReport,
+      canSubmitAttendance,
       canUseReporting,
       onTeamChange,
       openTransport,
-      openSchedule
+      openSchedule,
+      openAttendance,
+      openDailyReport
     }
   }
 }
@@ -184,6 +228,8 @@ export default {
 }
 .transport-icon { background: var(--zl-primary, #4096ff); }
 .schedule-icon { background: var(--zl-success, #52c41a); }
+.attendance-icon { background: var(--zl-warning, #e6a23c); }
+.daily-report-icon { background: #13a8a8; }
 .module-copy { flex: 1; min-width: 0; margin-left: 24rpx; }
 .module-title { display: block; font-size: 30rpx; color: var(--zl-text, #1f2733); font-weight: 600; }
 .module-meta { display: block; margin-top: 8rpx; font-size: 24rpx; color: var(--zl-muted, #64748b); }

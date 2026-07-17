@@ -79,20 +79,41 @@ const IMPORT_DECISION_LABELS = Object.freeze({
 })
 
 const IMPORT_FIELD_LABELS = Object.freeze({
+  sourceSequence: '序号',
+  assetType: '资产类型',
   assetCode: '资产编号',
+  sourceAssetCode: '原资产编号',
   name: '设备名称',
+  productCode: '产品编码/SN/PN',
+  plateNumber: '车牌号',
+  serialNumber: '序列号',
+  brandSerialNumber: '品牌编号',
+  brand: '品牌',
   categoryId: '设备分类',
   specification: '规格型号',
   manufacturer: '生产厂家',
+  vehicleLength: '车长',
+  ratedCapacityText: '吨位/额定载重',
   quantity: '数量',
+  bookQuantity: '账存数量',
+  physicalQuantity: '实盘数量',
   unit: '单位',
   acquisitionDate: '购置日期',
+  productionDate: '出厂日期',
+  activationDate: '启用日期',
+  idlePlacedAt: '闲置时间',
   originalValue: '原值',
   orgUnitId: '所属组织',
+  orgUnitNameSnapshot: '所在部室',
   custodianUserId: '保管人',
+  custodianDisplayName: '使用人',
   location: '存放地点',
+  forkliftPosition: '高低位',
+  environmentalRegistrationCode: '叉车环保编号',
+  conditionText: '原表状态',
   status: '设备状态',
   remark: '备注',
+  photoFileIds: '设备照片',
   sourceRow: '原始行'
 })
 
@@ -273,7 +294,7 @@ export function buildRoutineRulePayload(form) {
     throw new TypeError('status is invalid')
   }
 
-  const payload = {
+    const payload = {
     routineType,
     categoryId: String(form.categoryId || ''),
     name: String(form.name || '').trim(),
@@ -281,8 +302,47 @@ export function buildRoutineRulePayload(form) {
     checklistItems,
     schedule: buildRoutineSchedule(form.schedule),
     photoPolicy: form.photoPolicy,
-    abnormalNoteRequired: form.abnormalNoteRequired !== false
-  }
+      abnormalNoteRequired: form.abnormalNoteRequired !== false
+    }
+    if (form.executionConfig) {
+      const windows = (form.executionConfig.windows || [])
+        .map((window) => ({
+          key: String(window.key || '').trim().toUpperCase(),
+          name: String(window.name || '').trim(),
+          startTime: String(window.startTime || ''),
+          endTime: String(window.endTime || ''),
+          enabled: window.enabled !== false
+        }))
+      if (!windows.length || windows.some((window) => (
+        !window.key || !window.name || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.startTime) ||
+        !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.endTime)
+      ))) {
+        throw new TypeError('Execution windows require a name and HH:mm start/end time')
+      }
+      if (!windows.some((window) => window.enabled)) {
+        throw new TypeError('At least one execution window must be enabled')
+      }
+      const locationPolicy = String(form.executionConfig.locationPolicy || 'PENDING_CONFIRMATION')
+      if (!['PENDING_CONFIRMATION', 'OPTIONAL', 'REQUIRED'].includes(locationPolicy)) {
+        throw new TypeError('locationPolicy is invalid')
+      }
+      const precisionSource = form.executionConfig.locationPrecisionMeters
+      const locationPrecisionMeters = precisionSource === '' || precisionSource == null
+        ? null
+        : Number(precisionSource)
+      if (locationPrecisionMeters !== null && (!Number.isFinite(locationPrecisionMeters) || locationPrecisionMeters < 1)) {
+        throw new TypeError('locationPrecisionMeters must be a positive number')
+      }
+      payload.executionConfig = {
+        timeZone: String(form.executionConfig.timeZone || 'Asia/Shanghai'),
+        windows,
+        weeklyDay: Number(form.executionConfig.weeklyDay || 1),
+        monthlyDay: Number(form.executionConfig.monthlyDay || 1),
+        inspectionEscalationMinutes: Number(form.executionConfig.inspectionEscalationMinutes || 60),
+        locationPolicy,
+        locationPrecisionMeters
+      }
+    }
   if (!payload.categoryId || !payload.name) {
     throw new TypeError('categoryId and name are required')
   }
@@ -358,9 +418,22 @@ export function buildRoutineRecordPayload(form) {
     }
     payload.runtimeHours = runtimeHours
   }
-  if (form.idempotencyKey) payload.idempotencyKey = String(form.idempotencyKey)
-  return payload
-}
+    if (form.idempotencyKey) payload.idempotencyKey = String(form.idempotencyKey)
+    if (form.planId) payload.planId = String(form.planId)
+    if (Array.isArray(form.photoEvidence)) {
+      payload.photoEvidence = form.photoEvidence.map((evidence) => ({
+        fileId: String(evidence.fileId || ''),
+        sourceType: 'CAMERA',
+        capturedAt: evidence.capturedAt || null,
+        locationStatus: evidence.locationStatus || 'PENDING_CONFIRMATION',
+        longitude: evidence.longitude ?? null,
+        latitude: evidence.latitude ?? null,
+        accuracyMeters: evidence.accuracyMeters ?? null,
+        address: String(evidence.address || '').trim()
+      }))
+    }
+    return payload
+  }
 
 export function buildRuntimeReadingPayload(form) {
   const hours = Number(form.hours)

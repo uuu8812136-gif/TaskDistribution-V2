@@ -53,6 +53,100 @@
       <section class="form-section">
         <div class="section-heading">
           <div>
+            <h3>执行窗口与提醒</h3>
+            <p>白班、夜班、每周执行日和每月执行日均可维护，不作为固定常量。</p>
+          </div>
+          <el-button v-if="!readOnly && form.executionConfig.windows.length < 8" @click="addExecutionWindow">
+            <el-icon><Plus /></el-icon>
+            添加窗口
+          </el-button>
+        </div>
+        <div class="window-editor">
+          <div
+            v-for="(window, index) in form.executionConfig.windows"
+            :key="window._localKey"
+            class="window-row"
+          >
+            <el-switch v-model="window.enabled" aria-label="启用执行窗口" />
+            <el-input v-model="window.name" maxlength="100" placeholder="窗口名称" />
+            <el-time-picker
+              v-model="window.startTime"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="开始"
+              class="window-time"
+            />
+            <el-time-picker
+              v-model="window.endTime"
+              format="HH:mm"
+              value-format="HH:mm"
+              placeholder="结束"
+              class="window-time"
+            />
+            <el-button
+              v-if="!readOnly"
+              text
+              circle
+              type="danger"
+              :disabled="form.executionConfig.windows.length === 1"
+              aria-label="删除执行窗口"
+              @click="removeExecutionWindow(index)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+        <div class="form-grid execution-grid">
+          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'WEEK'" label="每周执行日">
+            <el-select v-model="form.executionConfig.weeklyDay" class="full-width">
+              <el-option v-for="day in weekDayOptions" :key="day.value" :label="day.label" :value="day.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'MONTH'" label="每月执行日">
+            <el-input-number v-model="form.executionConfig.monthlyDay" :min="1" :max="31" :precision="0" class="full-width" />
+          </el-form-item>
+          <el-form-item v-if="form.routineType === 'INSPECTION'" label="二次升级等待（分钟）">
+            <el-input-number
+              v-model="form.executionConfig.inspectionEscalationMinutes"
+              :min="1"
+              :max="10080"
+              :precision="0"
+              class="full-width"
+            />
+          </el-form-item>
+          <el-form-item label="现场定位策略">
+            <el-select v-model="form.executionConfig.locationPolicy" class="full-width">
+              <el-option label="待客户确认（记录状态，不拦截）" value="PENDING_CONFIRMATION" />
+              <el-option label="可选定位" value="OPTIONAL" />
+              <el-option label="必须取得定位" value="REQUIRED" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="form.executionConfig.locationPolicy === 'REQUIRED'" label="最大定位误差（米）">
+            <el-input-number
+              v-model="form.executionConfig.locationPrecisionMeters"
+              :min="1"
+              :max="100000"
+              :precision="0"
+              clearable
+              class="full-width"
+            />
+          </el-form-item>
+          <el-form-item label="时区">
+            <el-input v-model="form.executionConfig.timeZone" maxlength="64" />
+          </el-form-item>
+        </div>
+        <el-alert
+          v-if="form.executionConfig.locationPolicy === 'PENDING_CONFIRMATION'"
+          title="地点精度、拒绝定位和无法定位时是否允许提交仍待客户确认；当前保存真实授权状态和水印文本，但不阻止提交。"
+          type="warning"
+          :closable="false"
+          show-icon
+        />
+      </section>
+
+      <section class="form-section">
+        <div class="section-heading">
+          <div>
             <h3>检查项目</h3>
             <p>同一规则内的项目使用相同周期，执行时逐项填写结果。</p>
           </div>
@@ -259,6 +353,15 @@ const duePolicyOptions = ROUTINE_DUE_POLICY_OPTIONS.map((item) => ({
   label: item.value === 'ANY' ? '任一到期' : '全部到期',
   value: item.value
 }))
+const weekDayOptions = [
+  { value: 1, label: '周一' },
+  { value: 2, label: '周二' },
+  { value: 3, label: '周三' },
+  { value: 4, label: '周四' },
+  { value: 5, label: '周五' },
+  { value: 6, label: '周六' },
+  { value: 7, label: '周日' }
+]
 const usesCalendar = computed(() => ['CALENDAR', 'COMBINED'].includes(form.schedule.mode))
 const usesRuntime = computed(() => ['RUNTIME_HOURS', 'COMBINED'].includes(form.schedule.mode))
 const calendarIntervalLabel = computed(() => ({
@@ -301,6 +404,22 @@ function defaultFirstDueAt() {
   return value
 }
 
+function createExecutionWindow(source = {}, index = 0) {
+  localKeySequence += 1
+  const defaults = index === 0
+    ? { key: 'DAY_SHIFT', name: '白班', startTime: '07:00', endTime: '09:00' }
+    : { key: 'NIGHT_SHIFT', name: '夜班', startTime: '19:00', endTime: '21:00' }
+  const key = source.key || defaults.key || `CUSTOM_${index + 1}`
+  return {
+    _localKey: `window-${localKeySequence}`,
+    key,
+    name: source.name || defaults.name || `窗口${index + 1}`,
+    startTime: source.startTime || defaults.startTime || '07:00',
+    endTime: source.endTime || defaults.endTime || '09:00',
+    enabled: source.enabled !== false
+  }
+}
+
 function emptyForm() {
   return {
     routineType: props?.routineType || 'INSPECTION',
@@ -316,6 +435,15 @@ function emptyForm() {
     },
     photoPolicy: 'ON_ABNORMAL',
     abnormalNoteRequired: true,
+    executionConfig: {
+      timeZone: 'Asia/Shanghai',
+      windows: [createExecutionWindow({}, 0), createExecutionWindow({}, 1)],
+      weeklyDay: 1,
+      monthlyDay: 1,
+      inspectionEscalationMinutes: 60,
+      locationPolicy: 'PENDING_CONFIRMATION',
+      locationPrecisionMeters: null
+    },
     status: 'ACTIVE'
   }
 }
@@ -347,6 +475,20 @@ function resetForm() {
       },
       photoPolicy: source.photoPolicy || 'NONE',
       abnormalNoteRequired: source.abnormalNoteRequired !== false,
+      executionConfig: {
+        timeZone: source.executionConfig?.timeZone || 'Asia/Shanghai',
+        windows: (source.executionConfig?.windows?.length
+          ? source.executionConfig.windows
+          : [
+              { key: 'DAY_SHIFT', name: '白班', startTime: '07:00', endTime: '09:00' },
+              { key: 'NIGHT_SHIFT', name: '夜班', startTime: '19:00', endTime: '21:00' }
+            ]).map(createExecutionWindow),
+        weeklyDay: source.executionConfig?.weeklyDay || 1,
+        monthlyDay: source.executionConfig?.monthlyDay || 1,
+        inspectionEscalationMinutes: source.executionConfig?.inspectionEscalationMinutes || 60,
+        locationPolicy: source.executionConfig?.locationPolicy || 'PENDING_CONFIRMATION',
+        locationPrecisionMeters: source.executionConfig?.locationPrecisionMeters ?? null
+      },
       status: props.copy ? 'ACTIVE' : source.status || 'ACTIVE'
     })
     if (!form.checklistItems.length) form.checklistItems.push(createChecklistItem())
@@ -368,6 +510,20 @@ function moveItem(index, direction) {
 
 function handleScheduleModeChange(mode) {
   if (mode === 'COMBINED' && !form.schedule.duePolicy) form.schedule.duePolicy = 'ANY'
+}
+
+function addExecutionWindow() {
+  const index = form.executionConfig.windows.length
+  form.executionConfig.windows.push(createExecutionWindow({
+    key: `CUSTOM_${index + 1}`,
+    name: `窗口${index + 1}`,
+    startTime: '07:00',
+    endTime: '09:00'
+  }, index))
+}
+
+function removeExecutionWindow(index) {
+  if (form.executionConfig.windows.length > 1) form.executionConfig.windows.splice(index, 1)
 }
 
 async function submitForm() {
@@ -424,11 +580,17 @@ watch(() => props.modelValue, (visible) => {
 .item-actions { display: grid; grid-template-columns: repeat(3, 32px); justify-content: end; gap: 2px; }
 .item-actions .el-button { width: 32px; height: 32px; margin: 0; }
 .schedule-grid { align-items: end; }
+.window-editor { display: grid; gap: 8px; margin-bottom: 16px; }
+.window-row { display: grid; grid-template-columns: 44px minmax(120px, 1fr) 160px 160px 34px; align-items: center; gap: 8px; }
+.window-time { width: 100%; }
+.execution-grid { align-items: end; }
 @media (max-width: 760px) {
   .form-grid { grid-template-columns: 1fr; }
   .span-full { grid-column: auto; }
   .section-heading { align-items: stretch; flex-direction: column; }
   .add-checklist-button { width: 100%; }
   .checklist-editor { overflow-x: auto; }
+  .window-row { grid-template-columns: 40px minmax(110px, 1fr) 1fr; }
+  .window-row .window-time { grid-column: span 1; }
 }
 </style>

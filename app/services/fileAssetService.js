@@ -7,11 +7,17 @@ const mongoose = require('mongoose');
 const FileAsset = require('../models/FileAsset');
 const Task = require('../models/Task');
 const TransportRecord = require('../models/TransportRecord');
+const EquipmentAsset = require('../models/EquipmentAsset');
+const ImportJob = require('../models/ImportJob');
 const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
+const EquipmentRepairOrder = require('../models/EquipmentRepairOrder');
+const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
+const InventoryItem = require('../models/InventoryItem');
 const ProjectTeam = require('../models/ProjectTeam');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
+  DATA_SCOPES,
   DATA_SCOPE_MODULES,
   SESSION_MODES,
   TEAM_STATUSES
@@ -37,6 +43,7 @@ const {
   assertBusinessContext,
   assertPermission,
   assertTeamContext,
+  resolveModuleDataScope,
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
@@ -47,8 +54,14 @@ const TEMPORARY_UPLOAD_PERMISSIONS = Object.freeze([
   'task.edit',
   'task.review',
   'report.submit',
+  'equipment.create',
+  'equipment.edit',
+  'equipment.import',
+  'equipment.inventory',
   'equipment.inspect',
-  'equipment.maintain'
+  'equipment.repair',
+  'equipment.maintain',
+  'equipment.status.apply'
 ]);
 const OWNER_ACCESS_POLICIES = Object.freeze({
   [FILE_OWNER_TYPES.TASK]: Object.freeze({
@@ -75,6 +88,30 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     readPermission: 'report.view',
     writePermission: 'report.submit'
   }),
+  [FILE_OWNER_TYPES.EQUIPMENT]: Object.freeze({
+    resourceModel: 'EQUIPMENT_ASSET',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.view',
+    writePermission: 'equipment.edit'
+  }),
+  [FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE]: Object.freeze({
+    resourceModel: 'IMPORT_JOB',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.import',
+    writePermission: 'equipment.import'
+  }),
+  [FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA]: Object.freeze({
+    resourceModel: 'IMPORT_JOB',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.import',
+    writePermission: 'equipment.import'
+  }),
+  [FILE_OWNER_TYPES.INVENTORY]: Object.freeze({
+    resourceModel: 'INVENTORY_ITEM',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.inventory',
+    writePermission: 'equipment.inventory'
+  }),
   [FILE_OWNER_TYPES.INSPECTION]: Object.freeze({
     resourceModel: 'EQUIPMENT_ROUTINE_RECORD',
     moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
@@ -82,14 +119,35 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     writePermission: 'equipment.inspect',
     userFilter: Object.freeze({ routineType: 'INSPECTION' })
   }),
+  [FILE_OWNER_TYPES.REPAIR]: Object.freeze({
+    resourceModel: 'EQUIPMENT_REPAIR_ORDER',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.view',
+    writePermission: 'equipment.repair'
+  }),
   [FILE_OWNER_TYPES.MAINTENANCE]: Object.freeze({
     resourceModel: 'EQUIPMENT_ROUTINE_RECORD',
     moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
     readPermission: 'equipment.view',
     writePermission: 'equipment.maintain',
     userFilter: Object.freeze({ routineType: 'MAINTENANCE' })
+  }),
+  [FILE_OWNER_TYPES.EQUIPMENT_STATUS_APPLICATION]: Object.freeze({
+    resourceModel: 'EQUIPMENT_STATUS_APPLICATION',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.view',
+    writePermission: 'equipment.status.apply'
   })
 });
+const WORKFLOW_MANAGED_OWNER_TYPES = new Set([
+  FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE,
+  FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA,
+  FILE_OWNER_TYPES.INVENTORY,
+  FILE_OWNER_TYPES.INSPECTION,
+  FILE_OWNER_TYPES.REPAIR,
+  FILE_OWNER_TYPES.MAINTENANCE,
+  FILE_OWNER_TYPES.EQUIPMENT_STATUS_APPLICATION
+]);
 const MAX_OWNER_FILES = 10;
 
 class FileAssetError extends Error {
@@ -183,6 +241,16 @@ function normalizeOwnerInput(ownerType, ownerId) {
   }
 }
 
+function assertGenericOwnerMutationAllowed(ownerType) {
+  if (WORKFLOW_MANAGED_OWNER_TYPES.has(ownerType)) {
+    throw fileError(
+      409,
+      'FILE_WORKFLOW_OWNER_MANAGED',
+      'Workflow attachments must be changed through their owning business endpoint'
+    );
+  }
+}
+
 function normalizeAttachmentInput(attachments) {
   if (attachments === undefined || attachments === null) return [];
   if (!Array.isArray(attachments) || attachments.length > MAX_OWNER_FILES) {
@@ -254,7 +322,12 @@ function createFileAssetService({
   FileAssetModel = FileAsset,
   TaskModel = Task,
   TransportRecordModel = TransportRecord,
+  EquipmentAssetModel = EquipmentAsset,
+  ImportJobModel = ImportJob,
   EquipmentRoutineRecordModel = EquipmentRoutineRecord,
+  EquipmentRepairOrderModel = EquipmentRepairOrder,
+  EquipmentStatusApplicationModel = EquipmentStatusApplication,
+  InventoryItemModel = InventoryItem,
   ProjectTeamModel = ProjectTeam,
   auditService = createAuditService(),
   connection = mongoose.connection
@@ -313,19 +386,38 @@ function createFileAssetService({
     const policy = OWNER_ACCESS_POLICIES[ownerType];
     if (!policy) throw notFound();
     assertPermission(authContext, write ? policy.writePermission : policy.readPermission);
-    const ownerFilter = buildScopedDetailFilter({
-      authContext,
-      moduleKey: policy.moduleKey,
-      id: ownerId,
-      userFilter: policy.userFilter || {},
-      globalTeamId: teamId,
-      method
-    });
+    let ownerFilter;
+    if (policy.resourceModel === 'IMPORT_JOB') {
+      ownerFilter = { _id: normalizeObjectId(ownerId, 'ownerId'), teamId };
+      if (authContext.mode === SESSION_MODES.TEAM) {
+        const scope = resolveModuleDataScope(authContext, policy.moduleKey);
+        if (scope.scope === DATA_SCOPES.ORG_UNIT) ownerFilter.scopeOrgUnitId = scope.orgUnitId;
+      }
+    } else {
+      ownerFilter = buildScopedDetailFilter({
+        authContext,
+        moduleKey: policy.moduleKey,
+        id: ownerId,
+        userFilter: policy.userFilter || {},
+        globalTeamId: teamId,
+        method
+      });
+    }
     const OwnerModel = policy.resourceModel === 'TRANSPORT_RECORD'
       ? TransportRecordModel
-      : policy.resourceModel === 'EQUIPMENT_ROUTINE_RECORD'
-        ? EquipmentRoutineRecordModel
-        : TaskModel;
+      : policy.resourceModel === 'EQUIPMENT_ASSET'
+        ? EquipmentAssetModel
+        : policy.resourceModel === 'IMPORT_JOB'
+          ? ImportJobModel
+          : policy.resourceModel === 'EQUIPMENT_ROUTINE_RECORD'
+            ? EquipmentRoutineRecordModel
+            : policy.resourceModel === 'EQUIPMENT_REPAIR_ORDER'
+              ? EquipmentRepairOrderModel
+            : policy.resourceModel === 'EQUIPMENT_STATUS_APPLICATION'
+              ? EquipmentStatusApplicationModel
+            : policy.resourceModel === 'INVENTORY_ITEM'
+              ? InventoryItemModel
+            : TaskModel;
     const query = OwnerModel.findOne(ownerFilter).select('_id teamId orgUnitId');
     if (session) query.session(session);
     const owner = await query.lean();
@@ -603,6 +695,8 @@ function createFileAssetService({
 
   async function bindFile({ authContext, req, fileId, ownerType, ownerId }) {
     const normalizedFileId = normalizeFileId(fileId);
+    assertTeamContext(authContext);
+    assertGenericOwnerMutationAllowed(ownerType);
     return runWithOptionalTransaction(async (session) => {
       await reconcileOwnerFiles({
         authContext,
@@ -635,6 +729,7 @@ function createFileAssetService({
       method: 'DELETE',
       write: true
     });
+    assertGenericOwnerMutationAllowed(file.ownerType);
     return runWithOptionalTransaction(async (session) => {
       if (session) file.$session(session);
       const before = auditSnapshot(file);

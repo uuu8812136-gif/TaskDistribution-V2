@@ -6,6 +6,7 @@ const { authenticate, isAdmin, requireTeamContext } = require('../middlewares/au
 
 const router = express.Router();
 
+router.get('/login-teams', authController.listLoginTeams);
 router.post('/login', authController.login);
 router.get('/teams', authenticate, authController.listTeams);
 router.post('/switch-team', authenticate, authController.switchTeam);

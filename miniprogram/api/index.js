@@ -1,7 +1,7 @@
 /**
  * API 接口统一管理
  */
-import { get, post, put, del, upload, download } from '@/utils/request.js'
+import { get, post, put, patch, del, upload, download } from '@/utils/request.js'
 import { managedFileId } from '@/utils/attachments.js'
 
 // ==================== 认证模块 ====================
@@ -12,6 +12,13 @@ import { managedFileId } from '@/utils/attachments.js'
 export const login = (data) => {
   return post('/auth/login', data, { auth: false, contextScoped: false })
 }
+
+export const getLoginTeams = () => get('/auth/login-teams', {}, {
+  auth: false,
+  contextScoped: false,
+  showLoading: false,
+  silentError: true
+})
 
 export const getAccessibleTeams = () => get('/auth/teams')
 
@@ -255,16 +262,36 @@ export const getEquipmentDetail = (equipmentId, params = {}) => {
   return get(`/equipment/${equipmentId}`, params)
 }
 
-export const getEquipmentByQrToken = (qrToken, params = {}) => {
-  return get(`/equipment/qr/${encodeURIComponent(qrToken)}`, params)
+export const getEquipmentByQrToken = (qrToken, params = {}, options = {}) => {
+  return get(`/equipment/qr/${encodeURIComponent(qrToken)}`, params, options)
 }
 
-export const getEquipmentRoutineSchedule = (equipmentId, params = {}) => {
-  return get(`/equipment/${equipmentId}/routine-schedule`, params)
+export const getEquipmentRoutineSchedule = (equipmentId, params = {}, options = {}) => {
+  return get(`/equipment/${equipmentId}/routine-schedule`, params, options)
 }
 
 export const createEquipmentRoutineRecord = (equipmentId, data) => {
   return post(`/equipment/${equipmentId}/routine-records`, data)
+}
+
+export const getEquipmentRoutineRecords = (params = {}) => {
+  return get('/equipment/routine-records', params)
+}
+
+export const getEquipmentRoutinePlans = (params = {}) => {
+  return get('/equipment/routine-plans', params)
+}
+
+export const getEquipmentRoutineExceptions = (params = {}) => {
+  return get('/equipment/routine-exceptions', params)
+}
+
+export const getEquipmentRoutineException = (exceptionId, params = {}) => {
+  return get(`/equipment/routine-exceptions/${exceptionId}`, params)
+}
+
+export const transitionEquipmentRoutineException = (exceptionId, data) => {
+  return post(`/equipment/routine-exceptions/${exceptionId}/actions`, data)
 }
 
 export const getEquipmentRuntimeReadings = (equipmentId, params = {}) => {
@@ -278,6 +305,89 @@ export const createEquipmentRuntimeReading = (equipmentId, data) => {
 export const uploadEquipmentRoutinePhoto = async (file) => {
   const response = await upload('/files', file.path, {
     originalName: file.name || `equipment-${Date.now()}.jpg`
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return fileId
+}
+
+export const getEquipmentRepairs = (params = {}) => {
+  return get('/equipment/repairs', params)
+}
+
+export const getEquipmentRepair = (repairId, params = {}) => {
+  return get(`/equipment/repairs/${repairId}`, params)
+}
+
+export const createEquipmentRepair = (data) => {
+  return post('/equipment/repairs', data)
+}
+
+export const transitionEquipmentRepair = (repairId, data) => {
+  return post(`/equipment/repairs/${repairId}/actions`, data)
+}
+
+export const uploadEquipmentRepairPhoto = async (file) => {
+  const response = await upload('/files', file.path || file.tempFilePath, {
+    originalName: file.name || `repair-${Date.now()}.jpg`
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return fileId
+}
+
+export const getEquipmentInventorySessions = (params = {}) => {
+  return get('/equipment/inventories', params)
+}
+
+export const getEquipmentInventorySession = (inventorySessionId, params = {}) => {
+  return get(`/equipment/inventories/${inventorySessionId}`, params)
+}
+
+export const scanEquipmentInventoryItem = (inventorySessionId, qrToken) => {
+  return post(`/equipment/inventories/${inventorySessionId}/scan`, { qrToken })
+}
+
+export const updateEquipmentInventoryItem = (inventorySessionId, inventoryItemId, data) => {
+  return patch(`/equipment/inventories/${inventorySessionId}/items/${inventoryItemId}`, data)
+}
+
+export const submitEquipmentInventorySession = (inventorySessionId, data) => {
+  return post(`/equipment/inventories/${inventorySessionId}/submit`, data)
+}
+
+export const reviewEquipmentInventorySession = (inventorySessionId, data) => {
+  return post(`/equipment/inventories/${inventorySessionId}/review`, data)
+}
+
+export const uploadEquipmentInventoryPhoto = async (file) => {
+  const response = await upload('/files', file.path || file.tempFilePath, {
+    originalName: file.name || `inventory-${Date.now()}.jpg`
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return fileId
+}
+
+export const getEquipmentStatusApplications = (params = {}) => {
+  return get('/equipment/status-applications', params)
+}
+
+export const getEquipmentStatusApplication = (applicationId, params = {}) => {
+  return get(`/equipment/status-applications/${applicationId}`, params)
+}
+
+export const createEquipmentStatusApplication = (data) => {
+  return post('/equipment/status-applications', data)
+}
+
+export const transitionEquipmentStatusApplication = (applicationId, data) => {
+  return post(`/equipment/status-applications/${applicationId}/actions`, data)
+}
+
+export const uploadEquipmentStatusAttachment = async (file) => {
+  const response = await upload('/files', file.path || file.tempFilePath, {
+    originalName: file.name || `equipment-status-${Date.now()}.jpg`
   })
   const fileId = managedFileId({ fileId: response.file?._id })
   if (!fileId) throw new Error('上传响应缺少有效文件ID')
@@ -342,6 +452,50 @@ export const getDailyProductionSchedules = (slot, params = {}) => {
 
 export const getMonthlyProductionSchedules = (params = {}) => {
   return get('/production-schedules/monthly', params)
+}
+
+export const getAttendanceOptions = (params = {}) => {
+  return get('/attendance-submissions/options', params)
+}
+
+export const getAttendanceSubmissions = (params = {}) => {
+  return get('/attendance-submissions', params)
+}
+
+export const getAttendanceSubmission = (attendanceSubmissionId, params = {}) => {
+  return get(`/attendance-submissions/${attendanceSubmissionId}`, params)
+}
+
+export const createAttendanceSubmission = (data) => {
+  return post('/attendance-submissions', data)
+}
+
+export const updateAttendanceSubmission = (attendanceSubmissionId, data) => {
+  return patch(`/attendance-submissions/${attendanceSubmissionId}`, data)
+}
+
+export const getAttendanceDailySummary = (params = {}) => {
+  return get('/attendance-submissions/summary/daily', params)
+}
+
+export const getAttendanceMonthlySummary = (params = {}) => {
+  return get('/attendance-submissions/summary/monthly', params)
+}
+
+export const reviewAttendanceDailySummary = (date, data = {}) => {
+  return post(`/attendance-submissions/summary/daily/${date}/review`, data)
+}
+
+export const getGeneratedDailyReports = (params = {}) => {
+  return get('/generated-daily-reports', params)
+}
+
+export const getGeneratedDailyReport = (date, params = {}) => {
+  return get(`/generated-daily-reports/${date}`, params)
+}
+
+export const generateDailyReport = (date) => {
+  return post(`/generated-daily-reports/${date}/generate`, {})
 }
 
 // ==================== 统计模块 ====================

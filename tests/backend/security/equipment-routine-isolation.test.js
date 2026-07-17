@@ -814,6 +814,16 @@ test('team, organization, and global read-only boundaries apply to rules, schedu
       itemResults: [{ itemKey: ruleA2.checklistItems[0].key, result: 'NORMAL' }]
     }
   });
+  const recordsInA2 = await routineService.listRecords({
+    authContext: fixture.contextA,
+    query: { orgUnitId: String(fixture.orgA2) }
+  });
+  const recordsInA1 = await routineService.listRecords({
+    authContext: fixture.contextA,
+    query: { orgUnitId: String(fixture.orgA1) }
+  });
+  assert.equal(recordsInA2.total, 1);
+  assert.equal(recordsInA1.total, 0);
   const hiddenRecords = await routineService.listRecords({ authContext: orgA1 });
   assert.equal(hiddenRecords.total, 0);
   await assert.rejects(routineService.createRecord({

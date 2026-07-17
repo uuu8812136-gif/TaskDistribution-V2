@@ -191,6 +191,44 @@ test('maps request and auth context and passes a mongoose session unchanged', as
   assert.doesNotMatch(payload.requestPath, /token/);
 });
 
+test('redacts credentials from scalar fields before audit persistence', async () => {
+  const secrets = [
+    'request-secret',
+    'user-agent-secret',
+    'resource-secret',
+    'reason-secret'
+  ];
+  const AuditLog = fakeAuditModel();
+  const service = createAuditService({ AuditLog });
+
+  await service.recordSystem({
+    req: {
+      id: 'trace token=request-secret;segment=7',
+      method: 'POST',
+      ip: '10.10.0.9',
+      headers: {
+        'user-agent': 'audit-client Bearer user-agent-secret; build/1'
+      }
+    },
+    action: permissions.AUDIT_ACTIONS.UPDATE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.SYSTEM,
+    resourceId: 'system credential=resource-secret;revision=2',
+    reason: 'normal reason; password=reason-secret; keep this'
+  });
+
+  const payload = AuditLog.calls[0][0];
+  assert.equal(payload.requestId, 'trace token=[REDACTED];segment=7');
+  assert.equal(payload.userAgent, 'audit-client Bearer [REDACTED]; build/1');
+  assert.equal(payload.resourceId, 'system credential=[REDACTED];revision=2');
+  assert.equal(payload.reason, 'normal reason; password=[REDACTED]; keep this');
+  assert.equal(payload.ip, '10.10.0.9');
+
+  const persistedText = JSON.stringify(payload);
+  for (const secret of secrets) {
+    assert.doesNotMatch(persistedText, new RegExp(secret));
+  }
+});
+
 test('does not trust a request-level targetTeamId when none is explicitly supplied', async () => {
   const activeTeamId = '507f1f77bcf86cd799439012';
   const AuditLog = fakeAuditModel();

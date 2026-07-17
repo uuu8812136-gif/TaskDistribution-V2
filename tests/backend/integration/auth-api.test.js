@@ -109,10 +109,10 @@ async function createTeam({ createdBy, member = null, membership = {} } = {}) {
   return { team, orgUnit, membership: membershipDocument };
 }
 
-function login(username, password = 'initial-password') {
+function login(username, password = 'initial-password', options = {}) {
   return request(app)
     .post('/api/auth/login')
-    .send({ username, password });
+    .send({ username, password, ...options });
 }
 
 before(async () => {
@@ -141,6 +141,38 @@ after(async () => {
     await mongoose.disconnect();
   }
   if (mongoServer) await mongoServer.stop();
+});
+
+test('login team options are public, active-only, minimal, and sorted', async () => {
+  const creator = await createUser({ username: 'team.options.owner' });
+  const second = await createTeam({ createdBy: creator._id });
+  const first = await createTeam({ createdBy: creator._id });
+  const disabled = await createTeam({ createdBy: creator._id });
+  await ProjectTeam.updateOne(
+    { _id: second.team._id },
+    { $set: { name: 'Zulu Team' } }
+  );
+  await ProjectTeam.updateOne(
+    { _id: first.team._id },
+    { $set: { name: 'Alpha Team' } }
+  );
+  await ProjectTeam.updateOne(
+    { _id: disabled.team._id },
+    { $set: { status: permissions.TEAM_STATUSES.DISABLED } }
+  );
+
+  const response = await request(app)
+    .get('/api/auth/login-teams')
+    .expect(200);
+
+  assert.deepEqual(response.body.teams.map(({ name }) => name), ['Alpha Team', 'Zulu Team']);
+  assert.deepEqual(
+    new Set(response.body.teams.map(({ _id }) => _id)),
+    new Set([first.team.id, second.team.id])
+  );
+  for (const team of response.body.teams) {
+    assert.deepEqual(Object.keys(team).sort(), ['_id', 'code', 'name']);
+  }
 });
 
 test('super administrator login starts in GLOBAL_READ_ONLY without leaking secrets', async () => {
@@ -256,7 +288,108 @@ test('ordinary login with multiple active teams starts in TEAM_SELECTION', async
     .expect(200)
     .expect(({ body }) => {
       assert.equal(body.context.canAccessBusiness, false);
+  });
+});
+
+test('ordinary login can select an active membership and enter TEAM directly', async () => {
+  const user = await createUser({ username: 'selected.team' });
+  const first = await createTeam({ createdBy: user._id, member: user });
+  const second = await createTeam({ createdBy: user._id, member: user });
+
+  const response = await login(
+    user.username,
+    'initial-password',
+    { teamId: second.team.id.toUpperCase() }
+  ).expect(200);
+
+  assert.equal(response.body.mode, permissions.SESSION_MODES.TEAM);
+  assert.equal(response.body.activeTeamId, second.team.id);
+  assert.deepEqual(
+    new Set(response.body.teams.map(({ _id }) => _id)),
+    new Set([first.team.id, second.team.id])
+  );
+
+  await request(app)
+    .get('/api/auth/me')
+    .set(bearer(response.body.token))
+    .expect(200)
+    .expect(({ body }) => {
+      assert.equal(body.context.mode, permissions.SESSION_MODES.TEAM);
+      assert.equal(body.context.activeTeamId, second.team.id);
     });
+});
+
+test('super administrator login can select any active team and enter TEAM directly', async () => {
+  const superAdmin = await createUser({
+    username: 'selected.root',
+    isSuperAdmin: true
+  });
+  const { team } = await createTeam({ createdBy: superAdmin._id });
+
+  const response = await login(
+    superAdmin.username,
+    'initial-password',
+    { teamId: team.id }
+  ).expect(200);
+
+  assert.equal(response.body.mode, permissions.SESSION_MODES.TEAM);
+  assert.equal(response.body.activeTeamId, team.id);
+  assert.equal(response.body.user.isSuperAdmin, true);
+});
+
+test('selected login team hides missing, disabled, and unauthorized team differences', async () => {
+  const user = await createUser({ username: 'selected.scope' });
+  await createTeam({ createdBy: user._id, member: user });
+  const unowned = await createTeam({ createdBy: user._id });
+  const disabled = await createTeam({ createdBy: user._id, member: user });
+  await ProjectTeam.updateOne(
+    { _id: disabled.team._id },
+    { $set: { status: permissions.TEAM_STATUSES.DISABLED } }
+  );
+
+  const responses = [];
+  for (const teamId of [
+    unowned.team.id,
+    disabled.team.id,
+    new mongoose.Types.ObjectId().toString()
+  ]) {
+    responses.push(await login(
+      user.username,
+      'initial-password',
+      { teamId }
+    ).expect(403));
+  }
+
+  assert.deepEqual(responses[0].body, responses[1].body);
+  assert.deepEqual(responses[1].body, responses[2].body);
+  assert.equal(responses[0].body.code, 'AUTH_TEAM_ACCESS_REQUIRED');
+  assert.equal(await AuthSession.countDocuments(), 0);
+});
+
+test('credential failures take precedence over malformed selected team input', async () => {
+  const user = await createUser({ username: 'selected.credentials' });
+
+  const wrongPassword = await login(
+    user.username,
+    'wrong-password',
+    { teamId: 'not-an-object-id' }
+  ).expect(401);
+  const unknownUser = await login(
+    'unknown.selected.credentials',
+    'wrong-password',
+    { teamId: 'not-an-object-id' }
+  ).expect(401);
+
+  assert.deepEqual(unknownUser.body, wrongPassword.body);
+  assert.equal(wrongPassword.body.code, 'AUTH_CREDENTIALS_INVALID');
+
+  const validCredentials = await login(
+    user.username,
+    'initial-password',
+    { teamId: 'not-an-object-id' }
+  ).expect(400);
+  assert.equal(validCredentials.body.code, 'AUTH_INPUT_INVALID');
+  assert.equal(await AuthSession.countDocuments(), 0);
 });
 
 test('ordinary login rejects users with no active team and creates no session', async () => {

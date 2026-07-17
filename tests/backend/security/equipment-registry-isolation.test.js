@@ -348,6 +348,16 @@ test('ORG_UNIT scope hides other divisions and teams with the same detail 404', 
 
   const listed = await service.listAssets({ authContext: orgA1 });
   assert.deepEqual(listed.equipment.map((item) => item.assetCode), ['A1-001']);
+  await EquipmentAsset.updateOne(
+    { _id: assetA1._id },
+    { $set: { productCode: 'VIN-SEARCH-001', plateNumber: 'TEST-PLATE-06' } }
+  );
+  const searchedByProductCode = await service.listAssets({
+    authContext: orgA1,
+    query: { keyword: 'VIN-SEARCH' }
+  });
+  assert.deepEqual(searchedByProductCode.equipment.map((item) => item.assetCode), ['A1-001']);
+  assert.equal(searchedByProductCode.equipment[0].plateNumber, 'TEST-PLATE-06');
   const missingId = objectId();
   await assert.rejects(
     service.getAsset({ authContext: orgA1, equipmentId: assetA2._id }),

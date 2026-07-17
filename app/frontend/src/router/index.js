@@ -102,6 +102,86 @@ const router = createRouter({
           }
         },
         {
+          path: 'equipment/routines',
+          name: 'EquipmentRoutineWorkbench',
+          component: () => import('@/views/equipment/EquipmentRoutineWorkbench.vue'),
+          meta: {
+            title: '点检保养工作台',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/inventories',
+          name: 'EquipmentInventories',
+          component: () => import('@/views/equipment/EquipmentInventoryList.vue'),
+          meta: {
+            title: '设备盘点',
+            permission: 'equipment.inventory',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/inventories/:inventorySessionId',
+          name: 'EquipmentInventoryDetail',
+          component: () => import('@/views/equipment/EquipmentInventoryDetail.vue'),
+          meta: {
+            title: '盘点批次详情',
+            activeMenu: '/equipment/inventories',
+            permission: 'equipment.inventory',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/repairs',
+          name: 'EquipmentRepairs',
+          component: () => import('@/views/equipment/EquipmentRepairs.vue'),
+          meta: {
+            title: '设备维修',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/repairs/:repairId',
+          name: 'EquipmentRepairDetail',
+          component: () => import('@/views/equipment/EquipmentRepairDetail.vue'),
+          meta: {
+            title: '维修单详情',
+            activeMenu: '/equipment/repairs',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/status-applications',
+          name: 'EquipmentStatusApplications',
+          component: () => import('@/views/equipment/EquipmentStatusApplications.vue'),
+          meta: {
+            title: '设备状态申请',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment/status-applications/:applicationId',
+          name: 'EquipmentStatusApplicationDetail',
+          component: () => import('@/views/equipment/EquipmentStatusApplicationDetail.vue'),
+          meta: {
+            title: '设备状态申请详情',
+            activeMenu: '/equipment/status-applications',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
           path: 'equipment/:id',
           name: 'EquipmentDetail',
           component: () => import('@/views/equipment/EquipmentDetail.vue'),
@@ -141,6 +221,28 @@ const router = createRouter({
           component: () => import('@/views/reporting/ProductionSchedules.vue'),
           meta: {
             title: '生产排产',
+            permission: 'report.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'reporting/attendance',
+          name: 'AttendanceReports',
+          component: () => import('@/views/reporting/AttendanceReports.vue'),
+          meta: {
+            title: '出勤日报',
+            permission: 'report.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'reporting/daily-report',
+          name: 'GeneratedDailyReports',
+          component: () => import('@/views/reporting/GeneratedDailyReports.vue'),
+          meta: {
+            title: '生产日报',
             permission: 'report.view',
             teamRequired: true,
             readOnlyAllowed: true
@@ -201,6 +303,19 @@ const router = createRouter({
             permission: 'task.review',
             teamRequired: true,
             readOnlyAllowed: false
+          }
+        },
+        {
+          path: 'audit-logs',
+          name: 'AuditLogs',
+          component: () => import('@/views/audit/AuditLogs.vue'),
+          meta: {
+            title: '审计日志',
+            permission: 'audit.view',
+            teamAdminRequired: true,
+            teamRequired: true,
+            readOnlyAllowed: true,
+            allowedModes: [SESSION_MODES.GLOBAL_READ_ONLY, SESSION_MODES.TEAM]
           }
         },
         {

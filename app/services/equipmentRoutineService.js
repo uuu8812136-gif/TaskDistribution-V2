@@ -6,8 +6,11 @@ const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentCategory = require('../models/EquipmentCategory');
 const EquipmentRoutineRule = require('../models/EquipmentRoutineRule');
 const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
+const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
+const EquipmentRoutineException = require('../models/EquipmentRoutineException');
 const EquipmentRuntimeReading = require('../models/EquipmentRuntimeReading');
 const ProjectTeam = require('../models/ProjectTeam');
+const OrgUnit = require('../models/OrgUnit');
 const FileAsset = require('../models/FileAsset');
 const {
   AUDIT_ACTIONS,
@@ -43,6 +46,9 @@ const {
   combineDueStates
 } = require('./equipmentRoutineCalendarService');
 const { EquipmentRegistryError } = require('./equipmentRegistryService');
+const {
+  createEquipmentRoutineWorkflowService
+} = require('./equipmentRoutineWorkflowService');
 
 const {
   EQUIPMENT_ROUTINE_TYPES,
@@ -54,10 +60,20 @@ const {
   EQUIPMENT_ROUTINE_CALENDAR_UNIT_VALUES,
   EQUIPMENT_ROUTINE_DUE_POLICY_VALUES,
   EQUIPMENT_ROUTINE_PHOTO_POLICIES,
-  EQUIPMENT_ROUTINE_PHOTO_POLICY_VALUES
+  EQUIPMENT_ROUTINE_PHOTO_POLICY_VALUES,
+  EQUIPMENT_ROUTINE_LOCATION_POLICIES,
+  EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES,
+  defaultExecutionWindows
 } = EquipmentRoutineRule;
 const { FILE_OWNER_TYPES } = FileAsset;
-const { EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES } = EquipmentRoutineRecord;
+const {
+  EQUIPMENT_ROUTINE_LOCATION_STATUSES,
+  EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES,
+  EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES
+} = EquipmentRoutineRecord;
+const {
+  EQUIPMENT_ROUTINE_PLAN_STATUSES
+} = EquipmentRoutinePlan;
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
@@ -195,6 +211,7 @@ function serializeRule(document) {
     version: value.version,
     photoPolicy: value.photoPolicy,
     abnormalNoteRequired: value.abnormalNoteRequired === true,
+    executionConfig: serializeExecutionConfig(value.executionConfig),
     createdBy: normalizeId(value.createdBy),
     updatedBy: normalizeId(value.updatedBy),
     createdAt: value.createdAt,
@@ -212,6 +229,7 @@ function serializeRecord(document) {
     categoryId: normalizeId(value.categoryId),
     ruleId: normalizeId(value.ruleId),
     ruleVersion: value.ruleVersion,
+    planId: normalizeId(value.planId),
     routineType: value.routineType,
     scheduledFor: value.scheduledFor || null,
     dueRuntimeHours: value.dueRuntimeHours ?? null,
@@ -226,9 +244,115 @@ function serializeRecord(document) {
     overallResult: value.overallResult,
     abnormalSummary: value.abnormalSummary || '',
     photoFileIds: (value.photoFileIds || []).map(normalizeId),
+    photoEvidence: (value.photoEvidence || []).map((evidence) => ({
+      fileId: normalizeId(evidence.fileId),
+      sourceType: evidence.sourceType,
+      capturedAt: evidence.capturedAt || null,
+      locationStatus: evidence.locationStatus,
+      longitude: evidence.longitude ?? null,
+      latitude: evidence.latitude ?? null,
+      accuracyMeters: evidence.accuracyMeters ?? null,
+      address: evidence.address || '',
+      watermarkText: evidence.watermarkText || ''
+    })),
     idempotencyKey: value.idempotencyKey || null,
     ruleSnapshot: value.ruleSnapshot,
     createdAt: value.createdAt
+  };
+}
+
+function serializeExecutionConfig(value = {}) {
+  const windows = Array.isArray(value?.windows) && value.windows.length
+    ? value.windows
+    : defaultExecutionWindows();
+  return {
+    timeZone: value?.timeZone || 'Asia/Shanghai',
+    windows: windows.map((window) => ({
+      key: window.key,
+      name: window.name,
+      startTime: window.startTime,
+      endTime: window.endTime,
+      enabled: window.enabled !== false
+    })),
+    weeklyDay: value?.weeklyDay ?? 1,
+    monthlyDay: value?.monthlyDay ?? 1,
+    inspectionEscalationMinutes: value?.inspectionEscalationMinutes ?? 60,
+    locationPolicy: value?.locationPolicy || EQUIPMENT_ROUTINE_LOCATION_POLICIES.PENDING_CONFIRMATION,
+    locationPrecisionMeters: value?.locationPrecisionMeters ?? null
+  };
+}
+
+function validTimeZone(value) {
+  const timeZone = requiredString(value, 'executionConfig.timeZone', 64);
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone }).format(new Date());
+  } catch {
+    throw inputInvalid('executionConfig.timeZone must be a valid IANA time zone');
+  }
+  return timeZone;
+}
+
+function normalizeExecutionConfig(value) {
+  if (value === undefined || value === null) return serializeExecutionConfig();
+  assertOnlyKeys(value, [
+    'timeZone',
+    'windows',
+    'weeklyDay',
+    'monthlyDay',
+    'inspectionEscalationMinutes',
+    'locationPolicy',
+    'locationPrecisionMeters'
+  ], 'executionConfig');
+  const windows = value.windows === undefined ? defaultExecutionWindows() : value.windows;
+  if (!Array.isArray(windows) || windows.length < 1 || windows.length > 8) {
+    throw inputInvalid('executionConfig.windows must contain between 1 and 8 items');
+  }
+  const normalizedWindows = windows.map((window, index) => {
+    assertOnlyKeys(window, ['key', 'name', 'startTime', 'endTime', 'enabled'], `executionConfig.windows[${index}]`);
+    const key = requiredString(window.key, `executionConfig.windows[${index}].key`, 50).toUpperCase();
+    if (!/^[A-Z0-9](?:[A-Z0-9_-]{0,48}[A-Z0-9])?$/.test(key)) {
+      throw inputInvalid(`executionConfig.windows[${index}].key is invalid`);
+    }
+    const startTime = requiredString(window.startTime, `executionConfig.windows[${index}].startTime`, 5);
+    const endTime = requiredString(window.endTime, `executionConfig.windows[${index}].endTime`, 5);
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(startTime) || !/^([01]\d|2[0-3]):[0-5]\d$/.test(endTime)) {
+      throw inputInvalid('execution window times must use HH:mm');
+    }
+    return {
+      key,
+      name: requiredString(window.name, `executionConfig.windows[${index}].name`, 100),
+      startTime,
+      endTime,
+      enabled: booleanValue(window.enabled, `executionConfig.windows[${index}].enabled`, true)
+    };
+  });
+  if (new Set(normalizedWindows.map(({ key }) => key)).size !== normalizedWindows.length) {
+    throw inputInvalid('execution window keys must be unique');
+  }
+  if (!normalizedWindows.some(({ enabled }) => enabled)) {
+    throw inputInvalid('At least one execution window must be enabled');
+  }
+  const locationPolicy = value.locationPolicy || EQUIPMENT_ROUTINE_LOCATION_POLICIES.PENDING_CONFIRMATION;
+  if (!EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES.includes(locationPolicy)) {
+    throw inputInvalid('executionConfig.locationPolicy is invalid');
+  }
+  const precision = finiteNumber(
+    value.locationPrecisionMeters,
+    'executionConfig.locationPrecisionMeters',
+    { min: 1 }
+  );
+  return {
+    timeZone: validTimeZone(value.timeZone || 'Asia/Shanghai'),
+    windows: normalizedWindows,
+    weeklyDay: integer(value.weeklyDay, 'executionConfig.weeklyDay', { min: 1, max: 7, fallback: 1 }),
+    monthlyDay: integer(value.monthlyDay, 'executionConfig.monthlyDay', { min: 1, max: 31, fallback: 1 }),
+    inspectionEscalationMinutes: integer(
+      value.inspectionEscalationMinutes,
+      'executionConfig.inspectionEscalationMinutes',
+      { min: 1, max: 10080, fallback: 60 }
+    ),
+    locationPolicy,
+    locationPrecisionMeters: precision
   };
 }
 
@@ -409,13 +533,25 @@ function createEquipmentRoutineService({
   EquipmentCategoryModel = EquipmentCategory,
   EquipmentRoutineRuleModel = EquipmentRoutineRule,
   EquipmentRoutineRecordModel = EquipmentRoutineRecord,
+  EquipmentRoutinePlanModel = EquipmentRoutinePlan,
+  EquipmentRoutineExceptionModel = EquipmentRoutineException,
   EquipmentRuntimeReadingModel = EquipmentRuntimeReading,
   ProjectTeamModel = ProjectTeam,
+  OrgUnitModel = OrgUnit,
   auditService = createAuditService(),
   fileAssetService = createFileAssetService(),
+  workflowService = null,
   connection = mongoose.connection,
   clock = () => new Date()
 } = {}) {
+  const routineWorkflowService = workflowService || createEquipmentRoutineWorkflowService({
+    EquipmentAssetModel,
+    EquipmentRoutineRecordModel,
+    EquipmentRoutinePlanModel,
+    auditService,
+    connection,
+    clock
+  });
   function runRoutineTransaction(work) {
     if (!supportsTransactions(connection)) {
       throw routineError(
@@ -454,6 +590,22 @@ function createEquipmentRoutineService({
     const context = assertTeamContext(authContext);
     assertPermission(context, 'equipment.edit');
     assertPermission(context, routinePermission(routineType));
+    const membership = context.membership || {};
+    const hasFixedIdentity = Boolean(
+      membership.positionKey || Array.isArray(membership.functionalRoleKeys)
+    );
+    const fixedIdentityAllowed = (
+      context.isSuperAdmin === true ||
+      membership.positionKey === 'DEPARTMENT_MANAGER' ||
+      membership.functionalRoleKeys?.includes('ASSET_ADMIN')
+    );
+    if (hasFixedIdentity && !fixedIdentityAllowed) {
+      throw routineError(
+        403,
+        'EQUIPMENT_ROUTINE_MANAGER_REQUIRED',
+        'Only a department manager or equipment administrator can manage routine rules'
+      );
+    }
     const scope = resolveModuleDataScope(context, DATA_SCOPE_MODULES.EQUIPMENT);
     if (scope.scope !== DATA_SCOPES.TEAM) {
       throw routineError(
@@ -590,6 +742,7 @@ function createEquipmentRoutineService({
       'schedule',
       'photoPolicy',
       'abnormalNoteRequired',
+      'executionConfig',
       'reason'
     ]);
     if (!EQUIPMENT_ROUTINE_TYPE_VALUES.includes(input.routineType)) {
@@ -607,7 +760,8 @@ function createEquipmentRoutineService({
       checklistItems: normalizeChecklistItems(input.checklistItems),
       schedule: normalizeSchedule(input.schedule),
       photoPolicy,
-      abnormalNoteRequired: booleanValue(input.abnormalNoteRequired, 'abnormalNoteRequired', true)
+      abnormalNoteRequired: booleanValue(input.abnormalNoteRequired, 'abnormalNoteRequired', true),
+      executionConfig: normalizeExecutionConfig(input.executionConfig)
     };
   }
 
@@ -658,6 +812,7 @@ function createEquipmentRoutineService({
       'status',
       'photoPolicy',
       'abnormalNoteRequired',
+      'executionConfig',
       'reason'
     ]);
     const context = assertTeamContext(authContext);
@@ -712,6 +867,9 @@ function createEquipmentRoutineService({
             'abnormalNoteRequired',
             rule.abnormalNoteRequired
           );
+        }
+        if (Object.prototype.hasOwnProperty.call(input, 'executionConfig')) {
+          rule.executionConfig = normalizeExecutionConfig(input.executionConfig);
         }
         rule.version += 1;
         rule.updatedBy = context.userId;
@@ -893,6 +1051,38 @@ function createEquipmentRoutineService({
     const schedules = await Promise.all(
       rules.map((rule) => calculateRuleSchedule(rule, asset))
     );
+    const plans = await EquipmentRoutinePlanModel.find({
+      teamId: asset.teamId,
+      equipmentId: asset._id,
+      ruleId: { $in: rules.map(({ _id }) => _id) },
+      status: { $in: [
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+      ] }
+    }).sort({ scheduledFor: 1, dueAt: 1, _id: 1 }).lean();
+    const plansByRule = new Map();
+    for (const plan of plans) {
+      const key = normalizeId(plan.ruleId);
+      if (!plansByRule.has(key)) plansByRule.set(key, []);
+      plansByRule.get(key).push({
+        _id: normalizeId(plan._id),
+        windowKey: plan.windowKey,
+        windowName: plan.windowName,
+        scheduledFor: plan.scheduledFor,
+        dueAt: plan.dueAt,
+        status: plan.status,
+        cycleKey: plan.cycleKey
+      });
+    }
+    for (const schedule of schedules) {
+      schedule.plans = plansByRule.get(schedule.rule._id) || [];
+      schedule.planStatus = schedule.plans.some(({ status }) => status === 'OVERDUE')
+        ? 'OVERDUE'
+        : schedule.plans.some(({ status }) => status === 'IN_WINDOW')
+          ? 'IN_WINDOW'
+          : schedule.plans.length > 0 ? 'PLANNED' : schedule.status;
+    }
     return {
       equipment: {
         _id: normalizeId(asset._id),
@@ -917,6 +1107,7 @@ function createEquipmentRoutineService({
       filters.push({ routineType: query.routineType });
     }
     if (query.equipmentId) filters.push({ equipmentId: normalizeRelatedId(query.equipmentId) });
+    if (query.orgUnitId) filters.push({ orgUnitId: normalizeRelatedId(query.orgUnitId) });
     if (query.categoryId) filters.push({ categoryId: normalizeRelatedId(query.categoryId) });
     if (query.ruleId) filters.push({ ruleId: normalizeRelatedId(query.ruleId) });
     if (query.overallResult) {
@@ -952,6 +1143,7 @@ function createEquipmentRoutineService({
       'pageSize',
       'routineType',
       'equipmentId',
+      'orgUnitId',
       'categoryId',
       'ruleId',
       'overallResult',
@@ -976,7 +1168,26 @@ function createEquipmentRoutineService({
         .lean(),
       EquipmentRoutineRecordModel.countDocuments(filter)
     ]);
-    return { records: documents.map(serializeRecord), total, page, pageSize };
+    const equipmentIds = [...new Set(documents.map(({ equipmentId }) => normalizeId(equipmentId)))];
+    const orgUnitIds = [...new Set(documents.map(({ orgUnitId }) => normalizeId(orgUnitId)))];
+    const [assets, orgUnits, exceptions] = await Promise.all([
+      EquipmentAssetModel.find({ _id: { $in: equipmentIds }, teamId }).select('_id assetCode name').lean(),
+      OrgUnitModel.find({ _id: { $in: orgUnitIds }, teamId }).select('_id name').lean(),
+      EquipmentRoutineExceptionModel.find({
+        teamId,
+        recordId: { $in: documents.map(({ _id }) => _id) }
+      }).select('recordId status currentStage revision').lean()
+    ]);
+    const assetById = new Map(assets.map((asset) => [normalizeId(asset._id), asset]));
+    const orgById = new Map(orgUnits.map((unit) => [normalizeId(unit._id), unit]));
+    const exceptionByRecord = new Map(exceptions.map((item) => [normalizeId(item.recordId), item]));
+    const records = documents.map((document) => ({
+      ...serializeRecord(document),
+      equipment: assetById.get(normalizeId(document.equipmentId)) || null,
+      orgUnit: orgById.get(normalizeId(document.orgUnitId)) || null,
+      exception: exceptionByRecord.get(normalizeId(document._id)) || null
+    }));
+    return { records, total, page, pageSize };
   }
 
   function normalizePhotoFileIds(value) {
@@ -995,6 +1206,131 @@ function createEquipmentRoutineService({
     return ids;
   }
 
+  function normalizePhotoEvidence(value, photoFileIds) {
+    if (value === undefined || value === null) {
+      return photoFileIds.map((fileId) => ({
+        fileId,
+        sourceType: 'CAMERA',
+        capturedAt: null,
+        locationStatus: EQUIPMENT_ROUTINE_LOCATION_STATUSES.PENDING_CONFIRMATION,
+        longitude: null,
+        latitude: null,
+        accuracyMeters: null,
+        address: ''
+      }));
+    }
+    if (!Array.isArray(value) || value.length > MAX_PHOTOS) {
+      throw inputInvalid(`photoEvidence must contain at most ${MAX_PHOTOS} items`);
+    }
+    const normalized = value.map((evidence, index) => {
+      assertOnlyKeys(evidence, [
+        'fileId',
+        'sourceType',
+        'capturedAt',
+        'locationStatus',
+        'longitude',
+        'latitude',
+        'accuracyMeters',
+        'address'
+      ], `photoEvidence[${index}]`);
+      let fileId;
+      try {
+        fileId = normalizeObjectId(evidence.fileId, 'fileId');
+      } catch {
+        throw inputInvalid('photoEvidence.fileId must be a valid ObjectId');
+      }
+      if (evidence.sourceType !== 'CAMERA') {
+        throw inputInvalid('Routine evidence can only come from the camera');
+      }
+      const locationStatus = evidence.locationStatus || EQUIPMENT_ROUTINE_LOCATION_STATUSES.PENDING_CONFIRMATION;
+      if (!EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES.includes(locationStatus)) {
+        throw inputInvalid('photoEvidence.locationStatus is invalid');
+      }
+      let capturedAt = null;
+      if (evidence.capturedAt !== undefined && evidence.capturedAt !== null && evidence.capturedAt !== '') {
+        capturedAt = new Date(evidence.capturedAt);
+        if (Number.isNaN(capturedAt.getTime())) throw inputInvalid('photoEvidence.capturedAt must be a valid date');
+      }
+      const longitude = finiteNumber(evidence.longitude, 'photoEvidence.longitude', { min: -180 });
+      const latitude = finiteNumber(evidence.latitude, 'photoEvidence.latitude', { min: -90 });
+      if (longitude !== null && longitude > 180) throw inputInvalid('photoEvidence.longitude is invalid');
+      if (latitude !== null && latitude > 90) throw inputInvalid('photoEvidence.latitude is invalid');
+      const accuracyMeters = finiteNumber(evidence.accuracyMeters, 'photoEvidence.accuracyMeters', { min: 0 });
+      if (accuracyMeters !== null && accuracyMeters > 100000) {
+        throw inputInvalid('photoEvidence.accuracyMeters is invalid');
+      }
+      if (locationStatus === EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED && (longitude === null || latitude === null)) {
+        throw inputInvalid('A granted location requires longitude and latitude');
+      }
+      if (locationStatus !== EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED && (longitude !== null || latitude !== null)) {
+        throw inputInvalid('Coordinates require GRANTED location status');
+      }
+      return {
+        fileId,
+        sourceType: 'CAMERA',
+        capturedAt,
+        locationStatus,
+        longitude,
+        latitude,
+        accuracyMeters,
+        address: optionalString(evidence.address, 'photoEvidence.address', 500)
+      };
+    });
+    const evidenceIds = normalized.map(({ fileId }) => String(fileId));
+    if (new Set(evidenceIds).size !== evidenceIds.length) {
+      throw inputInvalid('photoEvidence must not contain duplicate files');
+    }
+    if (
+      evidenceIds.length !== photoFileIds.length ||
+      evidenceIds.some((fileId, index) => fileId !== String(photoFileIds[index]))
+    ) {
+      throw inputInvalid('photoEvidence must correspond to photoFileIds in the same order');
+    }
+    return normalized;
+  }
+
+  function watermarkTime(date, timeZone) {
+    return new Intl.DateTimeFormat('zh-CN', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }).format(date).replace(/\//g, '-');
+  }
+
+  function finalizePhotoEvidence(values, rule, performedAt) {
+    const config = serializeExecutionConfig(rule.executionConfig);
+    return values.map((evidence) => {
+      const capturedAt = evidence.capturedAt || performedAt;
+      if (capturedAt > new Date(performedAt.getTime() + 5 * 60 * 1000)) {
+        throw inputInvalid('Photo capture time cannot be in the future');
+      }
+      const precisionExceeded = (
+        config.locationPrecisionMeters !== null &&
+        evidence.accuracyMeters !== null &&
+        evidence.accuracyMeters > config.locationPrecisionMeters
+      );
+      if (
+        config.locationPolicy === EQUIPMENT_ROUTINE_LOCATION_POLICIES.REQUIRED &&
+        (evidence.locationStatus !== EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED || precisionExceeded)
+      ) {
+        throw inputInvalid('This rule requires an available location within the configured precision');
+      }
+      const locationText = evidence.locationStatus === EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED
+        ? evidence.address || `${evidence.latitude.toFixed(6)}, ${evidence.longitude.toFixed(6)}`
+        : `定位状态：${evidence.locationStatus}`;
+      return {
+        ...evidence,
+        capturedAt,
+        watermarkText: `${watermarkTime(capturedAt, config.timeZone)} | ${locationText}`
+      };
+    });
+  }
+
   function normalizeSubmittedItemResults(values) {
     if (!Array.isArray(values) || values.length < 1 || values.length > MAX_CHECKLIST_ITEMS) {
       throw inputInvalid(`itemResults must contain between 1 and ${MAX_CHECKLIST_ITEMS} items`);
@@ -1010,11 +1346,15 @@ function createEquipmentRoutineService({
   }
 
   function normalizeRecordSubmission(input) {
+    const photoFileIds = normalizePhotoFileIds(input.photoFileIds);
     return {
       itemResults: normalizeSubmittedItemResults(input.itemResults),
       abnormalSummary: optionalString(input.abnormalSummary, 'abnormalSummary', 2000),
-      photoFileIds: normalizePhotoFileIds(input.photoFileIds),
-      runtimeHours: finiteNumber(input.runtimeHours, 'runtimeHours', { min: 0 })
+      photoFileIds,
+      photoEvidence: normalizePhotoEvidence(input.photoEvidence, photoFileIds),
+      photoEvidenceSupplied: input.photoEvidence !== undefined && input.photoEvidence !== null,
+      runtimeHours: finiteNumber(input.runtimeHours, 'runtimeHours', { min: 0 }),
+      planId: input.planId ? normalizeRelatedId(input.planId) : null
     };
   }
 
@@ -1029,7 +1369,22 @@ function createEquipmentRoutineService({
       JSON.stringify(normalizedExistingItems) === JSON.stringify(submission.itemResults) &&
       (record.performedRuntimeHours ?? null) === submission.runtimeHours &&
       (record.abnormalSummary || '') === submission.abnormalSummary &&
-      JSON.stringify(record.photoFileIds) === JSON.stringify(submission.photoFileIds)
+      JSON.stringify(record.photoFileIds) === JSON.stringify(submission.photoFileIds) &&
+      (!submission.planId || (record.planId || null) === String(submission.planId)) &&
+      (!submission.photoEvidenceSupplied || JSON.stringify(record.photoEvidence.map((evidence) => ({
+        fileId: evidence.fileId,
+        sourceType: evidence.sourceType,
+        capturedAt: evidence.capturedAt ? new Date(evidence.capturedAt).toISOString() : null,
+        locationStatus: evidence.locationStatus,
+        longitude: evidence.longitude,
+        latitude: evidence.latitude,
+        accuracyMeters: evidence.accuracyMeters,
+        address: evidence.address
+      }))) === JSON.stringify(submission.photoEvidence.map((evidence) => ({
+        ...evidence,
+        fileId: String(evidence.fileId),
+        capturedAt: evidence.capturedAt ? evidence.capturedAt.toISOString() : null
+      }))))
     );
   }
 
@@ -1134,7 +1489,9 @@ function createEquipmentRoutineService({
       'itemResults',
       'abnormalSummary',
       'photoFileIds',
+      'photoEvidence',
       'runtimeHours',
+      'planId',
       'idempotencyKey'
     ]);
     const context = assertTeamContext(authContext);
@@ -1223,6 +1580,39 @@ function createEquipmentRoutineService({
         }
 
         const performedAt = clock();
+        let plan = null;
+        if (submission.planId) {
+          plan = await execute(EquipmentRoutinePlanModel.findOne({
+            _id: submission.planId,
+            teamId: context.activeTeamId,
+            equipmentId: asset._id,
+            ruleId: rule._id,
+            status: { $in: [
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+            ] }
+          }), session);
+          if (!plan) {
+            throw routineError(
+              409,
+              'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN',
+              'The selected routine plan is no longer open'
+            );
+          }
+        } else {
+          plan = await execute(EquipmentRoutinePlanModel.findOne({
+            teamId: context.activeTeamId,
+            equipmentId: asset._id,
+            ruleId: rule._id,
+            scheduledFor: { $lte: performedAt },
+            status: { $in: [
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+            ] }
+          }).sort({ dueAt: -1, _id: -1 }), session);
+        }
+        const photoEvidence = finalizePhotoEvidence(submission.photoEvidence, rule, performedAt);
         const recordId = new mongoose.Types.ObjectId();
         const record = await createOne(EquipmentRoutineRecordModel, {
           _id: recordId,
@@ -1232,8 +1622,9 @@ function createEquipmentRoutineService({
           categoryId: asset.categoryId,
           ruleId: rule._id,
           ruleVersion: rule.version,
+          planId: plan?._id || null,
           routineType: rule.routineType,
-          scheduledFor: schedule.nextDueAt,
+          scheduledFor: plan?.dueAt || schedule.nextDueAt,
           dueRuntimeHours: schedule.nextDueRuntimeHours,
           performedBy: context.userId,
           performedAt,
@@ -1242,6 +1633,7 @@ function createEquipmentRoutineService({
           overallResult: itemResult.overallResult,
           abnormalSummary,
           photoFileIds,
+          photoEvidence,
           idempotencyKey,
           ruleSnapshot: serializeRule(rule)
         }, session);
@@ -1270,6 +1662,45 @@ function createEquipmentRoutineService({
             ownerId: record._id,
             method: 'POST',
             allowedMimeTypes: ['image/jpeg', 'image/png', 'image/gif'],
+            session
+          });
+        }
+
+        if (plan) {
+          const completed = await EquipmentRoutinePlanModel.updateOne({
+            _id: plan._id,
+            status: { $in: [
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+            ] }
+          }, {
+            $set: {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED,
+              completedRecordId: record._id,
+              completedAt: performedAt,
+              completedBy: context.userId
+            }
+          }, { session });
+          if (completed.modifiedCount !== 1) {
+            throw routineError(
+              409,
+              'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN',
+              'The selected routine plan was completed concurrently'
+            );
+          }
+        }
+
+        if (itemResult.abnormal) {
+          await routineWorkflowService.createExceptionForRecord({
+            record,
+            asset,
+            actorId: context.userId,
+            summary: abnormalSummary || itemResult.results
+              .filter(({ result }) => result === 'ABNORMAL')
+              .map(({ note }) => note)
+              .filter(Boolean)
+              .join('；'),
             session
           });
         }
@@ -1369,7 +1800,9 @@ function createEquipmentRoutineService({
 module.exports = {
   createEquipmentRoutineService,
   normalizeChecklistItems,
+  normalizeExecutionConfig,
   normalizeSchedule,
+  serializeExecutionConfig,
   serializeReading,
   serializeRecord,
   serializeRule

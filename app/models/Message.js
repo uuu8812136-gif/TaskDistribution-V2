@@ -33,6 +33,9 @@ const messageSchema = new mongoose.Schema({
       'extension_applied',    // 延期申请（通知管理员）
       'extension_approved',   // 延期审批通过（通知申请人）
       'extension_rejected',   // 延期审批拒绝（通知申请人）
+      'attendance_missing',   // 出勤日报缺报提醒
+      'attendance_reviewed',  // 出勤日报审核完成
+      'equipment_status',     // 设备状态申请与审批
       'system'                // 系统通知
     ]
   },
@@ -90,6 +93,14 @@ const messageSchema = new mongoose.Schema({
   // 额外数据（JSON格式存储其他信息）
   extraData: {
     type: mongoose.Schema.Types.Mixed
+  },
+
+  // 业务通知可使用稳定键实现重试去重；普通消息保持为空。
+  deduplicationKey: {
+    type: String,
+    trim: true,
+    maxlength: 300,
+    default: null
   }
 }, {
   timestamps: true  // 自动添加 createdAt 和 updatedAt
@@ -99,6 +110,14 @@ const messageSchema = new mongoose.Schema({
 messageSchema.index({ teamId: 1, recipient: 1, isRead: 1 });
 messageSchema.index({ teamId: 1, recipient: 1, createdAt: -1 });
 messageSchema.index({ teamId: 1, type: 1, recipient: 1 });
+messageSchema.index(
+  { teamId: 1, recipient: 1, deduplicationKey: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { deduplicationKey: { $type: 'string' } },
+    name: 'uq_message_team_recipient_deduplication'
+  }
+);
 
 // 虚拟字段：格式化创建时间
 messageSchema.virtual('createdAtFormatted').get(function() {

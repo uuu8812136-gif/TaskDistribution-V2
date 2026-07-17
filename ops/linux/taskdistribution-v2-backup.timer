@@ -1,0 +1,11 @@
+[Unit]
+Description=Run TaskDistribution V2 backup daily
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=taskdistribution-v2-backup.service
+
+[Install]
+WantedBy=timers.target

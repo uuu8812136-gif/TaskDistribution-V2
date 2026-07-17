@@ -56,6 +56,139 @@ const EQUIPMENT_ROUTINE_PHOTO_POLICY_VALUES = Object.freeze(
   Object.values(EQUIPMENT_ROUTINE_PHOTO_POLICIES)
 );
 
+const EQUIPMENT_ROUTINE_LOCATION_POLICIES = Object.freeze({
+  PENDING_CONFIRMATION: 'PENDING_CONFIRMATION',
+  OPTIONAL: 'OPTIONAL',
+  REQUIRED: 'REQUIRED'
+});
+const EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES = Object.freeze(
+  Object.values(EQUIPMENT_ROUTINE_LOCATION_POLICIES)
+);
+
+const TIME_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+const executionWindowSchema = new mongoose.Schema({
+  key: {
+    type: String,
+    required: true,
+    trim: true,
+    minlength: 1,
+    maxlength: 50,
+    match: /^[A-Z0-9](?:[A-Z0-9_-]{0,48}[A-Z0-9])?$/
+  },
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+    minlength: 1,
+    maxlength: 100
+  },
+  startTime: {
+    type: String,
+    required: true,
+    match: TIME_PATTERN
+  },
+  endTime: {
+    type: String,
+    required: true,
+    match: TIME_PATTERN
+  },
+  enabled: {
+    type: Boolean,
+    required: true,
+    default: true
+  }
+}, {
+  _id: false,
+  strict: 'throw'
+});
+
+function defaultExecutionWindows() {
+  return [
+    { key: 'DAY_SHIFT', name: '白班', startTime: '07:00', endTime: '09:00', enabled: true },
+    { key: 'NIGHT_SHIFT', name: '夜班', startTime: '19:00', endTime: '21:00', enabled: true }
+  ];
+}
+
+const executionConfigSchema = new mongoose.Schema({
+  timeZone: {
+    type: String,
+    required: true,
+    trim: true,
+    maxlength: 64,
+    default: 'Asia/Shanghai'
+  },
+  windows: {
+    type: [executionWindowSchema],
+    required: true,
+    default: defaultExecutionWindows,
+    validate: [
+      {
+        validator: (values) => Array.isArray(values) && values.length >= 1 && values.length <= 8,
+        message: 'execution windows must contain between 1 and 8 items'
+      },
+      {
+        validator: (values) => (
+          Array.isArray(values) && new Set(values.map(({ key }) => key)).size === values.length
+        ),
+        message: 'execution window keys must be unique'
+      },
+      {
+        validator: (values) => Array.isArray(values) && values.some(({ enabled }) => enabled),
+        message: 'at least one execution window must be enabled'
+      }
+    ]
+  },
+  weeklyDay: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 7,
+    default: 1,
+    validate: {
+      validator: Number.isInteger,
+      message: 'weeklyDay must be an integer'
+    }
+  },
+  monthlyDay: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 31,
+    default: 1,
+    validate: {
+      validator: Number.isInteger,
+      message: 'monthlyDay must be an integer'
+    }
+  },
+  inspectionEscalationMinutes: {
+    type: Number,
+    required: true,
+    min: 1,
+    max: 10080,
+    default: 60,
+    validate: {
+      validator: Number.isInteger,
+      message: 'inspectionEscalationMinutes must be an integer'
+    }
+  },
+  locationPolicy: {
+    type: String,
+    enum: EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES,
+    required: true,
+    default: EQUIPMENT_ROUTINE_LOCATION_POLICIES.PENDING_CONFIRMATION
+  },
+  locationPrecisionMeters: {
+    type: Number,
+    min: 1,
+    max: 100000,
+    default: null
+  }
+}, {
+  _id: false,
+  strict: 'throw'
+});
+
 const calendarScheduleSchema = new mongoose.Schema({
   unit: {
     type: String,
@@ -286,6 +419,11 @@ const equipmentRoutineRuleSchema = new mongoose.Schema({
     required: true,
     default: true
   },
+  executionConfig: {
+    type: executionConfigSchema,
+    required: true,
+    default: () => ({})
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -332,3 +470,6 @@ module.exports.EQUIPMENT_ROUTINE_DUE_POLICIES = EQUIPMENT_ROUTINE_DUE_POLICIES;
 module.exports.EQUIPMENT_ROUTINE_DUE_POLICY_VALUES = EQUIPMENT_ROUTINE_DUE_POLICY_VALUES;
 module.exports.EQUIPMENT_ROUTINE_PHOTO_POLICIES = EQUIPMENT_ROUTINE_PHOTO_POLICIES;
 module.exports.EQUIPMENT_ROUTINE_PHOTO_POLICY_VALUES = EQUIPMENT_ROUTINE_PHOTO_POLICY_VALUES;
+module.exports.EQUIPMENT_ROUTINE_LOCATION_POLICIES = EQUIPMENT_ROUTINE_LOCATION_POLICIES;
+module.exports.EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES = EQUIPMENT_ROUTINE_LOCATION_POLICY_VALUES;
+module.exports.defaultExecutionWindows = defaultExecutionWindows;
