@@ -16,6 +16,20 @@ Every `vite build` requires `VITE_API_BASE_URL` explicitly. A same-origin revers
 
 ## Isolated local API
 
+The equipment inspection and maintenance module fails closed when MongoDB transactions are not
+available. Development, test, and production API instances must connect to a replica set (a
+single-node replica set is sufficient); a standalone `mongod` can still serve reads but routine
+writes return `503 EQUIPMENT_ROUTINE_TRANSACTIONS_REQUIRED` before any business write.
+
+For a locally installed MongoDB, start it with a replica-set name, initialize it once, and keep the
+same `replicaSet` query parameter in `MONGODB_URI`:
+
+```powershell
+mongod --dbpath E:\mongodb-data --port 27017 --replSet task_distribution_v2_rs --bind_ip 127.0.0.1
+mongosh --port 27017 --eval "rs.initiate({_id:'task_distribution_v2_rs',members:[{_id:0,host:'127.0.0.1:27017'}]})"
+$env:MONGODB_URI='mongodb://127.0.0.1:27017/task_distribution_v2_dev?replicaSet=task_distribution_v2_rs'
+```
+
 The local E2E launcher starts a loopback-only API, a persistent in-memory MongoDB replica set, isolated uploads, two demo teams and three account classes. It refuses the live API port, MongoDB's default port, non-loopback hosts, non-`_v2_test` databases and runtime paths outside `.test-data`.
 
 Use the repository-pinned Node.js version, then from `app` enter a strong password that is used only for demo accounts and start the isolated runtime:

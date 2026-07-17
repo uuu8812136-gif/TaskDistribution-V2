@@ -245,6 +245,45 @@ export const getOrgUnits = (params = {}) => {
   return get('/org-units', params)
 }
 
+// ==================== 设备现场模块 ====================
+
+export const getEquipmentList = (params = {}) => {
+  return get('/equipment', params)
+}
+
+export const getEquipmentDetail = (equipmentId, params = {}) => {
+  return get(`/equipment/${equipmentId}`, params)
+}
+
+export const getEquipmentByQrToken = (qrToken, params = {}) => {
+  return get(`/equipment/qr/${encodeURIComponent(qrToken)}`, params)
+}
+
+export const getEquipmentRoutineSchedule = (equipmentId, params = {}) => {
+  return get(`/equipment/${equipmentId}/routine-schedule`, params)
+}
+
+export const createEquipmentRoutineRecord = (equipmentId, data) => {
+  return post(`/equipment/${equipmentId}/routine-records`, data)
+}
+
+export const getEquipmentRuntimeReadings = (equipmentId, params = {}) => {
+  return get(`/equipment/${equipmentId}/runtime-readings`, params)
+}
+
+export const createEquipmentRuntimeReading = (equipmentId, data) => {
+  return post(`/equipment/${equipmentId}/runtime-readings`, data)
+}
+
+export const uploadEquipmentRoutinePhoto = async (file) => {
+  const response = await upload('/files', file.path, {
+    originalName: file.name || `equipment-${Date.now()}.jpg`
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return fileId
+}
+
 // ==================== 数据提报模块 ====================
 
 export const getTransportRecords = (params = {}) => {
@@ -272,6 +311,18 @@ export const getPrivateFileMetadata = (fileId, params = {}) => {
   const normalized = managedFileId({ fileId })
   if (!normalized) throw new TypeError('Managed fileId is required')
   return get(`/files/${normalized}`, params)
+}
+
+export const getPrivateFileMetadataSilently = (fileId) => {
+  const normalized = managedFileId({ fileId })
+  if (!normalized) throw new TypeError('Managed fileId is required')
+  return get(`/files/${normalized}`, {}, { showLoading: false, silentError: true })
+}
+
+export const deleteTemporaryPrivateFile = (fileId, reason = 'Client upload cleanup') => {
+  const normalized = managedFileId({ fileId })
+  if (!normalized) throw new TypeError('Managed fileId is required')
+  return del(`/files/${normalized}`, { reason }, { showLoading: false, silentError: true })
 }
 
 export const downloadPrivateFile = (fileId, params = {}) => {

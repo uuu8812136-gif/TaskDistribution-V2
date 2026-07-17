@@ -7,6 +7,7 @@ const mongoose = require('mongoose');
 const FileAsset = require('../models/FileAsset');
 const Task = require('../models/Task');
 const TransportRecord = require('../models/TransportRecord');
+const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
 const ProjectTeam = require('../models/ProjectTeam');
 const {
   AUDIT_ACTIONS,
@@ -45,7 +46,9 @@ const TEMPORARY_UPLOAD_PERMISSIONS = Object.freeze([
   'task.create',
   'task.edit',
   'task.review',
-  'report.submit'
+  'report.submit',
+  'equipment.inspect',
+  'equipment.maintain'
 ]);
 const OWNER_ACCESS_POLICIES = Object.freeze({
   [FILE_OWNER_TYPES.TASK]: Object.freeze({
@@ -71,6 +74,20 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     moduleKey: DATA_SCOPE_MODULES.REPORT_TRANSPORT,
     readPermission: 'report.view',
     writePermission: 'report.submit'
+  }),
+  [FILE_OWNER_TYPES.INSPECTION]: Object.freeze({
+    resourceModel: 'EQUIPMENT_ROUTINE_RECORD',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.view',
+    writePermission: 'equipment.inspect',
+    userFilter: Object.freeze({ routineType: 'INSPECTION' })
+  }),
+  [FILE_OWNER_TYPES.MAINTENANCE]: Object.freeze({
+    resourceModel: 'EQUIPMENT_ROUTINE_RECORD',
+    moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+    readPermission: 'equipment.view',
+    writePermission: 'equipment.maintain',
+    userFilter: Object.freeze({ routineType: 'MAINTENANCE' })
   })
 });
 const MAX_OWNER_FILES = 10;
@@ -237,6 +254,7 @@ function createFileAssetService({
   FileAssetModel = FileAsset,
   TaskModel = Task,
   TransportRecordModel = TransportRecord,
+  EquipmentRoutineRecordModel = EquipmentRoutineRecord,
   ProjectTeamModel = ProjectTeam,
   auditService = createAuditService(),
   connection = mongoose.connection
@@ -299,12 +317,15 @@ function createFileAssetService({
       authContext,
       moduleKey: policy.moduleKey,
       id: ownerId,
+      userFilter: policy.userFilter || {},
       globalTeamId: teamId,
       method
     });
     const OwnerModel = policy.resourceModel === 'TRANSPORT_RECORD'
       ? TransportRecordModel
-      : TaskModel;
+      : policy.resourceModel === 'EQUIPMENT_ROUTINE_RECORD'
+        ? EquipmentRoutineRecordModel
+        : TaskModel;
     const query = OwnerModel.findOne(ownerFilter).select('_id teamId orgUnitId');
     if (session) query.session(session);
     const owner = await query.lean();
@@ -459,6 +480,7 @@ function createFileAssetService({
     ownerType,
     ownerId,
     method = 'PATCH',
+    allowedMimeTypes = null,
     session = null
   }) {
     const context = assertTeamContext(authContext);
@@ -466,6 +488,17 @@ function createFileAssetService({
     const teamId = normalizeObjectId(context.activeTeamId, 'activeTeamId');
     const fileIds = normalizeAttachmentInput(attachments);
     const previousIds = new Set(managedAttachmentIds(previousAttachments));
+    let allowedMimeTypeSet = null;
+    if (allowedMimeTypes !== null) {
+      if (
+        !Array.isArray(allowedMimeTypes) ||
+        allowedMimeTypes.length === 0 ||
+        allowedMimeTypes.some((mimeType) => typeof mimeType !== 'string' || !mimeType.trim())
+      ) {
+        throw new TypeError('allowedMimeTypes must be null or a non-empty array of MIME types');
+      }
+      allowedMimeTypeSet = new Set(allowedMimeTypes.map((mimeType) => mimeType.trim().toLowerCase()));
+    }
 
     await assertOwnerAccess({
       authContext: context,
@@ -489,6 +522,12 @@ function createFileAssetService({
     const filesById = new Map(files.map((file) => [String(file._id), file]));
     const orderedFiles = fileIds.map((fileId) => filesById.get(fileId));
     if (orderedFiles.some((file) => !file)) throw notFound();
+    if (
+      allowedMimeTypeSet &&
+      orderedFiles.some((file) => !allowedMimeTypeSet.has(String(file.mimeType).toLowerCase()))
+    ) {
+      throw fileError(415, 'FILE_MIME_TYPE_NOT_ALLOWED', 'One or more files use a disallowed MIME type');
+    }
 
     for (const file of orderedFiles) {
       const normalizedFileId = String(file._id);

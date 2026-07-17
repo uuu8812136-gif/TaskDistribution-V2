@@ -51,9 +51,50 @@
 			}
 		},
 		{
+			"path": "pages/workbench/index",
+			"style": {
+				"navigationBarTitleText": "工作台",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/reporting/index",
 			"style": {
 				"navigationBarTitleText": "数据提报",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/index",
+			"style": {
+				"navigationBarTitleText": "设备现场",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/detail",
+			"style": {
+				"navigationBarTitleText": "设备详情",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/execute",
+			"style": {
+				"navigationBarTitleText": "现场执行",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
+			"path": "pages/equipment/runtime-reading",
+			"style": {
+				"navigationBarTitleText": "运行小时",
 				"navigationBarBackgroundColor": "#4096FF",
 				"navigationBarTextStyle": "white"
 			}
@@ -160,8 +201,8 @@
 				"text": "任务管理"
 			},
 			{
-				"pagePath": "pages/reporting/index",
-				"text": "数据提报"
+				"pagePath": "pages/workbench/index",
+				"text": "工作台"
 			},
 			{
 				"pagePath": "pages/message/index",

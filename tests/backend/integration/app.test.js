@@ -78,3 +78,17 @@ test('transport and production schedule APIs are mounted behind authentication',
     assert.notEqual(response.body.message, '接口不存在');
   }
 });
+
+test('equipment routine APIs are mounted behind authentication', async () => {
+  const app = createApp(testConfig());
+  const equipmentId = '507f1f77bcf86cd799439011';
+  for (const route of [
+    '/api/equipment/routine-rules',
+    '/api/equipment/routine-records',
+    `/api/equipment/${equipmentId}/routine-schedule`,
+    `/api/equipment/${equipmentId}/runtime-readings`
+  ]) {
+    const response = await request(app).get(route).expect(401);
+    assert.ok(response.body.code || response.body.message);
+  }
+});

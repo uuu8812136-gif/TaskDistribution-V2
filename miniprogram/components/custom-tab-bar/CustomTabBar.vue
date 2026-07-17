@@ -51,9 +51,9 @@ export default {
           size: 48
         },
         {
-          text: '数据提报',
+          text: '工作台',
           icon: '▤',
-          pagePath: '/pages/reporting/index',
+          pagePath: '/pages/workbench/index',
           size: 46
         },
         {

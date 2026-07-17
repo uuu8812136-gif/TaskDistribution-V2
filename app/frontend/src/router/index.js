@@ -91,6 +91,17 @@ const router = createRouter({
           }
         },
         {
+          path: 'equipment/rules',
+          name: 'EquipmentRules',
+          component: () => import('@/views/equipment/EquipmentRules.vue'),
+          meta: {
+            title: '点检与保养规则',
+            permission: 'equipment.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
           path: 'equipment/:id',
           name: 'EquipmentDetail',
           component: () => import('@/views/equipment/EquipmentDetail.vue'),

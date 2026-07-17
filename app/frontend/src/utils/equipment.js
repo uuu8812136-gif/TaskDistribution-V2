@@ -10,6 +10,60 @@ export const CATEGORY_STATUS_OPTIONS = Object.freeze([
   { value: 'DISABLED', label: '停用', type: 'info' }
 ])
 
+export const ROUTINE_TYPE_OPTIONS = Object.freeze([
+  { value: 'INSPECTION', label: '点检', type: 'primary' },
+  { value: 'MAINTENANCE', label: '保养', type: 'success' }
+])
+
+export const ROUTINE_RULE_STATUS_OPTIONS = Object.freeze([
+  { value: 'ACTIVE', label: '启用', type: 'success' },
+  { value: 'DISABLED', label: '停用', type: 'info' }
+])
+
+export const ROUTINE_SCHEDULE_MODE_OPTIONS = Object.freeze([
+  { value: 'MANUAL', label: '手动发起' },
+  { value: 'CALENDAR', label: '按日历周期' },
+  { value: 'RUNTIME_HOURS', label: '按运行小时' },
+  { value: 'COMBINED', label: '日历与运行小时组合' }
+])
+
+export const ROUTINE_CALENDAR_UNIT_OPTIONS = Object.freeze([
+  { value: 'DAY', label: '天' },
+  { value: 'WEEK', label: '周' },
+  { value: 'MONTH', label: '月' }
+])
+
+export const ROUTINE_DUE_POLICY_OPTIONS = Object.freeze([
+  { value: 'ANY', label: '任一条件到期' },
+  { value: 'ALL', label: '全部条件到期' }
+])
+
+export const ROUTINE_PHOTO_POLICY_OPTIONS = Object.freeze([
+  { value: 'NONE', label: '不要求照片' },
+  { value: 'ON_ABNORMAL', label: '异常时必填' },
+  { value: 'ALWAYS', label: '始终必填' }
+])
+
+export const ROUTINE_ITEM_RESULT_OPTIONS = Object.freeze([
+  { value: 'NORMAL', label: '正常', type: 'success' },
+  { value: 'COMPLETED', label: '完成', type: 'success' },
+  { value: 'ABNORMAL', label: '异常', type: 'danger' },
+  { value: 'SKIPPED', label: '跳过', type: 'info' }
+])
+
+export const ROUTINE_DUE_STATE_OPTIONS = Object.freeze([
+  { value: 'OVERDUE', label: '已逾期', type: 'danger' },
+  { value: 'DUE', label: '已到期', type: 'warning' },
+  { value: 'UPCOMING', label: '未到期', type: 'success' },
+  { value: 'ON_DEMAND', label: '手动发起', type: 'info' },
+  { value: 'WAITING_FOR_READING', label: '待录入运行小时', type: 'info' },
+  { value: 'DUE_SOON', label: '即将到期', type: 'warning' },
+  { value: 'NOT_DUE', label: '未到期', type: 'success' },
+  { value: 'MANUAL', label: '手动发起', type: 'info' },
+  { value: 'WAITING_RUNTIME', label: '待录入运行小时', type: 'info' },
+  { value: 'NO_RUNTIME_READING', label: '待录入运行小时', type: 'info' }
+])
+
 export const IMPORT_DECISION_ACTIONS = Object.freeze({
   ACCEPT_AS_IS: 'ACCEPT_AS_IS',
   ACCEPT_SUGGESTION: 'ACCEPT_SUGGESTION',
@@ -102,6 +156,202 @@ export function buildEquipmentPayload(form) {
     remark: form.remark.trim(),
     reason: form.reason.trim() || null
   }
+}
+
+function positiveInteger(value, fieldName) {
+  const normalized = Number(value)
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new TypeError(`${fieldName} must be a positive integer`)
+  }
+  return normalized
+}
+
+function positiveNumber(value, fieldName) {
+  const normalized = Number(value)
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    throw new TypeError(`${fieldName} must be greater than zero`)
+  }
+  return normalized
+}
+
+function isoDateTime(value, fieldName) {
+  const date = value instanceof Date ? value : new Date(value)
+  if (!value || Number.isNaN(date.getTime())) {
+    throw new TypeError(`${fieldName} must be a valid date time`)
+  }
+  return date.toISOString()
+}
+
+function buildCalendarSchedule(calendar = {}) {
+  if (!ROUTINE_CALENDAR_UNIT_OPTIONS.some((option) => option.value === calendar.unit)) {
+    throw new TypeError('calendar.unit is invalid')
+  }
+  return {
+    unit: calendar.unit,
+    interval: positiveInteger(calendar.interval, 'calendar.interval'),
+    firstDueAt: isoDateTime(calendar.firstDueAt, 'calendar.firstDueAt')
+  }
+}
+
+function buildRuntimeSchedule(runtime = {}) {
+  return {
+    intervalHours: positiveNumber(runtime.intervalHours, 'runtime.intervalHours')
+  }
+}
+
+export function buildRoutineSchedule(schedule = {}) {
+  const mode = schedule.mode
+  if (!ROUTINE_SCHEDULE_MODE_OPTIONS.some((option) => option.value === mode)) {
+    throw new TypeError('schedule.mode is invalid')
+  }
+  if (mode === 'MANUAL') return { mode }
+  if (mode === 'CALENDAR') {
+    return { mode, calendar: buildCalendarSchedule(schedule.calendar) }
+  }
+  if (mode === 'RUNTIME_HOURS') {
+    return { mode, runtime: buildRuntimeSchedule(schedule.runtime) }
+  }
+  if (!ROUTINE_DUE_POLICY_OPTIONS.some((option) => option.value === schedule.duePolicy)) {
+    throw new TypeError('schedule.duePolicy is invalid')
+  }
+  return {
+    mode,
+    duePolicy: schedule.duePolicy,
+    calendar: buildCalendarSchedule(schedule.calendar),
+    runtime: buildRuntimeSchedule(schedule.runtime)
+  }
+}
+
+export function buildRoutineRulePayload(form) {
+  const routineType = String(form.routineType || '')
+  if (!ROUTINE_TYPE_OPTIONS.some((option) => option.value === routineType)) {
+    throw new TypeError('routineType is invalid')
+  }
+  const checklistItems = (form.checklistItems || []).map((item, index) => {
+    const name = String(item.name || '').trim()
+    if (!name) throw new TypeError('Every checklist item requires a name')
+    const normalized = {
+      name,
+      description: String(item.description || '').trim(),
+      required: item.required !== false,
+      sortOrder: index * 10
+    }
+    if (item.key) normalized.key = String(item.key)
+    return normalized
+  })
+  if (!checklistItems.length) throw new TypeError('At least one checklist item is required')
+  if (!ROUTINE_PHOTO_POLICY_OPTIONS.some((option) => option.value === form.photoPolicy)) {
+    throw new TypeError('photoPolicy is invalid')
+  }
+  if (!ROUTINE_RULE_STATUS_OPTIONS.some((option) => option.value === (form.status || 'ACTIVE'))) {
+    throw new TypeError('status is invalid')
+  }
+
+  const payload = {
+    routineType,
+    categoryId: String(form.categoryId || ''),
+    name: String(form.name || '').trim(),
+    description: String(form.description || '').trim(),
+    checklistItems,
+    schedule: buildRoutineSchedule(form.schedule),
+    photoPolicy: form.photoPolicy,
+    abnormalNoteRequired: form.abnormalNoteRequired !== false
+  }
+  if (!payload.categoryId || !payload.name) {
+    throw new TypeError('categoryId and name are required')
+  }
+  return payload
+}
+
+function calendarScheduleLabel(calendar = {}) {
+  const interval = Number(calendar.interval) || 1
+  const labels = {
+    DAY: interval === 1 ? '每日' : `每 ${interval} 天`,
+    WEEK: interval === 1 ? '每周' : `每 ${interval} 周`,
+    MONTH: interval === 1 ? '每月' : `每 ${interval} 个月`
+  }
+  return labels[calendar.unit] || '日历周期'
+}
+
+export function routineScheduleLabel(schedule = {}) {
+  if (schedule.mode === 'MANUAL') return '手动发起'
+  if (schedule.mode === 'CALENDAR') return calendarScheduleLabel(schedule.calendar)
+  if (schedule.mode === 'RUNTIME_HOURS') {
+    return `每运行 ${Number(schedule.runtime?.intervalHours) || '-'} 小时`
+  }
+  if (schedule.mode === 'COMBINED') {
+    const duePolicy = schedule.duePolicy === 'ALL' ? '全部到期' : '任一到期'
+    return `${calendarScheduleLabel(schedule.calendar)} + 每运行 ${Number(schedule.runtime?.intervalHours) || '-'} 小时（${duePolicy}）`
+  }
+  return '-'
+}
+
+export function routineItemResultOptions(routineType, required = true) {
+  const options = routineType === 'MAINTENANCE'
+    ? [
+        { value: 'COMPLETED', label: '完成', type: 'success' },
+        { value: 'ABNORMAL', label: '异常', type: 'danger' }
+      ]
+    : [
+        { value: 'NORMAL', label: '正常', type: 'success' },
+        { value: 'ABNORMAL', label: '异常', type: 'danger' }
+      ]
+  if (!required) options.push({ value: 'SKIPPED', label: '跳过', type: 'info' })
+  return options
+}
+
+export function routineAbnormalNotesComplete(itemResults = [], abnormalSummary = '', required = true) {
+  if (!required) return true
+  const hasSummary = String(abnormalSummary || '').trim().length > 0
+  return hasSummary || !itemResults.some((item) => (
+    item.result === 'ABNORMAL' && !String(item.note || '').trim()
+  ))
+}
+
+export function buildRoutineRecordPayload(form) {
+  const itemResults = (form.itemResults || []).map((item) => ({
+    itemKey: String(item.itemKey || ''),
+    result: item.result,
+    note: String(item.note || '').trim()
+  }))
+  if (!form.ruleId || !itemResults.length || itemResults.some((item) => (
+    !item.itemKey || !ROUTINE_ITEM_RESULT_OPTIONS.some((option) => option.value === item.result)
+  ))) {
+    throw new TypeError('A rule and complete item results are required')
+  }
+  const payload = {
+    ruleId: String(form.ruleId),
+    itemResults,
+    abnormalSummary: String(form.abnormalSummary || '').trim(),
+    photoFileIds: [...(form.photoFileIds || [])]
+  }
+  if (form.runtimeHours !== '' && form.runtimeHours !== null && form.runtimeHours !== undefined) {
+    const runtimeHours = Number(form.runtimeHours)
+    if (!Number.isFinite(runtimeHours) || runtimeHours < 0) {
+      throw new TypeError('runtimeHours must be a non-negative number')
+    }
+    payload.runtimeHours = runtimeHours
+  }
+  if (form.idempotencyKey) payload.idempotencyKey = String(form.idempotencyKey)
+  return payload
+}
+
+export function buildRuntimeReadingPayload(form) {
+  const hours = Number(form.hours)
+  if (!Number.isFinite(hours) || hours < 0) {
+    throw new TypeError('hours must be a non-negative number')
+  }
+  const payload = {
+    hours,
+    reason: String(form.reason || '').trim()
+  }
+  return payload
+}
+
+export function normalizeRuntimeHours(value) {
+  if (value === null || value === undefined || value === '') return null
+  const normalized = Number(value)
+  return Number.isFinite(normalized) && normalized >= 0 ? normalized : null
 }
 
 export function buildCategoryTree(categories = []) {

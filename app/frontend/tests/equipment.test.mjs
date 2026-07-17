@@ -3,6 +3,9 @@ import test from 'node:test'
 
 import {
   IMPORT_DECISION_ACTIONS,
+  buildRoutineRecordPayload,
+  buildRoutineRulePayload,
+  buildRuntimeReadingPayload,
   buildEquipmentImportConfirmation,
   buildCategoryTree,
   buildEquipmentPayload,
@@ -10,7 +13,11 @@ import {
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
   isEquipmentImportDecisionComplete,
+  normalizeRuntimeHours,
   optionForValue,
+  routineAbnormalNotesComplete,
+  routineItemResultOptions,
+  routineScheduleLabel,
   EQUIPMENT_STATUS_OPTIONS
 } from '../src/utils/equipment.js'
 
@@ -116,4 +123,155 @@ test('equipment import confirmation carries the optimistic version and explicit 
       }
     ]
   })
+})
+
+test('routine rule payload supports calendar, runtime and combined schedules', () => {
+  const base = {
+    routineType: 'INSPECTION',
+    categoryId: 'category-1',
+    name: ' 电机皮带检查 ',
+    description: ' 检查张紧度 ',
+    checklistItems: [
+      { key: 'belt', name: ' 检查皮带 ', description: ' 不得开裂 ', required: true },
+      { name: '检查张紧度', description: '', required: false }
+    ],
+    photoPolicy: 'ON_ABNORMAL',
+    abnormalNoteRequired: true,
+    status: 'ACTIVE',
+    version: 2,
+    teamId: 'must-not-leak'
+  }
+  const calendar = buildRoutineRulePayload({
+    ...base,
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 3, firstDueAt: '2026-07-20T08:00:00+08:00' }
+    }
+  })
+  assert.equal(calendar.schedule.calendar.firstDueAt, '2026-07-20T00:00:00.000Z')
+  assert.equal(calendar.checklistItems[0].sortOrder, 0)
+  assert.equal(calendar.checklistItems[1].sortOrder, 10)
+  assert.equal(calendar.checklistItems[0].key, 'belt')
+  assert.equal(calendar.checklistItems[0].description, '不得开裂')
+  assert.equal('version' in calendar, false)
+  assert.equal('teamId' in calendar, false)
+  assert.equal(routineScheduleLabel(calendar.schedule), '每 3 天')
+
+  const runtime = buildRoutineRulePayload({
+    ...base,
+    schedule: { mode: 'RUNTIME_HOURS', runtime: { intervalHours: 200 } }
+  })
+  assert.equal(routineScheduleLabel(runtime.schedule), '每运行 200 小时')
+
+  const combined = buildRoutineRulePayload({
+    ...base,
+    schedule: {
+      mode: 'COMBINED',
+      duePolicy: 'ANY',
+      calendar: { unit: 'MONTH', interval: 1, firstDueAt: '2026-08-01T00:00:00Z' },
+      runtime: { intervalHours: 500 }
+    }
+  })
+  assert.equal(routineScheduleLabel(combined.schedule), '每月 + 每运行 500 小时（任一到期）')
+  assert.equal('status' in combined, false)
+})
+
+test('routine execution and runtime reading payloads contain only accepted fields', () => {
+  assert.deepEqual(buildRoutineRecordPayload({
+    ruleId: 'rule-1',
+    runtimeHours: '215.5',
+    itemResults: [
+      { itemKey: 'belt', result: 'ABNORMAL', note: ' 松动 ', photoFileIds: ['must-not-leak'] }
+    ],
+    abnormalSummary: ' 已安排处理 ',
+    photoFileIds: [],
+    idempotencyKey: 'request-1',
+    teamId: 'must-not-leak'
+  }), {
+    ruleId: 'rule-1',
+    runtimeHours: 215.5,
+    itemResults: [
+      { itemKey: 'belt', result: 'ABNORMAL', note: '松动' }
+    ],
+    abnormalSummary: '已安排处理',
+    photoFileIds: [],
+    idempotencyKey: 'request-1'
+  })
+
+  assert.deepEqual(buildRuntimeReadingPayload({
+    hours: '220',
+    recordedAt: '2026-07-20T08:00:00+08:00',
+    reason: ' 交班读数 ',
+    teamId: 'must-not-leak'
+  }), {
+    hours: 220,
+    reason: '交班读数'
+  })
+})
+
+test('routine builders reject incomplete schedules and checklist results', () => {
+  assert.throws(() => buildRoutineRulePayload({
+    routineType: 'MAINTENANCE',
+    categoryId: 'category-1',
+    name: '保养',
+    checklistItems: [{ name: '润滑' }],
+    schedule: { mode: 'RUNTIME_HOURS', runtime: { intervalHours: 0 } },
+    photoPolicy: 'ALWAYS'
+  }), /greater than zero/)
+
+  assert.throws(() => buildRoutineRecordPayload({
+    ruleId: 'rule-1',
+    itemResults: [{ itemKey: 'item-1', result: '' }]
+  }), /complete item results/)
+})
+
+test('maintenance records accept completed and skipped results without leaking item photos', () => {
+  assert.deepEqual(buildRoutineRecordPayload({
+    ruleId: 'maintenance-rule',
+    itemResults: [
+      { itemKey: 'required-item', result: 'COMPLETED', note: '', photoFileIds: ['ignored'] },
+      { itemKey: 'optional-item', result: 'SKIPPED', note: '本次无需执行' }
+    ],
+    abnormalSummary: '',
+    photoFileIds: []
+  }), {
+    ruleId: 'maintenance-rule',
+    itemResults: [
+      { itemKey: 'required-item', result: 'COMPLETED', note: '' },
+      { itemKey: 'optional-item', result: 'SKIPPED', note: '本次无需执行' }
+    ],
+    abnormalSummary: '',
+    photoFileIds: []
+  })
+})
+
+test('optional inspection and maintenance items may be skipped while required items may not', () => {
+  assert.deepEqual(
+    routineItemResultOptions('INSPECTION', false).map((item) => item.value),
+    ['NORMAL', 'ABNORMAL', 'SKIPPED']
+  )
+  assert.deepEqual(
+    routineItemResultOptions('MAINTENANCE', false).map((item) => item.value),
+    ['COMPLETED', 'ABNORMAL', 'SKIPPED']
+  )
+  assert.equal(routineItemResultOptions('INSPECTION', true).some((item) => item.value === 'SKIPPED'), false)
+  assert.equal(routineItemResultOptions('MAINTENANCE', true).some((item) => item.value === 'SKIPPED'), false)
+})
+
+test('an abnormal item may use either its own note or the top-level summary', () => {
+  const results = [{ itemKey: 'belt', result: 'ABNORMAL', note: '' }]
+  assert.equal(routineAbnormalNotesComplete(results, '', true), false)
+  assert.equal(routineAbnormalNotesComplete(results, '统一说明：已停机处理', true), true)
+  assert.equal(routineAbnormalNotesComplete([{ ...results[0], note: '皮带松动' }], '', true), true)
+  assert.equal(routineAbnormalNotesComplete(results, '', false), true)
+})
+
+test('missing runtime readings remain empty instead of becoming zero', () => {
+  assert.equal(normalizeRuntimeHours(null), null)
+  assert.equal(normalizeRuntimeHours(undefined), null)
+  assert.equal(normalizeRuntimeHours(''), null)
+  assert.equal(normalizeRuntimeHours('0'), 0)
+  assert.equal(normalizeRuntimeHours(12.5), 12.5)
+  assert.equal(normalizeRuntimeHours(-1), null)
+  assert.equal(normalizeRuntimeHours('invalid'), null)
 })

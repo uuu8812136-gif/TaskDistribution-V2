@@ -106,6 +106,9 @@
             </template>
             <el-menu-item index="/equipment">设备台账</el-menu-item>
             <el-menu-item index="/equipment/categories">设备分类</el-menu-item>
+            <el-menu-item index="/equipment/rules">
+              点检保养规则
+            </el-menu-item>
           </el-sub-menu>
 
           <el-sub-menu v-if="session.hasPermission('report.view')" index="/reporting-module">

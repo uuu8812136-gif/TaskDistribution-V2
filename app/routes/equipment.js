@@ -3,6 +3,7 @@
 const express = require('express');
 const multer = require('multer');
 const equipmentController = require('../controllers/equipmentController');
+const equipmentRoutineController = require('../controllers/equipmentRoutineController');
 const {
   authenticateContext,
   requireBusinessContext,
@@ -16,6 +17,7 @@ const {
   EquipmentImportError,
   MAX_EQUIPMENT_IMPORT_FILE_SIZE
 } = require('../services/equipmentImportService');
+const { EquipmentRegistryError } = require('../services/equipmentRegistryService');
 
 const router = express.Router();
 
@@ -70,7 +72,44 @@ function importUploadMiddleware(req, res, next) {
   });
 }
 
+function rejectRoutineWriteTeamId(req, res, next) {
+  if (Object.prototype.hasOwnProperty.call(req.query || {}, 'teamId')) {
+    return next(new EquipmentRegistryError(
+      400,
+      'EQUIPMENT_TEAM_ID_IMMUTABLE',
+      'teamId is derived from the authenticated team and cannot be supplied by the client'
+    ));
+  }
+  return next();
+}
+
 router.get('/options', equipmentView, equipmentController.listOptions);
+
+router.get('/routine-rules', equipmentView, equipmentRoutineController.listRules);
+router.post(
+  '/routine-rules',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRoutineController.createRule
+);
+router.get('/routine-rules/:ruleId', equipmentView, equipmentRoutineController.getRule);
+router.patch(
+  '/routine-rules/:ruleId',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRoutineController.updateRule
+);
+router.delete(
+  '/routine-rules/:ruleId',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRoutineController.disableRule
+);
+router.get('/routine-records', equipmentView, equipmentRoutineController.listRecords);
+
 router.get('/categories', equipmentView, equipmentController.listCategories);
 router.post(
   '/categories',
@@ -124,6 +163,29 @@ router.post(
 router.post('/', requireTeamContext, equipmentCreate, equipmentController.createAsset);
 router.get('/', equipmentView, equipmentController.listAssets);
 router.get('/:equipmentId/history', equipmentView, equipmentController.getHistory);
+router.get(
+  '/:equipmentId/routine-schedule',
+  equipmentView,
+  equipmentRoutineController.getSchedule
+);
+router.post(
+  '/:equipmentId/routine-records',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentRoutineController.createRecord
+);
+router.get(
+  '/:equipmentId/runtime-readings',
+  equipmentView,
+  equipmentRoutineController.listRuntimeReadings
+);
+router.post(
+  '/:equipmentId/runtime-readings',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRoutineController.createRuntimeReading
+);
 router.post(
   '/:equipmentId/qrcode',
   requireTeamContext,

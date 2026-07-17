@@ -79,6 +79,24 @@ const equipmentAssetSchema = new mongoose.Schema({
     min: 0,
     default: null
   },
+  currentRuntimeHours: {
+    type: Number,
+    min: 0,
+    default: null,
+    validate: {
+      validator: (value) => value === null || Number.isFinite(value),
+      message: 'currentRuntimeHours must be a finite non-negative number or null'
+    }
+  },
+  runtimeHoursUpdatedAt: {
+    type: Date,
+    default: null
+  },
+  lastRuntimeReadingId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'EquipmentRuntimeReading',
+    default: null
+  },
   custodianUserId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

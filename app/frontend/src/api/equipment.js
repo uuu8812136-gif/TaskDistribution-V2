@@ -99,3 +99,63 @@ export const confirmEquipmentImport = (importJobId, data) => request({
   method: 'post',
   data
 })
+
+export const getEquipmentRoutineRules = (params) => request({
+  url: '/equipment/routine-rules',
+  method: 'get',
+  params
+})
+
+export const getEquipmentRoutineRule = (ruleId, params) => request({
+  url: `/equipment/routine-rules/${ruleId}`,
+  method: 'get',
+  params
+})
+
+export const createEquipmentRoutineRule = (data) => request({
+  url: '/equipment/routine-rules',
+  method: 'post',
+  data
+})
+
+export const updateEquipmentRoutineRule = (ruleId, data) => request({
+  url: `/equipment/routine-rules/${ruleId}`,
+  method: 'patch',
+  data
+})
+
+export const disableEquipmentRoutineRule = (ruleId, data = {}) => request({
+  url: `/equipment/routine-rules/${ruleId}`,
+  method: 'delete',
+  data
+})
+
+export const getEquipmentRoutineSchedule = (equipmentId, params) => request({
+  url: `/equipment/${equipmentId}/routine-schedule`,
+  method: 'get',
+  params
+})
+
+export const getEquipmentRoutineRecords = (params) => request({
+  url: '/equipment/routine-records',
+  method: 'get',
+  params
+})
+
+export const createEquipmentRoutineRecord = (equipmentId, data) => request({
+  url: `/equipment/${equipmentId}/routine-records`,
+  method: 'post',
+  data
+})
+
+export const getEquipmentRuntimeReadings = (equipmentId, params) => request({
+  url: `/equipment/${equipmentId}/runtime-readings`,
+  method: 'get',
+  params
+})
+
+export const createEquipmentRuntimeReading = (equipmentId, data) => request({
+  url: `/equipment/${equipmentId}/runtime-readings`,
+  method: 'post',
+  data
+})
