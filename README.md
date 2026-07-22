@@ -24,5 +24,6 @@ This directory is the isolated development workspace for the management system u
 - `docs/DEVELOPMENT_ENVIRONMENTS.md`: isolated development and test environments.
 - `docs/OPERATIONS_RUNBOOK.md`: backup, restore, retention, and health monitoring.
 - `docs/RELEASE_DEPLOYMENT_AND_ROLLBACK.md`: release checklist, environment variables, Windows/Linux deployment, rollback drills, and mini-program rollback.
+- `docs/PUBLIC_TEST_DEPLOYMENT_ACCEPTANCE_20260722.md`: live public PC-Web test deployment, isolation, TLS, regression evidence, and rollback points.
 - `docs/CUSTOMER_OPERATION_GUIDE.md`: customer-facing basic operation guide.
 - `docs/DELIVERY_REQUIREMENTS_CHECKLIST.md`: persistent completion and runtime-verification status.

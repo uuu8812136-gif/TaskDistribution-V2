@@ -27,6 +27,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Development source, database state, uploads, and customer fixtures stay on the E drive.
 - [x] Customer source files are excluded from Git.
 - [x] A database and upload backup exists before the real-data import.
+- [x] The public V2 customer-test site uses a dedicated domain, vhost, `38130` tunnel, `18120/18130` services, `27150` MongoDB and isolated data paths; the legacy site, `38080` tunnel and production MongoDB passed the post-deployment read-only regression.
 
 ## Requirements Baseline
 
@@ -127,6 +128,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] The historical 2026-07-17 isolated restore drill remains valid historical evidence for the backup/restore tooling; its 243-file snapshot is not the current customer-test baseline.
 - [x] The final clean customer-test baseline was backed up and independently verified on 2026-07-21 as `backup-20260721T141605Z-03560577` with manifest SHA256 `8f6bb074da2015763b92927cac407eb9f58ae990961c72d041974b10e6ef3044`: 33 collections, 241 FileAsset references, and 241 physical upload files totaling 117,731,100 bytes.
 - [x] `.test-data` operations tools, environment files, backup sets, restored attachments, and drill reports are ignored by Git and are not delivery-source artifacts.
+- [x] The isolated V2 test certificate renewal task runs daily as SYSTEM, returns `LastTaskResult=0` when the certificate is not yet due, and does not reload Nginx when the certificate hash is unchanged.
 - [ ] On the customer-selected host, install the schedule and visible health terminal, observe at least one real scheduled backup cycle, connect the approved alert channel, and repeat the isolated restore drill in a customer maintenance window with a signed report.
 
 ## Final Verification
@@ -138,5 +140,8 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] The 2026-07-21 broad browser run verifies all 23 Web routes, 5/5 focused clicks, 30/30 ordinary-team route/viewport cases, 9 global-read-only core routes, and 15 screenshots across 1920x1080, 1366x768, and 390x844. The 2026-07-22 focused rerun adds current equipment multi-period/dynamic-row evidence and catches then verifies the mobile shell fix: at 390x844 the closed sidebar leaves no residual node or gray rail, document width equals the 390px viewport, the title is not clipped, and the menu opens/closes normally.
 - [x] Database and file reconciliation confirms 141 equipment, 43 production months, 6 transport, 7 attendance, 241 FileAssets, and 241 upload files totaling 117,731,100 bytes. The clean customer-test baseline had zero audit/session rows; the current isolated runtime snapshot has 8 active routine rules, 0 open plans, 20 audit rows, and 7 auth sessions from local smoke verification, all outside production.
 - [x] Local API and Web development servers run the latest code. Web `3101` proxies to API `18110`; the final API was restarted after the last source change and passed `/health`, login, seven critical routes, and clean-console checks.
+- [x] The 2026-07-22 public V2 test deployment passed HTTP/DNS/TLS `10/10`, authenticated browser checks `12/12`, and the `1920x1080`/`1366x768`/`390x844` responsive route matrix `18/18`; console errors, page errors, HTTP 4xx/5xx and request failures were all zero.
+- [x] The public run verified 141 equipment assets, 8 routine rules, 6 transport rows, 43 production rows, 7 attendance rows and an authenticated private image; the customer project-admin account could see only Gearbox Logistics and had no Engine Logistics or global-read-only entry.
+- [x] After the public deployment and renewal-task trial, the legacy `/`, `/admin`, `/health`, `38080` tunnel and production MongoDB remained healthy; the MongoDB check was read-only.
 - [x] Current source is committed and pushed to the private GitHub repository; the delivery commit contains no customer source files, local data, uploads, backups, environment files, generated HBuilderX output, or Web build output.
 - [ ] Execute and archive the release/rollback drill on the selected staging host; the documentation itself is not deployment evidence.

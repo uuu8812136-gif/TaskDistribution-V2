@@ -495,6 +495,18 @@ sudo systemctl reload nginx
 
 恢复到 Task/TaskReview 审核轮次迁移前的旧测试快照后，新测试库的字段和索引状态也随快照回退；在用当前版本启动 API 或继续冒烟前，必须针对该恢复库重新执行 dry-run 和显式迁移，不能沿用原数据库的迁移报告。
 
+### 6.5 当前公网测试域名的边缘回滚
+
+`v2-test.horselink.cn` 是独立客户测试入口，不是生产切换。当前真实回滚点和验收结果见 `PUBLIC_TEST_DEPLOYMENT_ACCEPTANCE_20260722.md`。执行回滚时：
+
+1. 使用明确的 HTTPS 切换备份 `deploy-20260722T175528418-9e0c0ad6` 回到 HTTP 阶段；需要完全移除测试 vhost 时，再使用 HTTP 部署备份 `deploy-20260722T170909046-28c7dbed`。
+2. 禁止使用模糊的 `latest` 备份。回滚脚本必须先创建 safety backup，在 candidate 配置树执行 `nginx -t`，替换后再次执行 live `nginx -t`，成功后才 reload。
+3. 边缘入口回滚并验证旧版 `/`、`/admin`、`/health` 和 `38080` 后，才删除测试 DNS 记录。
+4. 完全下线时单独禁用 `TaskDistribution-V2-Test-Certificate-Renewal`，只停止 `taskdistribution-v2-test-tunnel.service` 和 V2 服务；不得触碰生产 `38080`、`27017` 或旧版服务。
+5. 不删除 V2 MongoDB、附件、备份和 release。数据库恢复不属于普通边缘或代码回滚。
+
+当前回滚脚本已通过 PowerShell 5.1 解析和自包含 `21/21` 断言，但真实边缘完整撤销再恢复尚未演练；完成前不得把测试版部署写成正式生产回滚验收。
+
 ## 7. 微信小程序发布与版本回退
 
 ### 7.1 发布
