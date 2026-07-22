@@ -62,6 +62,23 @@ test('attendance monthly view downloads the reviewed-only fixed A:R workbook', (
   assert.match(viewSource, /仅包含已审核日报/)
 })
 
+test('attendance views clear incompatible data and only accept their latest requests', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/AttendanceReports.vue`, 'utf8')
+
+  for (const requestName of ['options', 'records', 'daily', 'monthly', 'detail']) {
+    const requestId = `${requestName}RequestId`
+    assert.match(viewSource, new RegExp(`let ${requestId} = 0`))
+    assert.match(viewSource, new RegExp(`requestId !== ${requestId}`))
+  }
+  assert.match(viewSource, /if \(requestId === recordsRequestId\) loading\.value = false/)
+  assert.match(viewSource, /if \(requestId === dailyRequestId\) dailyLoading\.value = false/)
+  assert.match(viewSource, /if \(requestId === monthlyRequestId\) monthlyLoading\.value = false/)
+  assert.match(viewSource, /if \(requestId === detailRequestId\) detailLoading\.value = false/)
+  assert.match(viewSource, /async function handleViewChange\(\)[\s\S]*records\.value = \[\][\s\S]*dailySummary\.value = \{\}[\s\S]*monthlySummaries\.value = \[\]/)
+  assert.match(viewSource, /async function handleTeamChange\(\)[\s\S]*detailVisible\.value = false/)
+})
+
 test('transport payload emits only the fixed form and opaque photo ids', () => {
   const loadDetails = emptyTransportLoadDetails()
   loadDetails.woodenBox = '3'
@@ -198,6 +215,7 @@ test('production daily report page wires fixed generation, versions, tracing and
   const root = fileURLToPath(new URL('..', import.meta.url))
   const apiSource = fs.readFileSync(`${root}/src/api/reporting.js`, 'utf8')
   const viewSource = fs.readFileSync(`${root}/src/views/reporting/GeneratedDailyReports.vue`, 'utf8')
+  const requestSource = fs.readFileSync(`${root}/src/utils/request.js`, 'utf8')
   const routerSource = fs.readFileSync(`${root}/src/router/index.js`, 'utf8')
 
   assert.match(apiSource, /generated-daily-reports/)
@@ -206,5 +224,33 @@ test('production daily report page wires fixed generation, versions, tracing and
   assert.match(viewSource, /复制文字/)
   assert.match(viewSource, /来源追溯/)
   assert.match(viewSource, /availableVersions/)
+  assert.match(viewSource, /requestErrorMessage\(error, '生产日报生成失败。'\)/)
+  for (const code of [
+    'DAILY_REPORT_ATTENDANCE_REVIEW_REQUIRED',
+    'DAILY_REPORT_ATTENDANCE_INCOMPLETE',
+    'DAILY_REPORT_ATTENDANCE_SOURCE_MISSING',
+    'DAILY_REPORT_PRODUCTION_SCHEDULE_REQUIRED',
+    'DAILY_REPORT_VERSION_LIMIT_REACHED'
+  ]) {
+    assert.match(requestSource, new RegExp(`${code}: '[^']+'`))
+  }
+  assert.match(requestSource, /const localErrorMessage = error\?\.response \? '' : error\?\.message/)
+  assert.match(requestSource, /REQUEST_ERROR_CODE_MESSAGES\[code\] \|\| data\?\.message \|\| localErrorMessage \|\| fallback/)
+  assert.match(requestSource, /if \(status === 401 && hadToken && !isLoginRequest\)/)
+  assert.match(requestSource, /return Promise\.reject\(error\)/)
   assert.match(routerSource, /GeneratedDailyReports/)
+})
+
+test('production daily list and detail discard stale team, date and page responses', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/GeneratedDailyReports.vue`, 'utf8')
+
+  assert.match(viewSource, /let listRequestId = 0/)
+  assert.match(viewSource, /let detailRequestId = 0/)
+  assert.match(viewSource, /const requestId = \+\+listRequestId[\s\S]*reports\.value = \[\][\s\S]*if \(requestId !== listRequestId\) return/)
+  assert.match(viewSource, /if \(requestId === listRequestId\) listLoading\.value = false/)
+  assert.match(viewSource, /const requestId = \+\+detailRequestId[\s\S]*report\.value = null[\s\S]*if \(requestId !== detailRequestId\) return/)
+  assert.match(viewSource, /if \(requestId === detailRequestId\) loading\.value = false/)
+  assert.match(viewSource, /async function handleTeamChange\(teamId\)[\s\S]*report\.value = null[\s\S]*reports\.value = \[\]/)
+  assert.match(viewSource, /const pageLoading = computed\(\(\) => loading\.value \|\| listLoading\.value\)/)
 })

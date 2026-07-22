@@ -57,7 +57,7 @@
             v-for="task in taskList"
             :key="task._id"
             class="task-card"
-            @click="goToDetail(task._id)"
+            @click="goToDetail(task)"
           >
             <!-- 任务标题 -->
             <view class="task-header">
@@ -150,10 +150,12 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import { getAllTasks } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
+import { taskDetailUrl } from "@/utils/taskPolicy.js";
+import { createLatestRequestGate } from "@/utils/latestRequest.js";
 import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
 import {
   formatDate,
@@ -202,6 +204,7 @@ export default {
     const page = ref(1);
     const limit = ref(10);
     const hasMore = ref(true);
+    const requestGate = createLatestRequestGate();
 
     // 页面显示时触发
     onShow(() => {
@@ -248,44 +251,59 @@ export default {
     };
 
     // 加载任务列表
-    const loadTasks = async () => {
-      if (loading.value) return;
-
+    const loadTasks = async ({ append = false } = {}) => {
+      const request = requestGate.begin({
+        append,
+        page: page.value,
+        limit: limit.value,
+        status: currentStatus.value.value,
+        priority: currentPriority.value.value,
+        keyword: keyword.value.trim(),
+      });
       loading.value = true;
 
       try {
         const params = {
-          page: page.value,
-          limit: limit.value,
+          page: request.page,
+          limit: request.limit,
         };
 
-        if (currentStatus.value.value) {
-          params.status = currentStatus.value.value;
+        if (request.status) {
+          params.status = request.status;
         }
 
-        if (currentPriority.value.value) {
-          params.priority = currentPriority.value.value;
+        if (request.priority) {
+          params.priority = request.priority;
         }
 
-        if (keyword.value) {
-          params.keyword = keyword.value;
+        if (request.keyword) {
+          params.keyword = request.keyword;
         }
 
         const res = await getAllTasks(params);
+        if (!requestGate.isCurrent(request)) return;
 
-        if (page.value === 1) {
-          taskList.value = res.tasks || [];
-        } else {
+        if (request.append) {
           taskList.value = [...taskList.value, ...(res.tasks || [])];
+        } else {
+          taskList.value = res.tasks || [];
         }
 
         // 判断是否还有更多
-        hasMore.value = taskList.value.length < res.total;
+        const total = Number(res.pagination?.total ?? res.total ?? 0);
+        hasMore.value = taskList.value.length < total;
       } catch (error) {
-        console.error("加载任务失败:", error);
+        if (requestGate.isCurrent(request)) {
+          if (request.append && page.value === request.page) {
+            page.value = Math.max(1, request.page - 1);
+          }
+          console.error("加载任务失败:", error);
+        }
       } finally {
-        loading.value = false;
-        refreshing.value = false;
+        if (requestGate.isCurrent(request)) {
+          loading.value = false;
+          refreshing.value = false;
+        }
       }
     };
 
@@ -317,13 +335,15 @@ export default {
       if (loading.value || !hasMore.value) return;
 
       page.value++;
-      loadTasks();
+      loadTasks({ append: true });
     };
 
+    onUnmounted(() => requestGate.invalidate());
+
     // 跳转到详情页
-    const goToDetail = (taskId) => {
+    const goToDetail = (task) => {
       uni.navigateTo({
-        url: `/pages/task/detail?id=${taskId}`,
+        url: taskDetailUrl(task, { includeTeamId: userStore.isGlobalReadOnly }),
       });
     };
 

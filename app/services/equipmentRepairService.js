@@ -1099,12 +1099,13 @@ function createEquipmentRepairService({
     }
   }
 
-  async function exportRepairs({ authContext, requestedTeamId, method = 'GET', query = {} }) {
-    const { filter } = await readFilter({
+  async function exportRepairs({ authContext, req, requestedTeamId, method = 'GET', query = {} }) {
+    const userFilter = queryFilters(query);
+    const { teamId, filter } = await readFilter({
       authContext,
       requestedTeamId,
       method,
-      userFilter: queryFilters(query),
+      userFilter,
       permissionKey: 'equipment.export'
     });
     const documents = await EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).lean();
@@ -1149,7 +1150,34 @@ function createEquipmentRepairService({
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '维修单号': '' }]);
     XLSX.utils.book_append_sheet(workbook, worksheet, '维修记录');
-    return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    await auditService.record({
+      req,
+      authContext,
+      action: AUDIT_ACTIONS.EXPORT,
+      resourceType: AUDIT_RESOURCE_TYPES.REPAIR_ORDER,
+      after: {
+        count: rows.length,
+        filters: {
+          type: query.type || null,
+          statuses: query.status ? String(query.status).split(',').filter(Boolean) : [],
+          equipmentId: query.equipmentId
+            ? normalizeId(normalizeRelatedId(query.equipmentId, 'equipmentId'))
+            : null,
+          orgUnitId: query.orgUnitId
+            ? normalizeId(normalizeRelatedId(query.orgUnitId, 'orgUnitId'))
+            : null,
+          createdBy: query.createdBy
+            ? normalizeId(normalizeRelatedId(query.createdBy, 'createdBy'))
+            : null,
+          keyword: query.keyword ? requiredString(query.keyword, 'keyword', 100) : null,
+          startDate: query.startDate ? requiredDate(query.startDate, 'startDate').toISOString() : null,
+          endDate: query.endDate ? requiredDate(query.endDate, 'endDate').toISOString() : null
+        }
+      },
+      targetTeamId: teamId
+    });
+    return buffer;
   }
 
   return Object.freeze({

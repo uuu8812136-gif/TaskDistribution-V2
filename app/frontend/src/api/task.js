@@ -25,10 +25,11 @@ export function getMyTasks(params) {
 /**
  * 获取任务详情
  */
-export function getTaskDetail(id) {
+export function getTaskDetail(id, params = {}) {
   return request({
     url: `/tasks/${id}`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 
@@ -100,10 +101,11 @@ export function confirmTask(id, data = {}) {
 /**
  * 获取任务审核记录
  */
-export function getTaskReviews(id) {
+export function getTaskReviews(id, params = {}) {
   return request({
     url: `/tasks/${id}/reviews`,
-    method: 'get'
+    method: 'get',
+    params
   })
 }
 

@@ -4,6 +4,8 @@
 !.env.example
 *.key
 *.pem
+*.pfx
+ops/operations.env
 
 # Dependencies and builds
 node_modules/
@@ -19,6 +21,8 @@ backups/
 app/script/backup_task_distribution_*/
 *.log
 *.pid
+*.sqlite
+*.sqlite3
 
 # Test data and local state
 .test-data/

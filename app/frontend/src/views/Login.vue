@@ -10,7 +10,7 @@
         </div>
 
         <header class="login-header">
-          <h1>公司管理系统</h1>
+          <h1>Horselink 公司管理系统</h1>
           <p>登录账号，进入所属项目团队</p>
         </header>
 
@@ -110,6 +110,7 @@ import { ElMessage } from 'element-plus'
 import { getLoginTeams } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
 import { defaultLoginTeamId, normalizeLoginTeams } from '@/utils/loginTeams'
+import { requestErrorMessage } from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
@@ -179,7 +180,13 @@ const handleLogin = async () => {
       await router.replace(redirect || { name: 'Dashboard' })
     }
   } catch (error) {
-    ElMessage.error(error.response?.data?.message || '登录失败')
+    const isLoginResponseError = error?.config?.url === '/auth/login' && Boolean(error?.response)
+    if (isLoginResponseError || !error?.config) {
+      ElMessage.error(requestErrorMessage(error, '登录失败'))
+    }
+    if (session.token && !session.isReady) {
+      session.clearLocalSession('login-bootstrap-failed')
+    }
   } finally {
     loading.value = false
   }
@@ -198,7 +205,7 @@ onMounted(loadLoginTeams)
   align-items: center;
   background:
     linear-gradient(90deg, rgb(2 12 35 / 78%) 0%, rgb(2 18 52 / 56%) 48%, rgb(2 18 52 / 16%) 100%),
-    url('@/assets/2.png');
+    url('@/assets/login-logistics.jpg');
   background-size: cover;
   background-position: center;
 }

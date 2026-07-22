@@ -26,23 +26,29 @@
       <text class="section-count">{{ schedules.length }} 项</text>
     </view>
     <view class="schedule-list">
-      <view v-for="entry in schedules" :key="entry.ruleId" class="schedule-row">
-        <view class="schedule-top">
-          <view class="schedule-copy">
-            <text class="schedule-name">{{ entry.rule.name }}</text>
-            <text class="schedule-meta">{{ routineTypeLabel(entry.routineType) }} · {{ scheduleDescription(entry.rule.schedule) }}</text>
+      <view v-for="group in scheduleGroups" :key="group.routineType" class="schedule-group">
+        <view class="schedule-group-heading">
+          <text>{{ group.label }}</text>
+          <text>{{ group.entries.length }} 项</text>
+        </view>
+        <view v-for="entry in group.entries" :key="entry.ruleId" class="schedule-row">
+          <view class="schedule-top">
+            <view class="schedule-copy">
+              <text class="schedule-name">{{ entry.rule.name }}</text>
+              <text class="schedule-meta">{{ scheduleDescription(entry.rule.schedule) }}</text>
+            </view>
+            <text class="due-tag" :class="`tone-${dueStateTone(entry.dueState)}`">{{ dueStateLabel(entry.dueState) }}</text>
           </view>
-          <text class="due-tag" :class="`tone-${dueStateTone(entry.dueState)}`">{{ dueStateLabel(entry.dueState) }}</text>
+          <view class="due-grid">
+            <text v-if="entry.nextDueAt">日期：{{ formatDate(entry.nextDueAt, 'YYYY-MM-DD HH:mm') }}</text>
+            <text v-if="entry.runtimeStatus === 'WAITING_FOR_READING'">运行小时：待录入读数</text>
+            <text v-else-if="entry.nextDueRuntimeHours != null">小时：{{ entry.nextDueRuntimeHours }} h</text>
+            <text v-if="entry.lastRecord">上次：{{ formatDate(entry.lastRecord.performedAt, 'YYYY-MM-DD HH:mm') }}</text>
+          </view>
+          <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
+            执行{{ routineTypeLabel(entry.routineType) }}
+          </button>
         </view>
-        <view class="due-grid">
-          <text v-if="entry.nextDueAt">日期：{{ formatDate(entry.nextDueAt, 'YYYY-MM-DD HH:mm') }}</text>
-          <text v-if="entry.runtimeStatus === 'WAITING_FOR_READING'">运行小时：待录入读数</text>
-          <text v-else-if="entry.nextDueRuntimeHours != null">小时：{{ entry.nextDueRuntimeHours }} h</text>
-          <text v-if="entry.lastRecord">上次：{{ formatDate(entry.lastRecord.performedAt, 'YYYY-MM-DD HH:mm') }}</text>
-        </view>
-        <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
-          执行{{ routineTypeLabel(entry.routineType) }}
-        </button>
       </view>
     </view>
     <view v-if="!loading && schedules.length === 0" class="empty-state">当前设备类型尚未配置点检或保养规则</view>
@@ -84,6 +90,7 @@ import { formatDate } from '@/utils/format.js'
 import {
   dueStateLabel,
   dueStateTone,
+  groupRoutineSchedules,
   loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
   routineTypeLabel,
@@ -103,6 +110,7 @@ export default {
     const monthlyActivity = ref({ month: '', routineRecords: [], routineTotal: 0, repairs: [], repairTotal: 0 })
     const currentRuntimeHours = ref(null)
     const loading = ref(false)
+    const scheduleGroups = computed(() => groupRoutineSchedules(schedules.value))
     const requestParams = () => userStore.isGlobalReadOnly && teamId.value ? { teamId: teamId.value } : {}
 
     const canRecordHours = computed(() => (
@@ -147,9 +155,14 @@ export default {
     const openExecute = (entry) => uni.navigateTo({
       url: `/pages/equipment/execute?equipmentId=${equipmentId.value}&ruleId=${entry.ruleId}`
     })
-    const openRuntimeReading = () => uni.navigateTo({
-      url: `/pages/equipment/runtime-reading?equipmentId=${equipmentId.value}`
-    })
+    const openRuntimeReading = () => {
+      const currentQuery = currentRuntimeHours.value == null
+        ? ''
+        : `&currentHours=${encodeURIComponent(currentRuntimeHours.value)}`
+      uni.navigateTo({
+        url: `/pages/equipment/runtime-reading?equipmentId=${equipmentId.value}${currentQuery}`
+      })
+    }
     const openRepair = () => uni.navigateTo({
       url: `/pages/equipment/repair-form?equipmentId=${equipmentId.value}`
     })
@@ -167,7 +180,7 @@ export default {
     })
     onShow(load)
     return {
-      userStore, equipment, schedules, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
+      userStore, equipment, schedules, scheduleGroups, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
       canExecute, openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
       resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
     }
@@ -198,8 +211,9 @@ export default {
 .section-heading { display: flex; justify-content: space-between; margin: 30rpx 0 14rpx; color: #1f2733; font-size: 29rpx; font-weight: 600; }
 .section-count { color: #64748b; font-size: 23rpx; font-weight: 400; }
 .schedule-list { overflow: hidden; }
-.schedule-row { padding: 24rpx; border-bottom: 1px solid #e8edf3; }
-.schedule-row:last-child { border-bottom: 0; }
+.schedule-group + .schedule-group { border-top: 1px solid #dce4ee; }
+.schedule-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 14rpx 24rpx; color: #52606d; background: #f7f9fc; font-size: 22rpx; font-weight: 600; }
+.schedule-row { padding: 24rpx; border-top: 1px solid #e8edf3; }
 .schedule-name { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .schedule-meta { margin-top: 7rpx; color: #64748b; font-size: 23rpx; }
 .due-tag { flex: 0 0 auto; padding: 7rpx 12rpx; border-radius: 8rpx; font-size: 21rpx; }

@@ -33,10 +33,12 @@ const IDS = Object.freeze({
   teamA: new mongoose.Types.ObjectId(),
   teamB: new mongoose.Types.ObjectId(),
   orgA: new mongoose.Types.ObjectId(),
+  managerOrgA: new mongoose.Types.ObjectId(),
   orgB: new mongoose.Types.ObjectId(),
   executorA: new mongoose.Types.ObjectId(),
   reviewerA: new mongoose.Types.ObjectId(),
   creatorA: new mongoose.Types.ObjectId(),
+  systemCreatorA: new mongoose.Types.ObjectId(),
   executorB: new mongoose.Types.ObjectId(),
   reviewerB: new mongoose.Types.ObjectId(),
   creatorB: new mongoose.Types.ObjectId()
@@ -80,6 +82,19 @@ function teamContext(userId, teamId, orgUnitId, overrides = {}) {
     permissionKeys: [...ALL_TASK_PERMISSIONS],
     moduleDataScopes: moduleScopes(),
     ...overrides
+  };
+}
+
+function superAdminTeamContext(userId, teamId) {
+  return {
+    authenticated: true,
+    mode: SESSION_MODES.TEAM,
+    activeTeamId: teamId.toString(),
+    userId: userId.toString(),
+    isSuperAdmin: true,
+    membership: null,
+    permissionKeys: [...ALL_TASK_PERMISSIONS],
+    moduleDataScopes: moduleScopes(DATA_SCOPES.TEAM)
   };
 }
 
@@ -239,6 +254,25 @@ async function createTask({
   });
 }
 
+async function moveCreatorToTeamWideManagerOrg() {
+  await OrgUnit.create(orgDocument(IDS.managerOrgA, IDS.teamA, 'TEAM_A_MANAGER'));
+  await TeamMembership.updateOne({
+    teamId: IDS.teamA,
+    userId: IDS.creatorA
+  }, {
+    $set: {
+      orgUnitId: IDS.managerOrgA,
+      role: MEMBERSHIP_ROLES.PROJECT_ADMIN,
+      positionLevel: 1,
+      positionKey: POSITION_KEYS.DEPARTMENT_MANAGER,
+      moduleDataScopes: DATA_SCOPE_MODULE_VALUES.map((moduleKey) => ({
+        moduleKey,
+        scope: DATA_SCOPES.TEAM
+      }))
+    }
+  });
+}
+
 before(async () => {
   replicaSet = await MongoMemoryReplSet.create({
     replSet: { count: 1, storageEngine: 'wiredTiger' }
@@ -355,6 +389,662 @@ test('completion and completion updates cannot mutate a task in team B', async (
   assert.equal((await Task.findById(editableA._id)).executorCompletions[0].content, 'updated in A');
 });
 
+test('child-organization task workflows accept a team-wide creator in another organization', async () => {
+  await moveCreatorToTeamWideManagerOrg();
+
+  const extensionTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    name: 'Team manager extension task'
+  });
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA);
+  const applied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: extensionTask._id.toString() },
+    body: { reason: 'valid child organization request', requestedDays: 2 }
+  }), applied);
+  assert.equal(applied.statusCode, 201);
+  assert.equal((await Task.findById(extensionTask._id)).status, 'extension_pending');
+
+  const workflowTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    name: 'Team manager completion task'
+  });
+  const completed = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: workflowTask._id.toString() },
+    body: { completionNote: 'completed below a team-wide creator' }
+  }), completed);
+  assert.equal(completed.statusCode, 200);
+  assert.equal((await Task.findById(workflowTask._id)).status, 'pending_review');
+
+  const reviewed = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA),
+    params: { id: workflowTask._id.toString() },
+    body: { result: 'approved', content: 'approved in child organization' }
+  }), reviewed);
+  assert.equal(reviewed.statusCode, 200);
+  assert.equal((await Task.findById(workflowTask._id)).status, 'pending_confirm');
+});
+
+test('tasks created by a team-mode super administrator do not require creator membership', async () => {
+  await User.collection.insertOne({
+    ...userDocument(IDS.systemCreatorA, 'system-creator-a'),
+    roles: ['admin'],
+    isSuperAdmin: true,
+    isSystemAccount: true
+  });
+  assert.equal(await TeamMembership.countDocuments({ userId: IDS.systemCreatorA }), 0);
+
+  const task = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.systemCreatorA,
+    name: 'System-created workflow task'
+  });
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA);
+  const reviewerContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA);
+  const creatorContext = superAdminTeamContext(IDS.systemCreatorA, IDS.teamA);
+
+  const applied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: task._id.toString() },
+    body: { reason: 'System creator has no membership', requestedDays: 1 }
+  }), applied);
+  assert.equal(applied.statusCode, 201);
+
+  const extensionRequest = await ExtensionRequest.findOne({ task: task._id });
+  const approved = response();
+  await extensionController.approveExtension(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: extensionRequest._id.toString() },
+    body: { status: 'approved', approvedDays: 1, approvalNote: 'approved by creator' }
+  }), approved);
+  assert.equal(approved.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'in_progress');
+
+  const completed = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: task._id.toString() },
+    body: { completionNote: 'completed under a system creator' }
+  }), completed);
+  assert.equal(completed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'pending_review');
+
+  const reviewed = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: task._id.toString() },
+    body: { result: 'approved', content: 'reviewed under a system creator' }
+  }), reviewed);
+  assert.equal(reviewed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'pending_confirm');
+
+  const confirmed = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: task._id.toString() }
+  }), confirmed);
+  assert.equal(confirmed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'finished');
+  assert.equal((await ExtensionRequest.findById(extensionRequest._id)).status, 'approved');
+
+  const messageTypes = await Message.find({ teamId: IDS.teamA }).distinct('type');
+  assert.deepEqual(new Set(messageTypes), new Set([
+    'extension_applied',
+    'extension_approved',
+    'task_completed',
+    'task_reviewed',
+    'task_confirmed'
+  ]));
+});
+
+test('a view-only executor can complete only their own assignment without task.edit', async () => {
+  const assignedTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    name: 'View-only executor assignment'
+  });
+  const otherTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.reviewerA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    name: 'Another executor assignment'
+  });
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+
+  const completed = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: assignedTask._id.toString() },
+    body: { completionNote: 'completed without task.edit' }
+  }), completed);
+  assert.equal(completed.statusCode, 200);
+  assert.equal((await Task.findById(assignedTask._id)).status, 'pending_review');
+
+  const denied = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: otherTask._id.toString() },
+    body: { completionNote: 'must not complete another assignment' }
+  }), denied);
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.body.code, 'TASK_EXECUTOR_REQUIRED');
+  assert.equal((await Task.findById(otherTask._id)).status, 'in_progress');
+
+  const duplicate = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: assignedTask._id.toString() },
+    body: { completionNote: 'must not resubmit' }
+  }), duplicate);
+  assert.equal(duplicate.statusCode, 400);
+  assert.equal(duplicate.body.code, 'TASK_COMPLETION_ALREADY_SUBMITTED');
+});
+
+test('a view-only executor can update their submitted record while another executor is pending', async () => {
+  const task = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    name: 'Multi-executor completion update'
+  });
+  task.executor = [IDS.executorA, IDS.reviewerA];
+  task.executorCompletions = [
+    { executor: IDS.executorA, status: 'pending', attachments: [] },
+    { executor: IDS.reviewerA, status: 'pending', attachments: [] }
+  ];
+  await task.save();
+
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+  const completed = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: task._id.toString() },
+    body: { completionNote: 'first submission' }
+  }), completed);
+  assert.equal(completed.statusCode, 200);
+  assert.equal(completed.body.completionStatus.allCompleted, false);
+
+  const updated = response();
+  await taskFlowController.updateCompletion(request({
+    method: 'PUT',
+    authContext: executorContext,
+    params: { id: task._id.toString() },
+    body: { completionNote: 'corrected submission' }
+  }), updated);
+  assert.equal(updated.statusCode, 200);
+  const stored = await Task.findById(task._id);
+  const ownCompletion = stored.executorCompletions.find(
+    (entry) => entry.executor.toString() === IDS.executorA.toString()
+  );
+  assert.equal(ownCompletion.content, 'corrected submission');
+});
+
+test('a rejected CC review reopens a new round that can be resubmitted and reviewed again', async () => {
+  const task = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    executorCompletionStatus: 'completed',
+    name: 'Strict review sequence'
+  });
+  const reviewerContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA);
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+  task.actualCompletionTime = new Date('2026-07-18T08:00:00.000Z');
+  task.completedBy = IDS.executorA;
+  task.completionNote = 'Initial submitted completion';
+  await task.save();
+  const initialCompletedAt = task.executorCompletions[0].completedAt;
+
+  const invalidDecision = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: task._id.toString() },
+    body: { content: 'must not create a pending review', result: 'pending' }
+  }), invalidDecision);
+  assert.equal(invalidDecision.statusCode, 400);
+  assert.equal(invalidDecision.body.code, 'TASK_FLOW_INVALID');
+  assert.equal(await TaskReview.countDocuments({ task: task._id }), 0);
+  assert.equal((await Task.findById(task._id)).status, 'pending_review');
+
+  const bypassedConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: task._id.toString() }
+  }), bypassedConfirmation);
+  assert.equal(bypassedConfirmation.statusCode, 400);
+  assert.equal(bypassedConfirmation.body.code, 'TASK_FLOW_INVALID');
+  assert.equal((await Task.findById(task._id)).status, 'pending_review');
+
+  const rejected = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: task._id.toString() },
+    body: { content: 'Please correct the completion evidence', result: 'rejected' }
+  }), rejected);
+  assert.equal(rejected.statusCode, 200);
+  assert.equal(rejected.body.message, 'Task returned for revision');
+
+  let stored = await Task.findById(task._id);
+  assert.equal(stored.status, 'in_progress');
+  assert.equal(stored.reviewRound, 2);
+  assert.equal(stored.executorCompletions[0].status, 'pending');
+  assert.equal(stored.executorCompletions[0].content, 'initial');
+  assert.equal(stored.executorCompletions[0].completedAt, null);
+  assert.equal(stored.actualCompletionTime, null);
+  assert.equal(stored.completedBy, null);
+  assert.equal(stored.completionNote, null);
+  assert.deepEqual(stored.completionAttachments, []);
+  const rejectedReview = await TaskReview.findOne({ task: task._id, result: 'rejected' }).lean();
+  assert.equal(rejectedReview.stage, 'review');
+  assert.equal(rejectedReview.reviewRound, 1);
+  assert.equal(await AuditLog.countDocuments({
+    resourceType: 'TASK_REVIEW',
+    resourceId: rejectedReview._id,
+    action: 'REJECT'
+  }), 1);
+  assert.equal(await Message.countDocuments({
+    teamId: IDS.teamA,
+    type: 'task_updated',
+    recipient: IDS.executorA,
+    relatedTask: task._id
+  }), 1);
+  const taskRejectionAudit = await AuditLog.findOne({
+    resourceType: 'TASK',
+    resourceId: task._id,
+    action: 'STATUS_CHANGE'
+  }).lean();
+  assert.equal(
+    new Date(taskRejectionAudit.before.executorCompletions[0].completedAt).getTime(),
+    initialCompletedAt.getTime()
+  );
+  assert.equal(taskRejectionAudit.after.executorCompletions[0].completedAt, null);
+
+  const rejectedConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: task._id.toString() }
+  }), rejectedConfirmation);
+  assert.equal(rejectedConfirmation.statusCode, 400);
+  assert.equal((await Task.findById(task._id)).status, 'in_progress');
+
+  const resubmitted = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: task._id.toString() },
+    body: { completionNote: 'Corrected completion evidence' }
+  }), resubmitted);
+  assert.equal(resubmitted.statusCode, 200);
+  stored = await Task.findById(task._id);
+  assert.equal(stored.status, 'pending_review');
+  assert.equal(stored.reviewRound, 2);
+  assert.equal(stored.executorCompletions[0].status, 'completed');
+  assert.ok(stored.executorCompletions[0].completedAt instanceof Date);
+
+  const approved = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: task._id.toString() },
+    body: { content: 'Corrected evidence accepted', result: 'approved' }
+  }), approved);
+  assert.equal(approved.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'pending_confirm');
+
+  const confirmed = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: task._id.toString() },
+    body: { content: 'Final confirmation after correction' }
+  }), confirmed);
+  assert.equal(confirmed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'finished');
+
+  const reviews = await TaskReview.find({ task: task._id })
+    .sort({ reviewRound: 1, reviewTime: 1 })
+    .lean();
+  assert.deepEqual(
+    reviews.map(({ reviewRound, stage, result }) => `${reviewRound}:${stage}:${result}`),
+    [
+      '1:review:rejected',
+      '2:review:approved',
+      '2:confirmation:approved'
+    ]
+  );
+});
+
+test('final confirmation uses creator or administrator resource authorization without task.review', async () => {
+  const createPendingConfirmationTask = (name) => createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    executorCompletionStatus: 'completed',
+    name
+  });
+
+  const creatorTask = await createPendingConfirmationTask('Creator confirms without review permission');
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view', 'task.create']
+  });
+  const creatorConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: creatorTask._id.toString() }
+  }), creatorConfirmation);
+  assert.equal(creatorConfirmation.statusCode, 200);
+  assert.equal((await Task.findById(creatorTask._id)).status, 'finished');
+
+  const deniedTask = await createPendingConfirmationTask('Member cannot confirm another creator task');
+  const memberContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+  const deniedConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: memberContext,
+    params: { id: deniedTask._id.toString() }
+  }), deniedConfirmation);
+  assert.equal(deniedConfirmation.statusCode, 403);
+  assert.equal(deniedConfirmation.body.code, 'TASK_CONFIRMATION_DENIED');
+  assert.equal((await Task.findById(deniedTask._id)).status, 'pending_confirm');
+
+  const projectAdminTask = await createPendingConfirmationTask('Project admin confirms without review permission');
+  const projectAdminContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+  projectAdminContext.membership.role = MEMBERSHIP_ROLES.PROJECT_ADMIN;
+  const projectAdminConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: projectAdminContext,
+    params: { id: projectAdminTask._id.toString() }
+  }), projectAdminConfirmation);
+  assert.equal(projectAdminConfirmation.statusCode, 200);
+  assert.equal((await Task.findById(projectAdminTask._id)).status, 'finished');
+
+  const superAdminTask = await createPendingConfirmationTask('Super admin confirms without review permission');
+  const superAdminContext = {
+    ...superAdminTeamContext(IDS.reviewerA, IDS.teamA),
+    permissionKeys: ['task.view']
+  };
+  const superAdminConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: superAdminContext,
+    params: { id: superAdminTask._id.toString() }
+  }), superAdminConfirmation);
+  assert.equal(superAdminConfirmation.statusCode, 200);
+  assert.equal((await Task.findById(superAdminTask._id)).status, 'finished');
+});
+
+test('extension requests cannot interleave with completion or later workflow states', async () => {
+  const applicantContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA);
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+
+  for (const status of [
+    'partial_completed',
+    'completed',
+    'pending_review',
+    'pending_confirm',
+    'finished'
+  ]) {
+    const task = await createTask({
+      teamId: IDS.teamA,
+      orgUnitId: IDS.orgA,
+      executor: IDS.executorA,
+      reviewer: IDS.reviewerA,
+      creator: IDS.creatorA,
+      status,
+      name: `Extension blocked from ${status}`
+    });
+    const denied = response();
+    await extensionController.applyExtension(request({
+      method: 'POST',
+      authContext: applicantContext,
+      params: { id: task._id.toString() },
+      body: { reason: `invalid state ${status}`, requestedDays: 1 }
+    }), denied);
+    assert.equal(denied.statusCode, 400, status);
+    assert.equal(denied.body.code, 'EXTENSION_TASK_STATE_INVALID', status);
+    assert.equal((await Task.findById(task._id)).status, status);
+  }
+
+  const previouslyCompleted = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    executorCompletionStatus: 'completed',
+    name: 'Extension blocked by completion record'
+  });
+  const completedRecordDenied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: applicantContext,
+    params: { id: previouslyCompleted._id.toString() },
+    body: { reason: 'completion already submitted', requestedDays: 1 }
+  }), completedRecordDenied);
+  assert.equal(completedRecordDenied.statusCode, 400);
+  assert.equal(completedRecordDenied.body.code, 'EXTENSION_TASK_STATE_INVALID');
+  assert.equal(await ExtensionRequest.countDocuments({ task: previouslyCompleted._id }), 0);
+
+  const pendingExtensionTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    name: 'Pending extension completion lock'
+  });
+  const applied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: applicantContext,
+    params: { id: pendingExtensionTask._id.toString() },
+    body: { reason: 'valid pending extension', requestedDays: 2 }
+  }), applied);
+  assert.equal(applied.statusCode, 201);
+
+  const completionDuringExtension = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: applicantContext,
+    params: { id: pendingExtensionTask._id.toString() },
+    body: { completionNote: 'must wait for extension decision' }
+  }), completionDuringExtension);
+  assert.equal(completionDuringExtension.statusCode, 400);
+  assert.equal(completionDuringExtension.body.code, 'TASK_EXTENSION_PENDING');
+  assert.equal((await Task.findById(pendingExtensionTask._id)).status, 'extension_pending');
+
+  const pendingRequest = await ExtensionRequest.findOne({ task: pendingExtensionTask._id });
+  await Task.updateOne({ _id: pendingExtensionTask._id }, {
+    $set: {
+      'executorCompletions.0.status': 'completed',
+      'executorCompletions.0.completedAt': new Date(),
+      'executorCompletions.0.content': 'legacy inconsistent completion'
+    }
+  });
+  const originalTime = pendingExtensionTask.plannedCompletionTime.getTime();
+  const unsafeApproval = response();
+  await extensionController.approveExtension(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: pendingRequest._id.toString() },
+    body: { status: 'approved', approvedDays: 2 }
+  }), unsafeApproval);
+  assert.equal(unsafeApproval.statusCode, 400);
+  assert.equal(unsafeApproval.body.code, 'EXTENSION_TASK_STATE_INVALID');
+  const unchangedTask = await Task.findById(pendingExtensionTask._id);
+  assert.equal(unchangedTask.status, 'extension_pending');
+  assert.equal(unchangedTask.plannedCompletionTime.getTime(), originalTime);
+  assert.equal((await ExtensionRequest.findById(pendingRequest._id)).status, 'pending');
+});
+
+test('a view-only responsible owner can request an extension only for their own task', async () => {
+  const ownedTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    name: 'View-only owner extension'
+  });
+  const otherTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.reviewerA,
+    reviewer: IDS.executorA,
+    creator: IDS.creatorA,
+    name: 'Another owner extension'
+  });
+  const applicantContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+
+  const applied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: applicantContext,
+    params: { id: ownedTask._id.toString() },
+    body: { reason: 'Need one more day', requestedDays: 1 }
+  }), applied);
+  assert.equal(applied.statusCode, 201);
+  assert.equal((await Task.findById(ownedTask._id)).status, 'extension_pending');
+
+  const denied = response();
+  await extensionController.applyExtension(request({
+    method: 'POST',
+    authContext: applicantContext,
+    params: { id: otherTask._id.toString() },
+    body: { reason: 'Must not request for another owner', requestedDays: 1 }
+  }), denied);
+  assert.equal(denied.statusCode, 403);
+  assert.equal(denied.body.code, 'EXTENSION_APPLICANT_DENIED');
+  assert.equal((await Task.findById(otherTask._id)).status, 'in_progress');
+});
+
+test('concurrent completion, confirmation, and extension submissions commit once', async () => {
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+  const completionTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    name: 'Concurrent completion task'
+  });
+
+  const completionResponses = [response(), response()];
+  await Promise.all(completionResponses.map((targetResponse) => (
+    taskFlowController.completeTask(request({
+      method: 'POST',
+      authContext: executorContext,
+      params: { id: completionTask._id.toString() },
+      body: { completionNote: 'single committed completion' }
+    }), targetResponse)
+  )));
+  assert.equal(completionResponses.filter(({ statusCode }) => statusCode === 200).length, 1);
+  assert.equal(completionResponses.some(({ statusCode }) => statusCode >= 500), false);
+  assert.equal((await Task.findById(completionTask._id)).status, 'pending_confirm');
+  assert.equal(await AuditLog.countDocuments({
+    resourceType: 'TASK',
+    resourceId: completionTask._id,
+    action: 'SUBMIT'
+  }), 1);
+
+  const confirmationResponses = [response(), response()];
+  await Promise.all(confirmationResponses.map((targetResponse) => (
+    taskFlowController.confirmTask(request({
+      method: 'POST',
+      authContext: creatorContext,
+      params: { id: completionTask._id.toString() }
+    }), targetResponse)
+  )));
+  assert.equal(confirmationResponses.filter(({ statusCode }) => statusCode === 200).length, 1);
+  assert.equal(confirmationResponses.some(({ statusCode }) => statusCode >= 500), false);
+  assert.equal((await Task.findById(completionTask._id)).status, 'finished');
+
+  const extensionTask = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    name: 'Concurrent extension task'
+  });
+  const extensionResponses = [response(), response()];
+  await Promise.all(extensionResponses.map((targetResponse) => (
+    extensionController.applyExtension(request({
+      method: 'POST',
+      authContext: executorContext,
+      params: { id: extensionTask._id.toString() },
+      body: { reason: 'single extension request', requestedDays: 1 }
+    }), targetResponse)
+  )));
+  assert.equal(extensionResponses.filter(({ statusCode }) => statusCode === 201).length, 1);
+  assert.equal(extensionResponses.some(({ statusCode }) => statusCode >= 500), false);
+  assert.equal(await ExtensionRequest.countDocuments({ task: extensionTask._id }), 1);
+  assert.equal((await Task.findById(extensionTask._id)).status, 'extension_pending');
+});
+
 test('review, review history and confirmation stay inside the active team', async () => {
   const taskA = await createTask({
     teamId: IDS.teamA,
@@ -394,12 +1084,11 @@ test('review, review history and confirmation stay inside the active team', asyn
     method: 'POST',
     authContext: reviewerContext,
     params: { id: taskA._id.toString() },
-    body: { content: 'legacy rejection behavior', result: 'rejected' }
+    body: { content: 'approved inside team A', result: 'approved' }
   }), reviewed);
   assert.equal(reviewed.statusCode, 200);
   const review = await TaskReview.findOne({ task: taskA._id });
   assert.equal(review.teamId.toString(), IDS.teamA.toString());
-  // Frozen legacy behavior: a rejection still advances pending_confirm for now.
   assert.equal((await Task.findById(taskA._id)).status, 'pending_confirm');
 
   const deniedHistory = response();
@@ -437,6 +1126,503 @@ test('review, review history and confirmation stay inside the active team', asyn
   assert.equal(confirmed.statusCode, 200);
   assert.equal((await Task.findById(taskA._id)).status, 'finished');
   assert.equal(await Message.countDocuments({ teamId: IDS.teamB }), 0);
+});
+
+test('the same actor may review as a CC user and then perform final confirmation', async () => {
+  const task = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.creatorA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    executorCompletionStatus: 'completed',
+    name: 'Same reviewer and confirmer'
+  });
+  const actorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+
+  const reviewed = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: actorContext,
+    params: { id: task._id.toString() },
+    body: { content: 'CC review approved', result: 'approved', rating: 4 }
+  }), reviewed);
+  assert.equal(reviewed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'pending_confirm');
+
+  const confirmed = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: actorContext,
+    params: { id: task._id.toString() },
+    body: { content: 'Final confirmation approved', rating: 5 }
+  }), confirmed);
+  assert.equal(confirmed.statusCode, 200);
+  assert.equal((await Task.findById(task._id)).status, 'finished');
+
+  const reviews = await TaskReview.find({ task: task._id }).sort({ reviewTime: 1 }).lean();
+  assert.deepEqual(reviews.map(({ stage }) => stage), ['review', 'confirmation']);
+  assert.deepEqual(reviews.map(({ reviewer }) => reviewer.toString()), [
+    IDS.creatorA.toString(),
+    IDS.creatorA.toString()
+  ]);
+});
+
+test('final confirmation always records the current review round without client content', async () => {
+  const task = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    executorCompletionStatus: 'completed',
+    name: 'Confirmation with default content'
+  });
+  task.reviewRound = 3;
+  await task.save();
+
+  const confirmed = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: teamContext(IDS.creatorA, IDS.teamA, IDS.orgA),
+    params: { id: task._id.toString() },
+    body: {}
+  }), confirmed);
+
+  assert.equal(confirmed.statusCode, 200);
+  const confirmation = await TaskReview.findOne({
+    task: task._id,
+    stage: 'confirmation'
+  }).lean();
+  assert.equal(confirmation.reviewRound, 3);
+  assert.equal(confirmation.reviewer.toString(), IDS.creatorA.toString());
+  assert.equal(confirmation.result, 'approved');
+  assert.equal(confirmation.content, '已确认任务完成');
+});
+
+test('child completion only advances a parent to confirmation and never replaces explicit confirmation', async () => {
+  const parent = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    executorCompletionStatus: 'completed',
+    name: 'Parent requiring explicit confirmation'
+  });
+  parent.actualCompletionTime = new Date('2026-07-20T08:00:00.000Z');
+  await parent.save();
+  const child = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    isMainTask: false,
+    parentTask: parent._id,
+    executorCompletionStatus: 'completed',
+    name: 'Child awaiting review'
+  });
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+  const reviewerContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA);
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+
+  const prematureParentConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: parent._id.toString() }
+  }), prematureParentConfirmation);
+  assert.equal(prematureParentConfirmation.statusCode, 400);
+  assert.equal(prematureParentConfirmation.body.code, 'TASK_SUBTASKS_UNFINISHED');
+  assert.equal((await Task.findById(parent._id)).status, 'pending_confirm');
+
+  const rejectedChild = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: child._id.toString() },
+    body: { content: 'Child needs correction', result: 'rejected' }
+  }), rejectedChild);
+  assert.equal(rejectedChild.statusCode, 200);
+  let storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'partial_completed');
+  assert.equal(storedParent.completionRate, 0);
+
+  const resubmittedChild = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: child._id.toString() },
+    body: { completionNote: 'Corrected child submission' }
+  }), resubmittedChild);
+  assert.equal(resubmittedChild.statusCode, 200);
+  assert.equal((await Task.findById(parent._id)).status, 'partial_completed');
+
+  const approvedChild = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: child._id.toString() },
+    body: { content: 'Child correction accepted', result: 'approved' }
+  }), approvedChild);
+  assert.equal(approvedChild.statusCode, 200);
+  assert.equal((await Task.findById(parent._id)).status, 'partial_completed');
+
+  const childConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: child._id.toString() }
+  }), childConfirmation);
+  assert.equal(childConfirmation.statusCode, 200);
+
+  storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'pending_confirm');
+  assert.equal(storedParent.completionRate, 100);
+  assert.equal(storedParent.confirmedBy, undefined);
+  assert.equal(await TaskReview.countDocuments({
+    task: parent._id,
+    stage: 'confirmation'
+  }), 0);
+  assert.equal(await Message.countDocuments({
+    type: 'task_confirmed',
+    relatedTask: parent._id
+  }), 0);
+
+  const parentConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Explicit parent confirmation' }
+  }), parentConfirmation);
+  assert.equal(parentConfirmation.statusCode, 200);
+  storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'finished');
+  assert.equal(storedParent.confirmedBy.toString(), IDS.creatorA.toString());
+  assert.equal(await TaskReview.countDocuments({
+    task: parent._id,
+    stage: 'confirmation',
+    reviewRound: 1
+  }), 1);
+  assert.equal(await Message.countDocuments({
+    type: 'task_confirmed',
+    recipient: IDS.executorA,
+    relatedTask: parent._id
+  }), 1);
+});
+
+test('a child confirmed after the parent review cannot reopen the reviewed parent', async () => {
+  const parent = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    executorCompletionStatus: 'completed',
+    name: 'Reviewed parent awaiting child confirmation'
+  });
+  parent.actualCompletionTime = new Date('2026-07-20T08:00:00.000Z');
+  await parent.save();
+  const child = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    isMainTask: false,
+    parentTask: parent._id,
+    executorCompletionStatus: 'completed',
+    name: 'Child awaiting final confirmation'
+  });
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+  const reviewerContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA);
+
+  const reviewedParent = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Parent review approved', result: 'approved' }
+  }), reviewedParent);
+  assert.equal(reviewedParent.statusCode, 200);
+  assert.equal((await Task.findById(parent._id)).status, 'pending_confirm');
+
+  const confirmedChild = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: child._id.toString() }
+  }), confirmedChild);
+  assert.equal(confirmedChild.statusCode, 200);
+
+  let storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'pending_confirm');
+  assert.equal(storedParent.completionRate, 100);
+
+  const confirmedParent = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: parent._id.toString() }
+  }), confirmedParent);
+  assert.equal(confirmedParent.statusCode, 200);
+  storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'finished');
+  assert.equal(await TaskReview.countDocuments({
+    task: parent._id,
+    reviewRound: 1
+  }), 2);
+});
+
+test('a rejected child invalidates the parent review round before corrected work can advance', async () => {
+  const parent = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    executorCompletionStatus: 'completed',
+    name: 'Parent review must not survive child rework'
+  });
+  parent.actualCompletionTime = new Date('2026-07-20T08:00:00.000Z');
+  await parent.save();
+  const child = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'pending_review',
+    isMainTask: false,
+    parentTask: parent._id,
+    executorCompletionStatus: 'completed',
+    name: 'Child requiring rework'
+  });
+  child.actualCompletionTime = new Date('2026-07-20T08:05:00.000Z');
+  await child.save();
+
+  const reviewerContext = teamContext(IDS.reviewerA, IDS.teamA, IDS.orgA);
+  const creatorContext = teamContext(IDS.creatorA, IDS.teamA, IDS.orgA);
+  const executorContext = teamContext(IDS.executorA, IDS.teamA, IDS.orgA, {
+    permissionKeys: ['task.view']
+  });
+
+  const reviewedParent = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Parent round one approved', result: 'approved' }
+  }), reviewedParent);
+  assert.equal(reviewedParent.statusCode, 200);
+  assert.equal((await Task.findById(parent._id)).status, 'pending_confirm');
+
+  const rejectedChild = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: child._id.toString() },
+    body: { content: 'Child evidence needs correction', result: 'rejected' }
+  }), rejectedChild);
+  assert.equal(rejectedChild.statusCode, 200);
+
+  let storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'partial_completed');
+  assert.equal(storedParent.reviewRound, 2);
+
+  const resubmittedChild = response();
+  await taskFlowController.completeTask(request({
+    method: 'POST',
+    authContext: executorContext,
+    params: { id: child._id.toString() },
+    body: { completionNote: 'Corrected child evidence' }
+  }), resubmittedChild);
+  assert.equal(resubmittedChild.statusCode, 200);
+
+  const approvedChild = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: child._id.toString() },
+    body: { content: 'Corrected child evidence accepted', result: 'approved' }
+  }), approvedChild);
+  assert.equal(approvedChild.statusCode, 200);
+
+  const confirmedChild = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: child._id.toString() },
+    body: { content: 'Child correction confirmed' }
+  }), confirmedChild);
+  assert.equal(confirmedChild.statusCode, 200);
+
+  storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.completionRate, 100);
+  assert.equal(storedParent.status, 'pending_review');
+  assert.equal(storedParent.reviewRound, 2);
+  assert.equal(await TaskReview.countDocuments({
+    task: parent._id,
+    stage: 'review',
+    reviewRound: 1,
+    result: 'approved'
+  }), 1);
+  assert.equal(await TaskReview.countDocuments({
+    task: parent._id,
+    stage: 'review',
+    reviewRound: 2
+  }), 0);
+
+  const prematureParentConfirmation = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Must wait for parent re-review' }
+  }), prematureParentConfirmation);
+  assert.equal(prematureParentConfirmation.statusCode, 400);
+  assert.equal((await Task.findById(parent._id)).status, 'pending_review');
+
+  const rereviewedParent = response();
+  await taskFlowController.reviewTask(request({
+    method: 'POST',
+    authContext: reviewerContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Parent re-reviewed after child correction', result: 'approved' }
+  }), rereviewedParent);
+  assert.equal(rereviewedParent.statusCode, 200);
+  storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'pending_confirm');
+  assert.equal(storedParent.reviewRound, 2);
+
+  const confirmedParent = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: creatorContext,
+    params: { id: parent._id.toString() },
+    body: { content: 'Parent round two confirmed' }
+  }), confirmedParent);
+  assert.equal(confirmedParent.statusCode, 200);
+  assert.equal((await Task.findById(parent._id)).status, 'finished');
+
+  const parentReviews = await TaskReview.find({ task: parent._id })
+    .sort({ reviewRound: 1, reviewTime: 1 })
+    .lean();
+  assert.deepEqual(
+    parentReviews.map(({ reviewRound, stage, result }) => `${reviewRound}:${stage}:${result}`),
+    [
+      '1:review:approved',
+      '2:review:approved',
+      '2:confirmation:approved'
+    ]
+  );
+});
+
+test('a legacy partial parent invalidates its stale approval when the last child finishes', async () => {
+  const parent = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'partial_completed',
+    executorCompletionStatus: 'completed',
+    name: 'Legacy partial parent with stale approval'
+  });
+  parent.actualCompletionTime = new Date('2026-07-20T08:00:00.000Z');
+  parent.completionRate = 0;
+  await parent.save();
+  await TaskReview.create({
+    teamId: IDS.teamA,
+    task: parent._id,
+    reviewer: IDS.reviewerA,
+    stage: 'review',
+    reviewRound: 1,
+    content: 'Approval recorded before child regression',
+    result: 'approved'
+  });
+
+  const child = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    isMainTask: false,
+    parentTask: parent._id,
+    executorCompletionStatus: 'completed',
+    name: 'Last corrected child awaiting confirmation'
+  });
+
+  const confirmedChild = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: teamContext(IDS.creatorA, IDS.teamA, IDS.orgA),
+    params: { id: child._id.toString() },
+    body: { content: 'Corrected child confirmed' }
+  }), confirmedChild);
+  assert.equal(confirmedChild.statusCode, 200);
+
+  const storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.completionRate, 100);
+  assert.equal(storedParent.reviewRound, 2);
+  assert.equal(storedParent.status, 'pending_review');
+});
+
+test('a finished parent remains terminal when legacy child state is confirmed later', async () => {
+  const parent = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: IDS.reviewerA,
+    creator: IDS.creatorA,
+    status: 'finished',
+    executorCompletionStatus: 'completed',
+    name: 'Terminal parent'
+  });
+  const confirmedAt = new Date('2026-07-19T08:00:00.000Z');
+  parent.actualCompletionTime = confirmedAt;
+  parent.confirmedBy = IDS.creatorA;
+  parent.completionRate = 100;
+  await parent.save();
+  const child = await createTask({
+    teamId: IDS.teamA,
+    orgUnitId: IDS.orgA,
+    executor: IDS.executorA,
+    reviewer: null,
+    creator: IDS.creatorA,
+    status: 'pending_confirm',
+    isMainTask: false,
+    parentTask: parent._id,
+    executorCompletionStatus: 'completed',
+    name: 'Legacy late child'
+  });
+
+  const confirmed = response();
+  await taskFlowController.confirmTask(request({
+    method: 'POST',
+    authContext: teamContext(IDS.creatorA, IDS.teamA, IDS.orgA),
+    params: { id: child._id.toString() }
+  }), confirmed);
+  assert.equal(confirmed.statusCode, 200);
+
+  const storedParent = await Task.findById(parent._id);
+  assert.equal(storedParent.status, 'finished');
+  assert.equal(storedParent.completionRate, 100);
+  assert.equal(storedParent.confirmedBy.toString(), IDS.creatorA.toString());
+  assert.equal(storedParent.actualCompletionTime.getTime(), confirmedAt.getTime());
 });
 
 test('extension apply, detail, history, list and approval cannot cross teams', async () => {

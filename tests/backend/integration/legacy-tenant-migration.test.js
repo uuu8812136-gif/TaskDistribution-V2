@@ -470,6 +470,14 @@ test('execute maps role unions and backfills every legacy collection in one tran
   const task = await mongoose.connection.db.collection(COLLECTIONS.tasks)
     .findOne({ _id: fixture.taskId });
   assert.ok(task.orgUnitId.equals(fixture.plannedRootOrgId));
+  const taskReview = await mongoose.connection.db.collection(COLLECTIONS.taskreviews)
+    .findOne({ _id: fixture.reviewId });
+  assert.equal(taskReview.stage, 'review');
+  assert.equal(taskReview.reviewRound, 1);
+  assert.equal(task.reviewRound, 1);
+  assert.equal(report.plan.changes.tasksReviewRoundBackfilled, 1);
+  assert.equal(report.plan.changes.taskReviewsStageBackfilled, 1);
+  assert.equal(report.plan.changes.taskReviewsReviewRoundBackfilled, 1);
 
   const audit = await mongoose.connection.db.collection(COLLECTIONS.auditlogs).findOne({});
   assert.equal(audit.actorRole, 'SYSTEM');

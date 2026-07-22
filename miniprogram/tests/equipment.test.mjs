@@ -9,12 +9,15 @@ import {
   equipmentBusinessMonthRange,
   equipmentLookupFailureMessage,
   equipmentScanFailureMessage,
+  effectiveRoutineDueState,
+  groupRoutineSchedules,
   lookupEquipmentFromQr,
   loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
   parseEquipmentQrPayload,
   resultOptionsFor,
-  scheduleDescription
+  scheduleDescription,
+  selectExecutableRoutinePlan
 } from '../utils/equipment.js'
 
 const objectId = '507f1f77bcf86cd799439011'
@@ -32,6 +35,10 @@ const equipmentScanSource = readFileSync(
 )
 const equipmentDetailSource = readFileSync(
   new URL('../pages/equipment/detail.vue', import.meta.url),
+  'utf8'
+)
+const runtimeReadingSource = readFileSync(
+  new URL('../pages/equipment/runtime-reading.vue', import.meta.url),
   'utf8'
 )
 const workbenchSource = readFileSync(
@@ -104,6 +111,7 @@ test('equipment QR lookup executes the real two-step API flow with one team cont
     fetchSchedule: async (...args) => {
       calls.push(['schedule', ...args])
       return {
+        equipment: { currentRuntimeHours: 126.5, runtimeHoursUpdatedAt: '2030-02-15T08:00:00.000Z' },
         schedules: [{
           rule: { _id: '507f1f77bcf86cd799439012', routineType: 'INSPECTION' },
           status: 'DUE'
@@ -112,6 +120,7 @@ test('equipment QR lookup executes the real two-step API flow with one team cont
     }
   })
   assert.equal(result.equipment._id, objectId)
+  assert.equal(result.equipment.currentRuntimeHours, 126.5)
   assert.equal(result.schedules[0].dueState, 'DUE')
   assert.equal(calls[0][1], token)
   assert.deepEqual(calls[0][2], { teamId: objectId })
@@ -216,6 +225,94 @@ test('routine schedule descriptions retain dynamic calendar, meter and combinati
   }), '每 1 月；每运行 200 小时（任一先到）')
 })
 
+test('one equipment keeps independent daily, weekly, monthly and runtime inspection/maintenance rules', () => {
+  const rule = (id, routineType, name, schedule) => ({
+    rule: { _id: id, routineType, name, schedule },
+    status: 'UPCOMING'
+  })
+  const schedules = normalizeRoutineSchedules({
+    schedules: [
+      rule('507f1f77bcf86cd799439101', 'INSPECTION', '日点检', {
+        mode: 'CALENDAR', calendar: { unit: 'DAY', interval: 1 }
+      }),
+      rule('507f1f77bcf86cd799439102', 'INSPECTION', '周点检', {
+        mode: 'CALENDAR', calendar: { unit: 'WEEK', interval: 1 }
+      }),
+      rule('507f1f77bcf86cd799439103', 'INSPECTION', '月点检', {
+        mode: 'CALENDAR', calendar: { unit: 'MONTH', interval: 1 }
+      }),
+      rule('507f1f77bcf86cd799439104', 'MAINTENANCE', '日保养', {
+        mode: 'CALENDAR', calendar: { unit: 'DAY', interval: 1 }
+      }),
+      rule('507f1f77bcf86cd799439105', 'MAINTENANCE', '月保养', {
+        mode: 'CALENDAR', calendar: { unit: 'MONTH', interval: 1 }
+      }),
+      rule('507f1f77bcf86cd799439106', 'MAINTENANCE', '小时保养', {
+        mode: 'RUNTIME_HOURS', runtime: { intervalHours: 200 }
+      })
+    ]
+  })
+  assert.equal(schedules.length, 6)
+  assert.deepEqual(schedules.map(({ ruleId }) => ruleId), [
+    '507f1f77bcf86cd799439101',
+    '507f1f77bcf86cd799439102',
+    '507f1f77bcf86cd799439103',
+    '507f1f77bcf86cd799439104',
+    '507f1f77bcf86cd799439105',
+    '507f1f77bcf86cd799439106'
+  ])
+  const groups = groupRoutineSchedules(schedules)
+  assert.deepEqual(groups.map(({ routineType, entries }) => [routineType, entries.length]), [
+    ['INSPECTION', 3],
+    ['MAINTENANCE', 3]
+  ])
+  assert.deepEqual(groups.flatMap(({ entries }) => entries.map(({ ruleId }) => ruleId)), schedules.map(({ ruleId }) => ruleId))
+})
+
+test('open plans override calculated due state and execution selects the most urgent plan', () => {
+  assert.equal(effectiveRoutineDueState({ status: 'UPCOMING', planStatus: 'OVERDUE' }), 'OVERDUE')
+  assert.equal(effectiveRoutineDueState({ status: 'UPCOMING', planStatus: 'IN_WINDOW' }), 'DUE')
+  assert.equal(effectiveRoutineDueState({ status: 'OVERDUE', planStatus: 'PLANNED' }), 'UPCOMING')
+
+  const selected = selectExecutableRoutinePlan([
+    {
+      _id: '507f1f77bcf86cd799439205',
+      status: 'PLANNED',
+      dueAt: '2030-01-01T01:00:00.000Z'
+    },
+    {
+      _id: '507f1f77bcf86cd799439204',
+      status: 'IN_WINDOW',
+      dueAt: '2030-01-01T02:00:00.000Z'
+    },
+    {
+      _id: '507f1f77bcf86cd799439203',
+      status: 'OVERDUE',
+      dueAt: '2030-01-01T00:30:00.000Z'
+    },
+    {
+      _id: '507f1f77bcf86cd799439202',
+      status: 'OVERDUE',
+      dueAt: '2030-01-01T00:15:00.000Z'
+    }
+  ])
+  assert.equal(selected?._id, '507f1f77bcf86cd799439202')
+  assert.equal(selectExecutableRoutinePlan([{ status: 'PLANNED' }]), null)
+  assert.match(executePageSource, /selectExecutableRoutinePlan\(entry\.plans\)/)
+})
+
+test('mini-program surfaces schedule periods and the authoritative runtime reading history', () => {
+  assert.match(equipmentScanSource, /scheduleDescription\(entry\.rule\.schedule\)/)
+  assert.match(equipmentScanSource, /groupRoutineSchedules\(schedules\.value\)/)
+  assert.match(equipmentScanSource, /currentRuntimeHours == null \? '待录入'/)
+  assert.match(equipmentScanSource, /openRuntimeReading/)
+  assert.match(equipmentDetailSource, /groupRoutineSchedules\(schedules\.value\)/)
+  assert.match(equipmentDetailSource, /currentHours=\$\{encodeURIComponent\(currentRuntimeHours\.value\)\}/)
+  assert.match(runtimeReadingSource, /getEquipmentRuntimeReadings/)
+  assert.match(runtimeReadingSource, /buildRuntimeReadingPayload\(\{[\s\S]*currentHours: currentHours\.value/)
+  assert.match(runtimeReadingSource, /sourceLabel\(reading\.source\)/)
+})
+
 test('routine payload is derived from the server rule and rejects missing abnormal evidence', () => {
   const rule = {
     _id: objectId,
@@ -284,6 +381,10 @@ test('maintenance required items cannot be skipped and meter payload cannot move
   })
   assert.throws(() => buildRuntimeReadingPayload({ hours: -1 }), /非负数字/)
   assert.throws(() => buildRuntimeReadingPayload({ hours: '' }), /请填写累计运行小时/)
+  assert.throws(() => buildRuntimeReadingPayload({
+    hours: 321,
+    currentHours: 321.5
+  }), /不能小于当前读数 321\.5/)
 })
 
 test('runtime-based routine validation rejects a missing meter value before photo upload', () => {

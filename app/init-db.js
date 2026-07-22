@@ -167,7 +167,10 @@ async function createIndexes() {
     console.log('   ✓ Task 索引');
 
     // 任务审核索引
-    await TaskReview.collection.createIndex({ task: 1, reviewer: 1 }, { unique: true });
+    await TaskReview.collection.createIndex(
+      { teamId: 1, task: 1, reviewer: 1, stage: 1, reviewRound: 1 },
+      { unique: true, name: 'uq_task_review_stage_round' }
+    );
     console.log('   ✓ TaskReview 索引');
 
     // 延期申请索引

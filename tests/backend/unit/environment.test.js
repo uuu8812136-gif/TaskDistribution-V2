@@ -42,6 +42,11 @@ test('accepts an isolated non-production configuration', () => {
   assert.equal(config.appEnv, 'test');
   assert.equal(config.port, 18099);
   assert.equal(config.enableLegacyPublicUploads, false);
+  assert.equal(config.temporaryFileUserMaxCount, 20);
+  assert.equal(config.temporaryFileUserMaxBytes, 100 * 1024 * 1024);
+  assert.equal(config.temporaryFileTeamMaxCount, 200);
+  assert.equal(config.temporaryFileTeamMaxBytes, 1024 * 1024 * 1024);
+  assert.equal(config.temporaryFileTtlHours, 24);
   assert.equal(config.equipmentRoutineWorkerEnabled, false);
   assert.equal(config.equipmentRoutineWorkerIntervalMs, 300000);
   assert.ok(Object.isFrozen(config));
@@ -107,5 +112,28 @@ test('rejects a non-isolated upload directory outside production', () => {
   assert.throws(
     () => loadEnvironment(validEnvironment({ UPLOAD_PATH: 'C:\\shared\\uploads' })),
     /isolated V2 service root/
+  );
+});
+
+test('validates temporary file quotas against file and team limits', () => {
+  assert.throws(
+    () => loadEnvironment(validEnvironment({
+      TEMPORARY_FILE_USER_MAX_BYTES: '1048575'
+    })),
+    /must be at least MAX_FILE_SIZE/
+  );
+  assert.throws(
+    () => loadEnvironment(validEnvironment({
+      TEMPORARY_FILE_USER_MAX_COUNT: '21',
+      TEMPORARY_FILE_TEAM_MAX_COUNT: '20'
+    })),
+    /TEAM_MAX_COUNT must be at least/
+  );
+  assert.throws(
+    () => loadEnvironment(validEnvironment({
+      TEMPORARY_FILE_USER_MAX_BYTES: '20971520',
+      TEMPORARY_FILE_TEAM_MAX_BYTES: '10485760'
+    })),
+    /TEAM_MAX_BYTES must be at least/
   );
 });

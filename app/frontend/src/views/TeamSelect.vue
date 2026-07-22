@@ -9,12 +9,18 @@
         <el-button
           v-if="session.isSuperAdmin && !session.isGlobalReadOnly"
           :loading="switching === 'global'"
+          :disabled="Boolean(switching) || refreshing || logoutSubmitting"
           @click="enterGlobal"
         >
           <el-icon><View /></el-icon>
           全部团队只读
         </el-button>
-        <el-button text @click="handleLogout">
+        <el-button
+          text
+          :loading="logoutSubmitting"
+          :disabled="Boolean(switching) || refreshing || logoutSubmitting"
+          @click="handleLogout"
+        >
           <el-icon><SwitchButton /></el-icon>
           退出登录
         </el-button>
@@ -29,14 +35,20 @@
       show-icon
     />
 
-    <div v-loading="refreshing" class="team-grid">
+    <div v-if="teamsError" class="team-error" role="alert">
+      <el-icon><WarningFilled /></el-icon>
+      <span>{{ teamsError }}</span>
+      <el-button link type="primary" :disabled="refreshing" @click="loadTeams">重新加载</el-button>
+    </div>
+
+    <div v-if="session.teams.length" v-loading="refreshing" class="team-grid">
       <button
         v-for="team in session.teams"
         :key="team._id"
         type="button"
         class="team-card"
         :class="{ active: session.isTeamMode && team._id === session.activeTeamId }"
-        :disabled="Boolean(switching)"
+        :disabled="Boolean(switching) || refreshing || logoutSubmitting"
         @click="selectTeam(team)"
       >
         <span class="team-icon"><el-icon><OfficeBuilding /></el-icon></span>
@@ -52,7 +64,10 @@
       </button>
     </div>
 
-    <el-empty v-if="!refreshing && !session.teams.length" description="暂无可进入的项目团队">
+    <el-empty
+      v-if="!refreshing && !session.teams.length"
+      :description="teamsError ? '未能加载项目团队' : '暂无可进入的项目团队'"
+    >
       <el-button type="primary" @click="loadTeams">重新加载</el-button>
     </el-empty>
   </div>
@@ -68,19 +83,26 @@ const router = useRouter()
 const session = useSessionStore()
 const refreshing = ref(false)
 const switching = ref('')
+const logoutSubmitting = ref(false)
+const teamsError = ref('')
 
 const loadTeams = async () => {
+  if (refreshing.value) return
   refreshing.value = true
+  teamsError.value = ''
   try {
     await session.refreshTeams()
   } catch {
-    // 请求层统一展示错误，空状态提供重新加载入口。
+    teamsError.value = session.teams.length
+      ? '项目团队刷新失败，当前显示上次加载结果。'
+      : '项目团队加载失败，请检查网络后重试。'
   } finally {
     refreshing.value = false
   }
 }
 
 const selectTeam = async (team) => {
+  if (switching.value || refreshing.value || logoutSubmitting.value) return
   if (session.isTeamMode && team._id === session.activeTeamId) {
     await router.replace({ name: 'Dashboard' })
     return
@@ -99,6 +121,7 @@ const selectTeam = async (team) => {
 }
 
 const enterGlobal = async () => {
+  if (switching.value || refreshing.value || logoutSubmitting.value) return
   switching.value = 'global'
   try {
     await session.enterGlobalReadOnly()
@@ -111,12 +134,15 @@ const enterGlobal = async () => {
 }
 
 const handleLogout = async () => {
+  if (switching.value || refreshing.value || logoutSubmitting.value) return
+  logoutSubmitting.value = true
   try {
     await session.logout()
   } catch {
     // 服务端不可达时也清理本地会话并退出。
   } finally {
     await router.replace({ name: 'Login' })
+    logoutSubmitting.value = false
   }
 }
 
@@ -128,6 +154,7 @@ onMounted(() => {
 <style scoped lang="scss">
 .team-select-page {
   min-height: 100vh;
+  min-height: 100dvh;
   padding: 36px clamp(20px, 5vw, 72px);
   color: #303133;
   background: #f5f7fa;
@@ -160,6 +187,7 @@ onMounted(() => {
 }
 
 .el-alert,
+.team-error,
 .team-grid,
 .el-empty {
   max-width: 1120px;
@@ -168,6 +196,25 @@ onMounted(() => {
 
 .el-alert {
   margin-bottom: 18px;
+}
+
+.team-error {
+  min-height: 40px;
+  margin-bottom: 18px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--el-color-danger);
+  background: var(--el-color-danger-light-9);
+  border: 1px solid var(--el-color-danger-light-7);
+  border-radius: 6px;
+
+  span {
+    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
+  }
 }
 
 .team-grid {

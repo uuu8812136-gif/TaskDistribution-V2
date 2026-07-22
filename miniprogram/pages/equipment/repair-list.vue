@@ -1,8 +1,15 @@
 <template>
   <view class="repair-list-page">
+    <view v-if="userStore.isGlobalReadOnly" class="team-band">
+      <text>项目团队</text>
+      <picker :range="teamOptions" range-key="name" :value="teamIndex" @change="onTeamChange">
+        <view class="team-picker">{{ selectedTeamName || '请选择团队' }} 〉</view>
+      </picker>
+    </view>
+
     <view class="top-actions">
-      <view class="mode-segment">
-        <button :class="{ active: mode === 'todo' }" @click="setMode('todo')">我的待办</button>
+      <view class="mode-segment" :class="{ single: userStore.isGlobalReadOnly }">
+        <button v-if="!userStore.isGlobalReadOnly" :class="{ active: mode === 'todo' }" @click="setMode('todo')">我的待办</button>
         <button :class="{ active: mode === 'all' }" @click="setMode('all')">全部记录</button>
       </view>
       <button v-if="canCreate" class="scan-button" @click="scanToCreate">扫码发起</button>
@@ -47,7 +54,7 @@
 </template>
 
 <script>
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import {
   getEquipmentByQrToken,
@@ -61,19 +68,30 @@ import {
   repairTypeLabel
 } from '@/utils/equipmentRepair.js'
 import { formatDate } from '@/utils/format.js'
+import { createLatestRequestGate } from '@/utils/latestRequest.js'
 import { useUserStore } from '@/stores/user.js'
 
 export default {
   name: 'EquipmentRepairList',
   setup() {
     const userStore = useUserStore()
-    const mode = ref('todo')
+    const mode = ref(userStore.isGlobalReadOnly ? 'all' : 'todo')
     const keyword = ref('')
     const repairs = ref([])
     const page = ref(1)
     const pageSize = 20
     const total = ref(0)
     const loading = ref(false)
+    const requestGate = createLatestRequestGate()
+    const teamId = ref('')
+    const teamOptions = computed(() => userStore.teams || [])
+    const teamIndex = computed(() => Math.max(
+      0,
+      teamOptions.value.findIndex((team) => team._id === teamId.value)
+    ))
+    const selectedTeamName = computed(() => (
+      teamOptions.value.find((team) => team._id === teamId.value)?.name || ''
+    ))
     const hasMore = computed(() => repairs.value.length < total.value)
     const canCreate = computed(() => userStore.can('equipment.repair', {
       write: true,
@@ -81,19 +99,42 @@ export default {
     }))
 
     const load = async ({ append = false } = {}) => {
-      if (loading.value) return
+      if (userStore.isGlobalReadOnly && !teamId.value) {
+        requestGate.invalidate()
+        repairs.value = []
+        total.value = 0
+        loading.value = false
+        uni.stopPullDownRefresh()
+        return
+      }
+      const request = requestGate.begin({
+        append,
+        page: page.value,
+        mode: mode.value,
+        keyword: keyword.value.trim(),
+        teamId: teamId.value
+      })
       loading.value = true
       try {
         const result = await getEquipmentRepairs({
-          todo: mode.value === 'todo' ? true : undefined,
-          keyword: keyword.value.trim() || undefined,
-          page: page.value,
-          pageSize
+          todo: request.mode === 'todo' ? true : undefined,
+          keyword: request.keyword || undefined,
+          page: request.page,
+          pageSize,
+          ...(userStore.isGlobalReadOnly ? { teamId: request.teamId } : {})
         })
-        repairs.value = append ? [...repairs.value, ...(result.repairs || [])] : (result.repairs || [])
+        if (!requestGate.isCurrent(request)) return
+        repairs.value = request.append
+          ? [...repairs.value, ...(result.repairs || [])]
+          : (result.repairs || [])
         total.value = Number(result.total) || 0
+      } catch (error) {
+        if (requestGate.isCurrent(request) && request.append && page.value === request.page) {
+          page.value = Math.max(1, request.page - 1)
+        }
+        throw error
       } finally {
-        loading.value = false
+        if (requestGate.isCurrent(request)) loading.value = false
       }
     }
 
@@ -108,13 +149,22 @@ export default {
     }
     const applySearch = () => refresh()
     const loadMore = async () => {
-      if (!hasMore.value) return
+      if (loading.value || !hasMore.value) return
       page.value += 1
       await load({ append: true })
     }
     const openDetail = (item) => uni.navigateTo({
-      url: `/pages/equipment/repair-detail?repairId=${item._id}`
+      url: `/pages/equipment/repair-detail?repairId=${encodeURIComponent(item._id)}` +
+        `${userStore.isGlobalReadOnly ? `&teamId=${encodeURIComponent(teamId.value)}` : ''}`
     })
+
+    const onTeamChange = (event) => {
+      teamId.value = teamOptions.value[Number(event.detail.value)]?._id || ''
+      repairs.value = []
+      total.value = 0
+      page.value = 1
+      refresh()
+    }
 
     const scanToCreate = () => {
       uni.scanCode({
@@ -141,24 +191,31 @@ export default {
     }
 
     onLoad((options) => {
-      if (options.mode === 'all') mode.value = 'all'
+      teamId.value = options.teamId || ''
+      if (options.mode === 'all' || userStore.isGlobalReadOnly) mode.value = 'all'
     })
     onShow(refresh)
     onPullDownRefresh(async () => {
       try { await refresh() } finally { uni.stopPullDownRefresh() }
     })
+    onUnmounted(() => requestGate.invalidate())
 
     return {
+      userStore,
       mode,
       keyword,
       repairs,
       loading,
       hasMore,
       canCreate,
+      teamOptions,
+      teamIndex,
+      selectedTeamName,
       setMode,
       applySearch,
       loadMore,
       openDetail,
+      onTeamChange,
       scanToCreate,
       repairStatusLabel,
       repairStatusTone,
@@ -171,8 +228,12 @@ export default {
 
 <style scoped lang="scss">
 .repair-list-page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #eef3fb; }
+.team-band { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; min-height: 82rpx; padding: 0 22rpx; margin-bottom: 18rpx; box-sizing: border-box; border: 1px solid #dce4ee; border-left: 6rpx solid #4096ff; border-radius: 8rpx; background: #fff; color: #344054; font-size: 24rpx; }
+.team-band picker { min-width: 0; flex: 1; }
+.team-picker { color: #1677ff; text-align: right; overflow-wrap: anywhere; }
 .top-actions { display: flex; align-items: center; gap: 16rpx; }
 .mode-segment { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; border: 1px solid #cfd8e3; border-radius: 8rpx; overflow: hidden; }
+.mode-segment.single { grid-template-columns: minmax(0, 1fr); }
 .mode-segment button { height: 68rpx; padding: 0; border-radius: 0; color: #52606d; background: #fff; font-size: 24rpx; line-height: 68rpx; }
 .mode-segment button + button { border-left: 1px solid #cfd8e3; }
 .mode-segment button.active { color: #fff; background: #4096ff; }

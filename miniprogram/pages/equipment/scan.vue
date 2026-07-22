@@ -68,10 +68,19 @@
             <text>存放地点</text>
             <strong>{{ equipment.location || '-' }}</strong>
           </view>
+          <view>
+            <text>累计运行</text>
+            <strong>{{ equipment.currentRuntimeHours == null ? '待录入' : `${equipment.currentRuntimeHours} h` }}</strong>
+          </view>
+          <view>
+            <text>小时更新时间</text>
+            <strong>{{ formatDate(equipment.runtimeHoursUpdatedAt, 'YYYY-MM-DD HH:mm') || '-' }}</strong>
+          </view>
         </view>
         <view class="result-actions">
           <button class="detail-button" @click="openDetail">查看设备详情</button>
           <button v-if="canRepair" class="repair-button" @click="openRepair">发起维修</button>
+          <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
         </view>
       </view>
 
@@ -83,15 +92,22 @@
           </view>
           <text class="routine-count">{{ schedules.length }} 项</text>
         </view>
-        <view v-for="entry in schedules" :key="entry.ruleId" class="routine-row">
-          <view class="routine-copy">
-            <text class="routine-name">{{ entry.rule.name }}</text>
-            <text class="routine-meta">{{ routineTypeLabel(entry.routineType) }} · {{ dueStateLabel(entry.dueState) }}</text>
+        <view v-for="group in scheduleGroups" :key="group.routineType" class="routine-group">
+          <view class="routine-group-heading">
+            <text>{{ group.label }}</text>
+            <text>{{ group.entries.length }} 项</text>
           </view>
-          <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
-            执行{{ routineTypeLabel(entry.routineType) }}
-          </button>
-          <text v-else class="read-only-label">仅查看</text>
+          <view v-for="entry in group.entries" :key="entry.ruleId" class="routine-row">
+            <view class="routine-copy">
+              <text class="routine-name">{{ entry.rule.name }}</text>
+              <text class="routine-meta">{{ scheduleDescription(entry.rule.schedule) }}</text>
+              <text class="routine-state">{{ dueStateLabel(entry.dueState) }}</text>
+            </view>
+            <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
+              执行{{ routineTypeLabel(entry.routineType) }}
+            </button>
+            <text v-else class="read-only-label">仅查看</text>
+          </view>
         </view>
         <view v-if="schedules.length === 0" class="routine-empty">该设备尚未配置点检或保养规则</view>
       </view>
@@ -142,9 +158,11 @@ import {
   dueStateLabel,
   classifyEquipmentScanFailure,
   equipmentLookupFailureMessage,
+  groupRoutineSchedules,
   loadEquipmentMonthlyActivity,
   lookupEquipmentFromQr,
-  routineTypeLabel
+  routineTypeLabel,
+  scheduleDescription
 } from '@/utils/equipment.js'
 import { repairStatusLabel, repairTypeLabel } from '@/utils/equipmentRepair.js'
 import { useUserStore } from '@/stores/user.js'
@@ -171,6 +189,10 @@ export default {
       write: true,
       teamRequired: true
     }))
+    const canRecordHours = computed(() => userStore.can('equipment.edit', {
+      write: true,
+      teamRequired: true
+    }))
     const teamOptions = computed(() => userStore.teams || [])
     const teamIndex = computed(() => Math.max(
       0,
@@ -179,6 +201,7 @@ export default {
     const selectedTeamName = computed(() => (
       teamOptions.value.find((team) => team._id === selectedTeamId.value)?.name || ''
     ))
+    const scheduleGroups = computed(() => groupRoutineSchedules(schedules.value))
     const hasExecutableRoutine = computed(() => schedules.value.some((entry) => canExecute(entry)))
     const requestTeamId = () => userStore.isGlobalReadOnly ? selectedTeamId.value : ''
 
@@ -315,6 +338,15 @@ export default {
       url: `/pages/equipment/repair-form?equipmentId=${equipment.value._id}`
     })
 
+    const openRuntimeReading = () => {
+      const currentQuery = equipment.value.currentRuntimeHours == null
+        ? ''
+        : `&currentHours=${encodeURIComponent(equipment.value.currentRuntimeHours)}`
+      uni.navigateTo({
+        url: `/pages/equipment/runtime-reading?equipmentId=${equipment.value._id}${currentQuery}`
+      })
+    }
+
     const openExecute = (entry) => {
       if (!canExecute(entry)) {
         uni.showToast({ title: '当前账号仅可查看', icon: 'none' })
@@ -347,12 +379,14 @@ export default {
       userStore,
       canView,
       canRepair,
+      canRecordHours,
       teamOptions,
       teamIndex,
       selectedTeamName,
       manualCode,
       equipment,
       schedules,
+      scheduleGroups,
       monthlyActivity,
       activityLoading,
       activityError,
@@ -368,12 +402,14 @@ export default {
       canExecute,
       openDetail,
       openRepair,
+      openRuntimeReading,
       openExecute,
       onTeamChange,
       statusLabel,
       resultLabel,
       dueStateLabel,
       routineTypeLabel,
+      scheduleDescription,
       repairStatusLabel,
       repairTypeLabel,
       formatDate
@@ -424,16 +460,20 @@ export default {
 .equipment-grid text { color: #64748b; font-size: 21rpx; }
 .equipment-grid strong { margin-top: 5rpx; color: #1f2733; font-size: 24rpx; }
 .result-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 22rpx; }
-.detail-button, .repair-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
+.detail-button, .repair-button, .hours-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
 .detail-button { color: #1d5fa7; background: #eaf3ff; }
 .repair-button { color: #fff; background: #245d3f; }
+.hours-button { color: #8a4b08; background: #fff5e6; }
 .routine-title { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .routine-hint { margin-top: 5rpx; color: #64748b; font-size: 21rpx; }
 .routine-count { color: #64748b; font-size: 22rpx; }
-.routine-row { align-items: center; min-height: 94rpx; margin: 18rpx -24rpx 0; padding: 18rpx 24rpx 0; border-top: 1px solid #e8edf3; }
+.routine-group { margin: 18rpx -24rpx 0; border-top: 1px solid #e8edf3; }
+.routine-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 14rpx 24rpx; color: #52606d; background: #f7f9fc; font-size: 22rpx; font-weight: 600; }
+.routine-row { align-items: center; min-height: 94rpx; padding: 18rpx 24rpx; border-top: 1px solid #e8edf3; }
 .activity-row { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; min-height: 78rpx; margin: 14rpx -24rpx 0; padding: 14rpx 24rpx 0; border-top: 1px solid #e8edf3; }
 .routine-name { color: #1f2733; font-size: 26rpx; font-weight: 600; }
 .routine-meta { margin-top: 5rpx; color: #64748b; font-size: 22rpx; }
+.routine-state { display: block; margin-top: 5rpx; color: #1d5fa7; font-size: 21rpx; }
 .execute-button { flex: 0 0 170rpx; height: 64rpx; line-height: 64rpx; margin: 0; padding: 0; border-radius: 8rpx; color: #fff; background: #1677ff; font-size: 23rpx; }
 .read-only-label { flex: 0 0 auto; color: #64748b; font-size: 22rpx; }
 .routine-empty { margin-top: 18rpx; padding-top: 20rpx; border-top: 1px solid #e8edf3; color: #909399; text-align: center; font-size: 23rpx; }

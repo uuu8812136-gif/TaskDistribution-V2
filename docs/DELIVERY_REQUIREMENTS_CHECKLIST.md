@@ -6,11 +6,11 @@ This checklist is the persistent completion source for the current customer-mana
 
 Before reporting any task as complete, review all of the following sources again:
 
-- [ ] The currently visible conversation and every requirement added since the previous handoff.
-- [ ] The latest context-compaction/handoff summary, including explicit unfinished items and active-agent work.
-- [ ] This persistent checklist and the customer source files under `customer-data/`.
-- [ ] The current Git diff/status so uncommitted or partial implementations are not overlooked.
-- [ ] The authoritative runtime state: automated tests, browser flows, database records, uploaded files, and active process versions as applicable.
+- [x] The currently visible conversation and every requirement added since the previous handoff.
+- [x] The latest context-compaction/handoff summary, including explicit unfinished items and active-agent work.
+- [x] This persistent checklist and the customer source files under `customer-data/`.
+- [x] The current Git diff/status so uncommitted or partial implementations are not overlooked.
+- [x] The authoritative runtime state: automated tests, browser flows, database records, uploaded files, and active process versions as applicable.
 
 Completion wording is evidence-based:
 
@@ -46,6 +46,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [ ] Team switching, global read-only behavior, privileged writes, and membership changes produce the required audit records.
 - [x] Audit-log query is implemented as read-only list/detail APIs plus a Web page; global access is super-admin only, team access additionally permits project administrators with `audit.view`, and system-account identity is redacted from nested snapshots, arrays, and text.
 - [x] Browser automation verifies login, both selectable teams, global read-only mode, entering a team, and the audit-log list/detail page; automated tests cover global/team scope and deep system-account redaction.
+- [x] The 2026-07-22 focused browser rerun verifies developer-account login, both team choices, entering/leaving global read-only mode, returning to Gearbox Logistics, 141 equipment rows, an equipment detail with eight simultaneous calendar/runtime/combined rules, the dynamic checklist row control, six transport rows, seven attendance rows, task required-field validation, and a clean warning/error console. Overdue-first mutation remains automated-test evidence rather than a browser mutation test.
 - [x] Restart the local API after the database-readiness health patch and repeat the health/login smoke check; a live MongoDB disconnect returns HTTP 503 with `database=unavailable`, the same database recovers to HTTP 200, and the login/page smoke check has no console warnings or errors.
 
 ## Existing Task Management
@@ -64,7 +65,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Apply the real workbook to the local test database: 144 source rows, 141 publishable assets, and 3 idle duplicate rows retained as pending confirmation without duplicate asset creation.
 - [x] Connect workbook image extraction to the normal web upload-preview-confirm-publish workflow; 228 image references survive strict validation and WPS JPEG normalization tests.
 - [x] Equipment Excel preview lifecycle has per-request upload progress/timeout, explicit upload-parse-write UI states, local non-sensitive job-id recovery, cancel-on-close/new-import, transaction-first bounded physical staging cleanup with retry/audit metadata, and a 24-hour expiry cleanup CLI; focused cleanup tests and the 98,035,547-byte workbook benchmark pass.
-- [x] Equipment list/detail/photo access is verified in the running browser against 143 equipment records and the private uploaded images.
+- [x] Equipment list/detail/photo access is verified in the running browser against 141 customer equipment records and the private uploaded images.
 - [ ] One-asset-one-code generation and QR download/print are runtime verified.
 - [ ] Mini-program QR lookup is runtime verified for valid, invalid, cancelled, cross-team, and read-only cases.
 - [x] Inventory batches, discrepancy handling, return-and-resubmit, and the fixed four-stage approval chain are implemented across backend, Web, and mini-program with automated tests.
@@ -72,6 +73,7 @@ If any source conflicts with another, use the least-complete status and keep the
   - The Web inventory page and current data state are browser verified; mutation/approval/export and WeChat device flows remain pending.
 - [x] Inspection rules support configurable items/order/periods, configurable shift windows and weekly/monthly defaults, per-item normal/abnormal results, required abnormal notes/camera photos, plan status, overdue reminders, one-hour escalation, fixed three-stage exception handling, query, and formula-safe export in backend, Web, and mini-program code with automated tests.
 - [x] The inspection-rule editor can repeatedly add, reorder, and remove checklist rows beyond the original two-row limit while retaining at least one row; Web unit tests verify three-row editing and the backend round trip verifies persistence and reload of more than two ordered items.
+- [x] One device can retain independent active daily, weekly, monthly, runtime-hour, and combined rules at the same time; `COMBINED` `ANY` materializes the first due dimension and `ALL` waits for both, with idempotent generation keys, deterministic overdue-first execution, versioned re-materialization after rule edits, and cancellation of stale open plans on update/disable.
 - [ ] Inspection worker scheduling, message recipients, abnormal handling, Web workbench/export, and burned-in camera watermark photos are runtime verified against the latest API, browser, and WeChat Developer Tools/device build.
   - The Web inspection workbench page is browser verified; scheduled transitions, export, real camera/location, and watermarked pixels remain pending.
 - [x] Repair supports fault report, parts-required, and no-parts fixed flows with the confirmed fields, evidence, approvals, query, and export in backend, Web, and mini-program automated tests.
@@ -93,10 +95,10 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Apply and verify production records, transport records, photo files, totals, and idempotent rerun.
 - [x] Keep unconfirmed transport fields and photo associations visibly marked as test placeholders.
 - [ ] Transport entry/query, monthly driver trip totals, fixed-field Excel export, attachment isolation, and audit behavior are runtime verified end to end.
-  - The running Web query page displays all 7 records; create/edit, download, and audit mutation checks remain pending.
+  - The running Web query page displays all 6 customer records; create/edit, download, and audit mutation checks remain pending.
 - [ ] Previous/current-month daily schedules, monthly schedule maintenance, fixed calculation rules, and production daily-text generation are runtime verified end to end.
   - Implemented and automated tests passed: independent team/date report resource; fixed customer D4:D13 text template; current and prior reviewed attendance plus seven-record snapshots; current/prior daily and monthly production snapshots; previous natural day's item-3 schedule as actual completion; source fingerprints; bounded version history; audit; Web/mini-program tracing, version selection, and copy.
-  - The running Web production and generated-daily-report pages display the 44 production records; mutation/generation/copy and WeChat device click-through remain pending.
+  - The running Web production and generated-daily-report pages display all 43 customer production-month records; mutation/generation/copy and WeChat device click-through remain pending.
 - [x] Attendance implements one active reporter per branch, pre-09:00 replacement, post-09:00 officer changes with reason/before/after audit, missing-branch blocking/reminders, permanent review lock, manager notification, and copyable final text across Web and mini-program tests.
 - [x] Attendance monthly report is generated only from reviewed daily submissions, merges sick leave into leave, and exports the fixed A:R format with natural-month tests.
 - [x] The seven real 2026-07-14 branch rows are present in the isolated local test database, retain source-summary inconsistencies as visible data-quality exceptions, and the importer has idempotency/manual-conflict tests.
@@ -110,8 +112,8 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Add a visible scan-to-find-equipment entry.
 - [x] Add scan-to-inspect and scan-to-maintain flows with permission checks.
 - [ ] Verify valid, invalid, cancelled, cross-team, no-camera, denied-location, and global-read-only scan states in WeChat Developer Tools or on a real device.
-- [x] Complete local mini-program automated verification: 54/54 general tests, 18/18 scan-focused tests, 43 SFC checks, and the environment-isolation check pass.
-- [x] HBuilderX completes the WeChat mini-program build and the isolated review output contains the latest scan, inventory, repair, status-application, attendance, and production-report pages.
+- [x] Complete local mini-program automated verification: 81/81 general tests, 21/21 equipment/scan core tests (29/29 across equipment-related suites), 43 SFC checks, and the environment-isolation check pass.
+- [x] HBuilderX 5.15 recompiles the final source successfully on 2026-07-22; the generated WeChat output contains the latest request-race protection, multi-period equipment rules, scan, inventory, repair, status-application, attendance, and production-report code.
 
 ## Backup, Restore, And Operations
 
@@ -122,17 +124,19 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Focused backup, restore, retention, path-policy, and health-terminal tests pass (11/11 on 2026-07-17); the final API-health/operations compatibility focus passes 14/14.
 - [x] Windows Task Scheduler installer, Linux systemd timer/service and logrotate examples, visible health terminal, and operations runbook are present.
 - [x] Final release checklist, environment-variable inventory, Windows/Linux deployment, API/Web rollback drill, mini-program rollback, and customer basic-operation instructions are documented with executable commands.
-- [x] Real local isolated drill completed on 2026-07-17: official Database Tools 100.17.0 backed up `final_e2e_v2_test`, restored into the fresh `final_e2e_v2_restore_test`, reconciled 24 collections/652 documents and all 243 FileAssets/files (117,731,236 bytes). Evidence is retained only in ignored paths: `.test-data/OPERATIONS_DRILL_REPORT.md`, `.test-data/operations-drill-reconciliation.json`, the backup manifest, and the restore report.
+- [x] The historical 2026-07-17 isolated restore drill remains valid historical evidence for the backup/restore tooling; its 243-file snapshot is not the current customer-test baseline.
+- [x] The final clean customer-test baseline was backed up and independently verified on 2026-07-21 as `backup-20260721T141605Z-03560577` with manifest SHA256 `8f6bb074da2015763b92927cac407eb9f58ae990961c72d041974b10e6ef3044`: 33 collections, 241 FileAsset references, and 241 physical upload files totaling 117,731,100 bytes.
 - [x] `.test-data` operations tools, environment files, backup sets, restored attachments, and drill reports are ignored by Git and are not delivery-source artifacts.
 - [ ] On the customer-selected host, install the schedule and visible health terminal, observe at least one real scheduled backup cycle, connect the approved alert channel, and repeat the isolated restore drill in a customer maintenance window with a signed report.
 
 ## Final Verification
 
-- [x] Backend full test suite passes after all current changes (302/302 on 2026-07-17).
-- [x] Web unit tests (66/66) and production build pass (2026-07-17).
-- [x] Mini-program tests (54/54), scan-focused tests (18/18), 43 SFC/static checks, environment isolation, and HBuilderX WeChat build pass (2026-07-17).
-- [x] Browser automation verifies login, both teams, global read-only/team switching, equipment and photos, transport, production, attendance, inventory, inspection, repair, status applications, generated daily reports, and audit pages. At a 390px viewport, primary controls stay inside the DOM boundary and wide tables scroll inside their own containers.
-- [x] Database and file reconciliation confirms 143 equipment, 44 production, 7 transport, 7 attendance, 243 FileAssets, and 243 upload files totaling 117,731,236 bytes.
-- [x] Local API and Web development servers run the latest code. Web `3101` proxies to API `18110`; the API was restarted after the database-readiness patch and passed live disconnect-503, recovery-200, login, and page smoke checks.
-- [x] Current source is committed and pushed to the private GitHub repository; implementation commit `6d8d1ee` contains no customer source files, local data, uploads, backups, environment files, or generated build output.
+- [x] Backend full test suite passes after all current changes (356/356 on 2026-07-22), including the multi-period/`ANY`/`ALL` worker and rule-version regression cases.
+- [x] Web unit tests (125/125) and production build pass (2026-07-22); the equipment-focused Web run is 23/23.
+- [x] Mini-program tests (81/81), equipment-focused run (21/21; 29/29 across equipment-related suites), 43 SFC/static checks, environment isolation, and the latest HBuilderX 5.15 WeChat build pass (2026-07-22).
+- [x] The isolated tourist mini-program renders the login page and loads the Gearbox Logistics choice in WeChat Developer Tools; the tool's `touristappid` change error blocks the remaining automation, so login submission, scan/device/detail/runtime-hour interactions, camera/location permissions, and device acceptance remain explicitly unverified.
+- [x] The 2026-07-21 broad browser run verifies all 23 Web routes, 5/5 focused clicks, 30/30 ordinary-team route/viewport cases, 9 global-read-only core routes, and 15 screenshots across 1920x1080, 1366x768, and 390x844. The 2026-07-22 focused rerun adds current equipment multi-period/dynamic-row evidence and catches then verifies the mobile shell fix: at 390x844 the closed sidebar leaves no residual node or gray rail, document width equals the 390px viewport, the title is not clipped, and the menu opens/closes normally.
+- [x] Database and file reconciliation confirms 141 equipment, 43 production months, 6 transport, 7 attendance, 241 FileAssets, and 241 upload files totaling 117,731,100 bytes. The clean customer-test baseline had zero audit/session rows; the current isolated runtime snapshot has 8 active routine rules, 0 open plans, 20 audit rows, and 7 auth sessions from local smoke verification, all outside production.
+- [x] Local API and Web development servers run the latest code. Web `3101` proxies to API `18110`; the final API was restarted after the last source change and passed `/health`, login, seven critical routes, and clean-console checks.
+- [x] Current source is committed and pushed to the private GitHub repository; the delivery commit contains no customer source files, local data, uploads, backups, environment files, generated HBuilderX output, or Web build output.
 - [ ] Execute and archive the release/rollback drill on the selected staging host; the documentation itself is not deployment evidence.

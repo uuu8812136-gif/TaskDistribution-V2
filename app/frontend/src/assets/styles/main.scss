@@ -118,6 +118,7 @@ body {
 
 .el-dialog {
   max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
   margin: 24px auto;
   display: flex;
   flex-direction: column;
@@ -142,6 +143,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: flex-end;
+  flex-wrap: wrap;
   gap: 8px;
   padding-top: 16px;
   border-top: 1px solid rgb(220 230 244 / 80%);
@@ -185,6 +187,7 @@ body {
 
 .page-container {
   min-height: calc(100vh - 64px);
+  min-height: calc(100dvh - 64px);
   padding: 24px;
   background: transparent;
 }
@@ -288,6 +291,7 @@ body {
   .el-dialog {
     max-width: calc(100vw - 24px);
     max-height: calc(100vh - 24px);
+    max-height: calc(100dvh - 24px);
     margin: 12px auto;
   }
 }

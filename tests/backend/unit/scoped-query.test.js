@@ -15,6 +15,7 @@ const {
   buildScopedFilter,
   loadRelatedResourcesInActiveTeam
 } = require('../../../app/services/scopedQueryService');
+const { buildTaskDetailFilter } = require('../../../app/services/taskAccessService');
 
 const IDS = Object.freeze({
   team: '111111111111111111111111',
@@ -175,6 +176,21 @@ test('GLOBAL_READ_ONLY accepts only an explicit optional team constraint', () =>
     }),
     (error) => error.code === 'GLOBAL_READ_ONLY' && error.status === 403
   );
+});
+
+test('task detail helpers preserve the explicit GLOBAL_READ_ONLY team filter', () => {
+  const filter = buildTaskDetailFilter({
+    method: 'GET',
+    authContext: globalContext(),
+    query: { teamId: IDS.otherTeam }
+  }, IDS.resource);
+
+  assert.deepEqual(filter, {
+    $and: [
+      { _id: IDS.resource, teamId: IDS.otherTeam },
+      {}
+    ]
+  });
 });
 
 test('TEAM_SELECTION and unknown modules fail closed', () => {

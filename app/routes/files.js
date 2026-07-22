@@ -11,7 +11,8 @@ const {
 const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 const {
   FileAssetError,
-  assertTemporaryUploadPermission
+  assertTemporaryUploadPermission,
+  createFileAssetService
 } = require('../services/fileAssetService');
 const { validatedExtension } = require('../services/fileStorageService');
 
@@ -64,13 +65,26 @@ function requireTemporaryUploadPermission(req, res, next) {
   }
 }
 
-function createFilesRouter({ storageRoot, maxFileSize } = {}) {
+function createFilesRouter({ storageRoot, maxFileSize, temporaryFileLimits } = {}) {
   if (!Number.isSafeInteger(maxFileSize) || maxFileSize <= 0) {
     throw new TypeError('maxFileSize must be a positive safe integer');
   }
   const router = express.Router();
-  const controller = createFileController({ storageRoot });
+  const service = createFileAssetService({ storageRoot, temporaryFileLimits });
+  const controller = createFileController({ service });
   const upload = createUpload(maxFileSize);
+
+  async function requireTemporaryUploadCapacity(req, res, next) {
+    try {
+      await service.assertTemporaryUploadCapacity({
+        authContext: req.authContext,
+        incomingBytes: 1
+      });
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  }
 
   router.use(authenticateContext, requireBusinessContext);
   router.post(
@@ -78,6 +92,7 @@ function createFilesRouter({ storageRoot, maxFileSize } = {}) {
     requireTeamContext,
     businessWriteGuard,
     requireTemporaryUploadPermission,
+    requireTemporaryUploadCapacity,
     uploadMiddleware(upload),
     controller.uploadTemporary
   );

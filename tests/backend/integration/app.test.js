@@ -109,11 +109,13 @@ test('transport, attendance, and production APIs are mounted behind authenticati
 test('equipment routine APIs are mounted behind authentication', async () => {
   const app = createTestApp();
   const equipmentId = '507f1f77bcf86cd799439011';
+  const planId = '507f1f77bcf86cd799439012';
   for (const route of [
     '/api/equipment/routine-rules',
     '/api/equipment/routine-records',
     '/api/equipment/routine-records/export',
     '/api/equipment/routine-plans',
+    `/api/equipment/routine-plans/${planId}`,
     '/api/equipment/routine-exceptions',
     `/api/equipment/${equipmentId}/routine-schedule`,
     `/api/equipment/${equipmentId}/runtime-readings`

@@ -135,6 +135,7 @@ router.delete(
 router.get('/routine-records', equipmentView, equipmentRoutineController.listRecords);
 router.get('/routine-records/export', equipmentExport, equipmentRoutineController.exportRecords);
 router.get('/routine-plans', equipmentView, equipmentRoutineController.listPlans);
+router.get('/routine-plans/:planId', equipmentView, equipmentRoutineController.getPlan);
 router.get('/routine-exceptions', equipmentView, equipmentRoutineController.listExceptions);
 router.get('/routine-exceptions/:exceptionId', equipmentView, equipmentRoutineController.getException);
 router.post(

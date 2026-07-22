@@ -178,6 +178,16 @@ export function scheduleDescription(schedule = {}) {
   return `${parts.join('；')}（${schedule.duePolicy === 'ALL' ? '全部达到' : '任一先到'}）`
 }
 
+const ROUTINE_PLAN_DUE_STATE_MAP = Object.freeze({
+  PLANNED: 'UPCOMING',
+  IN_WINDOW: 'DUE'
+})
+
+export function effectiveRoutineDueState(entry = {}) {
+  const raw = entry.planStatus || entry.dueState || entry.status || 'UPCOMING'
+  return ROUTINE_PLAN_DUE_STATE_MAP[raw] || raw
+}
+
 export function normalizeRoutineSchedules(response = {}) {
   const values = response.schedules || response.rules || response.plans || []
   if (!Array.isArray(values)) return []
@@ -188,10 +198,45 @@ export function normalizeRoutineSchedules(response = {}) {
       rule,
       ruleId: rule?._id || entry.ruleId || '',
       routineType: rule?.routineType || entry.routineType,
-      dueState: entry.status || entry.dueState || 'UPCOMING',
+      dueState: effectiveRoutineDueState(entry),
       lastRecord: entry.latestRecord || entry.lastRecord || null
     }
   }).filter((entry) => entry.ruleId)
+}
+
+export function selectExecutableRoutinePlan(plans = []) {
+  const candidates = Array.isArray(plans)
+    ? plans.filter((plan) => ['OVERDUE', 'IN_WINDOW'].includes(plan?.status))
+    : []
+  const statusRank = { OVERDUE: 0, IN_WINDOW: 1 }
+  const timestamp = (value) => {
+    const parsed = Date.parse(value || '')
+    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+  }
+  return [...candidates].sort((left, right) => (
+    (statusRank[left.status] - statusRank[right.status]) ||
+    (timestamp(left.dueAt) - timestamp(right.dueAt)) ||
+    (timestamp(left.scheduledFor) - timestamp(right.scheduledFor)) ||
+    String(left._id || '').localeCompare(String(right._id || ''))
+  ))[0] || null
+}
+
+export function groupRoutineSchedules(schedules = []) {
+  const values = Array.isArray(schedules) ? schedules : normalizeRoutineSchedules(schedules)
+  const definitions = [
+    { routineType: ROUTINE_TYPES.INSPECTION, label: '点检' },
+    { routineType: ROUTINE_TYPES.MAINTENANCE, label: '保养' }
+  ]
+  const groups = definitions.map((definition) => ({
+    ...definition,
+    entries: values.filter((entry) => entry.routineType === definition.routineType)
+  })).filter(({ entries }) => entries.length > 0)
+  const knownTypes = new Set(definitions.map(({ routineType }) => routineType))
+  const otherEntries = values.filter((entry) => !knownTypes.has(entry.routineType))
+  if (otherEntries.length > 0) {
+    groups.push({ routineType: 'OTHER', label: '其他作业', entries: otherEntries })
+  }
+  return groups
 }
 
 export function equipmentBusinessMonthRange(now = new Date()) {
@@ -260,7 +305,10 @@ export async function lookupEquipmentFromQr(rawValue, {
     silentError: true
   })
   return {
-    equipment: response.equipment,
+    equipment: {
+      ...response.equipment,
+      ...(scheduleResponse?.equipment || {})
+    },
     schedules: normalizeRoutineSchedules(scheduleResponse)
   }
 }
@@ -362,13 +410,19 @@ export function buildRoutineRecordPayload({
     return payload
 }
 
-export function buildRuntimeReadingPayload({ hours, reason = '' }) {
+export function buildRuntimeReadingPayload({ hours, reason = '', currentHours = null }) {
   if (hours === '' || hours === null || hours === undefined) {
     throw new TypeError('请填写累计运行小时')
   }
   const normalizedHours = Number(hours)
   if (!Number.isFinite(normalizedHours) || normalizedHours < 0) {
     throw new TypeError('运行小时必须是非负数字')
+  }
+  if (currentHours !== '' && currentHours !== null && currentHours !== undefined) {
+    const normalizedCurrentHours = Number(currentHours)
+    if (Number.isFinite(normalizedCurrentHours) && normalizedHours < normalizedCurrentHours) {
+      throw new TypeError(`累计运行小时不能小于当前读数 ${normalizedCurrentHours}`)
+    }
   }
   return {
     hours: normalizedHours,

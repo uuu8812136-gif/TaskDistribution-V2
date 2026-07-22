@@ -73,15 +73,19 @@
               </view>
             </view>
 
-            <view v-if="ext.status === 'pending' && canApprove" class="card-footer">
+            <view v-if="canApproveRequest(ext)" class="card-footer">
               <button
                 class="action-btn reject"
+                :disabled="approvingId === ext._id"
+                :loading="approvingId === ext._id"
                 @click="handleApprove(ext, false)"
               >
                 拒绝
               </button>
               <button
                 class="action-btn approve"
+                :disabled="approvingId === ext._id"
+                :loading="approvingId === ext._id"
                 @click="handleApprove(ext, true)"
               >
                 通过
@@ -114,9 +118,11 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { getExtensions, approveExtension } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
+import { canApproveExtensionRequest } from "@/utils/taskPolicy.js";
+import { createLatestRequestGate } from "@/utils/latestRequest.js";
 import {
   formatDate,
   getExtensionStatusText,
@@ -127,10 +133,15 @@ export default {
   name: "ExtensionList",
   setup() {
     const userStore = useUserStore();
-    const canApprove = computed(() => userStore.can('task.review', {
-      write: true,
-      teamRequired: true
-    }));
+    const canApproveRequest = (request) => canApproveExtensionRequest({
+      request,
+      userId: userStore.userInfo?._id,
+      isTeamMode: userStore.isTeamMode,
+      isReadOnly: userStore.isReadOnly,
+      hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
+      isSuperAdmin: userStore.isSuperAdmin,
+      membershipRole: userStore.context?.membership?.role
+    });
 
     const statusOptions = [
       { label: "全部状态", value: "" },
@@ -146,6 +157,8 @@ export default {
     const page = ref(1);
     const limit = ref(10);
     const hasMore = ref(true);
+    const approvingId = ref('');
+    const requestGate = createLatestRequestGate();
 
     onMounted(() => {
       if (!userStore.can('task.view')) {
@@ -174,35 +187,47 @@ export default {
     };
 
     // 加载列表
-    const loadList = async () => {
-      if (loading.value) return;
-
+    const loadList = async ({ append = false } = {}) => {
+      const request = requestGate.begin({
+        append,
+        page: page.value,
+        limit: limit.value,
+        status: currentStatus.value.value,
+      });
       loading.value = true;
 
       try {
         const params = {
-          page: page.value,
-          limit: limit.value,
+          page: request.page,
+          limit: request.limit,
         };
 
-        if (currentStatus.value.value) {
-          params.status = currentStatus.value.value;
+        if (request.status) {
+          params.status = request.status;
         }
 
         const res = await getExtensions(params);
+        if (!requestGate.isCurrent(request)) return;
 
-        if (page.value === 1) {
-          list.value = res.requests || [];
-        } else {
+        if (request.append) {
           list.value = [...list.value, ...(res.requests || [])];
+        } else {
+          list.value = res.requests || [];
         }
 
-        hasMore.value = list.value.length < res.total;
+        hasMore.value = list.value.length < Number(res.total || 0);
       } catch (error) {
-        console.error("加载延期申请失败:", error);
+        if (requestGate.isCurrent(request)) {
+          if (request.append && page.value === request.page) {
+            page.value = Math.max(1, request.page - 1);
+          }
+          console.error("加载延期申请失败:", error);
+        }
       } finally {
-        loading.value = false;
-        refreshing.value = false;
+        if (requestGate.isCurrent(request)) {
+          loading.value = false;
+          refreshing.value = false;
+        }
       }
     };
 
@@ -220,11 +245,17 @@ export default {
       if (loading.value || !hasMore.value) return;
 
       page.value++;
-      loadList();
+      loadList({ append: true });
     };
+
+    onUnmounted(() => requestGate.invalidate());
 
     // 审批延期申请
     const handleApprove = async (ext, approved) => {
+      if (!canApproveRequest(ext) || approvingId.value) {
+        uni.showToast({ title: '当前申请不可审批', icon: 'none' });
+        return;
+      }
       const title = approved ? "通过延期申请" : "拒绝延期申请";
       const content = approved
         ? "确认通过该延期申请？"
@@ -250,6 +281,7 @@ export default {
               }
               
               try {
+                approvingId.value = ext._id;
                 await approveExtension(ext._id, {
                   status: 'approved',
                   approvedDays: approvedDays,
@@ -265,6 +297,8 @@ export default {
                 onRefresh();
               } catch (error) {
                 console.error("审批失败:", error);
+              } finally {
+                approvingId.value = '';
               }
             }
           }
@@ -277,6 +311,7 @@ export default {
           success: async (res) => {
             if (res.confirm) {
               try {
+                approvingId.value = ext._id;
                 await approveExtension(ext._id, {
                   status: 'rejected',
                   approvalNote: ''
@@ -291,6 +326,8 @@ export default {
                 onRefresh();
               } catch (error) {
                 console.error("审批失败:", error);
+              } finally {
+                approvingId.value = '';
               }
             }
           },
@@ -308,7 +345,8 @@ export default {
       loading,
       refreshing,
       hasMore,
-      canApprove,
+      canApproveRequest,
+      approvingId,
       onStatusChange,
       onRefresh,
       loadMore,

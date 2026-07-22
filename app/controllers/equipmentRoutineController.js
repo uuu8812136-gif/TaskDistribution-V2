@@ -114,6 +114,7 @@ function createEquipmentRoutineController({
       try {
         const exported = await workflowService.exportRecords({
           authContext: req.authContext,
+          req,
           requestedTeamId: req.query.teamId,
           method: req.method,
           query: req.query
@@ -135,6 +136,21 @@ function createEquipmentRoutineController({
           method: req.method,
           query: req.query
         }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async getPlan(req, res, next) {
+      try {
+        const plan = await workflowService.getPlan({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          planId: req.params.planId,
+          query: req.query
+        });
+        return res.json({ plan });
       } catch (error) {
         return next(error);
       }

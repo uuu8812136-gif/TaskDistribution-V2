@@ -6,11 +6,22 @@
         <p>集中查看任务通知和系统消息</p>
       </div>
       <div v-if="canModifyMessages" class="heading-actions">
-        <el-button type="primary" @click="handleMarkAllRead">
+        <el-button
+          type="primary"
+          :loading="bulkAction === 'read-all'"
+          :disabled="Boolean(bulkAction) || hasPendingRow"
+          @click="handleMarkAllRead"
+        >
           <el-icon><CircleCheck /></el-icon>
           全部已读
         </el-button>
-        <el-button type="danger" plain @click="handleClearRead">
+        <el-button
+          type="danger"
+          plain
+          :loading="bulkAction === 'clear-read'"
+          :disabled="Boolean(bulkAction) || hasPendingRow"
+          @click="handleClearRead"
+        >
           <el-icon><Delete /></el-icon>
           清空已读
         </el-button>
@@ -33,10 +44,16 @@
         </el-table-column>
         <el-table-column label="标题" min-width="200">
           <template #default="{ row }">
-            <div
-              :class="{ 'unread-title': !row.isRead, 'clickable-title': row.extraData?.statusApplicationId }"
+            <button
+              v-if="hasMessageResource(row)"
+              type="button"
+              :class="['message-title-link', { 'unread-title': !row.isRead }]"
+              :disabled="isRowPending(row) || Boolean(bulkAction)"
               @click="openRelatedResource(row)"
-            >{{ row.title }}</div>
+            >
+              {{ row.title }}
+            </button>
+            <span v-else :class="{ 'unread-title': !row.isRead }">{{ row.title }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="content" label="内容" min-width="300" show-overflow-tooltip />
@@ -48,10 +65,25 @@
         <el-table-column v-if="canModifyMessages" label="操作" width="150" align="center">
           <template #default="{ row }">
             <div class="table-actions">
-              <el-button v-if="!row.isRead" type="primary" size="small" text @click="handleMarkRead(row)">
+              <el-button
+                v-if="!row.isRead"
+                type="primary"
+                size="small"
+                text
+                :loading="rowAction(row) === 'read' || rowAction(row) === 'open'"
+                :disabled="isRowPending(row) || Boolean(bulkAction)"
+                @click="handleMarkRead(row)"
+              >
                 标记已读
               </el-button>
-              <el-button type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+              <el-button
+                type="danger"
+                size="small"
+                text
+                :loading="rowAction(row) === 'delete'"
+                :disabled="isRowPending(row) || Boolean(bulkAction)"
+                @click="handleDelete(row)"
+              >删除</el-button>
             </div>
           </template>
         </el-table-column>
@@ -84,6 +116,7 @@ import {
   clearReadMessages
 } from '@/api/message'
 import { fromNow, messageTypeIcon } from '@/utils/format'
+import { hasMessageResource, messageResourceLocation } from '@/utils/messageNavigation'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const messageStore = useMessageStore()
@@ -93,6 +126,9 @@ const canModifyMessages = computed(() => session.isTeamMode && !session.isReadOn
 
 const loading = ref(false)
 const activeTab = ref('all')
+const bulkAction = ref('')
+const pendingRows = reactive({})
+const hasPendingRow = computed(() => Object.keys(pendingRows).length > 0)
 
 const pagination = reactive({
   page: 1,
@@ -101,21 +137,27 @@ const pagination = reactive({
 })
 
 const messageList = ref([])
+let listRequestId = 0
 
 const fetchData = async () => {
+  const requestId = ++listRequestId
+  const params = {
+    page: pagination.page,
+    limit: pagination.limit,
+    isRead: activeTab.value === 'unread' ? 'false' : undefined
+  }
+  messageList.value = []
+  pagination.total = 0
   loading.value = true
   try {
-    const result = await getMessageList({
-      page: pagination.page,
-      limit: pagination.limit,
-      isRead: activeTab.value === 'unread' ? 'false' : undefined
-    })
+    const result = await getMessageList(params)
+    if (requestId !== listRequestId) return
     messageList.value = result.messages
     pagination.total = result.pagination.total
   } catch (error) {
-    console.error('获取消息列表失败:', error)
+    if (requestId === listRequestId) console.error('获取消息列表失败:', error)
   } finally {
-    loading.value = false
+    if (requestId === listRequestId) loading.value = false
   }
 }
 
@@ -124,74 +166,138 @@ const handleTabChange = () => {
   fetchData()
 }
 
-const openRelatedResource = (row) => {
-  if (!row.extraData?.statusApplicationId) return
-  router.push({
-    name: 'EquipmentStatusApplicationDetail',
-    params: { applicationId: row.extraData.statusApplicationId }
-  })
+const rowAction = (row) => pendingRows[String(row?._id || '')] || ''
+const isRowPending = (row) => Boolean(rowAction(row))
+
+const setRowAction = (row, action) => {
+  const id = String(row?._id || '')
+  if (!id) return
+  if (action) pendingRows[id] = action
+  else delete pendingRows[id]
+}
+
+const markRowAsRead = async (row) => {
+  if (row.isRead) return false
+  await markMessageAsRead(row._id)
+  if (!row.isRead) {
+    row.isRead = true
+    messageStore.decreaseUnreadCount()
+  }
+  return true
+}
+
+const openRelatedResource = async (row) => {
+  const location = messageResourceLocation(row, { includeTeamId: session.isGlobalReadOnly })
+  if (!location || isRowPending(row) || bulkAction.value) return
+
+  if (canModifyMessages.value && !row.isRead) {
+    setRowAction(row, 'open')
+    try {
+      await markRowAsRead(row)
+    } catch (error) {
+      console.error('打开消息前标记已读失败:', error)
+      ElMessage.error(error?.response?.data?.message || '消息标记已读失败，请重试后再打开')
+      return
+    } finally {
+      setRowAction(row, '')
+    }
+  }
+
+  await router.push(location)
 }
 
 const handleMarkRead = async (row) => {
+  if (isRowPending(row) || bulkAction.value || row.isRead) return
+  setRowAction(row, 'read')
   try {
-    await markMessageAsRead(row._id)
-    messageStore.decreaseUnreadCount()
-    fetchData()
+    await markRowAsRead(row)
+    await fetchData()
   } catch (error) {
     console.error('标记已读失败:', error)
+    ElMessage.error(error?.response?.data?.message || '标记已读失败，请稍后重试')
+  } finally {
+    setRowAction(row, '')
   }
 }
 
 const handleMarkAllRead = () => {
+  if (bulkAction.value || hasPendingRow.value) return
+  bulkAction.value = 'confirm-read-all'
   ElMessageBox.confirm('确定要将所有消息标记为已读吗？', '提示', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning'
   }).then(async () => {
+    if (bulkAction.value !== 'confirm-read-all' || hasPendingRow.value) return
+    bulkAction.value = 'read-all'
     try {
       await markAllAsRead()
       messageStore.clearUnreadCount()
+      messageList.value.forEach((row) => { row.isRead = true })
       ElMessage.success('操作成功')
-      fetchData()
+      await fetchData()
     } catch (error) {
       console.error('操作失败:', error)
+      ElMessage.error(error?.response?.data?.message || '全部标记已读失败，请稍后重试')
+    } finally {
+      bulkAction.value = ''
     }
-  }).catch(() => {})
+  }).catch(() => {
+    if (bulkAction.value === 'confirm-read-all') bulkAction.value = ''
+  })
 }
 
 const handleClearRead = () => {
+  if (bulkAction.value || hasPendingRow.value) return
+  bulkAction.value = 'confirm-clear-read'
   ElMessageBox.confirm('确定要清空所有已读消息吗？', '提示', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning'
   }).then(async () => {
+    if (bulkAction.value !== 'confirm-clear-read' || hasPendingRow.value) return
+    bulkAction.value = 'clear-read'
     try {
       await clearReadMessages()
       ElMessage.success('清空成功')
-      fetchData()
+      await fetchData()
     } catch (error) {
       console.error('清空失败:', error)
+      ElMessage.error(error?.response?.data?.message || '清空已读消息失败，请稍后重试')
+    } finally {
+      bulkAction.value = ''
     }
-  }).catch(() => {})
+  }).catch(() => {
+    if (bulkAction.value === 'confirm-clear-read') bulkAction.value = ''
+  })
 }
 
 const handleDelete = (row) => {
+  if (isRowPending(row) || bulkAction.value) return
+  setRowAction(row, 'confirm-delete')
   ElMessageBox.confirm('确定要删除该消息吗？', '提示', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
     type: 'warning'
   }).then(async () => {
+    if (rowAction(row) !== 'confirm-delete' || bulkAction.value) return
+    setRowAction(row, 'delete')
     try {
       await deleteMessage(row._id)
       if (!row.isRead) {
         messageStore.decreaseUnreadCount()
       }
       ElMessage.success('删除成功')
-      fetchData()
+      await fetchData()
     } catch (error) {
       console.error('删除失败:', error)
+      ElMessage.error(error?.response?.data?.message || '删除消息失败，请稍后重试')
+    } finally {
+      setRowAction(row, '')
     }
-  }).catch(() => {})
+  }).catch(() => {
+    if (rowAction(row) === 'confirm-delete') setRowAction(row, '')
+  })
 }
 
 onMounted(() => {
@@ -218,9 +324,25 @@ onMounted(() => {
     color: #303133;
   }
 
-  .clickable-title {
+  .message-title-link {
+    display: inline;
+    padding: 0;
     color: var(--el-color-primary);
+    font: inherit;
+    text-align: left;
+    background: none;
+    border: 0;
     cursor: pointer;
+  }
+
+  .message-title-link:hover,
+  .message-title-link:focus-visible {
+    text-decoration: underline;
+  }
+
+  .message-title-link:disabled {
+    cursor: wait;
+    opacity: 0.65;
   }
 
   .table-actions {

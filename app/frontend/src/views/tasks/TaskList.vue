@@ -23,6 +23,16 @@
         <el-form-item label="关键词">
           <el-input v-model="searchForm.keyword" placeholder="搜索任务名称" clearable style="width: 200px" />
         </el-form-item>
+        <el-form-item v-if="session.isGlobalReadOnly" label="项目团队">
+          <el-select v-model="searchForm.teamId" placeholder="全部团队" clearable style="width: 180px">
+            <el-option
+              v-for="team in session.teams"
+              :key="team._id"
+              :label="team.name"
+              :value="team._id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="状态">
           <el-select v-model="searchForm.status" placeholder="全部" clearable style="width: 120px">
             <el-option v-for="(label, value) in taskStatusMap" :key="value" :label="label" :value="value" />
@@ -60,6 +70,11 @@
       <!-- 任务表格 -->
       <el-table :data="taskList" v-loading="loading" border>
         <el-table-column prop="taskName" label="任务名称" min-width="200" show-overflow-tooltip />
+        <el-table-column v-if="session.isGlobalReadOnly" label="项目团队" min-width="150">
+          <template #default="{ row }">
+            <el-tag type="info" size="small">{{ resolveTeamName(row) }}</el-tag>
+          </template>
+        </el-table-column>
         <el-table-column prop="taskType" label="类型" width="120" />
         <el-table-column label="状态" width="120">
           <template #default="{ row }">
@@ -112,6 +127,7 @@
         :page-size="pagination.limit"
         :total="pagination.total"
         :page-sizes="[10, 20, 50]"
+        :pager-count="5"
         layout="total, sizes, prev, pager, next, jumper"
         @size-change="val => { pagination.limit = val; pagination.page = 1; fetchData(); }"
         @current-change="val => { pagination.page = val; fetchData(); }"
@@ -127,6 +143,7 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
+import { taskDetailLocation } from '@/utils/taskPolicy'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
@@ -141,6 +158,7 @@ const exportLoading = ref(false)
 
 const searchForm = reactive({
   keyword: '',
+  teamId: '',
   status: '',
   priority: '',
   startDate: '',
@@ -154,25 +172,44 @@ const pagination = reactive({
 })
 
 const taskList = ref([])
+let fetchRequestId = 0
+
+const teamNameById = computed(() => new Map(
+  session.teams.map((team) => [String(team._id), team.name])
+))
+
+const resolveTeamName = (task) => {
+  const value = task?.teamId
+  const teamId = String(value?._id || value || '')
+  return value?.name || teamNameById.value.get(teamId) || '未知团队'
+}
 
 const fetchData = async () => {
+  const requestId = ++fetchRequestId
   loading.value = true
+  taskList.value = []
+  pagination.total = 0
   try {
     const result = await getTaskList({
       page: pagination.page,
       limit: pagination.limit,
       keyword: searchForm.keyword,
+      teamId: session.isGlobalReadOnly ? searchForm.teamId : undefined,
       status: searchForm.status,
       priority: searchForm.priority,
       startDate: searchForm.startDate,
       endDate: searchForm.endDate
     })
-    taskList.value = result.tasks
-    pagination.total = result.pagination.total
+    if (requestId !== fetchRequestId) return
+    taskList.value = result.tasks || []
+    pagination.total = result.pagination?.total || 0
   } catch (error) {
+    if (requestId !== fetchRequestId) return
+    taskList.value = []
+    pagination.total = 0
     console.error('获取任务列表失败:', error)
   } finally {
-    loading.value = false
+    if (requestId === fetchRequestId) loading.value = false
   }
 }
 
@@ -184,6 +221,7 @@ const handleSearch = () => {
 const handleReset = () => {
   Object.assign(searchForm, {
     keyword: '',
+    teamId: '',
     status: '',
     priority: '',
     startDate: '',
@@ -197,7 +235,7 @@ const handleCreate = () => {
 }
 
 const handleView = (row) => {
-  router.push(`/tasks/${row._id}`)
+  router.push(taskDetailLocation(row, { includeTeamId: session.isGlobalReadOnly }))
 }
 
 const handleEdit = (row) => {
@@ -245,6 +283,7 @@ const handleBatchExport = async () => {
     
     // 只添加有值的参数
     if (searchForm.keyword) exportParams.keyword = searchForm.keyword
+    if (session.isGlobalReadOnly && searchForm.teamId) exportParams.teamId = searchForm.teamId
     if (searchForm.status) exportParams.status = searchForm.status
     if (searchForm.priority) exportParams.priority = searchForm.priority
     
@@ -254,16 +293,8 @@ const handleBatchExport = async () => {
       exportParams.endDate = endDate
     }
     
-    console.log('=== 导出参数 ===')
-    console.log('exportParams:', exportParams)
-    
     // 使用当前搜索条件导出
     const blob = await batchExportTasks(exportParams)
-    
-    console.log('=== 导出响应 ===')
-    console.log('blob:', blob)
-    console.log('blob type:', blob.type)
-    console.log('blob size:', blob.size)
     
     // 检查返回的是否为 blob
     if (!(blob instanceof Blob)) {
@@ -378,10 +409,14 @@ onMounted(() => {
     }
 
     .pagination {
+      width: 100%;
       justify-content: flex-start;
+      overflow-x: auto;
       padding-bottom: 4px;
     }
 
+    .pagination :deep(.el-pagination__total),
+    .pagination :deep(.el-pagination__sizes),
     .pagination :deep(.el-pagination__jump) {
       display: none;
     }

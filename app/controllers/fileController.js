@@ -18,8 +18,8 @@ function contentDisposition(originalName) {
   return `attachment; filename="${fallback}"; filename*=UTF-8''${rfc5987Value(originalName)}`;
 }
 
-function createFileController({ storageRoot } = {}) {
-  const service = createFileAssetService({ storageRoot });
+function createFileController({ storageRoot, service: providedService } = {}) {
+  const service = providedService || createFileAssetService({ storageRoot });
 
   return Object.freeze({
     async uploadTemporary(req, res, next) {

@@ -41,6 +41,7 @@ function createApp(config, { databaseConnection = mongoose.connection } = {}) {
 
   process.env.UPLOAD_PATH = config.uploadPath;
   process.env.MAX_FILE_SIZE = String(config.maxFileSize);
+  process.env.TEMPORARY_FILE_TTL_HOURS = String(config.temporaryFileTtlHours || 24);
 
   const app = express();
   app.disable('x-powered-by');
@@ -91,7 +92,13 @@ function createApp(config, { databaseConnection = mongoose.connection } = {}) {
   const { createFilesRouter } = require('./routes/files');
   app.use('/api/files', createFilesRouter({
     storageRoot: config.uploadPath,
-    maxFileSize: config.maxFileSize
+    maxFileSize: config.maxFileSize,
+    temporaryFileLimits: {
+      userMaxCount: config.temporaryFileUserMaxCount,
+      userMaxBytes: config.temporaryFileUserMaxBytes,
+      teamMaxCount: config.temporaryFileTeamMaxCount,
+      teamMaxBytes: config.temporaryFileTeamMaxBytes
+    }
   }));
 
   const { authenticate } = require('./middlewares/auth');

@@ -154,9 +154,13 @@
         <div class="section-heading routine-heading">
           <div>
             <h2>点检与保养</h2>
-            <p>按设备类型匹配当前启用规则和到期状态</p>
+            <p>该设备会同时执行所属类型下已启用的全部规则</p>
           </div>
           <div class="section-actions">
+            <el-button @click="openRoutineRules">
+              <el-icon><Setting /></el-icon>
+              规则配置
+            </el-button>
             <el-button @click="openRoutineRecords">
               <el-icon><Document /></el-icon>
               查看记录
@@ -175,6 +179,23 @@
           <span>当前累计运行小时</span>
           <strong>{{ currentRuntimeLabel }}</strong>
           <small v-if="currentRuntimeHours === null">运行小时规则将在录入首条读数后计算到期阈值</small>
+          <small v-else>最近更新：{{ displayTime(runtimeHoursUpdatedAt) }}</small>
+        </section>
+
+        <section class="routine-rule-summary" aria-label="当前设备生效规则分布">
+          <div v-for="row in routineSummaryRows" :key="row.value" class="routine-summary-row">
+            <div class="routine-summary-type">
+              <el-tag :type="row.type" effect="plain">{{ row.label }}</el-tag>
+              <strong>{{ row.summary.total }} 条</strong>
+            </div>
+            <div class="routine-summary-metrics">
+              <span>每日 <strong>{{ row.summary.DAY }}</strong></span>
+              <span>每周 <strong>{{ row.summary.WEEK }}</strong></span>
+              <span>每月 <strong>{{ row.summary.MONTH }}</strong></span>
+              <span>运行小时 <strong>{{ row.summary.RUNTIME_HOURS }}</strong></span>
+              <span v-if="row.summary.MANUAL">手动 <strong>{{ row.summary.MANUAL }}</strong></span>
+            </div>
+          </div>
         </section>
 
         <div class="table-shell routine-table">
@@ -381,8 +402,10 @@ import {
   ROUTINE_ITEM_RESULT_OPTIONS,
   ROUTINE_TYPE_OPTIONS,
   entityName,
+  effectiveRoutineDueState,
   optionForValue,
-  routineScheduleLabel
+  routineScheduleLabel,
+  routineScheduleSummary
 } from '@/utils/equipment'
 import {
   EQUIPMENT_DETAIL_GROUPS,
@@ -413,6 +436,7 @@ const photoFailures = ref([])
 const routineLoading = ref(false)
 const routineSchedules = ref([])
 const currentRuntimeHours = ref(null)
+const runtimeHoursUpdatedAt = ref(null)
 const runtimeDialogVisible = ref(false)
 const runtimeSubmitting = ref(false)
 const executionDialogVisible = ref(false)
@@ -472,6 +496,13 @@ const currentRuntimeLabel = computed(() => (
     ? '待录入'
     : `${currentRuntimeHours.value} 小时`
 ))
+const routineSummaryRows = computed(() => {
+  const summary = routineScheduleSummary(routineSchedules.value)
+  return ROUTINE_TYPE_OPTIONS.map((item) => ({
+    ...item,
+    summary: summary[item.value]
+  }))
+})
 
 const displayDate = (value) => value ? dayjs(value).format('YYYY-MM-DD') : '-'
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
@@ -539,6 +570,17 @@ async function loadEquipmentPhotos() {
 function canExecuteRoutine(routineType) {
   const permission = routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect'
   return session.can(permission, { write: true, teamRequired: true })
+}
+
+function openRoutineRules() {
+  const categoryId = equipment.value?.categoryId?._id || equipment.value?.categoryId
+  router.push({
+    name: 'EquipmentRules',
+    query: {
+      ...requestParams.value,
+      categoryId: categoryId ? String(categoryId) : undefined
+    }
+  })
 }
 
 function dueStateOption(entry) {
@@ -614,7 +656,7 @@ async function loadRoutineSchedule() {
     const result = await getEquipmentRoutineSchedule(route.params.id, requestParams.value)
     routineSchedules.value = (result.schedules || []).map((entry) => ({
       ...entry,
-      dueState: entry.dueState || entry.status,
+      dueState: effectiveRoutineDueState(entry),
       lastRecord: entry.lastRecord || entry.latestRecord || null
     }))
     const runtimeHours = result.equipment?.currentRuntimeHours ??
@@ -624,6 +666,7 @@ async function loadRoutineSchedule() {
     currentRuntimeHours.value = runtimeHours === null || runtimeHours === undefined
       ? null
       : Number(runtimeHours)
+    runtimeHoursUpdatedAt.value = result.equipment?.runtimeHoursUpdatedAt || null
   } finally {
     routineLoading.value = false
   }
@@ -778,6 +821,14 @@ onBeforeUnmount(releaseEquipmentPhotos)
 .runtime-band span { color: var(--zl-muted); font-size: 13px; }
 .runtime-band strong { font-size: 18px; }
 .runtime-band small { color: var(--zl-muted); text-align: right; }
+.routine-rule-summary { margin-top: 12px; display: grid; border-block: 1px solid var(--zl-border-soft); }
+.routine-summary-row { min-height: 54px; display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: center; gap: 16px; padding: 8px 14px; }
+.routine-summary-row + .routine-summary-row { border-top: 1px solid var(--zl-border-soft); }
+.routine-summary-type { display: flex; align-items: center; gap: 10px; }
+.routine-summary-type > strong { color: var(--zl-text); font-size: 14px; }
+.routine-summary-metrics { min-width: 0; display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--zl-muted); font-size: 13px; }
+.routine-summary-metrics span { white-space: nowrap; }
+.routine-summary-metrics strong { margin-left: 4px; color: var(--zl-text); font-size: 14px; }
 .routine-table { margin-top: 12px; border-radius: 8px; }
 .table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
 .quality-table { overflow-x: auto; }
@@ -811,6 +862,7 @@ onBeforeUnmount(releaseEquipmentPhotos)
   .section-actions { width: 100%; justify-content: flex-start; }
   .runtime-band { grid-template-columns: 1fr 1fr; }
   .runtime-band small { grid-column: 1 / -1; text-align: left; }
+  .routine-summary-row { grid-template-columns: 1fr; gap: 8px; }
   .records-toolbar { align-items: stretch; }
   .records-toolbar :deep(.el-segmented) { min-width: 0; flex: 1; }
   .records-pagination { align-items: flex-start; flex-direction: column; overflow-x: auto; }

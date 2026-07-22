@@ -240,6 +240,7 @@ async function loadSnapshot(db, session = null) {
       completedBy: 1,
       confirmedBy: 1,
       parentTask: 1,
+      reviewRound: 1,
       attachments: 1,
       completionAttachments: 1,
       executorCompletions: 1
@@ -249,6 +250,8 @@ async function loadSnapshot(db, session = null) {
       teamId: 1,
       task: 1,
       reviewer: 1,
+      stage: 1,
+      reviewRound: 1,
       attachments: 1
     }),
     find(COLLECTIONS.extensionrequests, {
@@ -768,6 +771,17 @@ function inspectBusinessReferences(snapshot, collector, target, identity) {
 
   let missingTaskOrgUnitId = 0;
   for (const task of snapshot.tasks) {
+    if (!isMissing(task.reviewRound) && (!Number.isInteger(task.reviewRound) || task.reviewRound < 1)) {
+      addAnomaly(
+        collector,
+        'TASK_REVIEW_ROUND_INVALID',
+        'BLOCKER',
+        COLLECTIONS.tasks,
+        task,
+        'reviewRound',
+        'Task reviewRound must be an integer greater than or equal to one'
+      );
+    }
     if (!isObjectId(task._id)) {
       addAnomaly(
         collector,
@@ -867,6 +881,31 @@ function inspectBusinessReferences(snapshot, collector, target, identity) {
   }
 
   for (const review of snapshot.taskreviews) {
+    if (!isMissing(review.stage) && !['review', 'confirmation'].includes(review.stage)) {
+      addAnomaly(
+        collector,
+        'TASK_REVIEW_STAGE_INVALID',
+        'BLOCKER',
+        COLLECTIONS.taskreviews,
+        review,
+        'stage',
+        'TaskReview stage must be review or confirmation'
+      );
+    }
+    if (
+      !isMissing(review.reviewRound) &&
+      (!Number.isInteger(review.reviewRound) || review.reviewRound < 1)
+    ) {
+      addAnomaly(
+        collector,
+        'TASK_REVIEW_REVIEW_ROUND_INVALID',
+        'BLOCKER',
+        COLLECTIONS.taskreviews,
+        review,
+        'reviewRound',
+        'TaskReview reviewRound must be an integer greater than or equal to one'
+      );
+    }
     inspectReference({
       collector,
       collection: COLLECTIONS.taskreviews,
@@ -1377,13 +1416,18 @@ function createMigrationPlan({
     const set = {};
     if (isMissing(task.teamId)) set.teamId = target.teamId;
     if (isMissing(task.orgUnitId)) set.orgUnitId = target.rootOrgId;
+    if (isMissing(task.reviewRound)) set.reviewRound = 1;
     if (Object.keys(set).length > 0) taskUpdates.push({ _id: task._id, set });
   }
   for (const collection of Object.keys(childTeamUpdates)) {
     for (const document of snapshot[collection]) {
-      if (isMissing(document.teamId)) {
-        childTeamUpdates[collection].push({ _id: document._id, set: { teamId: target.teamId } });
+      const set = {};
+      if (isMissing(document.teamId)) set.teamId = target.teamId;
+      if (collection === COLLECTIONS.taskreviews && isMissing(document.stage)) set.stage = 'review';
+      if (collection === COLLECTIONS.taskreviews && isMissing(document.reviewRound)) {
+        set.reviewRound = 1;
       }
+      if (Object.keys(set).length > 0) childTeamUpdates[collection].push({ _id: document._id, set });
     }
   }
 
@@ -1395,7 +1439,12 @@ function createMigrationPlan({
     membershipsUpdated: membershipWrites.filter((write) => write.existing).length,
     tasksTeamIdBackfilled: taskUpdates.filter((write) => write.set.teamId).length,
     tasksOrgUnitIdBackfilled: taskUpdates.filter((write) => write.set.orgUnitId).length,
-    taskReviewsTeamIdBackfilled: childTeamUpdates.taskreviews.length,
+    tasksReviewRoundBackfilled: taskUpdates.filter((write) => write.set.reviewRound).length,
+    taskReviewsTeamIdBackfilled: childTeamUpdates.taskreviews.filter((write) => write.set.teamId).length,
+    taskReviewsStageBackfilled: childTeamUpdates.taskreviews.filter((write) => write.set.stage).length,
+    taskReviewsReviewRoundBackfilled: childTeamUpdates.taskreviews.filter(
+      (write) => write.set.reviewRound
+    ).length,
     extensionRequestsTeamIdBackfilled: childTeamUpdates.extensionrequests.length,
     messagesTeamIdBackfilled: childTeamUpdates.messages.length,
     fileAssetsTeamIdBackfilled: childTeamUpdates.fileassets.length,

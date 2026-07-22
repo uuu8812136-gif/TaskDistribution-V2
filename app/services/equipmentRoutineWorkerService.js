@@ -202,12 +202,38 @@ function statusAt({ scheduledFor, dueAt }, now) {
   return EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE;
 }
 
-function cycleKeyForCalendar(anchor) {
-  return `calendar:${validDate(anchor).toISOString()}`;
+function cycleVersionSegment(ruleVersion) {
+  const version = Number(ruleVersion);
+  return Number.isInteger(version) && version > 1 ? `v${version}:` : '';
 }
 
-function runtimeCycleKey(nextDueRuntimeHours) {
-  return `runtime:${Number(nextDueRuntimeHours).toFixed(6)}`;
+function cycleKeyForCalendar(anchor, ruleVersion = null) {
+  return `calendar:${cycleVersionSegment(ruleVersion)}${validDate(anchor).toISOString()}`;
+}
+
+function runtimeCycleKey(nextDueRuntimeHours, ruleVersion = null) {
+  return `runtime:${cycleVersionSegment(ruleVersion)}${Number(nextDueRuntimeHours).toFixed(6)}`;
+}
+
+function dueStateTriggered(status) {
+  return status === 'DUE' || status === 'OVERDUE';
+}
+
+function isCombinedAnyRule(rule) {
+  return rule.schedule?.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED &&
+    rule.schedule?.duePolicy === 'ANY';
+}
+
+function combinedAnyCycleKey(schedule, triggerKey, ruleVersion = null) {
+  const recordKey = schedule.latestRecordId || 'initial';
+  const calendarKey = schedule.nextDueAt
+    ? validDate(schedule.nextDueAt).toISOString()
+    : 'none';
+  const runtimeKey = schedule.nextDueRuntimeHours === null ||
+    schedule.nextDueRuntimeHours === undefined
+    ? 'none'
+    : Number(schedule.nextDueRuntimeHours).toFixed(6);
+  return `combined:any:${recordKey}:${cycleVersionSegment(ruleVersion)}calendar:${calendarKey}:runtime:${runtimeKey}:${triggerKey}`;
 }
 
 function messageDetails({ plan, asset, level }) {
@@ -327,22 +353,33 @@ function createEquipmentRoutineWorkerService({
     return attempted;
   }
 
-  async function anchorsForRule(rule, asset, now) {
+  async function anchorsForRule(rule, asset, now, calculatedSchedule = null) {
     const schedule = rule.schedule;
     if (!schedule?.calendar) return [];
-    const serviceSchedule = await routineService.calculateRuleSchedule(rule, asset, { now });
+    const serviceSchedule = calculatedSchedule ||
+      await routineService.calculateRuleSchedule(rule, asset, { now });
     if (
       schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED &&
       schedule.duePolicy === 'ALL' &&
-      !['DUE', 'OVERDUE'].includes(serviceSchedule.runtimeStatus)
+      !dueStateTriggered(serviceSchedule.runtimeStatus)
+    ) {
+      return [];
+    }
+    if (
+      isCombinedAnyRule(rule) &&
+      dueStateTriggered(serviceSchedule.runtimeStatus) &&
+      !dueStateTriggered(serviceSchedule.calendarStatus)
     ) {
       return [];
     }
     if (rule.routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE) {
       return serviceSchedule.nextDueAt ? [new Date(serviceSchedule.nextDueAt)] : [];
     }
+    const firstAnchor = isCombinedAnyRule(rule) && serviceSchedule.nextDueAt
+      ? serviceSchedule.nextDueAt
+      : schedule.calendar.firstDueAt;
     const current = calendarAnchorAtOrBefore(
-      schedule.calendar.firstDueAt,
+      firstAnchor,
       schedule.calendar.unit,
       schedule.calendar.interval,
       now
@@ -351,12 +388,27 @@ function createEquipmentRoutineWorkerService({
     return current.getTime() === next.getTime() ? [current] : [current, next];
   }
 
-  async function materializeRuntimePlan(rule, asset, now) {
-    const schedule = await routineService.calculateRuleSchedule(rule, asset, { now });
-    if (!['DUE', 'OVERDUE'].includes(schedule.status) || schedule.nextDueRuntimeHours === null) return null;
+  async function materializeRuntimePlan(rule, asset, now, calculatedSchedule = null) {
+    const schedule = calculatedSchedule ||
+      await routineService.calculateRuleSchedule(rule, asset, { now });
+    if (schedule.nextDueRuntimeHours === null) return null;
+    if (isCombinedAnyRule(rule)) {
+      if (
+        !dueStateTriggered(schedule.runtimeStatus) ||
+        dueStateTriggered(schedule.calendarStatus)
+      ) return null;
+    } else if (!dueStateTriggered(schedule.status)) {
+      return null;
+    }
     const config = executionConfig(rule);
     const window = config.windows[0];
-    const cycleKey = runtimeCycleKey(schedule.nextDueRuntimeHours);
+    const cycleKey = isCombinedAnyRule(rule)
+      ? combinedAnyCycleKey(
+          schedule,
+          `trigger:runtime:${Number(schedule.nextDueRuntimeHours).toFixed(6)}`,
+          rule.version
+        )
+      : runtimeCycleKey(schedule.nextDueRuntimeHours, rule.version);
     const filter = {
       teamId: rule.teamId,
       ruleId: rule._id,
@@ -385,6 +437,46 @@ function createEquipmentRoutineWorkerService({
     return EquipmentRoutinePlanModel.findOne(filter).lean();
   }
 
+  async function findOpenCombinedAnyRuntimePlan(rule, asset, schedule) {
+    if (!isCombinedAnyRule(rule) || schedule.nextDueRuntimeHours === null) return null;
+    const cycleKey = combinedAnyCycleKey(
+      schedule,
+      `trigger:runtime:${Number(schedule.nextDueRuntimeHours).toFixed(6)}`,
+      rule.version
+    );
+    return EquipmentRoutinePlanModel.findOne({
+      teamId: rule.teamId,
+      ruleId: rule._id,
+      equipmentId: asset._id,
+      cycleKey,
+      windowKey: 'RUNTIME',
+      status: { $in: [
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+      ] }
+    }).lean();
+  }
+
+  async function cancelOtherCombinedAnyPlans(rule, asset, keepPlans) {
+    if (!isCombinedAnyRule(rule)) return;
+    const filter = {
+      teamId: rule.teamId,
+      ruleId: rule._id,
+      equipmentId: asset._id,
+      status: { $in: [
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+      ] }
+    };
+    const keepIds = keepPlans.map(({ _id }) => _id).filter(Boolean);
+    if (keepIds.length > 0) filter._id = { $nin: keepIds };
+    await EquipmentRoutinePlanModel.updateMany(filter, {
+      $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+    });
+  }
+
   async function runOnce({ now = clock(), teamId = null } = {}) {
     const instant = validDate(now, 'now');
     const ruleFilter = { status: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE };
@@ -403,12 +495,27 @@ function createEquipmentRoutineWorkerService({
       }).lean();
       for (const asset of assets) {
         const scheduleMode = rule.schedule?.mode;
+        const calculatedSchedule = [
+          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
+          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS,
+          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
+        ].includes(scheduleMode)
+          ? await routineService.calculateRuleSchedule(rule, asset, { now: instant })
+          : null;
         const plans = [];
+        const existingRuntimePlan = isCombinedAnyRule(rule)
+          ? await findOpenCombinedAnyRuntimePlan(rule, asset, calculatedSchedule)
+          : null;
+        const runtimeOwnsCombinedCycle = Boolean(existingRuntimePlan) || (
+          isCombinedAnyRule(rule) &&
+          dueStateTriggered(calculatedSchedule.runtimeStatus) &&
+          !dueStateTriggered(calculatedSchedule.calendarStatus)
+        );
         if ([
           EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
           EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
-        ].includes(scheduleMode)) {
-          const anchors = await anchorsForRule(rule, asset, instant);
+        ].includes(scheduleMode) && !runtimeOwnsCombinedCycle) {
+          const anchors = await anchorsForRule(rule, asset, instant, calculatedSchedule);
           const config = executionConfig(rule);
           const windows = rule.routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE
             ? config.windows.slice(0, 1)
@@ -422,15 +529,30 @@ function createEquipmentRoutineWorkerService({
                 unit: rule.schedule.calendar.unit,
                 window,
                 now: instant,
-                cycleKey: cycleKeyForCalendar(anchor)
+                cycleKey: isCombinedAnyRule(rule)
+                  ? combinedAnyCycleKey(
+                      calculatedSchedule,
+                      `trigger:calendar:${validDate(anchor).toISOString()}`,
+                      rule.version
+                    )
+                  : cycleKeyForCalendar(anchor, rule.version)
               }));
             }
           }
         }
-        if (scheduleMode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS) {
-          const runtimePlan = await materializeRuntimePlan(rule, asset, instant);
+        if (
+          scheduleMode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS ||
+          runtimeOwnsCombinedCycle
+        ) {
+          const runtimePlan = existingRuntimePlan || await materializeRuntimePlan(
+            rule,
+            asset,
+            instant,
+            calculatedSchedule
+          );
           if (runtimePlan) plans.push(runtimePlan);
         }
+        await cancelOtherCombinedAnyPlans(rule, asset, plans);
         plansProcessed += plans.length;
         for (const plan of plans) {
           notificationWritesAttempted += await notifyPlan(plan, asset, instant);

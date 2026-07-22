@@ -82,6 +82,11 @@ test('transport form uses the server fixed template and never accepts client tea
 })
 
 test('transport submission enforces 2 to 10 private FileAsset ids', () => {
+  assert.equal(buildTransportPayload(validForm(), FILE_IDS).photoFileIds.length, 2)
+  const tenFileIds = Array.from({ length: 10 }, (_, index) => (
+    `64b0000000000000000000${String(index).padStart(2, '0')}`
+  ))
+  assert.equal(buildTransportPayload(validForm(), tenFileIds).photoFileIds.length, 10)
   assert.throws(() => buildTransportPayload(validForm(), [FILE_IDS[0]]), /2至10张/)
   assert.throws(
     () => buildTransportPayload(validForm(), Array.from({ length: 11 }, (_, index) => (
@@ -177,6 +182,8 @@ test('mini-program reporting pages use authenticated file APIs and are registere
 
   assert.match(apiSource, /upload\('\/files'/)
   assert.doesNotMatch(formSource, /\/uploads\//)
+  assert.match(formSource, /sourceType:\s*\['camera'\]/)
+  assert.doesNotMatch(formSource, /sourceType:\s*\[[^\]]*['"]album['"]/)
   assert.match(detailSource, /downloadPrivateFile/)
   assert.equal(registered.has('pages/reporting/transport-list'), true)
   assert.equal(registered.has('pages/reporting/transport-form'), true)
@@ -187,6 +194,9 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   assert.equal(registered.has('pages/reporting/daily-report'), true)
   assert.match(reportingIndexSource, /openAttendance/)
   assert.match(attendanceSource, /getAttendanceDailySummary/)
+  assert.match(attendanceSource, /createLatestRequestGate/)
+  assert.match(attendanceSource, /date: request\.date/)
+  assert.match(attendanceSource, /requestGate\.isCurrent\(request\)/)
   assert.match(attendanceSource, /reviewAttendanceDailySummary/)
   assert.match(attendanceSource, /setClipboardData/)
   assert.match(attendanceFormSource, /buildAttendancePayload/)

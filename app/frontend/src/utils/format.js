@@ -81,7 +81,7 @@ export const priorityMap = {
  */
 export const priorityType = {
   low: 'info',
-  normal: '',
+  normal: 'primary',
   high: 'warning',
   urgent: 'danger'
 }

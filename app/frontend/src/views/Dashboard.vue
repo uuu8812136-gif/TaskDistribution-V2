@@ -1,16 +1,41 @@
 <template>
   <div class="dashboard">
     <header class="dashboard-heading">
-      <span class="heading-icon" aria-hidden="true">
-        <el-icon><DataAnalysis /></el-icon>
-      </span>
-      <div>
-        <h1>统计看板</h1>
-        <p>任务执行概览</p>
+      <div class="dashboard-heading-copy">
+        <span class="heading-icon" aria-hidden="true">
+          <el-icon><DataAnalysis /></el-icon>
+        </span>
+        <div>
+          <h1>统计看板</h1>
+          <p>任务执行概览</p>
+        </div>
       </div>
+      <el-button
+        circle
+        class="refresh-button"
+        :loading="loading"
+        aria-label="刷新统计看板"
+        @click="fetchData"
+      >
+        <el-icon v-if="!loading"><Refresh /></el-icon>
+      </el-button>
     </header>
 
-    <section class="stats-grid" aria-label="任务统计概览">
+    <el-skeleton v-if="loading" class="dashboard-skeleton" :rows="12" animated />
+
+    <el-result
+      v-else-if="loadError"
+      icon="error"
+      title="统计看板加载失败"
+      :sub-title="loadError"
+    >
+      <template #extra>
+        <el-button type="primary" :loading="loading" @click="fetchData">重新加载</el-button>
+      </template>
+    </el-result>
+
+    <template v-else>
+      <section v-if="canViewTasks" class="stats-grid" aria-label="任务统计概览">
       <el-card
         v-for="card in dataCards"
         :key="card.key"
@@ -30,9 +55,9 @@
           </div>
         </div>
       </el-card>
-    </section>
+      </section>
 
-    <section class="dashboard-grid chart-grid">
+      <section v-if="canViewTasks" class="dashboard-grid chart-grid">
       <el-card class="dashboard-card chart-card" shadow="never">
         <template #header>
           <div class="card-header">
@@ -42,7 +67,7 @@
             </div>
           </div>
         </template>
-        <div class="chart-container">
+        <div v-if="statusChartHasData" class="chart-container">
           <v-chart
             :option="pieChartOption"
             class="chart-canvas"
@@ -51,6 +76,7 @@
             aria-label="任务状态分布图"
           />
         </div>
+        <el-empty v-else class="chart-empty" description="暂无任务状态数据" :image-size="72" />
       </el-card>
 
       <el-card class="dashboard-card chart-card" shadow="never">
@@ -62,7 +88,7 @@
             </div>
           </div>
         </template>
-        <div class="chart-container">
+        <div v-if="priorityChartHasData" class="chart-container">
           <v-chart
             :option="barChartOption"
             class="chart-canvas"
@@ -71,11 +97,12 @@
             aria-label="任务优先级统计图"
           />
         </div>
+        <el-empty v-else class="chart-empty" description="暂无任务优先级数据" :image-size="72" />
       </el-card>
-    </section>
+      </section>
 
-    <section class="dashboard-grid activity-grid">
-      <el-card class="dashboard-card activity-card" shadow="never">
+      <section class="dashboard-grid activity-grid" :class="{ 'message-only': !canViewTasks }">
+      <el-card v-if="canViewTasks" class="dashboard-card activity-card" shadow="never">
         <template #header>
           <div class="card-header">
             <div class="card-title">
@@ -131,8 +158,8 @@
             <button
               type="button"
               class="message-item"
-              :class="{ 'is-static': !message.relatedTask }"
-              :disabled="!message.relatedTask"
+              :class="{ 'is-static': !hasMessageResource(message) }"
+              :disabled="!hasMessageResource(message)"
               @click="handleMessageClick(message)"
             >
               <div class="message-title">{{ message.title }}</div>
@@ -142,7 +169,8 @@
         </el-timeline>
         <el-empty v-else description="暂无新消息" />
       </el-card>
-    </section>
+      </section>
+    </template>
   </div>
 </template>
 
@@ -153,6 +181,8 @@ import { getStatisticsOverview } from '@/api/statistics'
 import { getMyTasks } from '@/api/task'
 import { getMessageList } from '@/api/message'
 import { formatDate, fromNow, priorityMap, priorityType } from '@/utils/format'
+import { hasMessageResource, messageResourceLocation } from '@/utils/messageNavigation'
+import { useSessionStore } from '@/stores/session'
 import VChart from 'vue-echarts'
 import { use } from 'echarts/core'
 import { CanvasRenderer } from 'echarts/renderers'
@@ -175,10 +205,15 @@ use([
 ])
 
 const router = useRouter()
+const session = useSessionStore()
 
 const overview = ref({})
 const pendingTasks = ref([])
 const recentMessages = ref([])
+const loading = ref(true)
+const loadError = ref('')
+let dashboardRequestId = 0
+const canViewTasks = computed(() => session.hasPermission('task.view'))
 const prefersReducedMotion = typeof window !== 'undefined' &&
   window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
@@ -217,6 +252,20 @@ const dataCards = computed(() => [
   }
 ])
 
+const statusChartHasData = computed(() => [
+  overview.value.inProgressTasks,
+  overview.value.finishedTasks,
+  overview.value.pendingReviewTasks,
+  overview.value.pendingConfirmTasks
+].some((value) => Number(value) > 0))
+
+const priorityChartHasData = computed(() => [
+  overview.value.priorityStats?.low,
+  overview.value.priorityStats?.normal,
+  overview.value.priorityStats?.high,
+  overview.value.priorityStats?.urgent
+].some((value) => Number(value) > 0))
+
 const pieChartOption = computed(() => ({
   animation: !prefersReducedMotion,
   color: ['#4096ff', '#52c41a', '#faad14', '#7c5cff'],
@@ -236,6 +285,7 @@ const pieChartOption = computed(() => ({
     {
       name: '任务状态',
       type: 'pie',
+      stillShowZeroSum: false,
       radius: ['40%', '70%'],
       center: ['50%', '43%'],
       avoidLabelOverlap: false,
@@ -281,7 +331,8 @@ const barChartOption = computed(() => ({
     left: '3%',
     right: '4%',
     bottom: '3%',
-    containLabel: true
+    outerBoundsMode: 'same',
+    outerBoundsContain: 'axisLabel'
   },
   xAxis: {
     type: 'category',
@@ -325,21 +376,31 @@ const barChartOption = computed(() => ({
 }))
 
 const fetchData = async () => {
+  const requestId = ++dashboardRequestId
+  loading.value = true
+  loadError.value = ''
+  overview.value = {}
+  pendingTasks.value = []
+  recentMessages.value = []
   try {
-    // 获取统计概览
-    const overviewData = await getStatisticsOverview()
-    // 后端返回的数据在 overview 对象里
+    const [overviewData, tasksRes, messagesRes] = await Promise.all([
+      canViewTasks.value ? getStatisticsOverview() : Promise.resolve({ overview: {} }),
+      canViewTasks.value
+        ? getMyTasks({ type: 'executor', status: 'in_progress' })
+        : Promise.resolve({ tasks: [] }),
+      getMessageList({ page: 1, limit: 5 })
+    ])
+    if (requestId !== dashboardRequestId) return
+
     overview.value = overviewData.overview || overviewData
-
-    // 获取待处理任务
-    const tasksRes = await getMyTasks({ type: 'executor', status: 'in_progress' })
     pendingTasks.value = tasksRes.tasks?.slice(0, 5) || []
-
-    // 获取最新消息
-    const messagesRes = await getMessageList({ page: 1, limit: 5 })
     recentMessages.value = messagesRes.messages || []
-  } catch {
-    console.error('获取看板数据失败')
+  } catch (error) {
+    if (requestId !== dashboardRequestId) return
+    console.error('获取看板数据失败:', error)
+    loadError.value = '请检查网络连接后重试；如果问题持续，请联系管理员。'
+  } finally {
+    if (requestId === dashboardRequestId) loading.value = false
   }
 }
 
@@ -352,9 +413,8 @@ const goToMessages = () => {
 }
 
 const handleMessageClick = (message) => {
-  if (message.relatedTask) {
-    router.push(`/tasks/${message.relatedTask._id}`)
-  }
+  const location = messageResourceLocation(message, { includeTeamId: session.isGlobalReadOnly })
+  if (location) router.push(location)
 }
 
 onMounted(() => {
@@ -371,7 +431,8 @@ onMounted(() => {
 .dashboard-heading {
   display: flex;
   align-items: center;
-  gap: 14px;
+  justify-content: space-between;
+  gap: 16px;
   margin-bottom: 20px;
 
   h1 {
@@ -389,6 +450,21 @@ onMounted(() => {
     font-size: 13px;
     line-height: 1.5;
   }
+}
+
+.dashboard-heading-copy {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.refresh-button {
+  flex: 0 0 var(--zl-control-height);
+}
+
+.dashboard-skeleton {
+  padding: 18px;
 }
 
 .heading-icon {
@@ -489,6 +565,10 @@ onMounted(() => {
   margin-top: 20px;
 }
 
+.activity-grid.message-only {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .dashboard-card {
   min-width: 0;
   height: 100%;
@@ -541,6 +621,12 @@ onMounted(() => {
 
 .chart-container {
   min-width: 0;
+}
+
+.chart-empty {
+  height: 300px;
+  justify-content: center;
+  padding: 0;
 }
 
 .chart-canvas {
@@ -643,6 +729,10 @@ onMounted(() => {
   .chart-canvas {
     height: 270px;
   }
+
+  .chart-empty {
+    height: 270px;
+  }
 }
 
 @media (max-width: 420px) {
@@ -694,6 +784,10 @@ onMounted(() => {
   }
 
   .chart-canvas {
+    height: 250px;
+  }
+
+  .chart-empty {
     height: 250px;
   }
 }

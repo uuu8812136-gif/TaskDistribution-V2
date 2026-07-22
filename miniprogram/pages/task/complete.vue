@@ -75,15 +75,22 @@
 		<!-- 底部操作按钮 -->
 		<view class="footer">
 			<button class="btn-cancel" @click="handleBack">取消</button>
-			<button class="btn-submit" @click="handleSubmit">提交完成</button>
+			<button
+				class="btn-submit"
+				:disabled="!completionAuthorized"
+				:loading="checkingAccess"
+				@click="handleSubmit"
+			>提交完成</button>
 		</view>
 	</view>
 </template>
 
 <script>
 import { ref, onMounted } from 'vue'
-import { completeTask, uploadTaskAttachment } from '@/api/index.js'
+import { completeTask, getTaskDetail, uploadTaskAttachment } from '@/api/index.js'
 import { useUserStore } from '@/stores/user.js'
+import { isTaskOverdue } from '@/utils/format.js'
+import { canCompleteAssignedTask } from '@/utils/taskPolicy.js'
 
 export default {
 	name: 'TaskComplete',
@@ -91,6 +98,8 @@ export default {
 		const userStore = useUserStore()
 		const taskId = ref('')
 		const taskName = ref('')
+		const checkingAccess = ref(true)
+		const completionAuthorized = ref(false)
 		
 		const form = ref({
 			completionNote: ''
@@ -99,16 +108,32 @@ export default {
 		const fileList = ref([])
 		
 		// 获取页面参数
-		onMounted(() => {
-			if (!userStore.can('task.edit', { write: true, teamRequired: true })) {
-				uni.showToast({ title: '无权限执行该操作', icon: 'none' })
-				setTimeout(() => uni.navigateBack(), 300)
-				return
-			}
+		onMounted(async () => {
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
 			taskId.value = currentPage.options.id || ''
 			taskName.value = decodeURIComponent(currentPage.options.name || '')
+
+			try {
+				const result = await getTaskDetail(taskId.value)
+				const task = result.task || {}
+				completionAuthorized.value = canCompleteAssignedTask({
+					task,
+					userId: userStore.userInfo?._id,
+					isTeamMode: userStore.isTeamMode,
+					isReadOnly: userStore.isReadOnly,
+					isOverdue: isTaskOverdue(task.plannedCompletionTime, task.status)
+				})
+				if (!completionAuthorized.value) {
+					uni.showToast({ title: '当前任务不可提交完成', icon: 'none' })
+					setTimeout(() => uni.navigateBack(), 300)
+				}
+			} catch (error) {
+				uni.showToast({ title: error.message || '任务校验失败', icon: 'none' })
+				setTimeout(() => uni.navigateBack(), 300)
+			} finally {
+				checkingAccess.value = false
+			}
 		})
 		
 	// 格式化文件大小
@@ -255,6 +280,10 @@ export default {
 		
 		// 提交
 		const handleSubmit = async () => {
+			if (!completionAuthorized.value) {
+				uni.showToast({ title: '当前任务不可提交完成', icon: 'none' })
+				return
+			}
 			if (!form.value.completionNote) {
 				uni.showToast({
 					title: '请填写完成说明',
@@ -323,6 +352,8 @@ export default {
 	return {
 		taskId,
 		taskName,
+		checkingAccess,
+		completionAuthorized,
 		form,
 		fileList,
 		formatFileSize,

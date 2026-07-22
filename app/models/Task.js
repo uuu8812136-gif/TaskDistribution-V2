@@ -113,6 +113,17 @@ const taskSchema = new mongoose.Schema({
     ],
     default: 'in_progress'
   },
+
+  // Rejected reviews start a new submission/review round while preserving history.
+  reviewRound: {
+    type: Number,
+    default: 1,
+    min: 1,
+    validate: {
+      validator: Number.isInteger,
+      message: 'reviewRound must be an integer'
+    }
+  },
   
   // 附件和图片
   attachments: [fileAttachmentSchema],
@@ -181,7 +192,8 @@ const taskSchema = new mongoose.Schema({
     type: String
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  optimisticConcurrency: true
 });
 
 // 索引

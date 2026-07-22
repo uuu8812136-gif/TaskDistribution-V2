@@ -73,7 +73,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import {
   getMessages,
@@ -85,6 +85,8 @@ import {
 import { useMessageStore } from "@/stores/message.js";
 import { useUserStore } from "@/stores/user.js";
 import { formatRelativeTime, getMessageTypeText } from "@/utils/format.js";
+import { messageResourceUrl } from "@/utils/messageNavigation.js";
+import { createLatestRequestGate } from "@/utils/latestRequest.js";
 import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
 
 export default {
@@ -103,6 +105,8 @@ export default {
     const page = ref(1);
     const limit = ref(20);
     const hasMore = ref(true);
+    const requestGate = createLatestRequestGate();
+    const pendingMessageClicks = new Set();
 
     // 页面显示时触发
     onShow(() => {
@@ -114,32 +118,40 @@ export default {
       loadMessages();
     });
 
+    onUnmounted(() => requestGate.invalidate());
+
     // 加载消息列表
     const loadMessages = async () => {
-      if (loading.value) return;
-
+      const request = requestGate.begin({ page: page.value });
       loading.value = true;
 
       try {
         const params = {
-          page: page.value,
+          page: request.page,
           limit: limit.value,
         };
 
         const res = await getMessages(params);
+        if (!requestGate.isCurrent(request)) return;
 
-        if (page.value === 1) {
+        if (request.page === 1) {
           messages.value = res.messages || [];
         } else {
           messages.value = [...messages.value, ...(res.messages || [])];
         }
 
-        hasMore.value = messages.value.length < res.total;
+        const total = Number(res.pagination?.total ?? res.total ?? 0);
+        hasMore.value = messages.value.length < total;
       } catch (error) {
-        console.error("加载消息失败:", error);
+        if (requestGate.isCurrent(request)) {
+          if (request.page > 1 && page.value === request.page) page.value = request.page - 1;
+          console.error("加载消息失败:", error);
+        }
       } finally {
-        loading.value = false;
-        refreshing.value = false;
+        if (requestGate.isCurrent(request)) {
+          loading.value = false;
+          refreshing.value = false;
+        }
       }
     };
 
@@ -164,34 +176,28 @@ export default {
 
     // 点击消息
     const handleMessageClick = async (msg) => {
-      // 标记为已读
-      if (canWriteMessages.value && !msg.isRead) {
-        try {
-          await markMessageRead(msg._id);
-          msg.isRead = true;
-          messageStore.decreaseUnreadCount();
-        } catch (error) {
-          console.error("标记已读失败:", error);
-        }
-      }
+      const messageId = String(msg?._id || "");
+      if (!messageId || pendingMessageClicks.has(messageId)) return;
+      pendingMessageClicks.add(messageId);
 
-      // 如果有关联任务，跳转到任务详情
-      if (msg.relatedTask) {
-        uni.navigateTo({
-          url: `/pages/task/detail?id=${
-            msg.relatedTask._id || msg.relatedTask
-          }`,
+      // 标记为已读
+      try {
+        if (canWriteMessages.value && !msg.isRead) {
+          await markMessageRead(msg._id);
+          if (!msg.isRead) {
+            msg.isRead = true;
+            messageStore.decreaseUnreadCount();
+          }
+        }
+
+        const url = messageResourceUrl(msg, {
+          includeTeamId: userStore.isGlobalReadOnly,
         });
-      } else if (msg.extraData?.resourceType === 'EQUIPMENT_ROUTINE_EXCEPTION') {
-        uni.navigateTo({
-          url: `/pages/equipment/routine-exception?exceptionId=${msg.extraData.exceptionId}`,
-        });
-      } else if (msg.extraData?.resourceType === 'EQUIPMENT_ROUTINE_PLAN') {
-        uni.navigateTo({ url: '/pages/equipment/routine-workbench' });
-      } else if (msg.extraData?.statusApplicationId) {
-        uni.navigateTo({
-          url: `/pages/equipment/status-application-detail?applicationId=${msg.extraData.statusApplicationId}`,
-        });
+        if (url) uni.navigateTo({ url });
+      } catch (error) {
+        console.error("处理消息失败:", error);
+      } finally {
+        setTimeout(() => pendingMessageClicks.delete(messageId), 800);
       }
     };
 

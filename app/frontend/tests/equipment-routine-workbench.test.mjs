@@ -12,6 +12,14 @@ const ruleDialogSource = readFileSync(
   new URL('../src/views/equipment/components/EquipmentRuleDialog.vue', import.meta.url),
   'utf8'
 )
+const rulesSource = readFileSync(
+  new URL('../src/views/equipment/EquipmentRules.vue', import.meta.url),
+  'utf8'
+)
+const detailSource = readFileSync(
+  new URL('../src/views/equipment/EquipmentDetail.vue', import.meta.url),
+  'utf8'
+)
 const routerSource = readFileSync(
   new URL('../src/router/index.js', import.meta.url),
   'utf8'
@@ -71,4 +79,67 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /添加窗口/)
   assert.match(ruleDialogSource, /inspectionEscalationMinutes/)
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
+})
+
+test('routine record export is permission gated and protected from repeated clicks', () => {
+  assert.match(workbenchSource, /v-if="activeTab === 'records' && canExport"/)
+  assert.match(workbenchSource, /:loading="exporting"/)
+  assert.match(workbenchSource, /const canExport = computed\(\(\) => session\.hasPermission\('equipment\.export'\)\)/)
+  assert.match(workbenchSource, /async function exportRows\(\) \{\s+if \(exporting\.value\) return\s+exporting\.value = true/)
+  assert.match(workbenchSource, /finally \{\s+exporting\.value = false\s+\}/)
+})
+
+test('routine workbench discards stale team and tab responses', () => {
+  assert.match(workbenchSource, /let referenceRequestId = 0/)
+  assert.match(workbenchSource, /let activeTabRequestId = 0/)
+  assert.match(workbenchSource, /const requestId = \+\+referenceRequestId[\s\S]*if \(requestId !== referenceRequestId\) return/)
+  assert.match(workbenchSource, /const requestId = \+\+activeTabRequestId[\s\S]*if \(requestId !== activeTabRequestId\) return/)
+  assert.match(workbenchSource, /if \(requestId === activeTabRequestId\) loading\.value = false/)
+  assert.match(workbenchSource, /plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
+})
+
+test('message focus is removed before routine filters or pagination are applied', () => {
+  assert.match(workbenchSource, /async function clearMessageFocus\(\)/)
+  assert.match(workbenchSource, /planId: undefined,[\s\S]*exceptionId: undefined/)
+  assert.match(workbenchSource, /async function applyFilters\(\)[\s\S]*await clearMessageFocus\(\)[\s\S]*await loadActiveTab\(\)/)
+  assert.match(workbenchSource, /@change="changePage"/)
+  assert.match(workbenchSource, /async function changePage\(\)[\s\S]*await clearMessageFocus\(\)/)
+})
+
+test('Web makes simultaneous calendar and runtime rules visible and quick to configure', () => {
+  for (const preset of ['DAY', 'WEEK', 'MONTH', 'RUNTIME_HOURS', 'COMBINED']) {
+    assert.match(rulesSource, new RegExp(`value: '${preset}'`))
+  }
+  assert.match(rulesSource, /:default-category-id="filters\.categoryId"/)
+  assert.match(rulesSource, /:schedule-preset="newRuleSchedulePreset"/)
+  assert.match(ruleDialogSource, /defaultCategoryId: \{ type: String, default: '' \}/)
+  assert.match(ruleDialogSource, /function defaultSchedule\(\)/)
+  assert.match(detailSource, /aria-label="当前设备生效规则分布"/)
+  assert.match(detailSource, /row\.summary\.DAY/)
+  assert.match(detailSource, /row\.summary\.WEEK/)
+  assert.match(detailSource, /row\.summary\.MONTH/)
+  assert.match(detailSource, /row\.summary\.RUNTIME_HOURS/)
+  assert.match(detailSource, /runtimeHoursUpdatedAt/)
+  assert.match(workbenchSource, /row\.performedRuntimeHours \?\? '-'/)
+  assert.match(workbenchSource, /routineScheduleLabel\(row\.ruleSnapshot\?\.schedule\)/)
+})
+
+test('routine workbench heading actions stay aligned without overflowing at 390px', () => {
+  assert.match(workbenchSource, /\.page-heading, \.heading-actions, \.toolbar, \.pagination-row \{ display: flex; align-items: center; \}/)
+  assert.match(workbenchSource, /\.heading-actions \{ gap: 8px; \}/)
+  assert.match(workbenchSource, /@media \(max-width: 760px\) \{[\s\S]*?\.page-heading \{ align-items: flex-start; flex-direction: column; \}/)
+  assert.match(workbenchSource, /\.heading-actions, \.toolbar > \*, \.team-select \{ width: 100%; \}/)
+})
+
+test('routine rule window controls keep explicit positions on narrow screens', () => {
+  assert.match(ruleDialogSource, /class="window-enabled"/)
+  assert.match(ruleDialogSource, /class="window-name"/)
+  assert.match(ruleDialogSource, /class="window-time window-time--start"/)
+  assert.match(ruleDialogSource, /class="window-time window-time--end"/)
+  assert.match(ruleDialogSource, /class="window-remove"/)
+  assert.match(ruleDialogSource, /\.window-row \{ grid-template-columns: 40px repeat\(4, minmax\(0, 1fr\)\) 34px; \}/)
+  assert.match(ruleDialogSource, /\.window-row > \* \{ min-width: 0; \}/)
+  assert.match(ruleDialogSource, /\.window-row \.window-time \{[\s\S]*?--el-date-editor-width: 100%;[\s\S]*?width: 100% !important;[\s\S]*?min-width: 0 !important;/)
+  assert.match(ruleDialogSource, /\.window-time--start \{ grid-column: 1 \/ 4; grid-row: 2; \}/)
+  assert.match(ruleDialogSource, /\.window-time--end \{ grid-column: 4 \/ 7; grid-row: 2; \}/)
 })

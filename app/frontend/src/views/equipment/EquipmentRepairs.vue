@@ -251,6 +251,7 @@ const createVisible = ref(false)
 const createFormRef = ref(null)
 const photoFileList = ref([])
 const selectedTeamId = ref(String(route.query.teamId || ''))
+let repairsRequestId = 0
 
 const filters = reactive({ keyword: '', type: '', status: '', todo: false, page: 1, pageSize: 20 })
 const createForm = reactive(emptyCreateForm())
@@ -308,18 +309,21 @@ function listParams(extra = {}) {
 }
 
 async function loadRepairs() {
+  const requestId = ++repairsRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     repairs.value = []
     total.value = 0
+    loading.value = false
     return
   }
   loading.value = true
   try {
     const result = await getEquipmentRepairs(listParams())
+    if (requestId !== repairsRequestId) return
     repairs.value = result.repairs || []
     total.value = result.total || 0
   } finally {
-    loading.value = false
+    if (requestId === repairsRequestId) loading.value = false
   }
 }
 
@@ -477,6 +481,7 @@ onMounted(async () => {
 @media (max-width: 768px) {
   .page-heading { align-items: flex-start; flex-direction: column; }
   .toolbar > * { width: 100% !important; }
+  .toolbar > .el-button.is-circle { width: var(--zl-control-height) !important; align-self: flex-end; }
   .toolbar-spacer { display: none; }
   .form-grid { grid-template-columns: 1fr; }
   .wide-field { grid-column: auto; }

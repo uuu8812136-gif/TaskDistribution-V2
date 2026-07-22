@@ -81,3 +81,27 @@ test('audit route and menu retain administrator, permission, and mode guards', (
   assert.match(layoutSource, /v-if="canViewAuditLogs" index="\/audit-logs"/)
   assert.doesNotMatch(pageSource, /导出/)
 })
+
+test('audit table and pagination stay unambiguous and operable on narrow screens', () => {
+  const pageSource = readFileSync(new URL('../src/views/audit/AuditLogs.vue', import.meta.url), 'utf8')
+
+  assert.match(pageSource, /label="操作类型"/)
+  assert.match(pageSource, /label="详情" width="86" fixed="right"/)
+  assert.match(pageSource, /:pager-count="5"/)
+  assert.match(pageSource, /class="audit-pagination"/)
+  assert.match(pageSource, /\.audit-pagination :deep\(\.el-pagination__sizes\)/)
+  assert.match(pageSource, /:column="detailColumns"/)
+  assert.match(pageSource, /const detailColumns = computed\(\(\) => compactDetail\.value \? 1 : 2\)/)
+  assert.match(pageSource, /window\.matchMedia\('\(max-width: 680px\)'\)/)
+})
+
+test('audit list and detail only accept the latest request', () => {
+  const pageSource = readFileSync(new URL('../src/views/audit/AuditLogs.vue', import.meta.url), 'utf8')
+
+  assert.match(pageSource, /let listRequestId = 0/)
+  assert.match(pageSource, /let detailRequestId = 0/)
+  assert.match(pageSource, /const requestId = \+\+listRequestId[\s\S]*if \(requestId !== listRequestId\) return/)
+  assert.match(pageSource, /if \(requestId === listRequestId\) loading\.value = false/)
+  assert.match(pageSource, /const requestId = \+\+detailRequestId[\s\S]*if \(requestId !== detailRequestId\) return/)
+  assert.match(pageSource, /if \(requestId === detailRequestId\) detailLoading\.value = false/)
+})

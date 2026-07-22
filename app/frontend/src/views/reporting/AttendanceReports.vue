@@ -12,7 +12,7 @@
     </header>
 
     <section class="view-switcher" aria-label="出勤数据视图">
-      <el-segmented v-model="viewMode" :options="viewOptions" @change="loadActiveView" />
+      <el-segmented v-model="viewMode" :options="viewOptions" @change="handleViewChange" />
     </section>
 
     <section class="toolbar">
@@ -152,6 +152,7 @@
           v-model:page-size="filters.pageSize"
           :total="total"
           :page-sizes="[20, 50, 100]"
+          :pager-count="5"
           layout="sizes, prev, pager, next"
           @change="loadRecords"
         />
@@ -454,7 +455,13 @@
       </template>
     </el-dialog>
 
-    <el-drawer v-model="detailVisible" title="出勤日报详情" size="min(760px, 94vw)" append-to-body>
+    <el-drawer
+      v-model="detailVisible"
+      title="出勤日报详情"
+      size="min(760px, 94vw)"
+      append-to-body
+      @closed="closeDetail"
+    >
       <div v-loading="detailLoading" class="detail-content">
         <el-alert
           v-if="detail.dataQualityStatus === 'PENDING_CONFIRMATION'"
@@ -496,6 +503,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -520,7 +528,10 @@ import {
 } from '@/utils/reporting'
 
 const session = useSessionStore()
-const viewMode = ref('records')
+const route = useRoute()
+const requestedReportDate = String(route.query.reportDate || '')
+const currentLocalDate = dayjs().format('YYYY-MM-DD')
+const viewMode = ref(requestedReportDate ? 'daily' : 'records')
 const viewOptions = [
   { label: '日报明细', value: 'records' },
   { label: '部门日汇总', value: 'daily' },
@@ -530,7 +541,7 @@ const shiftForms = [
   { key: 'dayShift', label: '白班' },
   { key: 'nightShift', label: '夜班' }
 ]
-const selectedTeamId = ref('')
+const selectedTeamId = ref(String(route.query.teamId || ''))
 const orgUnits = ref([])
 const records = ref([])
 const total = ref(0)
@@ -546,8 +557,8 @@ const formRef = ref(null)
 const detailVisible = ref(false)
 const detailLoading = ref(false)
 const detail = ref({})
-const dailyDate = ref('2026-07-14')
-const summaryMonth = ref('2026-07')
+const dailyDate = ref(requestedReportDate || currentLocalDate)
+const summaryMonth = ref((requestedReportDate || currentLocalDate).slice(0, 7))
 const dailySummary = ref({})
 const attendancePolicy = ref({})
 const reviewReason = ref('')
@@ -560,6 +571,13 @@ const filters = reactive({
   page: 1,
   pageSize: 20
 })
+
+let optionsRequestId = 0
+let recordsRequestId = 0
+let dailyRequestId = 0
+let monthlyRequestId = 0
+let detailRequestId = 0
+let editRequestId = 0
 
 const canSubmitPermission = computed(() => session.can('report.submit', {
   write: true,
@@ -612,49 +630,76 @@ function recordParams() {
 }
 
 async function loadOptions() {
+  const requestId = ++optionsRequestId
+  const params = { ...requestTeamParams.value }
+  orgUnits.value = []
+  attendancePolicy.value = {}
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getAttendanceOptions(requestTeamParams.value)
+  const result = await getAttendanceOptions(params)
+  if (requestId !== optionsRequestId) return
   orgUnits.value = result.orgUnits || []
   attendancePolicy.value = result.attendancePolicy || {}
 }
 
 async function loadRecords() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++recordsRequestId
+  const params = recordParams()
+  records.value = []
+  total.value = 0
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
-    const result = await getAttendanceSubmissions(recordParams())
+    const result = await getAttendanceSubmissions(params)
+    if (requestId !== recordsRequestId) return
     records.value = result.attendanceSubmissions || []
     total.value = result.total || 0
   } finally {
-    loading.value = false
+    if (requestId === recordsRequestId) loading.value = false
   }
 }
 
 async function loadDailySummary() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++dailyRequestId
+  const params = {
+    ...requestTeamParams.value,
+    date: dailyDate.value
+  }
+  dailySummary.value = {}
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    dailyLoading.value = false
+    return
+  }
   dailyLoading.value = true
   try {
-    const result = await getAttendanceDailySummary({
-      ...requestTeamParams.value,
-      date: dailyDate.value
-    })
+    const result = await getAttendanceDailySummary(params)
+    if (requestId !== dailyRequestId) return
     dailySummary.value = result.attendanceSummary || {}
   } finally {
-    dailyLoading.value = false
+    if (requestId === dailyRequestId) dailyLoading.value = false
   }
 }
 
 async function loadMonthlySummary() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++monthlyRequestId
+  const params = {
+    ...requestTeamParams.value,
+    month: summaryMonth.value
+  }
+  monthlySummaries.value = []
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    monthlyLoading.value = false
+    return
+  }
   monthlyLoading.value = true
   try {
-    const result = await getAttendanceMonthlySummary({
-      ...requestTeamParams.value,
-      month: summaryMonth.value
-    })
+    const result = await getAttendanceMonthlySummary(params)
+    if (requestId !== monthlyRequestId) return
     monthlySummaries.value = result.attendanceSummaries || []
   } finally {
-    monthlyLoading.value = false
+    if (requestId === monthlyRequestId) monthlyLoading.value = false
   }
 }
 
@@ -679,6 +724,20 @@ async function loadActiveView() {
   return loadMonthlySummary()
 }
 
+async function handleViewChange() {
+  recordsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  records.value = []
+  total.value = 0
+  dailySummary.value = {}
+  monthlySummaries.value = []
+  loading.value = false
+  dailyLoading.value = false
+  monthlyLoading.value = false
+  await loadActiveView()
+}
+
 async function applyFilters() {
   if (viewMode.value === 'records') filters.page = 1
   await loadActiveView()
@@ -696,21 +755,37 @@ async function resetFilters() {
 }
 
 async function handleTeamChange() {
+  optionsRequestId += 1
+  recordsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  detailRequestId += 1
+  editRequestId += 1
   orgUnits.value = []
   records.value = []
+  total.value = 0
   dailySummary.value = {}
   attendancePolicy.value = {}
   monthlySummaries.value = []
+  detail.value = {}
+  detailVisible.value = false
+  formVisible.value = false
+  loading.value = false
+  dailyLoading.value = false
+  monthlyLoading.value = false
+  detailLoading.value = false
   await loadOptions()
   await loadActiveView()
 }
 
 function resetForm() {
+  editRequestId += 1
   editingId.value = ''
   Object.assign(form, emptyAttendanceForm(dayjs().format('YYYY-MM-DD')))
 }
 
 function openCreate() {
+  editRequestId += 1
   resetForm()
   form.reportDate = attendancePolicy.value.currentBusinessDate || dayjs().format('YYYY-MM-DD')
   if (attendancePolicy.value.reporterOrgUnitId) {
@@ -754,21 +829,34 @@ function fillForm(record) {
 }
 
 async function openEdit(id) {
-  const result = await getAttendanceSubmission(id, requestTeamParams.value)
+  const requestId = ++editRequestId
+  const params = { ...requestTeamParams.value }
+  const result = await getAttendanceSubmission(id, params)
+  if (requestId !== editRequestId) return
   editingId.value = id
   fillForm(result.attendanceSubmission)
   formVisible.value = true
 }
 
 async function openDetail(id) {
+  const requestId = ++detailRequestId
+  const params = { ...requestTeamParams.value }
   detailVisible.value = true
   detailLoading.value = true
+  detail.value = {}
   try {
-    const result = await getAttendanceSubmission(id, requestTeamParams.value)
+    const result = await getAttendanceSubmission(id, params)
+    if (requestId !== detailRequestId) return
     detail.value = result.attendanceSubmission || {}
   } finally {
-    detailLoading.value = false
+    if (requestId === detailRequestId) detailLoading.value = false
   }
+}
+
+function closeDetail() {
+  detailRequestId += 1
+  detailLoading.value = false
+  detail.value = {}
 }
 
 async function submitForm() {
@@ -838,7 +926,7 @@ onMounted(async () => {
   }
   if (!session.isGlobalReadOnly || selectedTeamId.value) {
     await loadOptions()
-    await loadRecords()
+    await loadActiveView()
   }
 })
 </script>
@@ -853,6 +941,30 @@ onMounted(async () => {
 .view-switcher {
   display: flex;
   justify-content: flex-start;
+}
+
+.team-select {
+  width: 190px;
+}
+
+.date-range {
+  width: 250px;
+}
+
+.toolbar :deep(.el-select) {
+  width: 180px;
+}
+
+.toolbar-spacer {
+  flex: 1;
+}
+
+.pagination-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  color: var(--el-text-color-regular);
 }
 
 .quality-alert {
@@ -1048,6 +1160,30 @@ onMounted(async () => {
 }
 
 @media (max-width: 760px) {
+  .toolbar > *,
+  .toolbar :deep(.el-select),
+  .team-select,
+  .date-range {
+    width: 100%;
+  }
+
+  .toolbar > .el-button.is-circle {
+    width: var(--zl-control-height);
+    align-self: flex-end;
+  }
+
+  .toolbar-spacer {
+    display: none;
+  }
+
+  .pagination-row {
+    width: 100%;
+    align-items: flex-start;
+    flex-direction: column;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
   .summary-grid,
   .shift-form-grid,
   .four-columns,

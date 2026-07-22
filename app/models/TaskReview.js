@@ -1,6 +1,13 @@
 const mongoose = require('mongoose');
 const fileAttachmentSchema = require('./schemas/fileAttachmentSchema');
 
+const TASK_REVIEW_STAGES = Object.freeze({
+  REVIEW: 'review',
+  CONFIRMATION: 'confirmation'
+});
+
+const TASK_REVIEW_STAGE_VALUES = Object.freeze(Object.values(TASK_REVIEW_STAGES));
+
 const taskReviewSchema = new mongoose.Schema({
   teamId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -20,6 +27,27 @@ const taskReviewSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true
+  },
+
+  // 抄送审核与管理员最终确认是两个独立阶段，同一用户可以分别执行一次。
+  stage: {
+    type: String,
+    enum: TASK_REVIEW_STAGE_VALUES,
+    default: TASK_REVIEW_STAGES.REVIEW,
+    required: true,
+    immutable: true
+  },
+
+  reviewRound: {
+    type: Number,
+    default: 1,
+    min: 1,
+    required: true,
+    immutable: true,
+    validate: {
+      validator: Number.isInteger,
+      message: 'reviewRound must be an integer'
+    }
   },
   
   // 评价内容
@@ -60,8 +88,15 @@ taskReviewSchema.index({ teamId: 1, task: 1 });
 taskReviewSchema.index({ teamId: 1, reviewer: 1 });
 taskReviewSchema.index({ teamId: 1, reviewTime: -1 });
 
-// 一个任务的同一个抄送人只能评价一次
-taskReviewSchema.index({ teamId: 1, task: 1, reviewer: 1 }, { unique: true });
+// 同一用户在每个任务流程阶段只能提交一次。
+taskReviewSchema.index(
+  { teamId: 1, task: 1, reviewer: 1, stage: 1, reviewRound: 1 },
+  { unique: true, name: 'uq_task_review_stage_round' }
+);
 
-module.exports = mongoose.model('TaskReview', taskReviewSchema);
+const TaskReview = mongoose.model('TaskReview', taskReviewSchema);
+
+module.exports = TaskReview;
+module.exports.TASK_REVIEW_STAGES = TASK_REVIEW_STAGES;
+module.exports.TASK_REVIEW_STAGE_VALUES = TASK_REVIEW_STAGE_VALUES;
 

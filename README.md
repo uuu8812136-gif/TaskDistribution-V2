@@ -5,8 +5,8 @@ This directory is the isolated development workspace for the management system u
 ## Safety boundary
 
 - Production services, database, uploads, release links, and the existing mini program remain unchanged.
-- `app/` is a read-only snapshot of the currently running production source, excluding secrets and runtime data.
-- `miniprogram/` is an isolated copy of the delivered uni-app source.
+- `app/` is the isolated V2 Node.js API and Vue 3 Web development source, excluding secrets and runtime data.
+- `miniprogram/` is the isolated V2 uni-app development source; generated `unpackage/` output is not maintained as source.
 - Test deployment must use a separate service name, port, MongoDB database, upload directory, and release root.
 - No deployment script in this repository may point at the production database by default.
 

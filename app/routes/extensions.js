@@ -17,7 +17,7 @@ router.use(authenticateContext, requireBusinessContext, businessWriteGuard);
 router.post(
   '/apply/:id',
   requireTeamContext,
-  requirePermission('task.edit'),
+  requirePermission('task.view'),
   extensionController.applyExtension
 );
 router.post(

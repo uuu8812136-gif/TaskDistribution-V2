@@ -3,13 +3,26 @@
     <header class="page-heading">
       <div>
         <h1>点检与保养规则</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>{{ session.activeTeam?.name || '跨团队只读查询' }} · 同类型设备可同时启用多条独立规则</p>
       </div>
       <div class="heading-actions">
-        <el-button v-if="canManageActiveType" type="primary" @click="openCreate">
-          <el-icon><Plus /></el-icon>
+        <el-dropdown
+          v-if="canManageActiveType"
+          split-button
+          type="primary"
+          trigger="click"
+          @click="openCreate"
+          @command="openPresetCreate"
+        >
           新增规则
-        </el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-for="preset in createPresets" :key="preset.value" :command="preset.value">
+                {{ preset.label }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
       </div>
     </header>
 
@@ -171,6 +184,8 @@
       :routine-type="activeRoutineType"
       :allowed-routine-types="availableRoutineTypes.map((item) => item.value)"
       :categories="categories"
+      :default-category-id="filters.categoryId"
+      :schedule-preset="newRuleSchedulePreset"
       :submitting="submitting"
       @submit="saveRule"
     />
@@ -210,12 +225,27 @@ const submitting = ref(false)
 const dialogVisible = ref(false)
 const viewing = ref(false)
 const copying = ref(false)
+const newRuleSchedulePreset = ref('')
 const selectedRule = ref(null)
 const rules = ref([])
 const categories = ref([])
 const total = ref(0)
 const selectedTeamId = ref(String(route.query.teamId || ''))
-const filters = reactive({ keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1, pageSize: 20 })
+const filters = reactive({
+  keyword: '',
+  categoryId: String(route.query.categoryId || ''),
+  scheduleMode: '',
+  status: '',
+  page: 1,
+  pageSize: 20
+})
+const createPresets = Object.freeze([
+  { value: 'DAY', label: '新增每日规则' },
+  { value: 'WEEK', label: '新增每周规则' },
+  { value: 'MONTH', label: '新增每月规则' },
+  { value: 'RUNTIME_HOURS', label: '新增运行小时规则' },
+  { value: 'COMBINED', label: '新增日历 + 运行小时规则' }
+])
 
 const availableRoutineTypes = computed(() => ROUTINE_TYPE_OPTIONS)
 const requestedRoutineType = String(route.query.routineType || '')
@@ -300,14 +330,21 @@ async function initialize() {
   await Promise.all([loadCategories(), loadRules()])
 }
 
-function applyFilters() {
+async function applyFilters() {
   filters.page = 1
-  loadRules()
+  await router.replace({
+    query: {
+      ...route.query,
+      categoryId: filters.categoryId || undefined
+    }
+  })
+  await loadRules()
 }
 
-function resetFilters() {
+async function resetFilters() {
   Object.assign(filters, { keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1 })
-  loadRules()
+  await router.replace({ query: { ...route.query, categoryId: undefined } })
+  await loadRules()
 }
 
 async function handleTypeChange() {
@@ -318,7 +355,7 @@ async function handleTypeChange() {
 }
 
 async function handleTeamChange(teamId) {
-  await router.replace({ query: { ...route.query, teamId } })
+  await router.replace({ query: { ...route.query, teamId, categoryId: undefined } })
   Object.assign(filters, { keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1 })
   await Promise.all([loadCategories(), loadRules()])
 }
@@ -327,6 +364,15 @@ function openCreate() {
   selectedRule.value = null
   viewing.value = false
   copying.value = false
+  newRuleSchedulePreset.value = ''
+  dialogVisible.value = true
+}
+
+function openPresetCreate(preset) {
+  selectedRule.value = null
+  viewing.value = false
+  copying.value = false
+  newRuleSchedulePreset.value = preset
   dialogVisible.value = true
 }
 
@@ -339,6 +385,7 @@ async function openView(row) {
   selectedRule.value = await fetchRule(row)
   viewing.value = true
   copying.value = false
+  newRuleSchedulePreset.value = ''
   dialogVisible.value = true
 }
 
@@ -346,6 +393,7 @@ async function openEdit(row) {
   selectedRule.value = await fetchRule(row)
   viewing.value = false
   copying.value = false
+  newRuleSchedulePreset.value = ''
   dialogVisible.value = true
 }
 
@@ -353,6 +401,7 @@ async function openCopy(row) {
   selectedRule.value = await fetchRule(row)
   viewing.value = false
   copying.value = true
+  newRuleSchedulePreset.value = ''
   dialogVisible.value = true
 }
 

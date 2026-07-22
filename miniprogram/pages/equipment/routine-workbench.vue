@@ -6,10 +6,14 @@
     </view>
 
     <view v-if="activeTab === 'plans'" class="list-band">
-      <view v-for="plan in plans" :key="plan._id" class="list-row">
+      <view
+        v-for="plan in plans"
+        :key="plan._id"
+        :class="['list-row', { focused: String(plan._id) === focusedPlanId }]"
+      >
         <view class="row-heading">
           <strong>{{ plan.equipment?.name || '-' }}</strong>
-          <text class="danger-tag">已逾期</text>
+          <text :class="planStatusClass(plan.status)">{{ planStatusLabel(plan.status) }}</text>
         </view>
         <text>{{ plan.equipment?.assetCode || '-' }} · {{ plan.windowName }}</text>
         <text>{{ routineLabel(plan.routineType) }}截止 {{ formatTime(plan.dueAt) }}</text>
@@ -35,9 +39,14 @@
 </template>
 
 <script>
-import { ref } from 'vue'
+import { onUnmounted, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
-import { getEquipmentRoutineExceptions, getEquipmentRoutinePlans } from '@/api/index.js'
+import {
+  getEquipmentRoutineExceptions,
+  getEquipmentRoutinePlan,
+  getEquipmentRoutinePlans
+} from '@/api/index.js'
+import { createLatestRequestGate } from '@/utils/latestRequest.js'
 
 export default {
   name: 'EquipmentRoutineWorkbench',
@@ -47,24 +56,50 @@ export default {
     const exceptions = ref([])
     const loading = ref(false)
     const teamId = ref('')
-    const query = () => ({
-      ...(teamId.value ? { teamId: teamId.value } : {}),
+    const focusedPlanId = ref('')
+    const requestGate = createLatestRequestGate()
+    const query = (request) => ({
+      ...(request.teamId ? { teamId: request.teamId } : {}),
       page: 1,
       pageSize: 100
     })
     const load = async () => {
+      const request = requestGate.begin({
+        tab: activeTab.value,
+        teamId: teamId.value,
+        planId: focusedPlanId.value
+      })
       loading.value = true
       try {
-        if (activeTab.value === 'plans') {
-          const result = await getEquipmentRoutinePlans({ ...query(), status: 'OVERDUE' })
-          plans.value = result.plans || []
+        if (request.tab === 'plans') {
+          const [result, focusedResult] = await Promise.all([
+            getEquipmentRoutinePlans({ ...query(request), status: 'OVERDUE' }),
+            request.planId
+              ? getEquipmentRoutinePlan(request.planId, query(request)).catch(() => null)
+              : Promise.resolve(null)
+          ])
+          if (!requestGate.isCurrent(request)) return
+          const rows = result.plans || []
+          const focusedPlan = focusedResult?.plan
+          const mergedRows = focusedPlan && !rows.some((plan) => String(plan._id) === request.planId)
+            ? [focusedPlan, ...rows]
+            : rows
+          plans.value = request.planId
+            ? [...mergedRows].sort((left, right) => (
+                Number(String(right._id) === request.planId) -
+                Number(String(left._id) === request.planId)
+              ))
+            : mergedRows
         } else {
-          const result = await getEquipmentRoutineExceptions(query())
+          const result = await getEquipmentRoutineExceptions(query(request))
+          if (!requestGate.isCurrent(request)) return
           exceptions.value = result.exceptions || []
         }
       } finally {
-        loading.value = false
-        uni.stopPullDownRefresh()
+        if (requestGate.isCurrent(request)) {
+          loading.value = false
+          uni.stopPullDownRefresh()
+        }
       }
     }
     const switchTab = (tab) => {
@@ -77,6 +112,18 @@ export default {
       })
     }
     const routineLabel = (value) => value === 'MAINTENANCE' ? '保养' : '点检'
+    const planStatusLabel = (value) => ({
+      OVERDUE: '已逾期',
+      COMPLETED: '已完成',
+      CANCELLED: '已取消',
+      PENDING: '待执行',
+      DUE: '待执行'
+    }[value] || value || '待执行')
+    const planStatusClass = (value) => ({
+      'danger-tag': value === 'OVERDUE',
+      'success-tag': value === 'COMPLETED',
+      'neutral-tag': !['OVERDUE', 'COMPLETED'].includes(value)
+    })
     const stageLabel = (value) => ({
       TEAM_LEADER: '班组长处理',
       SUB_DEPARTMENT_MANAGER: '分部经理处理',
@@ -86,13 +133,15 @@ export default {
     const formatTime = (value) => value ? String(value).replace('T', ' ').slice(0, 16) : '-'
     onLoad((options) => {
       teamId.value = options.teamId || ''
+      focusedPlanId.value = options.planId || ''
       if (options.tab === 'exceptions') activeTab.value = 'exceptions'
     })
     onShow(load)
     onPullDownRefresh(load)
+    onUnmounted(() => requestGate.invalidate())
     return {
-      activeTab, plans, exceptions, loading, switchTab, openException,
-      routineLabel, stageLabel, formatTime
+      activeTab, plans, exceptions, loading, focusedPlanId, switchTab, openException,
+      routineLabel, planStatusLabel, planStatusClass, stageLabel, formatTime
     }
   }
 }
@@ -105,13 +154,15 @@ export default {
 .tab-row button.active { color: #fff; background: #1677ff; }
 .list-band { overflow: hidden; border: 1px solid #dce4ee; border-radius: 8rpx; background: #fff; }
 .list-row { display: grid; gap: 8rpx; padding: 22rpx 24rpx; border-bottom: 1px solid #e8edf3; }
+.list-row.focused { background: #edf5ff; box-shadow: inset 6rpx 0 #1677ff; }
 .list-row:last-child { border-bottom: 0; }
 .list-row > text { color: #64748b; font-size: 23rpx; overflow-wrap: anywhere; }
 .clickable:active { background: #f3f7fb; }
 .row-heading { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
 .row-heading strong { min-width: 0; color: #1f2733; font-size: 28rpx; overflow-wrap: anywhere; }
-.danger-tag, .success-tag { flex: 0 0 auto; padding: 5rpx 9rpx; border-radius: 6rpx; font-size: 20rpx; }
+.danger-tag, .success-tag, .neutral-tag { flex: 0 0 auto; padding: 5rpx 9rpx; border-radius: 6rpx; font-size: 20rpx; }
 .danger-tag { color: #b42318; background: #feeceb; }
 .success-tag { color: #245d3f; background: #eaf7ef; }
+.neutral-tag { color: #475467; background: #eef2f6; }
 .empty-state { padding: 150rpx 20rpx; color: #909399; text-align: center; font-size: 25rpx; }
 </style>

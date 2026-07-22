@@ -525,6 +525,9 @@ function createEquipmentRegistryService({
       }
       filters.push({ status: query.status });
     }
+    if (query.assetType) {
+      filters.push({ assetType: requiredString(query.assetType, 'assetType', 100) });
+    }
     if (query.orgUnitId) filters.push({ orgUnitId: normalizeRelatedId(query.orgUnitId) });
     if (query.categoryId) filters.push({ categoryId: normalizeRelatedId(query.categoryId) });
     if (query.custodianUserId) {

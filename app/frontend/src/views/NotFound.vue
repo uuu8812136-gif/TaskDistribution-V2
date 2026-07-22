@@ -25,11 +25,14 @@ const goHome = () => {
 <style scoped lang="scss">
 .not-found {
   width: 100%;
-  height: 100vh;
+  min-height: 100vh;
+  min-height: 100dvh;
+  padding: 24px;
   display: flex;
   align-items: center;
   justify-content: center;
   background: #f5f7fa;
+  overflow: auto;
 }
 </style>
 

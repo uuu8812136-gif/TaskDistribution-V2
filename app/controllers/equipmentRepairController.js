@@ -62,6 +62,7 @@ function createEquipmentRepairController({ service = createEquipmentRepairServic
       try {
         const workbook = await service.exportRepairs({
           authContext: req.authContext,
+          req,
           requestedTeamId: req.query.teamId,
           method: req.method,
           query: req.query

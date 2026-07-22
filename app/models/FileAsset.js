@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 
 const FILE_STATUSES = Object.freeze({
   TEMPORARY: 'TEMPORARY',
+  PURGING: 'PURGING',
   ACTIVE: 'ACTIVE',
   DELETED: 'DELETED'
 });
@@ -101,6 +102,10 @@ const fileAssetSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     default: null
+  },
+  cleanupStartedAt: {
+    type: Date,
+    default: null
   }
 }, {
   timestamps: true,
@@ -110,10 +115,18 @@ const fileAssetSchema = new mongoose.Schema({
 
 fileAssetSchema.pre('validate', function validateOwnershipState(next) {
   const isTemporary = this.status === FILE_STATUSES.TEMPORARY;
-  if (isTemporary && (this.ownerType !== FILE_OWNER_TYPES.TEMPORARY || this.ownerId)) {
+  const isPurging = this.status === FILE_STATUSES.PURGING;
+  if ((isTemporary || isPurging) && (
+    this.ownerType !== FILE_OWNER_TYPES.TEMPORARY || this.ownerId
+  )) {
     this.invalidate('ownerId', 'A temporary file cannot be bound to a business owner');
   }
-  if (!isTemporary && this.status !== FILE_STATUSES.DELETED && !this.ownerId) {
+  if (
+    !isTemporary &&
+    !isPurging &&
+    this.status !== FILE_STATUSES.DELETED &&
+    !this.ownerId
+  ) {
     this.invalidate('ownerId', 'An active file requires a business owner');
   }
   if (this.status === FILE_STATUSES.ACTIVE && this.ownerType === FILE_OWNER_TYPES.TEMPORARY) {
@@ -124,6 +137,12 @@ fileAssetSchema.pre('validate', function validateOwnershipState(next) {
   }
   if (this.status !== FILE_STATUSES.DELETED && (this.deletedAt || this.deletedBy)) {
     this.invalidate('status', 'Deletion metadata requires DELETED status');
+  }
+  if (isPurging && !this.cleanupStartedAt) {
+    this.invalidate('cleanupStartedAt', 'A purging file requires cleanupStartedAt');
+  }
+  if (!isPurging && this.cleanupStartedAt) {
+    this.invalidate('cleanupStartedAt', 'cleanupStartedAt requires PURGING status');
   }
   next();
 });

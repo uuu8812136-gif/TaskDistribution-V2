@@ -64,6 +64,16 @@ export const ROUTINE_DUE_STATE_OPTIONS = Object.freeze([
   { value: 'NO_RUNTIME_READING', label: '待录入运行小时', type: 'info' }
 ])
 
+const ROUTINE_PLAN_DUE_STATE_MAP = Object.freeze({
+  PLANNED: 'UPCOMING',
+  IN_WINDOW: 'DUE'
+})
+
+export function effectiveRoutineDueState(entry = {}) {
+  const raw = String(entry.planStatus || entry.dueState || entry.status || 'NOT_DUE').toUpperCase()
+  return ROUTINE_PLAN_DUE_STATE_MAP[raw] || raw
+}
+
 export const IMPORT_DECISION_ACTIONS = Object.freeze({
   ACCEPT_AS_IS: 'ACCEPT_AS_IS',
   ACCEPT_SUGGESTION: 'ACCEPT_SUGGESTION',
@@ -370,6 +380,38 @@ export function routineScheduleLabel(schedule = {}) {
     return `${calendarScheduleLabel(schedule.calendar)} + 每运行 ${Number(schedule.runtime?.intervalHours) || '-'} 小时（${duePolicy}）`
   }
   return '-'
+}
+
+export function routineScheduleSummary(entries = []) {
+  const emptySummary = () => ({
+    total: 0,
+    DAY: 0,
+    WEEK: 0,
+    MONTH: 0,
+    RUNTIME_HOURS: 0,
+    MANUAL: 0
+  })
+  const summary = {
+    INSPECTION: emptySummary(),
+    MAINTENANCE: emptySummary()
+  }
+
+  for (const entry of entries || []) {
+    const rule = entry?.rule || entry?.routineRule || entry
+    const bucket = summary[rule?.routineType]
+    if (!bucket) continue
+
+    bucket.total += 1
+    const schedule = rule.schedule || {}
+    const calendarUnit = schedule.calendar?.unit
+    if (calendarUnit && Object.prototype.hasOwnProperty.call(bucket, calendarUnit)) {
+      bucket[calendarUnit] += 1
+    }
+    if (schedule.runtime) bucket.RUNTIME_HOURS += 1
+    if (schedule.mode === 'MANUAL') bucket.MANUAL += 1
+  }
+
+  return summary
 }
 
 export function routineItemResultOptions(routineType, required = true) {

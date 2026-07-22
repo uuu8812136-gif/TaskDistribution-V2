@@ -53,7 +53,7 @@
         <el-table-column label="操作" width="100" fixed="right" align="center">
           <template #default="{ row }">
             <div class="table-actions">
-              <el-button v-if="row.status === 'pending'" type="primary" size="small" text @click="handleApprove(row)">
+              <el-button v-if="canApproveRow(row)" type="primary" size="small" text @click="handleApprove(row)">
                 审批
               </el-button>
               <el-button v-else type="primary" size="small" text @click="handleView(row)">查看</el-button>
@@ -64,15 +64,34 @@
     </el-card>
 
     <!-- 审批对话框 -->
-    <el-dialog v-model="approveDialogVisible" title="审批延期申请" width="min(500px, 94vw)">
+    <el-dialog
+      v-model="approveDialogVisible"
+      :title="canApproveCurrent ? '审批延期申请' : '延期申请详情'"
+      width="min(500px, 94vw)"
+    >
       <el-descriptions :column="1" border>
         <el-descriptions-item label="任务名称">{{ currentExtension?.task?.taskName }}</el-descriptions-item>
         <el-descriptions-item label="申请人">{{ currentExtension?.applicant?.name }}</el-descriptions-item>
         <el-descriptions-item label="请求天数">{{ currentExtension?.requestedDays }} 天</el-descriptions-item>
         <el-descriptions-item label="延期原因">{{ currentExtension?.reason }}</el-descriptions-item>
+        <el-descriptions-item v-if="!canApproveCurrent" label="处理状态">
+          {{ extensionStatusLabel(currentExtension?.status) }}
+        </el-descriptions-item>
+        <el-descriptions-item
+          v-if="!canApproveCurrent && currentExtension?.status === 'approved'"
+          label="批准天数"
+        >
+          {{ currentExtension?.approvedDays }} 天
+        </el-descriptions-item>
+        <el-descriptions-item v-if="!canApproveCurrent && currentExtension?.approvalTime" label="审批时间">
+          {{ formatDate(currentExtension.approvalTime) }}
+        </el-descriptions-item>
+        <el-descriptions-item v-if="!canApproveCurrent && currentExtension?.approvalNote" label="审批备注">
+          {{ currentExtension.approvalNote }}
+        </el-descriptions-item>
       </el-descriptions>
 
-      <el-form :model="approveForm" label-position="top" class="approve-form">
+      <el-form v-if="canApproveCurrent" :model="approveForm" label-position="top" class="approve-form">
         <el-form-item label="审批结果">
           <el-radio-group v-model="approveForm.status">
             <el-radio label="approved">批准</el-radio>
@@ -88,20 +107,26 @@
       </el-form>
 
       <template #footer>
-        <el-button @click="approveDialogVisible = false">取消</el-button>
-        <el-button type="primary" @click="submitApprove">提交</el-button>
+        <el-button @click="approveDialogVisible = false">{{ canApproveCurrent ? '取消' : '关闭' }}</el-button>
+        <el-button v-if="canApproveCurrent" type="primary" :loading="submitting" @click="submitApprove">
+          提交
+        </el-button>
       </template>
     </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted } from 'vue'
 import { getExtensionList, approveExtension } from '@/api/extension'
 import { formatDate } from '@/utils/format'
+import { useSessionStore } from '@/stores/session'
+import { canApproveExtensionRequest } from '@/utils/taskPolicy'
 import { ElMessage } from 'element-plus'
 
+const session = useSessionStore()
 const loading = ref(false)
+const submitting = ref(false)
 const approveDialogVisible = ref(false)
 const currentExtension = ref(null)
 
@@ -116,6 +141,23 @@ const approveForm = reactive({
 })
 
 const extensionList = ref([])
+
+const canApproveRow = (request) => canApproveExtensionRequest({
+  request,
+  userId: session.user?._id,
+  isTeamMode: session.isTeamMode,
+  isReadOnly: session.isReadOnly,
+  hasReviewPermission: session.can('task.review', { write: true, teamRequired: true }),
+  isSuperAdmin: session.isSuperAdmin,
+  membershipRole: session.context.membership?.role
+})
+
+const canApproveCurrent = computed(() => canApproveRow(currentExtension.value))
+const extensionStatusLabel = (status) => ({
+  pending: '待审批',
+  approved: '已批准',
+  rejected: '已拒绝'
+}[status] || '-')
 
 const fetchData = async () => {
   loading.value = true
@@ -146,13 +188,17 @@ const handleView = (row) => {
 }
 
 const submitApprove = async () => {
+  if (submitting.value || !canApproveCurrent.value) return
+  submitting.value = true
   try {
     await approveExtension(currentExtension.value._id, approveForm)
     ElMessage.success('审批成功')
     approveDialogVisible.value = false
-    fetchData()
+    await fetchData()
   } catch (error) {
     console.error('审批失败:', error)
+  } finally {
+    submitting.value = false
   }
 }
 

@@ -2,6 +2,7 @@
 
 const Task = require('../models/Task');
 const TaskReview = require('../models/TaskReview');
+const { TASK_REVIEW_STAGES } = TaskReview;
 const FileAsset = require('../models/FileAsset');
 const {
   AUDIT_ACTIONS,
@@ -12,7 +13,8 @@ const {
   notifyExecutorCompleted,
   notifyTaskCompleted,
   notifyTaskConfirmed,
-  notifyTaskReviewed
+  notifyTaskReviewed,
+  notifyTaskUpdated
 } = require('../utils/notificationHelper');
 const { createAuditService } = require('../services/auditService');
 const {
@@ -21,7 +23,7 @@ const {
   validateActiveTeamUsers,
   withSession
 } = require('../services/taskAccessService');
-const { runWithOptionalTransaction } = require('../services/transactionService');
+const { runWithRequiredTransaction } = require('../services/transactionService');
 const {
   createFileAssetService,
   normalizeAttachmentInput,
@@ -35,6 +37,11 @@ const {
 
 const auditService = createAuditService();
 const fileAssetService = createFileAssetService();
+const TASK_TRANSACTION_OPTIONS = Object.freeze({
+  code: 'TASK_FLOW_TRANSACTIONS_REQUIRED',
+  message: 'Task workflow writes require MongoDB replica-set transaction support'
+});
+const DEFAULT_TASK_CONFIRMATION_CONTENT = '已确认任务完成';
 
 function httpError(status, message, code) {
   const error = new Error(message);
@@ -87,6 +94,11 @@ function canAdministrateTask(authContext) {
     authContext?.membership?.role === MEMBERSHIP_ROLES.PROJECT_ADMIN;
 }
 
+function canSubmitCompletion(task) {
+  return task?.status === 'in_progress' ||
+    (task?.isMainTask === true && task?.status === 'partial_completed');
+}
+
 async function findScopedTask(req, taskId, session) {
   return withSession(Task.findOne(buildTaskDetailFilter(req, taskId)), session);
 }
@@ -100,6 +112,7 @@ async function validateTaskUsers(req, task, fields, session) {
     authContext: req.authContext,
     userIds: ids,
     taskOrgUnitId: task.orgUnitId,
+    enforceActorOrgScope: false,
     session
   });
 }
@@ -129,14 +142,38 @@ async function updateMainTaskProgress(req, mainTaskId, session) {
   const before = snapshot(mainTask);
   const finishedCount = subTasks.filter((subTask) => subTask.status === 'finished').length;
   const completionRate = Math.round((finishedCount / subTasks.length) * 100);
-  mainTask.completionRate = completionRate;
 
-  if (completionRate > 0 && completionRate < 100) {
-    mainTask.status = 'partial_completed';
-  } else if (completionRate === 100 && mainTask.actualCompletionTime) {
-    mainTask.status = idsOf(mainTask.ccUsers).length > 0
-      ? 'pending_review'
-      : 'pending_confirm';
+  if (mainTask.status === 'finished') {
+    // A terminal parent cannot be reopened by late child-state aggregation.
+    mainTask.completionRate = Math.max(mainTask.completionRate || 0, completionRate);
+  } else {
+    const hasCcUsers = idsOf(mainTask.ccUsers).length > 0;
+    let currentRoundApproved = hasCcUsers && Boolean(await withSession(TaskReview.exists({
+      teamId: mainTask.teamId,
+      task: mainTask._id,
+      stage: TASK_REVIEW_STAGES.REVIEW,
+      reviewRound: mainTask.reviewRound,
+      result: 'approved'
+    }), session));
+    mainTask.completionRate = completionRate;
+    // Also catches parents that regressed before review-round invalidation was introduced.
+    const invalidatesReviewedRound = currentRoundApproved && (
+      completionRate < 100 || mainTask.status === 'partial_completed'
+    );
+    if (invalidatesReviewedRound) {
+      mainTask.reviewRound += 1;
+      currentRoundApproved = false;
+    }
+    if (
+      completionRate < 100 &&
+      (completionRate > 0 || Boolean(mainTask.actualCompletionTime))
+    ) {
+      mainTask.status = 'partial_completed';
+    } else if (completionRate === 100 && mainTask.actualCompletionTime) {
+      mainTask.status = hasCcUsers && !currentRoundApproved
+        ? 'pending_review'
+        : 'pending_confirm';
+    }
   }
 
   if (mainTask.isModified()) await mainTask.save({ session });
@@ -145,6 +182,15 @@ async function updateMainTaskProgress(req, mainTaskId, session) {
 
 function handleError(res, error, operation) {
   if (isAuthContextError(error)) return sendAuthContextError(res, error);
+  if (error?.code === TASK_TRANSACTION_OPTIONS.code && error?.status === 503) {
+    return res.status(503).json({ message: error.message, code: error.code });
+  }
+  if (error?.name === 'VersionError') {
+    return res.status(409).json({
+      message: 'Task state changed; refresh and try again',
+      code: 'TASK_FLOW_CONFLICT'
+    });
+  }
   if (error?.code === 11000) {
     return res.status(400).json({
       message: 'This review has already been submitted',
@@ -163,32 +209,24 @@ function handleError(res, error, operation) {
 
 exports.completeTask = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.edit');
+    assertPermission(req.authContext, 'task.view');
     const actorId = req.authContext.userId;
     const { completionNote, attachments } = req.body || {};
     normalizeAttachmentInput(attachments);
 
-    const result = await runWithOptionalTransaction(async (session) => {
+    const result = await runWithRequiredTransaction(async (session) => {
       const task = await findScopedTask(req, req.params.id, session);
       if (!task) throw notFound();
       if (!idsOf(task.executor).some((executorId) => sameId(executorId, actorId))) {
         throw httpError(403, 'Only a task executor may submit completion', 'TASK_EXECUTOR_REQUIRED');
       }
-      await validateTaskUsers(req, task, ['executor', 'ccUsers', 'creator'], session);
-      if (task.status === 'finished') throw badRequest('Task is already finished');
-
-      if (task.isMainTask) {
-        const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
-          parentTask: task._id
-        })), session);
-        const completedStatuses = new Set(['finished', 'pending_review', 'pending_confirm']);
-        if (subTasks.length > 0 && subTasks.some(
-          (subTask) => !completedStatuses.has(subTask.status)
-        )) {
-          throw badRequest('Complete all subtasks before completing the main task');
-        }
+      await validateTaskUsers(req, task, ['executor', 'ccUsers'], session);
+      if (task.status === 'extension_pending') {
+        throw badRequest(
+          'Wait for the pending extension request to be processed',
+          'TASK_EXTENSION_PENDING'
+        );
       }
-
       const before = snapshot(task);
       if (!Array.isArray(task.executorCompletions) || task.executorCompletions.length === 0) {
         task.executorCompletions = idsOf(task.executor).map((executor) => ({
@@ -204,6 +242,27 @@ exports.completeTask = async (req, res) => {
         (completion) => sameId(completion.executor, actorId)
       );
       if (!executorCompletion) throw badRequest('Executor completion record not found');
+      if (executorCompletion.status === 'completed') {
+        throw badRequest(
+          'Completion has already been submitted; use the update endpoint to change it',
+          'TASK_COMPLETION_ALREADY_SUBMITTED'
+        );
+      }
+      if (!canSubmitCompletion(task)) {
+        throw badRequest('Task is not open for completion');
+      }
+
+      if (task.isMainTask) {
+        const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
+          parentTask: task._id
+        })), session);
+        const completedStatuses = new Set(['finished', 'pending_review', 'pending_confirm']);
+        if (subTasks.length > 0 && subTasks.some(
+          (subTask) => !completedStatuses.has(subTask.status)
+        )) {
+          throw badRequest('Complete all subtasks before completing the main task');
+        }
+      }
 
       const previousAttachments = [...(executorCompletion.attachments || [])];
       const managedAttachments = await fileAssetService.reconcileOwnerFiles({
@@ -266,7 +325,7 @@ exports.completeTask = async (req, res) => {
       }
 
       return { task, allExecutorsCompleted, completedCount, totalCount };
-    });
+    }, undefined, TASK_TRANSACTION_OPTIONS);
 
     try {
       if (result.allExecutorsCompleted) {
@@ -317,25 +376,27 @@ exports.reviewTask = async (req, res) => {
     const { content, result = 'approved', rating, attachments } = req.body || {};
     normalizeAttachmentInput(attachments);
     if (!content || typeof content !== 'string') throw badRequest('Review content is required');
-    if (!['approved', 'rejected', 'pending'].includes(result)) {
+    if (!['approved', 'rejected'].includes(result)) {
       throw badRequest('Review result is invalid');
     }
 
-    const mutation = await runWithOptionalTransaction(async (session) => {
+    const mutation = await runWithRequiredTransaction(async (session) => {
       const task = await findScopedTask(req, req.params.id, session);
       if (!task) throw notFound();
       if (!idsOf(task.ccUsers).some((ccUserId) => sameId(ccUserId, actorId))) {
         throw httpError(403, 'Only a task CC user may review it', 'TASK_REVIEWER_REQUIRED');
       }
-      await validateTaskUsers(req, task, ['ccUsers', 'creator'], session);
-      if (!['pending_review', 'completed'].includes(task.status)) {
+      await validateTaskUsers(req, task, ['ccUsers'], session);
+      if (task.status !== 'pending_review') {
         throw badRequest('Task is not awaiting review');
       }
 
       const existingReview = await withSession(TaskReview.findOne({
         teamId: task.teamId,
         task: task._id,
-        reviewer: actorId
+        reviewer: actorId,
+        stage: TASK_REVIEW_STAGES.REVIEW,
+        reviewRound: task.reviewRound
       }), session);
       if (existingReview) throw badRequest('This review has already been submitted');
 
@@ -354,6 +415,8 @@ exports.reviewTask = async (req, res) => {
         teamId: task.teamId,
         task: task._id,
         reviewer: actorId,
+        stage: TASK_REVIEW_STAGES.REVIEW,
+        reviewRound: task.reviewRound,
         content,
         result,
         rating,
@@ -361,9 +424,20 @@ exports.reviewTask = async (req, res) => {
       });
       await review.save({ session });
 
-      // TODO(requirement): legacy flow advances after any CC review, including a rejection.
-      // Keep this behavior until the customer freezes the multi-review/rejection policy.
-      task.status = 'pending_confirm';
+      if (result === 'rejected') {
+        task.status = 'in_progress';
+        task.reviewRound += 1;
+        task.actualCompletionTime = null;
+        task.completedBy = null;
+        task.completionNote = null;
+        task.completionAttachments = [];
+        for (const completion of task.executorCompletions) {
+          completion.status = 'pending';
+          completion.completedAt = null;
+        }
+      } else {
+        task.status = 'pending_confirm';
+      }
       await task.save({ session });
 
       await auditService.record({
@@ -382,17 +456,43 @@ exports.reviewTask = async (req, res) => {
         action: AUDIT_ACTIONS.STATUS_CHANGE,
         session
       });
+
+      if (result === 'rejected' && !task.isMainTask && task.parentTask) {
+        const parentMutation = await updateMainTaskProgress(req, task.parentTask, session);
+        if (!parentMutation) throw notFound();
+        await recordTaskMutation({
+          req,
+          task: parentMutation.task,
+          before: parentMutation.before,
+          action: AUDIT_ACTIONS.UPDATE,
+          session
+        });
+      }
       return { review, task };
-    });
+    }, undefined, TASK_TRANSACTION_OPTIONS);
 
     try {
-      await notifyTaskReviewed(mutation.task, idOf(mutation.task.creator), actorId);
+      if (mutation.review.result === 'rejected') {
+        await notifyTaskUpdated(
+          mutation.task,
+          idsOf(mutation.task.executor),
+          actorId,
+          '审核未通过，请修改后重新提交'
+        );
+      } else {
+        await notifyTaskReviewed(mutation.task, idOf(mutation.task.creator), actorId);
+      }
     } catch (notificationError) {
       console.error('Task review notification failed:', notificationError);
     }
 
     await mutation.review.populate('reviewer', 'name username isSystemAccount');
-    return res.json({ message: 'Task reviewed', ...mutation });
+    return res.json({
+      message: mutation.review.result === 'rejected'
+        ? 'Task returned for revision'
+        : 'Task reviewed',
+      ...mutation
+    });
   } catch (error) {
     return handleError(res, error, 'reviewTask');
   }
@@ -400,15 +500,15 @@ exports.reviewTask = async (req, res) => {
 
 exports.confirmTask = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.review');
+    assertPermission(req.authContext, 'task.view');
     const actorId = req.authContext.userId;
     const { content, rating, attachments } = req.body || {};
-    const attachmentIds = normalizeAttachmentInput(attachments);
-    if (attachmentIds.length > 0 && !content) {
-      throw badRequest('Confirmation attachments require review content');
-    }
+    normalizeAttachmentInput(attachments);
+    const confirmationContent = typeof content === 'string' && content.trim()
+      ? content.trim()
+      : DEFAULT_TASK_CONFIRMATION_CONTENT;
 
-    const mutation = await runWithOptionalTransaction(async (session) => {
+    const mutation = await runWithRequiredTransaction(async (session) => {
       const task = await findScopedTask(req, req.params.id, session);
       if (!task) throw notFound();
       if (!sameId(task.creator, actorId) && !canAdministrateTask(req.authContext)) {
@@ -419,43 +519,53 @@ exports.confirmTask = async (req, res) => {
         );
       }
       await validateTaskUsers(req, task, ['executor'], session);
-      if (!['pending_confirm', 'completed', 'pending_review'].includes(task.status)) {
+      if (task.status !== 'pending_confirm') {
         throw badRequest('Task is not awaiting confirmation');
+      }
+      if (task.isMainTask) {
+        const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
+          parentTask: task._id
+        })), session);
+        if (subTasks.some((subTask) => subTask.status !== 'finished')) {
+          throw badRequest(
+            'Confirm every subtask before confirming the main task',
+            'TASK_SUBTASKS_UNFINISHED'
+          );
+        }
       }
 
       const beforeTask = snapshot(task);
-      let confirmationReview = null;
-      if (content) {
-        const reviewAttachments = await fileAssetService.reconcileOwnerFiles({
-          authContext: req.authContext,
-          req,
-          attachments,
-          previousAttachments: [],
-          ownerType: FileAsset.FILE_OWNER_TYPES.TASK_REVIEW,
-          ownerId: task._id,
-          method: 'POST',
-          session
-        });
-        confirmationReview = new TaskReview({
-          teamId: task.teamId,
-          task: task._id,
-          reviewer: actorId,
-          content,
-          result: 'approved',
-          rating: rating || null,
-          attachments: reviewAttachments
-        });
-        await confirmationReview.save({ session });
-        await auditService.record({
-          req,
-          action: AUDIT_ACTIONS.APPROVE,
-          resourceType: AUDIT_RESOURCE_TYPES.TASK_REVIEW,
-          resourceId: confirmationReview._id,
-          after: snapshot(confirmationReview),
-          targetTeamId: task.teamId,
-          session
-        });
-      }
+      const reviewAttachments = await fileAssetService.reconcileOwnerFiles({
+        authContext: req.authContext,
+        req,
+        attachments,
+        previousAttachments: [],
+        ownerType: FileAsset.FILE_OWNER_TYPES.TASK_REVIEW,
+        ownerId: task._id,
+        method: 'POST',
+        session
+      });
+      const confirmationReview = new TaskReview({
+        teamId: task.teamId,
+        task: task._id,
+        reviewer: actorId,
+        stage: TASK_REVIEW_STAGES.CONFIRMATION,
+        reviewRound: task.reviewRound,
+        content: confirmationContent,
+        result: 'approved',
+        rating: rating || null,
+        attachments: reviewAttachments
+      });
+      await confirmationReview.save({ session });
+      await auditService.record({
+        req,
+        action: AUDIT_ACTIONS.APPROVE,
+        resourceType: AUDIT_RESOURCE_TYPES.TASK_REVIEW,
+        resourceId: confirmationReview._id,
+        after: snapshot(confirmationReview),
+        targetTeamId: task.teamId,
+        session
+      });
 
       task.status = 'finished';
       if (!task.actualCompletionTime) task.actualCompletionTime = new Date();
@@ -473,14 +583,6 @@ exports.confirmTask = async (req, res) => {
         const parentMutation = await updateMainTaskProgress(req, task.parentTask, session);
         if (!parentMutation) throw notFound();
         const parentTask = parentMutation.task;
-        const allFinished = parentMutation.subTasks.every(
-          (subTask) => subTask.status === 'finished'
-        );
-        if (allFinished && parentTask.status === 'pending_confirm') {
-          parentTask.status = 'finished';
-          parentTask.actualCompletionTime = new Date();
-          await parentTask.save({ session });
-        }
         await recordTaskMutation({
           req,
           task: parentTask,
@@ -491,7 +593,7 @@ exports.confirmTask = async (req, res) => {
       }
 
       return { task, confirmationReview };
-    });
+    }, undefined, TASK_TRANSACTION_OPTIONS);
 
     try {
       await notifyTaskConfirmed(mutation.task, idsOf(mutation.task.executor), actorId);
@@ -521,12 +623,12 @@ exports.getTaskReviews = async (req, res) => {
 
 exports.updateCompletion = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.edit');
+    assertPermission(req.authContext, 'task.view');
     const actorId = req.authContext.userId;
     const { completionNote, attachments } = req.body || {};
     normalizeAttachmentInput(attachments);
 
-    const mutation = await runWithOptionalTransaction(async (session) => {
+    const mutation = await runWithRequiredTransaction(async (session) => {
       const task = await findScopedTask(req, req.params.id, session);
       if (!task) throw notFound();
       if (!idsOf(task.executor).some((executorId) => sameId(executorId, actorId))) {
@@ -537,7 +639,13 @@ exports.updateCompletion = async (req, res) => {
         );
       }
       await validateTaskUsers(req, task, ['executor'], session);
-      if (['pending_review', 'pending_confirm', 'finished'].includes(task.status)) {
+      if (task.status === 'extension_pending') {
+        throw badRequest(
+          'Wait for the pending extension request to be processed',
+          'TASK_EXTENSION_PENDING'
+        );
+      }
+      if (!canSubmitCompletion(task)) {
         throw badRequest('Completion can no longer be updated');
       }
 
@@ -575,7 +683,7 @@ exports.updateCompletion = async (req, res) => {
         session
       });
       return { task, executorCompletion };
-    });
+    }, undefined, TASK_TRANSACTION_OPTIONS);
 
     return res.json({
       message: 'Completion updated',
@@ -589,5 +697,6 @@ exports.updateCompletion = async (req, res) => {
 
 module.exports._private = {
   attachmentsFrom,
+  canSubmitCompletion,
   updateMainTaskProgress
 };

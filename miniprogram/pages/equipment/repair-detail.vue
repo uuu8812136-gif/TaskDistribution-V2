@@ -161,6 +161,7 @@ export default {
   name: 'EquipmentRepairDetail',
   setup() {
     const repairId = ref('')
+    const teamId = ref('')
     const repair = ref(null)
     const selectedAction = ref('')
     const submitting = ref(false)
@@ -203,7 +204,10 @@ export default {
 
     const load = async () => {
       if (!repairId.value) return
-      const result = await getEquipmentRepair(repairId.value)
+      const result = await getEquipmentRepair(
+        repairId.value,
+        teamId.value ? { teamId: teamId.value } : {}
+      )
       repair.value = result.repair
       if (selectedAction.value && !repair.value.availableActions.includes(selectedAction.value)) {
         selectedAction.value = ''
@@ -313,12 +317,18 @@ export default {
 
     const previewRepairPhoto = async (photo) => {
       try {
-        const result = await downloadPrivateFile(photo.fileId)
+        const result = await downloadPrivateFile(
+          photo.fileId,
+          teamId.value ? { teamId: teamId.value } : {}
+        )
         uni.previewImage({ current: result.tempFilePath, urls: [result.tempFilePath] })
       } catch {}
     }
 
-    onLoad((options) => { repairId.value = options.repairId || '' })
+    onLoad((options) => {
+      repairId.value = options.repairId || ''
+      teamId.value = options.teamId || ''
+    })
     onShow(load)
     return {
       repair,

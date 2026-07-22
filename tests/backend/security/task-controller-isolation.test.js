@@ -19,7 +19,9 @@ const User = require('../../../app/models/User');
 const Task = require('../../../app/models/Task');
 const TaskReview = require('../../../app/models/TaskReview');
 const ExtensionRequest = require('../../../app/models/ExtensionRequest');
+const AuditLog = require('../../../app/models/AuditLog');
 const { createTaskController } = require('../../../app/controllers/taskController');
+const { createAuditService } = require('../../../app/services/auditService');
 
 const TEST_DATABASE_NAME = `task_controller_${randomUUID().replaceAll('-', '')}_v2_test`;
 const MODELS = [
@@ -29,7 +31,8 @@ const MODELS = [
   User,
   Task,
   TaskReview,
-  ExtensionRequest
+  ExtensionRequest,
+  AuditLog
 ];
 
 let mongoServer;
@@ -97,7 +100,7 @@ function systemAuthContext(teamId, orgUnitId, userId, username) {
   });
 }
 
-function createTestApp(context) {
+function createTestApp(context, controllerOverrides = {}) {
   const controller = createTaskController({
     mongoose,
     auditService: { record: async () => null },
@@ -105,7 +108,8 @@ function createTestApp(context) {
       notifyTaskAssigned: async () => null,
       notifyTaskUpdated: async () => null,
       notifyTaskDeleted: async () => null
-    }
+    },
+    ...controllerOverrides
   });
   const app = express();
   app.use(express.json());
@@ -289,6 +293,18 @@ async function insertTask({ teamId, orgUnitId, userId, taskName, parentTask = nu
     isMainTask,
     status: 'in_progress',
     executorCompletions: [{ executor: userId, status: 'pending' }]
+  });
+}
+
+async function insertTaskReview({ teamId, task, reviewer, content }) {
+  return TaskReview.create({
+    teamId,
+    task,
+    reviewer,
+    stage: 'review',
+    reviewRound: 1,
+    content,
+    result: 'approved'
   });
 }
 
@@ -559,6 +575,14 @@ test('deleting a main task only deletes children from the same team', async () =
     userId: fixture.userA,
     taskName: 'team A main task'
   });
+  const legitimateChild = await insertTask({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'team A child',
+    parentTask: mainTask._id,
+    isMainTask: false
+  });
   const maliciousCrossTeamChild = await insertTask({
     teamId: fixture.teamB,
     orgUnitId: fixture.orgB,
@@ -567,13 +591,139 @@ test('deleting a main task only deletes children from the same team', async () =
     parentTask: mainTask._id,
     isMainTask: false
   });
+  await Promise.all([
+    insertTaskReview({
+      teamId: fixture.teamA,
+      task: mainTask._id,
+      reviewer: fixture.userA,
+      content: 'main task review'
+    }),
+    insertTaskReview({
+      teamId: fixture.teamA,
+      task: legitimateChild._id,
+      reviewer: fixture.userA,
+      content: 'legitimate child review'
+    }),
+    insertTaskReview({
+      teamId: fixture.teamB,
+      task: maliciousCrossTeamChild._id,
+      reviewer: fixture.userB,
+      content: 'cross-team child review'
+    })
+  ]);
 
   await request(createTestApp(
     authContext(fixture.teamA, fixture.orgA, fixture.userA)
   )).delete(`/tasks/${mainTask._id}`).expect(200);
 
   assert.equal(await Task.exists({ _id: mainTask._id }), null);
+  assert.equal(await Task.exists({ _id: legitimateChild._id }), null);
   assert.ok(await Task.exists({ _id: maliciousCrossTeamChild._id, teamId: fixture.teamB }));
+  assert.equal(await TaskReview.countDocuments({
+    teamId: fixture.teamA,
+    task: { $in: [mainTask._id, legitimateChild._id] }
+  }), 0);
+  assert.ok(await TaskReview.exists({
+    teamId: fixture.teamB,
+    task: maliciousCrossTeamChild._id
+  }));
+});
+
+test('removing a subtask through task editing also removes its workflow reviews', async () => {
+  const mainTask = await insertTask({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'main task with removable child'
+  });
+  const child = await insertTask({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'child removed by reconciliation',
+    parentTask: mainTask._id,
+    isMainTask: false
+  });
+  await insertTaskReview({
+    teamId: fixture.teamA,
+    task: child._id,
+    reviewer: fixture.userA,
+    content: 'child review before removal'
+  });
+
+  await request(createTestApp(
+    authContext(fixture.teamA, fixture.orgA, fixture.userA)
+  )).put(`/tasks/${mainTask._id}`).send({ subTasks: [] }).expect(200);
+
+  assert.equal(await Task.exists({ _id: child._id }), null);
+  assert.equal(await TaskReview.exists({
+    teamId: fixture.teamA,
+    task: child._id
+  }), null);
+});
+
+test('task deletion retains immutable review evidence in the audit log', async () => {
+  const task = await insertTask({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'task deleted after review'
+  });
+  const review = await insertTaskReview({
+    teamId: fixture.teamA,
+    task: task._id,
+    reviewer: fixture.userA,
+    content: 'review evidence retained in audit'
+  });
+  const context = authContext(fixture.teamA, fixture.orgA, fixture.userA);
+  const auditService = createAuditService();
+  await auditService.record({
+    authContext: context,
+    action: permissions.AUDIT_ACTIONS.APPROVE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.TASK_REVIEW,
+    resourceId: review._id,
+    after: review.toObject(),
+    targetTeamId: fixture.teamA
+  });
+
+  await request(createTestApp(context, { auditService }))
+    .delete(`/tasks/${task._id}`)
+    .expect(200);
+
+  assert.equal(await TaskReview.exists({ _id: review._id }), null);
+  const retainedReviewAudit = await AuditLog.findOne({
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.TASK_REVIEW,
+    resourceId: String(review._id)
+  }).lean();
+  assert.equal(retainedReviewAudit.after.content, 'review evidence retained in audit');
+  assert.equal(await AuditLog.countDocuments({
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.TASK,
+    resourceId: String(task._id),
+    action: permissions.AUDIT_ACTIONS.DELETE
+  }), 1);
+});
+
+test('task and review deletion roll back together when delete audit persistence fails', async () => {
+  const task = await insertTask({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA,
+    userId: fixture.userA,
+    taskName: 'task protected by audit transaction'
+  });
+  const review = await insertTaskReview({
+    teamId: fixture.teamA,
+    task: task._id,
+    reviewer: fixture.userA,
+    content: 'review restored after rollback'
+  });
+
+  await request(createTestApp(
+    authContext(fixture.teamA, fixture.orgA, fixture.userA),
+    { auditService: { record: async () => { throw new Error('audit unavailable'); } } }
+  )).delete(`/tasks/${task._id}`).expect(500);
+
+  assert.ok(await Task.exists({ _id: task._id }));
+  assert.ok(await TaskReview.exists({ _id: review._id }));
 });
 
 test('Excel export never includes another team task', async () => {

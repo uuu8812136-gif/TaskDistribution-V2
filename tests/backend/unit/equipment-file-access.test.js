@@ -222,7 +222,7 @@ test('workflow-owned active files reject generic bind and delete mutations', asy
   }
 });
 
-test('ordinary equipment attachments keep generic bind compatibility', async () => {
+test('ordinary equipment attachments require the owning business workflow', async () => {
   const teamId = new mongoose.Types.ObjectId();
   const orgUnitId = new mongoose.Types.ObjectId();
   const userId = new mongoose.Types.ObjectId();
@@ -271,14 +271,25 @@ test('ordinary equipment attachments keep generic bind compatibility', async () 
     canAccessBusiness: true
   };
 
-  const bound = await service.bindFile({
+  await assert.rejects(
+    service.bindFile({
+      authContext,
+      fileId: String(fileId),
+      ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT,
+      ownerId: String(equipmentId)
+    }),
+    (error) => error.status === 409 && error.code === 'FILE_WORKFLOW_OWNER_MANAGED'
+  );
+
+  const [bound] = await service.reconcileOwnerFiles({
     authContext,
-    fileId: String(fileId),
+    attachments: [{ fileId: String(fileId) }],
     ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT,
     ownerId: String(equipmentId)
   });
 
-  assert.equal(bound.status, FileAsset.FILE_STATUSES.ACTIVE);
-  assert.equal(bound.ownerType, FileAsset.FILE_OWNER_TYPES.EQUIPMENT);
-  assert.equal(bound.ownerId, String(equipmentId));
+  assert.equal(bound.fileId, String(fileId));
+  assert.equal(file.status, FileAsset.FILE_STATUSES.ACTIVE);
+  assert.equal(file.ownerType, FileAsset.FILE_OWNER_TYPES.EQUIPMENT);
+  assert.equal(file.ownerId, String(equipmentId));
 });

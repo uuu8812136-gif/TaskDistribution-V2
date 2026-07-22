@@ -6,7 +6,11 @@
         <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
-        <el-button v-if="activeTab === 'records'" @click="exportRows">
+        <el-button
+          v-if="activeTab === 'records' && canExport"
+          :loading="exporting"
+          @click="exportRows"
+        >
           <el-icon><Download /></el-icon>
           导出 Excel
         </el-button>
@@ -84,7 +88,14 @@
     </el-tabs>
 
     <section v-if="activeTab === 'plans'" class="table-shell">
-      <el-table v-loading="loading" :data="plans" row-key="_id" stripe empty-text="暂无执行计划">
+      <el-table
+        v-loading="loading"
+        :data="plans"
+        :row-class-name="planRowClass"
+        row-key="_id"
+        stripe
+        empty-text="暂无执行计划"
+      >
         <el-table-column label="设备" min-width="190" fixed="left">
           <template #default="{ row }">
             <div class="primary-cell"><strong>{{ row.equipment?.name || '-' }}</strong><span>{{ row.equipment?.assetCode || '-' }}</span></div>
@@ -92,6 +103,12 @@
         </el-table-column>
         <el-table-column label="组织" min-width="130"><template #default="{ row }">{{ row.orgUnit?.name || '-' }}</template></el-table-column>
         <el-table-column label="类型" width="90"><template #default="{ row }">{{ routineLabel(row.routineType) }}</template></el-table-column>
+        <el-table-column label="规则" min-width="190" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.ruleSnapshot?.name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="周期" min-width="180" show-overflow-tooltip>
+          <template #default="{ row }">{{ routineScheduleLabel(row.ruleSnapshot?.schedule) }}</template>
+        </el-table-column>
         <el-table-column label="窗口" min-width="120" prop="windowName" />
         <el-table-column label="开始时间" width="170"><template #default="{ row }">{{ displayTime(row.scheduledFor) }}</template></el-table-column>
         <el-table-column label="截止时间" width="170"><template #default="{ row }">{{ displayTime(row.dueAt) }}</template></el-table-column>
@@ -111,6 +128,9 @@
         <el-table-column label="组织" min-width="130"><template #default="{ row }">{{ row.orgUnit?.name || '-' }}</template></el-table-column>
         <el-table-column label="规则" min-width="180"><template #default="{ row }">{{ row.ruleSnapshot?.name || '-' }} v{{ row.ruleVersion }}</template></el-table-column>
         <el-table-column label="类型" width="90"><template #default="{ row }">{{ routineLabel(row.routineType) }}</template></el-table-column>
+        <el-table-column label="运行小时" width="110" align="right">
+          <template #default="{ row }">{{ row.performedRuntimeHours ?? '-' }}</template>
+        </el-table-column>
         <el-table-column label="结果" width="100" align="center">
           <template #default="{ row }"><el-tag :type="row.overallResult === 'ABNORMAL' ? 'danger' : 'success'" effect="plain">{{ resultLabel(row.overallResult) }}</el-tag></template>
         </el-table-column>
@@ -128,7 +148,14 @@
     </section>
 
     <section v-else class="table-shell">
-      <el-table v-loading="loading" :data="exceptions" row-key="_id" stripe empty-text="暂无异常处理单">
+      <el-table
+        v-loading="loading"
+        :data="exceptions"
+        :row-class-name="exceptionRowClass"
+        row-key="_id"
+        stripe
+        empty-text="暂无异常处理单"
+      >
         <el-table-column label="设备" min-width="190" fixed="left">
           <template #default="{ row }">
             <div class="primary-cell"><strong>{{ row.equipment?.name || '-' }}</strong><span>{{ row.equipment?.assetCode || '-' }}</span></div>
@@ -155,7 +182,7 @@
         :page-sizes="[20, 50, 100]"
         :total="total"
         layout="sizes, prev, pager, next"
-        @change="loadActiveTab"
+        @change="changePage"
       />
     </footer>
 
@@ -179,37 +206,49 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import {
   exportEquipmentRoutineRecords,
   getEquipmentList,
   getEquipmentOptions,
+  getEquipmentRoutineException,
   getEquipmentRoutineExceptions,
+  getEquipmentRoutinePlan,
   getEquipmentRoutinePlans,
   getEquipmentRoutineRecords,
   transitionEquipmentRoutineException
 } from '@/api/equipment'
-import { saveBlob } from '@/utils/equipment'
+import { routineScheduleLabel, saveBlob } from '@/utils/equipment'
 import { useSessionStore } from '@/stores/session'
 
 const session = useSessionStore()
+const route = useRoute()
+const router = useRouter()
+const ROUTINE_TABS = new Set(['plans', 'records', 'exceptions'])
+const requestedTab = String(route.query.tab || '')
 const loading = ref(false)
+const exporting = ref(false)
 const submitting = ref(false)
-const activeTab = ref('plans')
-const selectedTeamId = ref('')
+const activeTab = ref(ROUTINE_TABS.has(requestedTab) ? requestedTab : 'plans')
+const selectedTeamId = ref(String(route.query.teamId || ''))
+const focusedExceptionId = ref(String(route.query.exceptionId || ''))
+const focusedPlanId = ref(String(route.query.planId || ''))
 const plans = ref([])
 const records = ref([])
 const exceptions = ref([])
 const equipmentOptions = ref([])
 const orgUnitOptions = ref([])
 const total = ref(0)
+let referenceRequestId = 0
+let activeTabRequestId = 0
 const handleVisible = ref(false)
 const selectedException = ref(null)
 const filters = reactive({
   routineType: '',
   dateRange: [],
-  equipmentId: '',
+  equipmentId: String(route.query.equipmentId || ''),
   orgUnitId: '',
   planStatus: '',
   overallResult: '',
@@ -249,6 +288,7 @@ const stages = {
 const requestTeam = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+const canExport = computed(() => session.hasPermission('equipment.export'))
 const handleActions = computed(() => (
   selectedException.value?.currentStage === 'ASSET_ADMIN'
     ? [{ label: '解决异常', value: 'RESOLVE' }]
@@ -260,6 +300,16 @@ const routineLabel = (value) => value === 'MAINTENANCE' ? '保养' : '点检'
 const resultLabel = (value) => ({ NORMAL: '正常', COMPLETED: '完成', ABNORMAL: '异常' }[value] || value || '-')
 const planStatus = (value) => planStatuses[value] || { label: value || '-', type: 'info' }
 const stageLabel = (value) => stages[value] || value || '-'
+const planRowClass = ({ row }) => (
+  focusedPlanId.value && String(row?._id || '') === focusedPlanId.value
+    ? 'focused-message-row'
+    : ''
+)
+const exceptionRowClass = ({ row }) => (
+  focusedExceptionId.value && String(row?._id || '') === focusedExceptionId.value
+    ? 'focused-message-row'
+    : ''
+)
 
 function queryParams() {
   const [from, to] = filters.dateRange || []
@@ -280,43 +330,117 @@ function queryParams() {
 }
 
 async function loadReferenceData() {
+  const requestId = ++referenceRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     equipmentOptions.value = []
     orgUnitOptions.value = []
     return
   }
+  const teamParams = { ...requestTeam.value }
   const [equipmentResult, optionResult] = await Promise.all([
-    getEquipmentList({ ...requestTeam.value, page: 1, pageSize: 200 }),
-    getEquipmentOptions(requestTeam.value)
+    getEquipmentList({ ...teamParams, page: 1, pageSize: 200 }),
+    getEquipmentOptions(teamParams)
   ])
+  if (requestId !== referenceRequestId) return
   equipmentOptions.value = equipmentResult.equipment || []
   orgUnitOptions.value = optionResult.orgUnits || []
 }
 
 async function loadActiveTab() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++activeTabRequestId
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    plans.value = []
+    records.value = []
+    exceptions.value = []
+    total.value = 0
+    loading.value = false
+    return
+  }
+  const tab = activeTab.value
+  const params = queryParams()
+  const teamParams = { ...requestTeam.value }
+  const requestedPlanId = focusedPlanId.value
+  const requestedExceptionId = focusedExceptionId.value
   loading.value = true
   try {
-    const result = activeTab.value === 'plans'
-      ? await getEquipmentRoutinePlans(queryParams())
-      : activeTab.value === 'records'
-        ? await getEquipmentRoutineRecords(queryParams())
-        : await getEquipmentRoutineExceptions(queryParams())
-    plans.value = result.plans || []
+    const result = tab === 'plans'
+      ? await getEquipmentRoutinePlans(params)
+      : tab === 'records'
+        ? await getEquipmentRoutineRecords(params)
+        : await getEquipmentRoutineExceptions(params)
+    if (requestId !== activeTabRequestId) return
+    const listedPlans = result.plans || []
+    plans.value = listedPlans
     records.value = result.records || []
-    exceptions.value = result.exceptions || []
+    const listedExceptions = result.exceptions || []
+    exceptions.value = listedExceptions
+    if (
+      tab === 'plans' &&
+      requestedPlanId &&
+      !listedPlans.some((item) => String(item._id) === requestedPlanId)
+    ) {
+      try {
+        const focusedResult = await getEquipmentRoutinePlan(
+          requestedPlanId,
+          teamParams
+        )
+        if (requestId !== activeTabRequestId) return
+        if (focusedResult?.plan) {
+          plans.value = [focusedResult.plan, ...listedPlans]
+        }
+      } catch {
+        if (requestId === activeTabRequestId) {
+          ElMessage.warning('消息对应的执行计划已不可用，已显示当前计划列表')
+        }
+      }
+    }
+    if (
+      tab === 'exceptions' &&
+      requestedExceptionId &&
+      !listedExceptions.some((item) => String(item._id) === requestedExceptionId)
+    ) {
+      try {
+        const focusedResult = await getEquipmentRoutineException(
+          requestedExceptionId,
+          teamParams
+        )
+        if (requestId !== activeTabRequestId) return
+        if (focusedResult?.exception) {
+          exceptions.value = [focusedResult.exception, ...listedExceptions]
+        }
+      } catch {
+        if (requestId === activeTabRequestId) {
+          ElMessage.warning('消息对应的异常记录已不可用，已显示当前异常列表')
+        }
+      }
+    }
+    if (requestId !== activeTabRequestId) return
     total.value = Number(result.total || 0)
   } finally {
-    loading.value = false
+    if (requestId === activeTabRequestId) loading.value = false
   }
 }
 
-function applyFilters() {
-  filters.page = 1
-  loadActiveTab()
+async function clearMessageFocus() {
+  if (!focusedPlanId.value && !focusedExceptionId.value) return
+  focusedPlanId.value = ''
+  focusedExceptionId.value = ''
+  await router.replace({
+    query: {
+      ...route.query,
+      planId: undefined,
+      exceptionId: undefined
+    }
+  })
 }
 
-function resetFilters() {
+async function applyFilters() {
+  filters.page = 1
+  await clearMessageFocus()
+  await loadActiveTab()
+}
+
+async function resetFilters() {
   Object.assign(filters, {
     routineType: '',
     dateRange: [],
@@ -327,18 +451,45 @@ function resetFilters() {
     exceptionStatus: '',
     page: 1
   })
-  loadActiveTab()
+  await clearMessageFocus()
+  await loadActiveTab()
 }
 
-function changeTab() {
+async function changePage() {
+  await clearMessageFocus()
+  await loadActiveTab()
+}
+
+async function changeTab() {
   filters.page = 1
-  loadActiveTab()
+  focusedExceptionId.value = activeTab.value === 'exceptions' ? focusedExceptionId.value : ''
+  focusedPlanId.value = activeTab.value === 'plans' ? focusedPlanId.value : ''
+  await router.replace({
+    query: {
+      ...route.query,
+      tab: activeTab.value,
+      exceptionId: focusedExceptionId.value || undefined,
+      planId: focusedPlanId.value || undefined
+    }
+  })
+  await loadActiveTab()
 }
 
 async function changeTeam() {
   filters.equipmentId = ''
   filters.orgUnitId = ''
   filters.page = 1
+  await router.replace({
+    query: {
+      ...route.query,
+      teamId: selectedTeamId.value || undefined,
+      equipmentId: undefined,
+      exceptionId: undefined,
+      planId: undefined
+    }
+  })
+  focusedExceptionId.value = ''
+  focusedPlanId.value = ''
   await Promise.all([loadReferenceData(), loadActiveTab()])
 }
 
@@ -377,15 +528,23 @@ async function submitHandle() {
 }
 
 async function exportRows() {
-  const params = queryParams()
-  delete params.page
-  delete params.pageSize
-  const blob = await exportEquipmentRoutineRecords(params)
-  saveBlob(blob, `点检保养记录-${dayjs().format('YYYYMMDD')}.xlsx`)
+  if (exporting.value) return
+  exporting.value = true
+  try {
+    const params = queryParams()
+    delete params.page
+    delete params.pageSize
+    const blob = await exportEquipmentRoutineRecords(params)
+    saveBlob(blob, `点检保养记录-${dayjs().format('YYYYMMDD')}.xlsx`)
+  } finally {
+    exporting.value = false
+  }
 }
 
 onMounted(async () => {
-  if (session.isGlobalReadOnly) selectedTeamId.value = session.teams[0]?._id || ''
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    selectedTeamId.value = session.teams[0]?._id || ''
+  }
   await Promise.all([loadReferenceData(), loadActiveTab()])
 })
 </script>
@@ -405,6 +564,7 @@ onMounted(async () => {
 .primary-cell, .watermark-list { display: grid; gap: 3px; }
 .primary-cell span, .watermark-list { color: var(--zl-muted); font-size: 12px; }
 .watermark-list span { overflow-wrap: anywhere; }
+:deep(.focused-message-row > td.el-table__cell) { background: var(--el-color-primary-light-9) !important; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .handle-form { margin-top: 18px; }
 @media (max-width: 760px) {

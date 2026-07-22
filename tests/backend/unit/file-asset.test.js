@@ -51,6 +51,27 @@ test('active files require a fixed owner type and owner id', async () => {
   );
 });
 
+test('purging files remain unbound and require a cleanup claim timestamp', async () => {
+  await new FileAsset(attributes({
+    status: FILE_STATUSES.PURGING,
+    cleanupStartedAt: new Date()
+  })).validate();
+
+  await assert.rejects(
+    new FileAsset(attributes({ status: FILE_STATUSES.PURGING })).validate(),
+    /requires cleanupStartedAt/
+  );
+  await assert.rejects(
+    new FileAsset(attributes({
+      status: FILE_STATUSES.PURGING,
+      ownerType: FILE_OWNER_TYPES.TASK,
+      ownerId: OWNER_ID,
+      cleanupStartedAt: new Date()
+    })).validate(),
+    /temporary file cannot be bound/
+  );
+});
+
 test('deleted files require deletion metadata and never expose an absolute path field', async () => {
   const deleted = new FileAsset(attributes({
     status: FILE_STATUSES.DELETED,

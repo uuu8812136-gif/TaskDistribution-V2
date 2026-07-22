@@ -73,10 +73,10 @@ router.delete('/:id', requireTeamContext, taskEdit, taskController.deleteTask);
 
 // These route-level guards establish the authorization boundary. The flow
 // controllers also enforce resource-level task/team filters.
-router.post('/:id/complete', requireTeamContext, taskEdit, taskFlowController.completeTask);
-router.put('/:id/complete', requireTeamContext, taskEdit, taskFlowController.updateCompletion);
+router.post('/:id/complete', requireTeamContext, taskView, taskFlowController.completeTask);
+router.put('/:id/complete', requireTeamContext, taskView, taskFlowController.updateCompletion);
 router.post('/:id/review', requireTeamContext, taskReview, taskFlowController.reviewTask);
-router.post('/:id/confirm', requireTeamContext, taskReview, taskFlowController.confirmTask);
+router.post('/:id/confirm', requireTeamContext, taskView, taskFlowController.confirmTask);
 router.get('/:id/reviews', taskView, taskFlowController.getTaskReviews);
 
 module.exports = router;

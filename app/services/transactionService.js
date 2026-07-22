@@ -29,7 +29,26 @@ async function runWithOptionalTransaction(work, connection = mongoose.connection
   }
 }
 
+async function runWithRequiredTransaction(
+  work,
+  connection = mongoose.connection,
+  {
+    code = 'TRANSACTIONS_REQUIRED',
+    message = 'This operation requires MongoDB transaction support'
+  } = {}
+) {
+  if (typeof work !== 'function') throw new TypeError('work must be a function');
+  if (!supportsTransactions(connection)) {
+    const error = new Error(message);
+    error.status = 503;
+    error.code = code;
+    throw error;
+  }
+  return runWithOptionalTransaction(work, connection);
+}
+
 module.exports = {
   runWithOptionalTransaction,
+  runWithRequiredTransaction,
   supportsTransactions
 };

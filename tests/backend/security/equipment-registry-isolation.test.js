@@ -594,6 +594,55 @@ test('Excel export is re-filtered by organization scope and neutralizes formulas
   assert.doesNotMatch(serialized, /A2_SECRET/);
 });
 
+test('asset type filter is exact for both list and Excel export', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const assetCategory = await category(service, context, fixture.orgA1, 'Asset Type Filter');
+  const transport = await equipment(service, context, {
+    assetCode: 'TYPE-TRANSPORT',
+    orgUnitId: fixture.orgA1,
+    categoryId: assetCategory._id
+  });
+  const handling = await equipment(service, context, {
+    assetCode: 'TYPE-HANDLING',
+    orgUnitId: fixture.orgA1,
+    categoryId: assetCategory._id
+  });
+  await Promise.all([
+    EquipmentAsset.updateOne(
+      { _id: transport._id },
+      { $set: { assetType: 'TRANSPORT_EQUIPMENT' } }
+    ),
+    EquipmentAsset.updateOne(
+      { _id: handling._id },
+      { $set: { assetType: 'HANDLING_EQUIPMENT' } }
+    )
+  ]);
+
+  const query = { assetType: ' TRANSPORT_EQUIPMENT ' };
+  const listed = await service.listAssets({ authContext: context, query });
+  assert.equal(listed.total, 1);
+  assert.deepEqual(listed.equipment.map((item) => item.assetCode), ['TYPE-TRANSPORT']);
+
+  const exported = await service.exportAssets({ authContext: context, query });
+  assert.equal(exported.count, 1);
+  const workbook = XLSX.read(exported.buffer, { type: 'buffer' });
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+  assert.deepEqual(rows.map((row) => row['Asset Code']), ['TYPE-TRANSPORT']);
+  assert.deepEqual(rows.map((row) => row['Asset Type']), ['TRANSPORT_EQUIPMENT']);
+
+  const partial = await service.listAssets({
+    authContext: context,
+    query: { assetType: 'TRANSPORT' }
+  });
+  assert.equal(partial.total, 0);
+  assert.deepEqual(partial.equipment, []);
+});
+
 test('QR payload is opaque, contains no public URL, and lookup retains scope checks', async () => {
   const service = createEquipmentRegistryService();
   const teamA = teamContext({

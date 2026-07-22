@@ -27,7 +27,10 @@ const {
   POSITION_KEYS,
   SESSION_MODES
 } = require('../../../app/config/permissions');
-const { resolveStoragePath } = require('../../../app/services/fileStorageService');
+const {
+  createStorageKey,
+  resolveStoragePath
+} = require('../../../app/services/fileStorageService');
 const { createSessionLifecycleService } = require('../../../app/services/sessionLifecycleService');
 
 const TEST_DATABASE_NAME = `file_api_${randomUUID().replaceAll('-', '')}_v2_test`;
@@ -65,9 +68,33 @@ function config() {
     jwtExpire: '1h',
     uploadPath: storageRoot,
     maxFileSize: 1024,
+    temporaryFileUserMaxCount: 2,
+    temporaryFileUserMaxBytes: 512,
+    temporaryFileTeamMaxCount: 3,
+    temporaryFileTeamMaxBytes: 1024,
     corsOrigins: ['http://localhost:3101'],
     enableLegacyPublicUploads: false
   };
+}
+
+async function quotaAsset({ teamId, uploaderId, size, status = 'TEMPORARY' }) {
+  return FileAsset.create({
+    teamId,
+    ownerType: 'TEMPORARY',
+    ownerId: null,
+    storageKey: createStorageKey({
+      teamId,
+      originalName: 'quota.txt',
+      mimeType: 'text/plain'
+    }),
+    originalName: 'quota.txt',
+    mimeType: 'text/plain',
+    size,
+    sha256: 'a'.repeat(64),
+    uploaderId,
+    status,
+    cleanupStartedAt: status === 'PURGING' ? new Date() : null
+  });
 }
 
 async function createUser(username, isSuperAdmin = false) {
@@ -291,6 +318,81 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
     assert.equal(await FileAsset.countDocuments(), 0);
   });
 
+  await t.test('temporary upload quotas enforce user and team counts and bytes', async () => {
+    const upload = () => request(app)
+      .post('/api/files')
+      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
+      .attach('file', PNG_CONTENT, {
+        filename: 'quota-check.png',
+        contentType: 'image/png'
+      });
+    const removeSeeded = async (files) => FileAsset.deleteMany({
+      _id: { $in: files.map((file) => file._id) }
+    });
+
+    const userCountFiles = await Promise.all([
+      quotaAsset({
+        teamId: seeded.teamA._id,
+        uploaderId: seeded.uploaderA._id,
+        size: 1
+      }),
+      quotaAsset({
+        teamId: seeded.teamA._id,
+        uploaderId: seeded.uploaderA._id,
+        size: 1,
+        status: 'PURGING'
+      })
+    ]);
+    await upload().expect(429).expect(({ body }) => {
+      assert.equal(body.code, 'TEMPORARY_FILE_USER_COUNT_LIMIT');
+    });
+    await removeSeeded(userCountFiles);
+
+    const userBytesFile = await quotaAsset({
+      teamId: seeded.teamA._id,
+      uploaderId: seeded.uploaderA._id,
+      size: 512 - PNG_CONTENT.length + 1
+    });
+    await upload().expect(429).expect(({ body }) => {
+      assert.equal(body.code, 'TEMPORARY_FILE_USER_BYTES_LIMIT');
+    });
+    assert.equal(await FileAsset.countDocuments({
+      teamId: seeded.teamA._id,
+      uploaderId: seeded.uploaderA._id,
+      status: 'TEMPORARY'
+    }), 1);
+    await removeSeeded([userBytesFile]);
+
+    const teamCountFiles = await Promise.all(Array.from({ length: 3 }, () => quotaAsset({
+      teamId: seeded.teamA._id,
+      uploaderId: new mongoose.Types.ObjectId(),
+      size: 1
+    })));
+    await upload().expect(429).expect(({ body }) => {
+      assert.equal(body.code, 'TEMPORARY_FILE_TEAM_COUNT_LIMIT');
+    });
+    await removeSeeded(teamCountFiles);
+
+    const teamByteSeed = 1024 - PNG_CONTENT.length + 1;
+    const teamByteFiles = await Promise.all([
+      quotaAsset({
+        teamId: seeded.teamA._id,
+        uploaderId: new mongoose.Types.ObjectId(),
+        size: Math.floor(teamByteSeed / 2)
+      }),
+      quotaAsset({
+        teamId: seeded.teamA._id,
+        uploaderId: new mongoose.Types.ObjectId(),
+        size: Math.ceil(teamByteSeed / 2)
+      })
+    ]);
+    await upload().expect(429).expect(({ body }) => {
+      assert.equal(body.code, 'TEMPORARY_FILE_TEAM_BYTES_LIMIT');
+    });
+    await removeSeeded(teamByteFiles);
+    assert.equal(await FileAsset.countDocuments({ status: { $in: ['TEMPORARY', 'PURGING'] } }), 0);
+  });
+
   await t.test('temporary upload uses an opaque path and remains private to its uploader', async () => {
     const uploadResponse = await request(app)
       .post('/api/files')
@@ -329,7 +431,7 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
     assert.equal(ownerMetadata.body.file.originalName, 'report-final.png');
   });
 
-  await t.test('binding verifies both owner scope and active team', async () => {
+  await t.test('business attachments can only bind through their owning endpoint', async () => {
     const unsupportedOwner = await request(app)
       .patch(`/api/files/${fileId}/bind`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
@@ -341,27 +443,40 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
       .patch(`/api/files/${fileId}/bind`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
       .send({ ownerType: 'TASK', ownerId: seeded.taskB._id.toString() })
-      .expect(404);
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
 
     await request(app)
       .patch(`/api/files/${fileId}/bind`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
       .send({ ownerType: 'TASK', ownerId: seeded.taskOtherA._id.toString() })
-      .expect(404);
-
-    const bindResponse = await request(app)
-      .patch(`/api/files/${fileId}/bind`)
-      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
-      .send({ ownerType: 'TASK', ownerId: seeded.taskA._id.toString() })
-      .expect(200);
-    assert.equal(bindResponse.body.file.status, 'ACTIVE');
-    assert.equal(bindResponse.body.file.ownerId, seeded.taskA._id.toString());
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
 
     await request(app)
       .patch(`/api/files/${fileId}/bind`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
       .send({ ownerType: 'TASK', ownerId: seeded.taskA._id.toString() })
-      .expect(404);
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
+
+    await request(app)
+      .put(`/api/tasks/${seeded.taskA._id}`)
+      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
+      .send({ attachments: [{ fileId }] })
+      .expect(200);
+
+    const bound = await FileAsset.findById(fileId).lean();
+    assert.equal(bound.status, 'ACTIVE');
+    assert.equal(bound.ownerType, 'TASK');
+    assert.equal(bound.ownerId.toString(), seeded.taskA._id.toString());
+
+    await request(app)
+      .patch(`/api/files/${fileId}/bind`)
+      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
+      .send({ ownerType: 'TASK', ownerId: seeded.taskA._id.toString() })
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
   });
 
   await t.test('active file reads enforce team and organization scope', async () => {
@@ -418,7 +533,7 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
     assert.equal(globalWrite.body.code, 'TEAM_CONTEXT_REQUIRED');
   });
 
-  await t.test('soft deletion preserves bytes, hides the record, and appends audits', async () => {
+  await t.test('active business files only delete through owner reconciliation', async () => {
     await request(app)
       .delete(`/api/files/${fileId}`)
       .set('Authorization', `Bearer ${seeded.otherOrgAToken}`)
@@ -429,8 +544,14 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
       .delete(`/api/files/${fileId}`)
       .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
       .send({ reason: 'superseded attachment' })
+      .expect(409);
+    assert.equal(deletedResponse.body.code, 'FILE_WORKFLOW_OWNER_MANAGED');
+
+    await request(app)
+      .put(`/api/tasks/${seeded.taskA._id}`)
+      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
+      .send({ attachments: [] })
       .expect(200);
-    assert.equal(deletedResponse.body.file.status, 'DELETED');
 
     const stored = await FileAsset.findById(fileId).lean();
     assert.equal(stored.status, 'DELETED');
@@ -450,7 +571,7 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
       audits.map(({ action }) => action),
       [AUDIT_ACTIONS.CREATE, AUDIT_ACTIONS.ASSIGN, AUDIT_ACTIONS.FILE_DELETE]
     );
-    assert.equal(audits[2].reason, 'superseded attachment');
+    assert.equal(audits[2].reason, 'Business attachment replaced');
     assert.equal(audits.every((audit) => String(audit.targetTeamId) === String(seeded.teamA._id)), true);
   });
 });

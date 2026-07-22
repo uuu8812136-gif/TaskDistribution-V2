@@ -21,7 +21,7 @@
           </el-button>
         </el-badge>
 
-        <el-dropdown @command="handleCommand">
+        <el-dropdown :disabled="accountActionPending" @command="handleCommand">
           <div class="user-info">
             <el-avatar :size="32">{{ session.user?.name?.substring(0, 1) || '用' }}</el-avatar>
             <span class="username">{{ session.user?.name }}</span>
@@ -58,6 +58,7 @@
       />
 
       <el-aside
+        v-if="!isMobile || !isCollapse"
         :width="isMobile ? '232px' : (isCollapse ? '76px' : '232px')"
         class="layout-aside"
         :aria-hidden="isMobile && isCollapse"
@@ -189,7 +190,14 @@
       </el-main>
     </el-container>
 
-    <el-dialog v-model="passwordDialogVisible" title="修改密码" width="min(500px, 92vw)">
+    <el-dialog
+      v-model="passwordDialogVisible"
+      title="修改密码"
+      width="min(500px, 92vw)"
+      :close-on-click-modal="!passwordSubmitting"
+      :close-on-press-escape="!passwordSubmitting"
+      :show-close="!passwordSubmitting"
+    >
       <el-form
         ref="passwordFormRef"
         :model="passwordForm"
@@ -207,7 +215,7 @@
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="passwordDialogVisible = false">取消</el-button>
+        <el-button :disabled="passwordSubmitting" @click="passwordDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="passwordSubmitting" @click="handleChangePassword">
           确定
         </el-button>
@@ -250,6 +258,8 @@ const isCollapse = ref(initialMobile)
 const isMobile = ref(initialMobile)
 const passwordDialogVisible = ref(false)
 const passwordSubmitting = ref(false)
+const logoutSubmitting = ref(false)
+const accountActionPending = computed(() => passwordSubmitting.value || logoutSubmitting.value)
 const passwordFormRef = ref(null)
 const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 let messagePollTimer = null
@@ -297,17 +307,25 @@ const startMessagePolling = () => {
 }
 
 const handleCommand = (command) => {
+  if (accountActionPending.value) return
   if (command === 'profile') router.push({ name: 'Profile' })
-  if (command === 'changePassword') passwordDialogVisible.value = true
+  if (command === 'changePassword') {
+    passwordForm.oldPassword = ''
+    passwordForm.newPassword = ''
+    passwordForm.confirmPassword = ''
+    passwordDialogVisible.value = true
+  }
   if (command === 'logout') handleLogout()
 }
 
 const handleChangePassword = async () => {
-  const valid = await passwordFormRef.value?.validate().catch(() => false)
-  if (!valid) return
+  if (passwordSubmitting.value) return
 
   passwordSubmitting.value = true
   try {
+    const valid = await passwordFormRef.value?.validate().catch(() => false)
+    if (!valid) return
+
     await changePassword({
       oldPassword: passwordForm.oldPassword,
       newPassword: passwordForm.newPassword
@@ -324,6 +342,8 @@ const handleChangePassword = async () => {
 }
 
 const handleLogout = async () => {
+  if (logoutSubmitting.value) return
+  logoutSubmitting.value = true
   try {
     await ElMessageBox.confirm('确定要退出登录吗？', '退出登录', {
       confirmButtonText: '退出',
@@ -331,7 +351,8 @@ const handleLogout = async () => {
       type: 'warning'
     })
   } catch (error) {
-    if (error === 'cancel' || error === 'close') return
+    logoutSubmitting.value = false
+    return
   }
 
   try {
@@ -340,6 +361,7 @@ const handleLogout = async () => {
     // 本地会话会在 store 的 finally 中清理，仍需回到登录页。
   } finally {
     await router.replace({ name: 'Login' })
+    logoutSubmitting.value = false
   }
 }
 
@@ -362,6 +384,7 @@ onUnmounted(() => {
 .main-layout {
   width: 100%;
   height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -535,6 +558,31 @@ onUnmounted(() => {
 
   .header-right {
     gap: 8px;
+  }
+}
+
+@media (max-width: 768px) {
+  .layout-container {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .layout-main {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    margin: 0;
+    overflow-x: hidden;
+    transform: none;
+  }
+
+  .main-content {
+    width: 100%;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0;
   }
 }
 

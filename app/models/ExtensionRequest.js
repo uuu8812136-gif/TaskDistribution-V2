@@ -88,11 +88,15 @@ const extensionRequestSchema = new mongoose.Schema({
     trim: true
   }
 }, {
-  timestamps: true
+  timestamps: true,
+  optimisticConcurrency: true
 });
 
 // 索引
-extensionRequestSchema.index({ teamId: 1, task: 1 });
+extensionRequestSchema.index(
+  { teamId: 1, task: 1 },
+  { unique: true, name: 'uq_extension_request_per_task' }
+);
 extensionRequestSchema.index({ teamId: 1, applicant: 1 });
 extensionRequestSchema.index({ teamId: 1, approver: 1, status: 1 });
 extensionRequestSchema.index({ teamId: 1, applyTime: -1 });

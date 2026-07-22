@@ -5,7 +5,7 @@
         <h1>生产日报</h1>
         <p>{{ activeTeamName }}</p>
       </div>
-      <el-button :loading="loading" circle aria-label="刷新生产日报" @click="refresh">
+      <el-button :loading="pageLoading" circle aria-label="刷新生产日报" @click="refresh">
         <el-icon><Refresh /></el-icon>
       </el-button>
     </header>
@@ -112,7 +112,7 @@
         <h2>生成记录</h2>
         <span>共 {{ total }} 天</span>
       </div>
-      <el-table :data="reports" row-key="_id" stripe empty-text="暂无生产日报">
+      <el-table v-loading="listLoading" :data="reports" row-key="_id" stripe empty-text="暂无生产日报">
         <el-table-column prop="reportDate" label="日期" width="125" />
         <el-table-column label="当前版本" width="100" align="center">
           <template #default="{ row }">v{{ row.version }}</template>
@@ -155,6 +155,7 @@ import {
 } from '@/api/reporting'
 import { useSessionStore } from '@/stores/session'
 import { copyPlainText, dailyReportSourceSummary } from '@/utils/reporting'
+import { requestErrorMessage } from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
@@ -166,9 +167,13 @@ const report = ref(null)
 const reports = ref([])
 const total = ref(0)
 const loading = ref(false)
+const listLoading = ref(false)
 const generating = ref(false)
 const generationBlock = ref('')
 const filters = reactive({ page: 1, pageSize: 20 })
+
+let listRequestId = 0
+let detailRequestId = 0
 
 const canGenerate = computed(() => session.can('report.daily.generate', {
   write: true,
@@ -177,6 +182,7 @@ const canGenerate = computed(() => session.can('report.daily.generate', {
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+const pageLoading = computed(() => loading.value || listLoading.value)
 const activeTeamName = computed(() => {
   if (!session.isGlobalReadOnly) return session.activeTeam?.name || '当前项目团队'
   return session.teams.find(({ _id }) => _id === selectedTeamId.value)?.name || '全局只读'
@@ -192,80 +198,106 @@ function shortId(value) {
 }
 
 function blockMessage(error) {
-  const code = error?.response?.data?.code || error?.code
-  if (code === 'DAILY_REPORT_ATTENDANCE_REVIEW_REQUIRED') return '今日或昨日出勤尚未完成审核，暂不能生成。'
-  if (code === 'DAILY_REPORT_ATTENDANCE_INCOMPLETE') return '出勤审核来源未包含完整七个分部，暂不能生成。'
-  if (code === 'DAILY_REPORT_ATTENDANCE_SOURCE_MISSING') return '已审核出勤来源记录不完整，暂不能生成。'
-  if (code === 'DAILY_REPORT_PRODUCTION_SCHEDULE_REQUIRED') return '今日、昨日或累计口径所需排产尚未维护完整，暂不能生成。'
-  if (code === 'DAILY_REPORT_VERSION_LIMIT_REACHED') return '该日期已达到 50 个版本，已禁止继续生成。'
-  return error?.response?.data?.message || error?.message || '生产日报生成失败。'
+  return requestErrorMessage(error, '生产日报生成失败。')
 }
 
 async function loadList() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getGeneratedDailyReports({
+  const requestId = ++listRequestId
+  const params = {
     ...requestTeamParams.value,
     page: filters.page,
     pageSize: filters.pageSize
-  })
-  reports.value = result.dailyReports || []
-  total.value = result.total || 0
+  }
+  reports.value = []
+  total.value = 0
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    listLoading.value = false
+    return
+  }
+  listLoading.value = true
+  try {
+    const result = await getGeneratedDailyReports(params)
+    if (requestId !== listRequestId) return
+    reports.value = result.dailyReports || []
+    total.value = result.total || 0
+  } finally {
+    if (requestId === listRequestId) listLoading.value = false
+  }
 }
 
 async function loadSelectedDate() {
+  const requestId = ++detailRequestId
+  const reportDate = selectedDate.value
+  const teamParams = { ...requestTeamParams.value }
   generationBlock.value = ''
   selectedVersion.value = null
-  await router.replace({
-    query: {
-      ...(selectedTeamId.value ? { teamId: selectedTeamId.value } : {}),
-      date: selectedDate.value
-    }
-  })
+  report.value = null
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
+    await router.replace({
+      query: {
+        ...(selectedTeamId.value ? { teamId: selectedTeamId.value } : {}),
+        date: reportDate
+      }
+    })
+    if (requestId !== detailRequestId) return
     const result = await getGeneratedDailyReports({
-      ...requestTeamParams.value,
-      dateFrom: selectedDate.value,
-      dateTo: selectedDate.value,
+      ...teamParams,
+      dateFrom: reportDate,
+      dateTo: reportDate,
       page: 1,
       pageSize: 1
     })
+    if (requestId !== detailRequestId) return
     if (!result.dailyReports?.length) {
-      report.value = null
       return
     }
-    const detail = await getGeneratedDailyReport(selectedDate.value, requestTeamParams.value)
+    const detail = await getGeneratedDailyReport(reportDate, teamParams)
+    if (requestId !== detailRequestId) return
     report.value = detail.dailyReport
     selectedVersion.value = detail.dailyReport.version
   } finally {
-    loading.value = false
+    if (requestId === detailRequestId) loading.value = false
   }
 }
 
 async function loadVersion(version) {
+  const requestId = ++detailRequestId
+  const reportDate = selectedDate.value
+  const teamParams = { ...requestTeamParams.value }
+  report.value = null
   loading.value = true
   try {
-    const result = await getGeneratedDailyReport(selectedDate.value, {
-      ...requestTeamParams.value,
+    const result = await getGeneratedDailyReport(reportDate, {
+      ...teamParams,
       version
     })
+    if (requestId !== detailRequestId) return
     report.value = result.dailyReport
   } finally {
-    loading.value = false
+    if (requestId === detailRequestId) loading.value = false
   }
 }
 
 async function generate() {
+  if (generating.value) return
+  const requestId = ++detailRequestId
+  const reportDate = selectedDate.value
   generationBlock.value = ''
   generating.value = true
   try {
-    const result = await generateDailyReport(selectedDate.value)
+    const result = await generateDailyReport(reportDate)
+    if (requestId !== detailRequestId) return
     report.value = result.dailyReport
     selectedVersion.value = result.dailyReport.version
     ElMessage.success(result.idempotent ? '来源未变化，已保留当前版本' : `已生成版本 ${result.dailyReport.version}`)
     await loadList()
   } catch (error) {
-    generationBlock.value = blockMessage(error)
+    if (requestId === detailRequestId) generationBlock.value = blockMessage(error)
   } finally {
     generating.value = false
   }
@@ -287,19 +319,21 @@ async function selectRecord(row) {
 }
 
 async function handleTeamChange(teamId) {
+  listRequestId += 1
+  detailRequestId += 1
   filters.page = 1
   report.value = null
-  await router.replace({ query: { teamId, date: selectedDate.value } })
+  reports.value = []
+  total.value = 0
+  selectedVersion.value = null
+  generationBlock.value = ''
+  loading.value = false
+  listLoading.value = false
   await Promise.all([loadList(), loadSelectedDate()])
 }
 
 async function refresh() {
-  loading.value = true
-  try {
-    await Promise.all([loadList(), loadSelectedDate()])
-  } finally {
-    loading.value = false
-  }
+  await Promise.all([loadList(), loadSelectedDate()])
 }
 
 async function initialize() {

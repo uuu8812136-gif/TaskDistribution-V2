@@ -102,11 +102,30 @@ test('Task requires an organization unit for ORG_UNIT data scope', async () => {
   );
 });
 
-test('TaskReview uniqueness is scoped to team, task, and reviewer', () => {
+test('TaskReview uniqueness is scoped to team, task, reviewer, workflow stage, and round', () => {
   const uniqueIndexes = TaskReview.schema.indexes().filter(([, options]) => options.unique);
 
   assert.equal(uniqueIndexes.length, 1);
-  assert.deepEqual(uniqueIndexes[0][0], { teamId: 1, task: 1, reviewer: 1 });
+  assert.deepEqual(uniqueIndexes[0][0], {
+    teamId: 1,
+    task: 1,
+    reviewer: 1,
+    stage: 1,
+    reviewRound: 1
+  });
+  assert.equal(uniqueIndexes[0][1].name, 'uq_task_review_stage_round');
+});
+
+test('Task and TaskReview use positive integer review rounds', async () => {
+  const task = new Task(validAttributes(Task, { teamId: objectId() }));
+  const review = new TaskReview(validAttributes(TaskReview, { teamId: objectId() }));
+  assert.equal(task.reviewRound, 1);
+  assert.equal(review.reviewRound, 1);
+
+  task.reviewRound = 1.5;
+  review.reviewRound = 0;
+  await assert.rejects(task.validate(), (error) => Boolean(error?.errors?.reviewRound));
+  await assert.rejects(review.validate(), (error) => Boolean(error?.errors?.reviewRound));
 });
 
 test('embedded Task records cannot carry an independent teamId', () => {

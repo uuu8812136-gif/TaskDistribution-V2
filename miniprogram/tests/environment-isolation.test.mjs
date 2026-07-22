@@ -1,10 +1,16 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const configUrl = new URL('../config/index.js', import.meta.url).href
 const cwd = fileURLToPath(new URL('..', import.meta.url))
+
+function readManifest() {
+  const source = readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')
+  return JSON.parse(source.replace(/\/\*[\s\S]*?\*\//g, ''))
+}
 
 function evaluateConfig(overrides = {}) {
   return spawnSync(
@@ -34,6 +40,12 @@ test('production refuses an implicit development fallback', () => {
   const result = evaluateConfig({ NODE_ENV: 'production' })
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /required for a production mini-program build/)
+})
+
+test('WeChat manifest declares the location purpose and private API', () => {
+  const weixin = readManifest()['mp-weixin']
+  assert.match(weixin.permission?.['scope.userLocation']?.desc || '', /点检和保养.*位置水印/)
+  assert.deepEqual(weixin.requiredPrivateInfos, ['getLocation'])
 })
 
 for (const forbidden of [

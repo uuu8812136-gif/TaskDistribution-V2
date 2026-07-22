@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   REPAIR_ACTION_LABELS,
@@ -27,4 +28,18 @@ test('mini program part rows and preview amounts are deterministic', () => {
   const second = createRepairPart(1)
   assert.notEqual(first.itemKey, second.itemKey)
   assert.equal(repairLineAmount({ quantity: 1.5, unitPrice: 12.34 }), 18.51)
+})
+
+test('global read-only repair navigation carries an explicit team through list, detail, and files', () => {
+  const workbench = readFileSync(new URL('../pages/workbench/index.vue', import.meta.url), 'utf8')
+  const list = readFileSync(new URL('../pages/equipment/repair-list.vue', import.meta.url), 'utf8')
+  const detail = readFileSync(new URL('../pages/equipment/repair-detail.vue', import.meta.url), 'utf8')
+
+  assert.match(workbench, /openRepairs: \(\) => uni\.navigateTo\(\{ url: '\/pages\/equipment\/repair-list' \}\)/)
+  assert.match(list, /v-if="userStore\.isGlobalReadOnly" class="team-band"/)
+  assert.match(list, /userStore\.isGlobalReadOnly \? \{ teamId: request\.teamId \} : \{\}/)
+  assert.match(list, /&teamId=\$\{encodeURIComponent\(teamId\.value\)\}/)
+  assert.match(detail, /getEquipmentRepair\([\s\S]*teamId\.value \? \{ teamId: teamId\.value \} : \{\}/)
+  assert.match(detail, /downloadPrivateFile\([\s\S]*teamId\.value \? \{ teamId: teamId\.value \} : \{\}/)
+  assert.match(detail, /teamId\.value = options\.teamId \|\| ''/)
 })

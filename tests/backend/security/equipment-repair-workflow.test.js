@@ -485,7 +485,7 @@ test('concurrent duplicate approval commits exactly one transition', async () =>
 test('repair export stays scoped and neutralizes spreadsheet formulas', async () => {
   const service = createService();
   const role = actors();
-  await service.createRepair({
+  const repair = await service.createRepair({
     authContext: role.creator,
     input: {
       type: 'NO_PARTS_REPAIR',
@@ -495,11 +495,47 @@ test('repair export stays scoped and neutralizes spreadsheet formulas', async ()
       repairDescription: '+formula'
     }
   });
-  const workbookBuffer = await service.exportRepairs({ authContext: role.creator });
+  const exportQuery = {
+    type: 'NO_PARTS_REPAIR',
+    status: repair.status,
+    equipmentId: String(fixtures.assetA1._id),
+    orgUnitId: String(fixtures.orgA1._id),
+    createdBy: role.creator.userId,
+    keyword: 'HYPERLINK'
+  };
+  const workbookBuffer = await service.exportRepairs({
+    authContext: role.creator,
+    req: {
+      method: 'GET',
+      originalUrl: '/api/equipment/repairs/export?type=NO_PARTS_REPAIR'
+    },
+    query: exportQuery
+  });
   const workbook = XLSX.read(workbookBuffer, { type: 'buffer', cellDates: true });
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets['维修记录'], { defval: '' });
   assert.equal(rows.length, 1);
   assert.equal(rows[0]['维修人'], "'=HYPERLINK(\"https://invalid.test\")");
   assert.equal(rows[0]['维修说明'], "'+formula");
   assert.equal(rows[0]['设备编码'], 'FC-A1-001');
+  const exportAudit = await AuditLog.findOne({
+    action: permissions.AUDIT_ACTIONS.EXPORT,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.REPAIR_ORDER
+  }).lean();
+  assert.ok(exportAudit);
+  assert.equal(String(exportAudit.actorUserId), role.creator.userId);
+  assert.equal(String(exportAudit.activeTeamId), String(fixtures.teamA._id));
+  assert.equal(String(exportAudit.targetTeamId), String(fixtures.teamA._id));
+  assert.equal(exportAudit.requestMethod, 'GET');
+  assert.equal(exportAudit.requestPath, '/api/equipment/repairs/export');
+  assert.equal(exportAudit.after.count, 1);
+  assert.deepEqual(exportAudit.after.filters, {
+    type: 'NO_PARTS_REPAIR',
+    statuses: [repair.status],
+    equipmentId: String(fixtures.assetA1._id),
+    orgUnitId: String(fixtures.orgA1._id),
+    createdBy: role.creator.userId,
+    keyword: 'HYPERLINK',
+    startDate: null,
+    endDate: null
+  });
 });

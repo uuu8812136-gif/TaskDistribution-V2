@@ -1,6 +1,11 @@
 <template>
   <el-table :data="tasks" v-loading="loading" border>
     <el-table-column prop="taskName" label="任务名称" min-width="200" show-overflow-tooltip />
+    <el-table-column v-if="showTeam" label="项目团队" min-width="150">
+      <template #default="{ row }">
+        <el-tag type="info" size="small">{{ resolveTeamName(row) }}</el-tag>
+      </template>
+    </el-table-column>
     <el-table-column label="状态" width="120">
       <template #default="{ row }">
         <el-tag :type="taskStatusType[row.status]" size="small">
@@ -33,10 +38,21 @@
 <script setup>
 import { taskStatusMap, taskStatusType, priorityMap, priorityType, formatDate } from '@/utils/format'
 
-defineProps({
+const props = defineProps({
   tasks: Array,
-  loading: Boolean
+  loading: Boolean,
+  showTeam: Boolean,
+  teams: {
+    type: Array,
+    default: () => []
+  }
 })
+
+const resolveTeamName = (task) => {
+  const value = task?.teamId
+  const teamId = String(value?._id || value || '')
+  return value?.name || props.teams.find((team) => String(team._id) === teamId)?.name || '未知团队'
+}
 
 defineEmits(['view'])
 </script>

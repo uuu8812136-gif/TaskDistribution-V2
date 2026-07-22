@@ -42,7 +42,8 @@ function taskScopeForMembership(membership) {
 function assertTaskParticipantOrgUnits({
   authContext,
   memberships,
-  taskOrgUnitId = null
+  taskOrgUnitId = null,
+  enforceActorOrgScope = true
 } = {}) {
   const context = assertTeamContext(authContext);
   const participantMemberships = Array.isArray(memberships) ? memberships : [];
@@ -51,6 +52,7 @@ function assertTaskParticipantOrgUnits({
   // Organization-scoped operators cannot assign anyone outside their own unit,
   // including a team-wide manager whose primary membership is elsewhere.
   if (
+    enforceActorOrgScope &&
     actorScope.scope === DATA_SCOPES.ORG_UNIT &&
     participantMemberships.some(
       (membership) => !sameId(membership.orgUnitId, actorScope.orgUnitId)
@@ -89,6 +91,7 @@ function buildTaskDetailFilter(req, id, userFilter = {}) {
     moduleKey: DATA_SCOPE_MODULES.TASK,
     id,
     userFilter,
+    globalTeamId: req.authContext.activeTeamId ? undefined : req.query?.teamId,
     method: req.method
   });
 }
@@ -138,6 +141,7 @@ async function validateActiveTeamUsers({
   authContext,
   userIds,
   taskOrgUnitId = null,
+  enforceActorOrgScope = true,
   session = null
 } = {}) {
   const context = assertTeamContext(authContext);
@@ -175,7 +179,8 @@ async function validateActiveTeamUsers({
   assertTaskParticipantOrgUnits({
     authContext: context,
     memberships,
-    taskOrgUnitId
+    taskOrgUnitId,
+    enforceActorOrgScope
   });
 
   const orgUnitIds = [...new Set(memberships.map(

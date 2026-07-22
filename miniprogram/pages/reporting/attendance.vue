@@ -109,7 +109,7 @@
 </template>
 
 <script>
-import { computed, ref } from 'vue'
+import { computed, onUnmounted, ref } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import {
   getAttendanceDailySummary,
@@ -123,6 +123,7 @@ import {
   businessNaturalDate,
   scopedReportingParams
 } from '@/utils/reporting.js'
+import { createLatestRequestGate } from '@/utils/latestRequest.js'
 
 export default {
   name: 'AttendanceReporting',
@@ -138,6 +139,7 @@ export default {
     const loading = ref(false)
     const reviewing = ref(false)
     const reviewReason = ref('')
+    const requestGate = createLatestRequestGate()
     let hasShown = false
 
     const canSubmitPermission = computed(() => userStore.can('report.submit', {
@@ -154,12 +156,6 @@ export default {
       Number(summary.value.nightShift?.leaveWithSickCount || 0)
     ))
 
-    const readParams = (extra = {}) => scopedReportingParams(
-      userStore.mode,
-      selectedTeamId.value,
-      extra
-    )
-
     const orgName = (orgUnitId) => (
       orgUnits.value.find((item) => item._id === orgUnitId)?.name ||
       userStore.context?.orgUnit?.name ||
@@ -167,27 +163,42 @@ export default {
     )
 
     const loadData = async () => {
+      const request = requestGate.begin({
+        teamId: selectedTeamId.value,
+        date: date.value
+      })
+      const params = (extra = {}) => scopedReportingParams(
+        userStore.mode,
+        request.teamId,
+        extra
+      )
       loading.value = true
       try {
         const [optionsResponse, recordsResponse, summaryResponse] = await Promise.all([
-          getAttendanceOptions(readParams()),
-          getAttendanceSubmissions(readParams({ date: date.value, page: 1, pageSize: 200 })),
-          getAttendanceDailySummary(readParams({ date: date.value }))
+          getAttendanceOptions(params()),
+          getAttendanceSubmissions(params({ date: request.date, page: 1, pageSize: 200 })),
+          getAttendanceDailySummary(params({ date: request.date }))
         ])
+        if (!requestGate.isCurrent(request)) return
         orgUnits.value = optionsResponse.orgUnits || []
         policy.value = optionsResponse.attendancePolicy || {}
         records.value = recordsResponse.attendanceSubmissions || []
         summary.value = summaryResponse.attendanceSummary || {}
       } catch (error) {
-        console.error('加载出勤日报失败:', error)
+        if (requestGate.isCurrent(request)) console.error('加载出勤日报失败:', error)
       } finally {
-        loading.value = false
-        uni.stopPullDownRefresh()
+        if (requestGate.isCurrent(request)) {
+          loading.value = false
+          uni.stopPullDownRefresh()
+        }
       }
     }
 
     onLoad((options) => {
       selectedTeamId.value = options?.teamId || ''
+      if (/^\d{4}-\d{2}-\d{2}$/.test(options?.reportDate || '')) {
+        date.value = options.reportDate
+      }
       if (!userStore.can('report.view')) {
         uni.showToast({ title: '无权限查看出勤日报', icon: 'none' })
         setTimeout(() => uni.navigateBack(), 300)
@@ -196,6 +207,7 @@ export default {
       loadData()
     })
     onPullDownRefresh(loadData)
+    onUnmounted(() => requestGate.invalidate())
     onShow(() => {
       if (hasShown) loadData()
       else hasShown = true

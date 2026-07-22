@@ -50,6 +50,9 @@ const { runWithOptionalTransaction } = require('./transactionService');
 
 const { FILE_OWNER_TYPES, FILE_STATUSES } = FileAsset;
 const TEMPORARY_UPLOAD_PERMISSIONS = Object.freeze([
+  // A task executor may have view-only module permissions; the owning task
+  // endpoint performs the resource-level check before a temporary file binds.
+  'task.view',
   'task.create',
   'task.edit',
   'task.review',
@@ -74,13 +77,17 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     resourceModel: 'TASK',
     moduleKey: DATA_SCOPE_MODULES.TASK,
     readPermission: 'task.view',
-    writePermission: 'task.edit'
+    // The task flow controller has already verified the current executor.
+    // Keep completion evidence separate from general task editing authority.
+    writePermission: 'task.view'
   }),
   [FILE_OWNER_TYPES.TASK_REVIEW]: Object.freeze({
     resourceModel: 'TASK',
     moduleKey: DATA_SCOPE_MODULES.TASK,
     readPermission: 'task.view',
-    writePermission: 'task.review'
+    // Review and confirmation controllers enforce their distinct resource roles.
+    // Final confirmation intentionally does not require the task.review permission.
+    writePermissionsAny: Object.freeze(['task.review', 'task.view'])
   }),
   [FILE_OWNER_TYPES.TRANSPORT_REPORT]: Object.freeze({
     resourceModel: 'TRANSPORT_RECORD',
@@ -140,6 +147,11 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
   })
 });
 const WORKFLOW_MANAGED_OWNER_TYPES = new Set([
+  FILE_OWNER_TYPES.TASK,
+  FILE_OWNER_TYPES.TASK_COMPLETION,
+  FILE_OWNER_TYPES.TASK_REVIEW,
+  FILE_OWNER_TYPES.TRANSPORT_REPORT,
+  FILE_OWNER_TYPES.EQUIPMENT,
   FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE,
   FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA,
   FILE_OWNER_TYPES.INVENTORY,
@@ -149,6 +161,17 @@ const WORKFLOW_MANAGED_OWNER_TYPES = new Set([
   FILE_OWNER_TYPES.EQUIPMENT_STATUS_APPLICATION
 ]);
 const MAX_OWNER_FILES = 10;
+const DEFAULT_TEMPORARY_FILE_LIMITS = Object.freeze({
+  userMaxCount: 20,
+  userMaxBytes: 100 * 1024 * 1024,
+  teamMaxCount: 200,
+  teamMaxBytes: 1024 * 1024 * 1024
+});
+const QUOTA_COUNTED_STATUSES = Object.freeze([
+  FILE_STATUSES.TEMPORARY,
+  FILE_STATUSES.PURGING
+]);
+const temporaryUploadQueues = new Map();
 
 class FileAssetError extends Error {
   constructor(status, code, message) {
@@ -162,6 +185,89 @@ class FileAssetError extends Error {
 
 function fileError(status, code, message) {
   return new FileAssetError(status, code, message);
+}
+
+function normalizeTemporaryFileLimits(limits = {}) {
+  const normalized = Object.fromEntries(Object.entries(DEFAULT_TEMPORARY_FILE_LIMITS).map(
+    ([key, fallback]) => [key, limits?.[key] ?? fallback]
+  ));
+  for (const [key, value] of Object.entries(normalized)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError(`${key} must be a positive safe integer`);
+    }
+  }
+  if (normalized.teamMaxCount < normalized.userMaxCount) {
+    throw new TypeError('teamMaxCount must be at least userMaxCount');
+  }
+  if (normalized.teamMaxBytes < normalized.userMaxBytes) {
+    throw new TypeError('teamMaxBytes must be at least userMaxBytes');
+  }
+  return Object.freeze(normalized);
+}
+
+function normalizeQuotaUsage(usage, name) {
+  if (
+    !usage ||
+    !Number.isSafeInteger(usage.count) ||
+    usage.count < 0 ||
+    !Number.isSafeInteger(usage.bytes) ||
+    usage.bytes < 0
+  ) {
+    throw new TypeError(`${name} must contain non-negative safe integer count and bytes`);
+  }
+  return usage;
+}
+
+function assertTemporaryQuotaUsage({ userUsage, teamUsage, incomingBytes, limits }) {
+  const normalizedLimits = normalizeTemporaryFileLimits(limits);
+  const user = normalizeQuotaUsage(userUsage, 'userUsage');
+  const team = normalizeQuotaUsage(teamUsage, 'teamUsage');
+  if (!Number.isSafeInteger(incomingBytes) || incomingBytes < 1) {
+    throw new TypeError('incomingBytes must be a positive safe integer');
+  }
+  if (user.count + 1 > normalizedLimits.userMaxCount) {
+    throw fileError(
+      429,
+      'TEMPORARY_FILE_USER_COUNT_LIMIT',
+      'Bind or remove an existing temporary file before uploading another file'
+    );
+  }
+  if (user.bytes + incomingBytes > normalizedLimits.userMaxBytes) {
+    throw fileError(
+      429,
+      'TEMPORARY_FILE_USER_BYTES_LIMIT',
+      'Temporary file storage for this user is full'
+    );
+  }
+  if (team.count + 1 > normalizedLimits.teamMaxCount) {
+    throw fileError(
+      429,
+      'TEMPORARY_FILE_TEAM_COUNT_LIMIT',
+      'Temporary file storage for this team is full'
+    );
+  }
+  if (team.bytes + incomingBytes > normalizedLimits.teamMaxBytes) {
+    throw fileError(
+      429,
+      'TEMPORARY_FILE_TEAM_BYTES_LIMIT',
+      'Temporary file storage for this team is full'
+    );
+  }
+}
+
+async function withTemporaryUploadLock(teamId, operation) {
+  const key = String(teamId);
+  const previous = temporaryUploadQueues.get(key) || Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  temporaryUploadQueues.set(key, current);
+  await previous.catch(() => {});
+  try {
+    return await operation();
+  } finally {
+    release();
+    if (temporaryUploadQueues.get(key) === current) temporaryUploadQueues.delete(key);
+  }
 }
 
 function notFound() {
@@ -330,15 +436,64 @@ function createFileAssetService({
   InventoryItemModel = InventoryItem,
   ProjectTeamModel = ProjectTeam,
   auditService = createAuditService(),
-  connection = mongoose.connection
+  connection = mongoose.connection,
+  temporaryFileLimits = DEFAULT_TEMPORARY_FILE_LIMITS
 } = {}) {
   const resolvedStorageRoot = typeof storageRoot === 'string' && storageRoot.trim()
     ? path.resolve(storageRoot)
     : null;
+  const normalizedTemporaryFileLimits = normalizeTemporaryFileLimits(temporaryFileLimits);
 
   function requireStorageRoot() {
     if (!resolvedStorageRoot) throw new TypeError('A private file storage root is required');
     return resolvedStorageRoot;
+  }
+
+  async function temporaryUsage(filter, session = null) {
+    const aggregation = FileAssetModel.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: null,
+          count: { $sum: 1 },
+          bytes: { $sum: '$size' }
+        }
+      }
+    ]);
+    if (session && typeof aggregation.session === 'function') aggregation.session(session);
+    const [usage] = await aggregation;
+    return {
+      count: Number(usage?.count || 0),
+      bytes: Number(usage?.bytes || 0)
+    };
+  }
+
+  async function assertTemporaryUploadCapacity({ authContext, incomingBytes, session = null }) {
+    const context = assertTeamContext(authContext);
+    assertTemporaryUploadPermission(context);
+    if (!Number.isSafeInteger(incomingBytes) || incomingBytes < 1) {
+      throw new TypeError('incomingBytes must be a positive safe integer');
+    }
+    const teamId = new mongoose.Types.ObjectId(
+      normalizeObjectId(context.activeTeamId, 'activeTeamId')
+    );
+    const uploaderId = new mongoose.Types.ObjectId(
+      normalizeObjectId(context.userId, 'userId')
+    );
+    const baseFilter = {
+      ownerType: FILE_OWNER_TYPES.TEMPORARY,
+      ownerId: null,
+      status: { $in: QUOTA_COUNTED_STATUSES }
+    };
+    const userUsage = await temporaryUsage({ ...baseFilter, teamId, uploaderId }, session);
+    const teamUsage = await temporaryUsage({ ...baseFilter, teamId }, session);
+    assertTemporaryQuotaUsage({
+      userUsage,
+      teamUsage,
+      incomingBytes,
+      limits: normalizedTemporaryFileLimits
+    });
+    return { userUsage, teamUsage };
   }
 
   async function resolveReadTeamId(authContext, requestedTeamId) {
@@ -385,7 +540,12 @@ function createFileAssetService({
   }) {
     const policy = OWNER_ACCESS_POLICIES[ownerType];
     if (!policy) throw notFound();
-    assertPermission(authContext, write ? policy.writePermission : policy.readPermission);
+    const permissionKeys = write && Array.isArray(policy.writePermissionsAny)
+      ? policy.writePermissionsAny
+      : [write ? policy.writePermission : policy.readPermission];
+    if (!permissionKeys.some((permissionKey) => authContext.permissionKeys.includes(permissionKey))) {
+      assertPermission(authContext, permissionKeys[0]);
+    }
     let ownerFilter;
     if (policy.resourceModel === 'IMPORT_JOB') {
       ownerFilter = { _id: normalizeObjectId(ownerId, 'ownerId'), teamId };
@@ -498,32 +658,40 @@ function createFileAssetService({
         mode: 0o600
       });
       const sha256 = crypto.createHash('sha256').update(upload.buffer).digest('hex');
-      file = await runWithOptionalTransaction(async (session) => {
-        const created = await createOne(FileAssetModel, {
-          teamId,
-          ownerType: FILE_OWNER_TYPES.TEMPORARY,
-          ownerId: null,
-          storageKey,
-          originalName,
-          mimeType: upload.mimetype,
-          size: upload.buffer.length,
-          sha256,
-          uploaderId: authContext.userId,
-          status: FILE_STATUSES.TEMPORARY
-        }, session);
-        persistedFile = created;
-        await auditService.record({
-          req,
-          authContext,
-          action: AUDIT_ACTIONS.CREATE,
-          resourceType: AUDIT_RESOURCE_TYPES.FILE_ASSET,
-          resourceId: created._id,
-          after: auditSnapshot(created),
-          targetTeamId: teamId,
-          session
-        });
-        return created;
-      }, connection);
+      file = await withTemporaryUploadLock(teamId, () => runWithOptionalTransaction(
+        async (session) => {
+          await assertTemporaryUploadCapacity({
+            authContext,
+            incomingBytes: upload.buffer.length,
+            session
+          });
+          const created = await createOne(FileAssetModel, {
+            teamId,
+            ownerType: FILE_OWNER_TYPES.TEMPORARY,
+            ownerId: null,
+            storageKey,
+            originalName,
+            mimeType: upload.mimetype,
+            size: upload.buffer.length,
+            sha256,
+            uploaderId: authContext.userId,
+            status: FILE_STATUSES.TEMPORARY
+          }, session);
+          persistedFile = created;
+          await auditService.record({
+            req,
+            authContext,
+            action: AUDIT_ACTIONS.CREATE,
+            resourceType: AUDIT_RESOURCE_TYPES.FILE_ASSET,
+            resourceId: created._id,
+            after: auditSnapshot(created),
+            targetTeamId: teamId,
+            session
+          });
+          return created;
+        },
+        connection
+      ));
       return serializeFile(file);
     } catch (error) {
       await fs.promises.rm(storagePath, { force: true }).catch(() => {});
@@ -695,7 +863,16 @@ function createFileAssetService({
 
   async function bindFile({ authContext, req, fileId, ownerType, ownerId }) {
     const normalizedFileId = normalizeFileId(fileId);
-    assertTeamContext(authContext);
+    const context = assertTeamContext(authContext);
+    // Preserve the non-disclosure boundary before reporting that an owner type
+    // is managed by its business workflow. A caller must first be able to see
+    // the source file (including ownership of a temporary upload).
+    await findAccessibleFile({
+      authContext: context,
+      fileId: normalizedFileId,
+      method: 'PATCH',
+      write: true
+    });
     assertGenericOwnerMutationAllowed(ownerType);
     return runWithOptionalTransaction(async (session) => {
       await reconcileOwnerFiles({
@@ -708,7 +885,6 @@ function createFileAssetService({
         method: 'PATCH',
         session
       });
-      const context = assertTeamContext(authContext);
       const query = FileAssetModel.findOne({
         _id: normalizedFileId,
         teamId: context.activeTeamId,
@@ -754,6 +930,7 @@ function createFileAssetService({
   }
 
   return Object.freeze({
+    assertTemporaryUploadCapacity,
     bindFile,
     deleteFile,
     getDownload,
@@ -764,11 +941,14 @@ function createFileAssetService({
 }
 
 module.exports = {
+  DEFAULT_TEMPORARY_FILE_LIMITS,
   FileAssetError,
   attachmentReference,
+  assertTemporaryQuotaUsage,
   assertTemporaryUploadPermission,
   createFileAssetService,
   managedAttachmentIds,
+  normalizeTemporaryFileLimits,
   normalizeAttachmentInput,
   preserveLegacyAttachments,
   serializeFile

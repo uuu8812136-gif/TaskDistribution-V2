@@ -294,7 +294,7 @@
 						<text v-if="completion.status === 'pending'" class="pending-badge">待提交</text>
 						<text v-else class="completed-badge">已完成</text>
 					</text>
-					<text v-if="completion.completedAt" class="completion-time">
+					<text v-if="completion.status === 'completed' && completion.completedAt" class="completion-time">
 						{{ formatDate(completion.completedAt, 'YYYY-MM-DD HH:mm') }}
 					</text>
 				</view>
@@ -332,17 +332,19 @@
 			</view>
 		</view>
 			
-			<!-- 评价记录 -->
+			<!-- 审核记录 -->
 			<view v-if="reviewRecords.length > 0" class="section">
 				<view class="section-title">
 					<text class="title-icon">✓</text>
-					<text>评价记录 ({{ reviewRecords.length }})</text>
+					<text>审核记录 ({{ reviewRecords.length }})</text>
 				</view>
 				
 				<view class="review-list">
 					<view v-for="review in reviewRecords" :key="review._id" class="review-item">
 						<view class="review-header">
-							<text class="reviewer-name">{{ review.reviewer?.name }}</text>
+							<text class="reviewer-name">
+								{{ review.reviewer?.name }} · {{ review.stage === 'confirmation' ? '最终确认' : '抄送审核' }}
+							</text>
 							<view class="review-result" :style="{ color: review.result === 'approved' ? '#67C23A' : '#F56C6C' }">
 								<text>{{ review.result === 'approved' ? '✓ 通过' : '✕ 拒绝' }}</text>
 							</view>
@@ -370,11 +372,11 @@
 				</view>
 			</view>
 
-			<!-- 审核记录（管理员确认）-->
+			<!-- 管理员最终确认 -->
 			<view v-if="taskDetail.status === 'finished' || taskDetail.status === 'pending_confirm'" class="section">
 				<view class="section-title">
 					<text class="title-icon">👑</text>
-					<text>管理员审核</text>
+					<text>最终确认</text>
 				</view>
 				
 				<view class="info-card">
@@ -392,10 +394,10 @@
 						<view class="review-header">
 							<text class="reviewer-name">{{ taskDetail.creator?.name || '管理员' }}</text>
 							<view class="review-result" style="color: #E6A23C;">
-								<text>⏱ 待审核</text>
+								<text>⏱ 待确认</text>
 							</view>
 						</view>
-						<text class="review-comment">等待管理员确认任务完成</text>
+						<text class="review-comment">等待任务创建人或管理员最终确认</text>
 					</view>
 				</view>
 			</view>
@@ -433,22 +435,22 @@
 				审批延期
 			</button>
 			
-			<!-- 抄送人：确认任务 -->
+			<!-- 抄送人：审核任务 -->
 			<button 
 				v-if="canReview" 
 				class="action-btn success"
 				@click="handleReview"
 			>
-				抄送者确认任务
+				抄送审核
 			</button>
 			
-			<!-- 管理员：审核任务 -->
+			<!-- 管理员：最终确认 -->
 			<button 
 				v-if="canConfirm" 
 				class="action-btn success"
 				@click="handleConfirm"
 			>
-				管理者审核任务
+				最终确认
 			</button>
 			
 			<!-- 管理员：编辑任务 -->
@@ -514,6 +516,16 @@ import {
 	isImageAttachment,
 	managedFileId
 } from '@/utils/attachments.js'
+import {
+	canApproveTaskExtension,
+	canCompleteAssignedTask,
+	canConfirmTask,
+	canRequestTaskExtension,
+	canReviewAssignedTask,
+	hasReviewedTaskRound,
+	taskEntityId,
+	taskReadParams
+} from '@/utils/taskPolicy.js'
 import ExtensionDialog from './components/ExtensionDialog.vue'
 
 export default {
@@ -525,10 +537,10 @@ export default {
 		const userStore = useUserStore()
 		
 		const taskId = ref('')
+		const detailTeamId = ref('')
 		const taskDetail = ref({})
 		const reviewRecords = ref([])
 		const extensionHistory = ref([])
-		const viewType = ref('') // 页面类型：executor-执行人视图, cc-抄送人视图, created-创建人视图
 		
 		const showExtensionDialog = ref(false)
 		
@@ -537,7 +549,7 @@ export default {
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
 			taskId.value = currentPage.options.id
-			viewType.value = currentPage.options.type || 'executor' // 默认执行人视图
+			detailTeamId.value = currentPage.options.teamId || ''
 			
 			if (taskId.value) {
 				loadTaskDetail()
@@ -556,12 +568,14 @@ export default {
 		})
 		
 		// 加载任务详情
+		const readParams = () => userStore.isGlobalReadOnly
+			? taskReadParams(detailTeamId.value)
+			: {}
+
 		const loadTaskDetail = async () => {
 			try {
-				const res = await getTaskDetail(taskId.value)
+				const res = await getTaskDetail(taskId.value, readParams())
 				taskDetail.value = res.task || {}
-				console.log('=== 任务详情加载完成 ===')
-				console.log('attachments:', taskDetail.value.attachments)
 			} catch (error) {
 				console.error('加载任务详情失败:', error)
 			}
@@ -570,7 +584,7 @@ export default {
 		// 加载审核记录
 		const loadReviewRecords = async () => {
 			try {
-				const res = await getTaskReviews(taskId.value)
+				const res = await getTaskReviews(taskId.value, readParams())
 				reviewRecords.value = res.reviews || []
 			} catch (error) {
 				console.error('加载审核记录失败:', error)
@@ -580,9 +594,8 @@ export default {
 		// 加载延期历史
 		const loadExtensionHistory = async () => {
 			try {
-				const res = await getExtensionHistory(taskId.value)
+				const res = await getExtensionHistory(taskId.value, readParams())
 				extensionHistory.value = res.history || []
-				console.log('延期历史加载完成:', extensionHistory.value)
 			} catch (error) {
 				console.error('加载延期历史失败:', error)
 			}
@@ -627,46 +640,68 @@ export default {
 			return taskDetail.value.executorCompletions.filter(ec => ec.status === 'completed').length
 		})
 		
-		// 判断是否可以完成任务（执行人 && 进行中状态 && 执行人视图 && 未过期）
+		// 操作权限只依赖任务状态和当前用户身份，不依赖页面入口。
 		const canComplete = computed(() => {
-			if (!taskDetail.value._id) return false
-			if (!userStore.can('task.edit', { write: true, teamRequired: true })) return false
-			if (viewType.value !== 'executor') return false
-			if (isOverdue.value) return false  // 过期的任务不能完成
-			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
-			return isExecutor && taskDetail.value.status === 'in_progress'
+			return canCompleteAssignedTask({
+				task: taskDetail.value,
+				userId: userStore.userInfo?._id,
+				isTeamMode: userStore.isTeamMode,
+				isReadOnly: userStore.isReadOnly,
+				isOverdue: isOverdue.value
+			})
 		})
 		
-		// 判断是否可以审核（抄送人 && 待审核状态 && 抄送人视图）
+		// 判断是否可以审核（抄送人 && 待审核状态）
 		const canReview = computed(() => {
-			if (!taskDetail.value._id) return false
-			if (!userStore.can('task.review', { write: true, teamRequired: true })) return false
-			if (viewType.value !== 'cc') return false
-			const isCc = taskDetail.value.ccUsers?.some(u => u._id === userStore.userInfo?._id)
-			return isCc && taskDetail.value.status === 'pending_review'
+			const hasReviewed = hasReviewedTaskRound(
+				reviewRecords.value,
+				userStore.userInfo?._id,
+				taskDetail.value.reviewRound
+			)
+			return canReviewAssignedTask({
+				task: taskDetail.value,
+				userId: userStore.userInfo?._id,
+				isTeamMode: userStore.isTeamMode,
+				isReadOnly: userStore.isReadOnly,
+				hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
+				hasReviewed
+			})
 		})
 		
-		// 判断是否可以确认（管理员 && 待确认状态）
+		// 最终确认由任务创建人、项目管理员或超级管理员执行。
 		const canConfirm = computed(() => {
-			if (!taskDetail.value._id) return false
-			return userStore.can('task.review', { write: true, teamRequired: true }) && taskDetail.value.status === 'pending_confirm'
+			return canConfirmTask({
+				task: taskDetail.value,
+				userId: userStore.userInfo?._id,
+				isTeamMode: userStore.isTeamMode,
+				isReadOnly: userStore.isReadOnly,
+				isSuperAdmin: userStore.isSuperAdmin,
+				membershipRole: userStore.context?.membership?.role
+			})
 		})
 		
-		// 判断是否可以申请延期（执行人 && 进行中状态 && 执行人视图 && 未申请过）
+		// 判断是否可以申请延期（负责人 && 进行中状态 && 未申请过）
 		// 注意：即使任务过期，也可以申请延期
 		const canApplyExtension = computed(() => {
-			if (!taskDetail.value._id) return false
-			if (!userStore.can('task.edit', { write: true, teamRequired: true })) return false
-			if (viewType.value !== 'executor') return false
-			const isExecutor = taskDetail.value.executor?.some(e => e._id === userStore.userInfo?._id)
-			// 允许过期任务申请延期
-			return isExecutor && taskDetail.value.status === 'in_progress' && !taskDetail.value.hasExtensionRequest
+			return canRequestTaskExtension({
+				task: taskDetail.value,
+				userId: userStore.userInfo?._id,
+				isTeamMode: userStore.isTeamMode,
+				isReadOnly: userStore.isReadOnly
+			})
 		})
 		
 		// 判断是否可以审批延期（管理员 && 延期待审批状态）
 		const canApproveExtension = computed(() => {
-			if (!taskDetail.value._id) return false
-			return userStore.can('task.review', { write: true, teamRequired: true }) && taskDetail.value.status === 'extension_pending'
+			return canApproveTaskExtension({
+				task: taskDetail.value,
+				userId: userStore.userInfo?._id,
+				isTeamMode: userStore.isTeamMode,
+				isReadOnly: userStore.isReadOnly,
+				hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
+				isSuperAdmin: userStore.isSuperAdmin,
+				membershipRole: userStore.context?.membership?.role
+			})
 		})
 
 		const canEdit = computed(() => userStore.can('task.edit', {
@@ -691,17 +726,17 @@ export default {
 		// 确认任务
 		const handleConfirm = () => {
 			uni.showModal({
-				title: '管理者审核任务',
+				title: '最终确认任务',
 				content: '确认该任务已完成？',
 				success: async (res) => {
 					if (res.confirm) {
 						try {
-							await confirmTask(taskId.value)
+							await confirmTask(taskId.value, { content: '已确认任务完成' })
 							uni.showToast({
 								title: '确认成功',
 								icon: 'success'
 							})
-							loadTaskDetail()
+							await Promise.all([loadTaskDetail(), loadReviewRecords()])
 						} catch (error) {
 							console.error('确认失败:', error)
 						}
@@ -819,7 +854,7 @@ export default {
 				return
 			}
 			try {
-				const result = await downloadTaskAttachment(file)
+				const result = await downloadTaskAttachment(file, readParams())
 				if (isImageAttachment(file)) {
 					uni.previewImage({ urls: [result.tempFilePath], current: 0 })
 					return

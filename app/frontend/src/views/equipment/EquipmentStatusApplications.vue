@@ -64,8 +64,10 @@
         v-model:current-page="page"
         :page-size="pageSize"
         :total="total"
+        :pager-count="5"
         layout="prev, pager, next, total"
         @current-change="load"
+        class="pagination"
       />
     </div>
 
@@ -140,6 +142,8 @@ const equipmentOptions = ref([])
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const filters = reactive({ applicationType: '', workflowStatus: '', todo: false })
 const createForm = reactive(emptyCreateForm())
+let listRequestId = 0
+let equipmentRequestId = 0
 const workflowOptions = [
   { value: 'DEPUTY_REVIEW_PENDING', label: '待副经理/经理助理审核' },
   { value: 'MANAGER_REVIEW_PENDING', label: '待部门经理终审' },
@@ -160,6 +164,7 @@ function emptyCreateForm() {
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 
 async function load() {
+  const requestId = ++listRequestId
   loading.value = true
   try {
     const result = await getEquipmentStatusApplications({
@@ -170,20 +175,23 @@ async function load() {
       ...(filters.workflowStatus ? { workflowStatus: filters.workflowStatus } : {}),
       ...(filters.todo ? { todo: true } : {})
     })
+    if (requestId !== listRequestId) return
     rows.value = result.applications || []
     total.value = Number(result.total || 0)
   } finally {
-    loading.value = false
+    if (requestId === listRequestId) loading.value = false
   }
 }
 
 async function loadEquipmentOptions(keyword = '') {
+  const requestId = ++equipmentRequestId
   equipmentLoading.value = true
   try {
     const result = await getEquipmentList({ page: 1, pageSize: 100, keyword: keyword.trim() })
+    if (requestId !== equipmentRequestId) return
     equipmentOptions.value = (result.equipment || []).filter((item) => item.status !== 'SCRAPPED')
   } finally {
-    equipmentLoading.value = false
+    if (requestId === equipmentRequestId) equipmentLoading.value = false
   }
 }
 
@@ -263,10 +271,11 @@ onMounted(async () => {
 .table-shell { min-width: 0; }
 .equipment-name, .equipment-code { display: block; overflow-wrap: anywhere; }
 .equipment-code { margin-top: 4px; color: #667085; font-size: 12px; }
-.el-pagination { justify-content: flex-end; margin-top: 16px; }
+.pagination { justify-content: flex-end; margin-top: 16px; }
 .full-width { width: 100%; }
 @media (max-width: 720px) {
   .page-heading { align-items: flex-start; }
   .filter-band .el-select { width: 100%; }
+  .pagination { width: 100%; justify-content: flex-start; overflow-x: auto; padding-bottom: 4px; }
 }
 </style>

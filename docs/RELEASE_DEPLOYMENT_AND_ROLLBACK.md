@@ -189,17 +189,24 @@ $Nssm = 'E:\ApprovedTools\nssm.exe'
 
 在 `services.msc` 或客户批准的凭据部署工具中，把 `TaskDistributionV2Api` 的“登录”账号改为前述低权限服务账号并授予“作为服务登录”；不要把该账号密码放入命令行、脚本或 release 记录，也不要保留 NSSM 默认的 LocalSystem 身份。
 
-在启动服务前，用同一服务账号执行一次前台预检：
+此时只注册服务和核对账号、ACL、Node 版本及路径，不运行候选 `server.js`。包含新 TaskReview 索引声明的候选 API 在下一节备份与迁移完成前不得首次连接旧数据库，否则 Mongoose `autoIndex` 可能提前创建索引并绕过迁移门禁。迁移完成后再按 4.5 节执行前台启动预检和正式启动；不得执行初始化或导入命令。
 
-```powershell
-$env:ENV_FILE='E:\TaskDistribution-V2-Secrets\app.env'
-node "$ReleaseRoot\app\server.js"
-Remove-Item Env:ENV_FILE
-```
+### 4.4 Task / TaskReview 审核轮次索引迁移门禁
 
-看到 MongoDB 连接和 API 监听成功后用 `Ctrl+C` 正常退出。先按下一节建立 `current` 指针，再启动服务。不得执行初始化或导入命令。
+release 解包、安装依赖和切换 `current` 都不会自动执行数据库 migration。包含 `Task.reviewRound`、`TaskReview.stage/reviewRound` 的候选 API（包括任何 `server.js` 前台预检）首次连接一个旧数据库前，必须由运维人员在维护窗口按 `docs/OPERATIONS_RUNBOOK.md` 的显式流程运行 `npm run migrate:task-review-stages -- ...`；不得把 migration 加入 NSSM、systemd、Web 构建或 API 启动命令。
 
-### 4.4 切换版本
+发布记录必须同时附有：
+
+- 默认 dry-run 生成的报告；
+- 紧邻执行窗口创建并经 `ops/verify-backup.js` 验证的 `backupId`、备份目录、`manifest.json` 绝对路径和 `manifestSha256`；
+- 带 `--execute`、精确 `--confirm-database`、`--backup-directory` 和独立 `--report` 的执行记录；
+- 迁移后新唯一索引、旧索引精确删除结果及任务审核/最终确认冒烟结果。
+
+维护窗口内必须停止 API、worker 和其他业务写入，再执行迁移。迁移顺序固定为：回填并校验 Task/TaskReview 的 `reviewRound` 及 `stage` -> 创建新的五字段唯一索引 -> 验证数据和新索引 -> 按迁移计划精确删除旧限制性唯一索引。最后一步只处理 key 精确等于 `{ task, reviewer }`、`{ teamId, task, reviewer }` 或 `{ teamId, task, reviewer, stage }` 的旧 unique 索引。禁止手工运行宽泛的 `dropIndexes()` 或用 `syncIndexes()` 代替该流程。
+
+这是 forward-only 迁移：一旦同一人员和阶段已产生多个 `reviewRound`，就不能直接重建旧两字段、三字段或四字段 stage 唯一索引，也不能只切回不了解 `reviewRound` 的旧代码。此后代码回滚必须停在兼容 `uq_task_review_stage_round` 和多轮历史的版本；若必须恢复迁移前状态，只能走单独批准的整库恢复/RPO 决策，不能按普通 release 回滚处理。
+
+### 4.5 切换版本
 
 上线前先按 `docs/OPERATIONS_RUNBOOK.md` 创建并校验备份。维护窗口内：
 
@@ -276,13 +283,15 @@ UMask=0027
 WantedBy=multi-user.target
 ```
 
-`UPLOAD_PATH` 必须与 `ReadWritePaths` 一致。先验证再启用：
+`UPLOAD_PATH` 必须与 `ReadWritePaths` 一致。这里只验证单元并注册开机自启动，`systemctl enable` 不会启动服务：
 
 ```bash
 sudo systemd-analyze verify /etc/systemd/system/taskdistribution-v2-api.service
 sudo systemctl daemon-reload
 sudo systemctl enable taskdistribution-v2-api.service
 ```
+
+此阶段不得使用 `systemctl enable --now`、`systemctl start/restart taskdistribution-v2-api.service`，不得直接运行候选目录中的 `app/server.js`，也不得先把 `current` 指向候选 release。候选 API 首次连接旧数据库前必须完成 5.3 的停写、完整备份、审核轮次迁移和报告校验；否则 Mongoose `autoIndex` 可能先创建新索引并绕过迁移门禁。
 
 Nginx 同源配置核心规则如下，证书和安全头由客户现有基线补齐：
 
@@ -303,18 +312,129 @@ location /api/ {
 
 ### 5.3 原子切换
 
-完成备份校验后，在维护窗口运行：
+以下命令必须在维护窗口的同一个 Bash 会话中按顺序运行，以保留变量和 `set -o pipefail`。候选代码只用于备份和显式迁移 CLI，不启动候选 API。先填写并复核 release、数据库和受保护环境文件；`DATABASE_NAME` 必须与 `app.env` 中 `MONGODB_URI` 的数据库名精确一致：
 
 ```bash
+set -euo pipefail
 RELEASE_ID=v2-YYYYMMDD-HHMMSS
+CANDIDATE="/opt/taskdistribution-v2/releases/$RELEASE_ID"
+DATABASE_NAME='task_distribution_v2'
+APP_ENV=/etc/taskdistribution-v2/app.env
+OPS_ENV=/etc/taskdistribution-v2/operations.env
+EVIDENCE_DIR="/var/log/taskdistribution-v2/releases/$RELEASE_ID"
+
+test -d "$CANDIDATE/app"
+test -f "$APP_ENV"
+test -f "$OPS_ENV"
+test ! -e "$EVIDENCE_DIR"
+test ! -L "$EVIDENCE_DIR"
+sudo install -d -o taskdistribution -g taskdistribution -m 0750 "$EVIDENCE_DIR"
+```
+
+停止 API 以及所有独立 worker、导入器和人工写入入口，并确认 API 已停止。首次部署也应先安装但不启动 API 单元，再执行此门禁：
+
+```bash
+sudo systemctl stop taskdistribution-v2-api.service
+if sudo systemctl is-active --quiet taskdistribution-v2-api.service; then
+  echo 'API is still active; aborting release gate' >&2
+  exit 1
+fi
+```
+
+由候选 release 的只读运维脚本创建完整数据库与上传备份。备份成功输出中的 `backupId` 和绝对目录必须人工回填到下面两个变量；不要复用旧备份 ID：
+
+```bash
+sudo -u taskdistribution /usr/bin/node "$CANDIDATE/ops/backup.js" \
+  --env-file "$OPS_ENV" | sudo tee "$EVIDENCE_DIR/backup-result.json"
+
+BACKUP_ID='backup-YYYYMMDDTHHMMSSZ-xxxxxxxx'
+BACKUP_DIR='/dedicated-backup-mount/taskdistribution-v2/backup-YYYYMMDDTHHMMSSZ-xxxxxxxx'
+
+sudo -u taskdistribution /usr/bin/node "$CANDIDATE/ops/verify-backup.js" \
+  --env-file "$OPS_ENV" \
+  --backup-id "$BACKUP_ID" | sudo tee "$EVIDENCE_DIR/backup-verify-result.json"
+```
+
+`verify-backup.js` 会复核清单 SHA256、每个声明文件及精确文件集合；审核轮次迁移还会在任何写入前再次强制校验数据库名，并要求清单和物理文件中同时存在 `tasks`、`taskreviews`。发布记录中显式保存这两个集合的预检证据：
+
+```bash
+sudo -u taskdistribution /usr/bin/node - \
+  "$BACKUP_DIR/manifest.json" "$DATABASE_NAME" <<'NODE' \
+  | sudo tee "$EVIDENCE_DIR/required-task-collections.json"
+const fs = require('node:fs');
+const [manifestPath, databaseName] = process.argv.slice(2);
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const collections = new Set((manifest.database?.collections || []).map(({ name }) => name));
+const files = new Set((manifest.files || []).map(({ file }) => file));
+const requiredCollections = ['tasks', 'taskreviews'];
+const requiredFiles = requiredCollections.map(
+  (name) => `database/${databaseName}/${name}.bson`
+);
+const missingCollections = requiredCollections.filter((name) => !collections.has(name));
+const missingFiles = requiredFiles.filter((file) => !files.has(file));
+const result = { databaseName, requiredCollections, requiredFiles, missingCollections, missingFiles };
+process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+if (manifest.database?.name !== databaseName || missingCollections.length || missingFiles.length) {
+  process.exitCode = 1;
+}
+NODE
+```
+
+为 dry-run 和 execute 使用两个从未存在过的独立报告路径。CLI 以不可覆盖方式创建报告，路径已存在会以 `EEXIST` 失败；execute 报告路径必须预先确认不存在且目录可写：
+
+```bash
+DRY_REPORT="$EVIDENCE_DIR/task-review-stages-dry-run.json"
+EXEC_REPORT="$EVIDENCE_DIR/task-review-stages-execute.json"
+sudo -u taskdistribution test -w "$EVIDENCE_DIR"
+sudo -u taskdistribution test ! -e "$DRY_REPORT"
+sudo -u taskdistribution test ! -e "$EXEC_REPORT"
+
+sudo -u taskdistribution env ENV_FILE="$APP_ENV" \
+  /usr/bin/node "$CANDIDATE/app/script/migrateTaskReviewStages.js" \
+  --report "$DRY_REPORT"
+
+sudo -u taskdistribution /usr/bin/node - "$DRY_REPORT" <<'NODE'
+const report = require(process.argv[2]);
+if (report.status !== 'DRY_RUN_READY' || report.writePerformed !== false) process.exit(1);
+NODE
+
+sudo -u taskdistribution env ENV_FILE="$APP_ENV" \
+  /usr/bin/node "$CANDIDATE/app/script/migrateTaskReviewStages.js" \
+  --execute \
+  --confirm-database "$DATABASE_NAME" \
+  --backup-directory "$BACKUP_DIR" \
+  --report "$EXEC_REPORT"
+
+sudo -u taskdistribution /usr/bin/node - "$EXEC_REPORT" "$BACKUP_ID" <<'NODE'
+const report = require(process.argv[2]);
+const backupId = process.argv[3];
+if (
+  report.status !== 'EXECUTED' ||
+  report.backup?.backupId !== backupId ||
+  !report.backup?.manifestSha256 ||
+  report.after?.indexes?.desiredPresent !== true ||
+  report.after?.indexes?.legacyRestrictive?.length !== 0
+) process.exit(1);
+NODE
+```
+
+只有以上命令全部成功后，才原子切换 `current` 并首次启动候选 API：
+
+```bash
 PREVIOUS=$(readlink -f /opt/taskdistribution-v2/current || true)
-sudo ln -s "/opt/taskdistribution-v2/releases/$RELEASE_ID" /opt/taskdistribution-v2/current.new
-sudo mv -Tf /opt/taskdistribution-v2/current.new /opt/taskdistribution-v2/current
-sudo systemctl restart taskdistribution-v2-api.service
-sudo nginx -t && sudo systemctl reload nginx
+CURRENT_NEW="/opt/taskdistribution-v2/current.new.$RELEASE_ID"
+test ! -e "$CURRENT_NEW"
+test ! -L "$CURRENT_NEW"
+sudo ln -s "$CANDIDATE" "$CURRENT_NEW"
+sudo mv -Tf "$CURRENT_NEW" /opt/taskdistribution-v2/current
+sudo systemctl start taskdistribution-v2-api.service
 sudo systemctl --no-pager --full status taskdistribution-v2-api.service
 curl --fail --silent --show-error http://127.0.0.1:18099/health
+sudo nginx -t
+sudo systemctl reload nginx
 ```
+
+如果备份、备份校验、必需集合检查或 dry-run 失败，`current` 仍指向旧 release 且迁移没有写入；归档错误后可启动旧 API 恢复服务。execute 失败时必须先读取新的 execute 报告：仅当报告存在且 `writePerformed` 明确为 `false` 时，才可启动旧 API；若为 `true` 或报告缺失，保持 API 停止，不切换、不重跑、不按普通代码回滚，依据报告中的 `backup`、`before`、`after`、`completedSteps` 做 forward repair 或单独批准的整库恢复。任何已有报告路径都不得删除后复用。
 
 安装备份/健康示例前先修改 `ops/linux/*.service` 中的用户、路径和读写目录，再按 `docs/OPERATIONS_RUNBOOK.md` dry run 和安装。
 
@@ -327,7 +447,7 @@ curl --fail --silent --show-error http://127.0.0.1:18099/health
 - 新版本产生持续 5xx、数据范围错误或 worker 异常重复消息。
 - Web 静态资源无法加载、API base URL 错误或权限路由不可用。
 
-普通代码回滚只切换 release，不回滚数据库或删除上传。当前 release 流程不自动执行 schema migration；只有经过独立批准且证据表明确要求时，才考虑数据恢复。
+普通代码回滚只切换 release，不回滚数据库或删除上传。当前 release 流程不自动执行 schema migration；只有经过独立批准且证据表明确要求时，才考虑数据恢复。若审核轮次迁移后已产生同一人员和阶段的多轮记录，禁止切回不识别 `reviewRound` 的旧代码或重建旧两字段、三字段、四字段 stage 限制性唯一索引；按 4.4 的 forward-only 约束处理。
 
 ### 6.2 Windows 回滚
 
@@ -341,13 +461,23 @@ Invoke-WebRequest http://127.0.0.1:18099/health -UseBasicParsing
 
 ### 6.3 Linux 回滚
 
+先确认目标旧 release 兼容当前数据库索引。若已执行审核轮次迁移，目标版本必须理解 `reviewRound` 和 `uq_task_review_stage_round`；不兼容的旧版本禁止启动。回滚时先停止 API，再切换链接：
+
 ```bash
+set -euo pipefail
 PREVIOUS_RELEASE=v2-YYYYMMDD-HHMMSS
-sudo ln -s "/opt/taskdistribution-v2/releases/$PREVIOUS_RELEASE" /opt/taskdistribution-v2/current.rollback
-sudo mv -Tf /opt/taskdistribution-v2/current.rollback /opt/taskdistribution-v2/current
-sudo systemctl restart taskdistribution-v2-api.service
-sudo nginx -t && sudo systemctl reload nginx
+ROLLBACK_TARGET="/opt/taskdistribution-v2/releases/$PREVIOUS_RELEASE"
+ROLLBACK_LINK="/opt/taskdistribution-v2/current.rollback.$PREVIOUS_RELEASE"
+test -d "$ROLLBACK_TARGET/app"
+test ! -e "$ROLLBACK_LINK"
+test ! -L "$ROLLBACK_LINK"
+sudo systemctl stop taskdistribution-v2-api.service
+sudo ln -s "$ROLLBACK_TARGET" "$ROLLBACK_LINK"
+sudo mv -Tf "$ROLLBACK_LINK" /opt/taskdistribution-v2/current
+sudo systemctl start taskdistribution-v2-api.service
 curl --fail --silent --show-error http://127.0.0.1:18099/health
+sudo nginx -t
+sudo systemctl reload nginx
 ```
 
 ### 6.4 必做演练
@@ -362,6 +492,8 @@ curl --fail --silent --show-error http://127.0.0.1:18099/health
 6. 记录两个 release ID、每次切换时间、退出码、日志、健康结果和批准人。
 
 数据库恢复演练使用 `ops/restore.js` 恢复到新的 `_restore_test`/`_v2_test` 库和隔离目录，不能覆盖活动数据库或上传目录，详见 `docs/OPERATIONS_RUNBOOK.md`。
+
+恢复到 Task/TaskReview 审核轮次迁移前的旧测试快照后，新测试库的字段和索引状态也随快照回退；在用当前版本启动 API 或继续冒烟前，必须针对该恢复库重新执行 dry-run 和显式迁移，不能沿用原数据库的迁移报告。
 
 ## 7. 微信小程序发布与版本回退
 

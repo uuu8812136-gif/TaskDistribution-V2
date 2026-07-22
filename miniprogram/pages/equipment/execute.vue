@@ -91,7 +91,8 @@ import {
   normalizeRoutineSchedules,
   resultOptionsFor,
   routineTypeLabel,
-  scheduleDescription
+  scheduleDescription,
+  selectExecutableRoutinePlan
 } from '@/utils/equipment.js'
 import { useUserStore } from '@/stores/user.js'
 
@@ -136,8 +137,7 @@ export default {
         return
       }
       rule.value = entry.rule
-      const currentPlan = (entry.plans || []).find(({ status }) => status === 'IN_WINDOW') ||
-        (entry.plans || []).find(({ status }) => status === 'OVERDUE') || null
+      const currentPlan = selectExecutableRoutinePlan(entry.plans)
       planId.value = currentPlan?._id || ''
       runtimeHours.value = response.equipment?.currentRuntimeHours == null
         ? ''

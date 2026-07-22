@@ -79,6 +79,11 @@ const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
 const MAX_CHECKLIST_ITEMS = 500;
 const MAX_PHOTOS = 10;
+const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+]);
 
 function routineError(status, code, message) {
   return new EquipmentRegistryError(status, code, message);
@@ -153,6 +158,11 @@ function pagination(query = {}) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function combinedAnyGenerationPrefix(cycleKey) {
+  const match = String(cycleKey || '').match(/^(combined:any:[^:]+:)/);
+  return match ? match[1] : null;
 }
 
 function normalizeRelatedId(value) {
@@ -563,6 +573,16 @@ function createEquipmentRoutineService({
     return runWithOptionalTransaction(work, connection);
   }
 
+  async function cancelOpenPlansForRule(rule, session) {
+    return execute(EquipmentRoutinePlanModel.updateMany({
+      teamId: rule.teamId,
+      ruleId: rule._id,
+      status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+    }, {
+      $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+    }), session);
+  }
+
   async function resolveReadTeamId(authContext, requestedTeamId) {
     const context = assertBusinessContext(authContext);
     if (context.mode === SESSION_MODES.TEAM) {
@@ -874,6 +894,7 @@ function createEquipmentRoutineService({
         rule.version += 1;
         rule.updatedBy = context.userId;
         await rule.save({ session: session || undefined });
+        await cancelOpenPlansForRule(rule, session);
         const after = serializeRule(rule);
         await auditService.record({
           req,
@@ -906,12 +927,16 @@ function createEquipmentRoutineService({
         }), session);
         if (!rule) throw notFound('Equipment routine rule');
         assertRuleManager(context, rule.routineType);
-        if (rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED) return serializeRule(rule);
+        if (rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED) {
+          await cancelOpenPlansForRule(rule, session);
+          return serializeRule(rule);
+        }
         const before = serializeRule(rule);
         rule.status = EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED;
         rule.version += 1;
         rule.updatedBy = context.userId;
         await rule.save({ session: session || undefined });
+        await cancelOpenPlansForRule(rule, session);
         const after = serializeRule(rule);
         await auditService.record({
           req,
@@ -1601,7 +1626,10 @@ function createEquipmentRoutineService({
             );
           }
         } else {
-          plan = await execute(EquipmentRoutinePlanModel.findOne({
+          // A client may omit planId (the Web form does this for compatibility).
+          // Resolve deterministically so an older overdue cycle cannot be hidden
+          // by a newer calendar cycle for the same equipment and rule.
+          const openPlans = await execute(EquipmentRoutinePlanModel.find({
             teamId: context.activeTeamId,
             equipmentId: asset._id,
             ruleId: rule._id,
@@ -1610,7 +1638,10 @@ function createEquipmentRoutineService({
               EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
               EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
             ] }
-          }).sort({ dueAt: -1, _id: -1 }), session);
+          }).sort({ dueAt: 1, _id: 1 }), session);
+          plan = openPlans.find(({ status }) => (
+            status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+          )) || openPlans[0] || null;
         }
         const photoEvidence = finalizePhotoEvidence(submission.photoEvidence, rule, performedAt);
         const recordId = new mongoose.Types.ObjectId();
@@ -1689,6 +1720,34 @@ function createEquipmentRoutineService({
               'The selected routine plan was completed concurrently'
             );
           }
+        }
+
+        if (
+          rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED &&
+          rule.schedule.duePolicy === 'ANY'
+        ) {
+          const siblingPlanFilter = {
+            teamId: context.activeTeamId,
+            equipmentId: asset._id,
+            ruleId: rule._id,
+            status: { $in: [
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+            ] }
+          };
+          const generationPrefix = combinedAnyGenerationPrefix(plan?.cycleKey);
+          if (generationPrefix) {
+            siblingPlanFilter.cycleKey = {
+              $regex: `^${escapeRegex(generationPrefix)}`,
+              $ne: plan.cycleKey
+            };
+          } else if (plan?.cycleKey) {
+            siblingPlanFilter.cycleKey = { $ne: plan.cycleKey };
+          }
+          await execute(EquipmentRoutinePlanModel.updateMany(siblingPlanFilter, {
+            $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+          }), session);
         }
 
         if (itemResult.abnormal) {

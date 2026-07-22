@@ -14,8 +14,8 @@ function parseInteger(value, fallback, name) {
 
 function parsePositiveInteger(value, fallback, name) {
   const parsed = Number.parseInt(value ?? fallback, 10);
-  if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error(`${name} must be a positive integer`);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${name} must be a positive safe integer`);
   }
   return parsed;
 }
@@ -94,6 +94,31 @@ function loadEnvironment(env = process.env) {
     jwtAudience: env.JWT_AUDIENCE || 'task-distribution-v2-clients',
     uploadPath: path.resolve(process.cwd(), env.UPLOAD_PATH || '../.test-data/uploads'),
     maxFileSize: parsePositiveInteger(env.MAX_FILE_SIZE, 10 * 1024 * 1024, 'MAX_FILE_SIZE'),
+    temporaryFileUserMaxCount: parsePositiveInteger(
+      env.TEMPORARY_FILE_USER_MAX_COUNT,
+      20,
+      'TEMPORARY_FILE_USER_MAX_COUNT'
+    ),
+    temporaryFileUserMaxBytes: parsePositiveInteger(
+      env.TEMPORARY_FILE_USER_MAX_BYTES,
+      100 * 1024 * 1024,
+      'TEMPORARY_FILE_USER_MAX_BYTES'
+    ),
+    temporaryFileTeamMaxCount: parsePositiveInteger(
+      env.TEMPORARY_FILE_TEAM_MAX_COUNT,
+      200,
+      'TEMPORARY_FILE_TEAM_MAX_COUNT'
+    ),
+    temporaryFileTeamMaxBytes: parsePositiveInteger(
+      env.TEMPORARY_FILE_TEAM_MAX_BYTES,
+      1024 * 1024 * 1024,
+      'TEMPORARY_FILE_TEAM_MAX_BYTES'
+    ),
+    temporaryFileTtlHours: parsePositiveInteger(
+      env.TEMPORARY_FILE_TTL_HOURS,
+      24,
+      'TEMPORARY_FILE_TTL_HOURS'
+    ),
     corsOrigins: (env.CORS_ORIGINS || 'http://localhost:3101')
       .split(',')
       .map((origin) => origin.trim())
@@ -111,6 +136,19 @@ function loadEnvironment(env = process.env) {
   };
   if (config.equipmentRoutineWorkerIntervalMs < 1000) {
     throw new Error('EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS must be at least 1000');
+  }
+  if (config.temporaryFileUserMaxBytes < config.maxFileSize) {
+    throw new Error('TEMPORARY_FILE_USER_MAX_BYTES must be at least MAX_FILE_SIZE');
+  }
+  if (config.temporaryFileTeamMaxCount < config.temporaryFileUserMaxCount) {
+    throw new Error(
+      'TEMPORARY_FILE_TEAM_MAX_COUNT must be at least TEMPORARY_FILE_USER_MAX_COUNT'
+    );
+  }
+  if (config.temporaryFileTeamMaxBytes < config.temporaryFileUserMaxBytes) {
+    throw new Error(
+      'TEMPORARY_FILE_TEAM_MAX_BYTES must be at least TEMPORARY_FILE_USER_MAX_BYTES'
+    );
   }
 
   if (!config.mongodbUri) {

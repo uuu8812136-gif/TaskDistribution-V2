@@ -164,8 +164,20 @@ export const getEquipmentRoutinePlans = (params) => request({
   params
 })
 
+export const getEquipmentRoutinePlan = (planId, params) => request({
+  url: `/equipment/routine-plans/${planId}`,
+  method: 'get',
+  params
+})
+
 export const getEquipmentRoutineExceptions = (params) => request({
   url: '/equipment/routine-exceptions',
+  method: 'get',
+  params
+})
+
+export const getEquipmentRoutineException = (exceptionId, params) => request({
+  url: `/equipment/routine-exceptions/${exceptionId}`,
   method: 'get',
   params
 })

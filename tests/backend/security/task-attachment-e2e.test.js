@@ -85,6 +85,7 @@ async function seed() {
   const systemUser = await createUser('attachment-system-user');
   const creatorA = await createUser('attachment-creator-a');
   const executor2A = await createUser('attachment-executor-2-a');
+  const viewerA = await createUser('attachment-viewer-a');
   const reviewerA = await createUser('attachment-reviewer-a');
   const memberB = await createUser('attachment-member-b');
   const [teamA, teamB] = await ProjectTeam.create([
@@ -120,7 +121,13 @@ async function seed() {
       teamId: teamA._id,
       userId: executor2A._id,
       orgUnitId: orgA._id,
-      permissionKeys: ['task.view', 'task.edit']
+      permissionKeys: ['task.view']
+    },
+    {
+      teamId: teamA._id,
+      userId: viewerA._id,
+      orgUnitId: orgA._id,
+      permissionKeys: ['task.view']
     },
     {
       teamId: teamA._id,
@@ -180,12 +187,15 @@ async function seed() {
     orgA,
     creatorA,
     executor2A,
+    viewerA,
     reviewerA,
     memberB,
     completionTask,
     reviewTask,
     taskB,
     creatorToken: await issueToken(creatorA, teamA._id),
+    executor2Token: await issueToken(executor2A, teamA._id),
+    viewerToken: await issueToken(viewerA, teamA._id),
     reviewerToken: await issueToken(reviewerA, teamA._id),
     memberBToken: await issueToken(memberB, teamB._id)
   };
@@ -347,6 +357,50 @@ test('task attachments use private FileAsset references end to end', async (t) =
     assert.equal(actorCompletion.attachments[0].path, undefined);
     assert.equal((await FileAsset.findById(first._id).lean()).status, 'DELETED');
     assert.equal((await FileAsset.findById(replacement._id).lean()).ownerType, 'TASK_COMPLETION');
+
+    const viewerTemporary = await upload(fixture.viewerToken, 'viewer-temporary.png');
+    await request(app)
+      .patch(`/api/files/${viewerTemporary._id}/bind`)
+      .set('Authorization', `Bearer ${fixture.viewerToken}`)
+      .send({
+        ownerType: 'TASK_COMPLETION',
+        ownerId: String(fixture.completionTask._id)
+      })
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
+    await request(app)
+      .delete(`/api/files/${replacement._id}`)
+      .set('Authorization', `Bearer ${fixture.viewerToken}`)
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
+
+    await request(app)
+      .patch(`/api/files/${viewerTemporary._id}/bind`)
+      .set('Authorization', `Bearer ${fixture.creatorToken}`)
+      .send({ ownerType: 'TASK', ownerId: managedTaskId })
+      .expect(404);
+    assert.equal((await FileAsset.findById(viewerTemporary._id).lean()).status, 'TEMPORARY');
+    assert.equal((await FileAsset.findById(replacement._id).lean()).status, 'ACTIVE');
+
+    const executorEvidence = await upload(fixture.executor2Token, 'completion-executor-two.png');
+    await request(app)
+      .post(`/api/tasks/${fixture.completionTask._id}/complete`)
+      .set('Authorization', `Bearer ${fixture.executor2Token}`)
+      .send({
+        completionNote: 'view-only executor completion',
+        attachments: [{ fileId: executorEvidence._id }]
+      })
+      .expect(200);
+    const completedTask = await Task.findById(fixture.completionTask._id).lean();
+    const executorCompletion = completedTask.executorCompletions.find(
+      (item) => String(item.executor) === String(fixture.executor2A._id)
+    );
+    assert.deepEqual(
+      executorCompletion.attachments.map((item) => String(item.fileId)),
+      [executorEvidence._id]
+    );
+    assert.equal(completedTask.status, 'pending_review');
+    assert.equal((await FileAsset.findById(executorEvidence._id).lean()).ownerType, 'TASK_COMPLETION');
   });
 
   await t.test('a review-only member can upload and bind review evidence', async () => {
@@ -368,6 +422,24 @@ test('task attachments use private FileAsset references end to end', async (t) =
     const storedFile = await FileAsset.findById(reviewFile._id).lean();
     assert.equal(storedFile.ownerType, 'TASK_REVIEW');
     assert.equal(String(storedFile.ownerId), String(fixture.reviewTask._id));
+
+    const orphanReviewFile = await upload(fixture.reviewerToken, 'orphan-review.png');
+    await request(app)
+      .patch(`/api/files/${orphanReviewFile._id}/bind`)
+      .set('Authorization', `Bearer ${fixture.reviewerToken}`)
+      .send({
+        ownerType: 'TASK_REVIEW',
+        ownerId: String(fixture.reviewTask._id)
+      })
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
+    await request(app)
+      .delete(`/api/files/${reviewFile._id}`)
+      .set('Authorization', `Bearer ${fixture.reviewerToken}`)
+      .expect(409)
+      .expect(({ body }) => assert.equal(body.code, 'FILE_WORKFLOW_OWNER_MANAGED'));
+    assert.equal((await FileAsset.findById(orphanReviewFile._id).lean()).status, 'TEMPORARY');
+    assert.equal((await FileAsset.findById(reviewFile._id).lean()).status, 'ACTIVE');
   });
 
   await t.test('managed task attachment downloads remain private and authenticated', async () => {

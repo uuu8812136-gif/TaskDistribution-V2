@@ -248,6 +248,14 @@ function createTaskController(overrides = {}) {
     );
   }
 
+  async function deleteTaskReviews(teamId, taskIds, session) {
+    if (!Array.isArray(taskIds) || taskIds.length === 0) return;
+    await TaskReviewModel.deleteMany({
+      teamId,
+      task: { $in: taskIds }
+    }, { session: session || undefined });
+  }
+
   async function findActiveOrgUnit(teamId, orgUnitId, session) {
     const query = OrgUnitModel.findOne({
       _id: normalizeInputId(orgUnitId, 'orgUnitId'),
@@ -669,11 +677,13 @@ function createTaskController(overrides = {}) {
 
     const deleted = existing.filter((subTask) => !retainedIds.includes(String(subTask._id)));
     if (deleted.length > 0) {
+      const deletedTaskIds = deleted.map((subTask) => subTask._id);
+      await deleteTaskReviews(teamId, deletedTaskIds, session);
       await TaskModel.deleteMany({
         teamId,
         orgUnitId,
         parentTask: task._id,
-        _id: { $in: deleted.map((subTask) => subTask._id) }
+        _id: { $in: deletedTaskIds }
       }, { session: session || undefined });
       for (const subTask of deleted) {
         await auditService.record({
@@ -837,7 +847,9 @@ function createTaskController(overrides = {}) {
             parentTask: task._id
           }), session)
           : [];
+        const deletedTaskIds = [task._id, ...children.map((child) => child._id)];
 
+        await deleteTaskReviews(teamId, deletedTaskIds, session);
         if (children.length > 0) {
           await TaskModel.deleteMany({
             teamId,

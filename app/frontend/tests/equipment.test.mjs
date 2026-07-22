@@ -23,6 +23,8 @@ import {
   routineAbnormalNotesComplete,
   routineItemResultOptions,
   routineScheduleLabel,
+  routineScheduleSummary,
+  effectiveRoutineDueState,
   removeChecklistItemAt,
   EQUIPMENT_STATUS_OPTIONS
 } from '../src/utils/equipment.js'
@@ -222,6 +224,45 @@ test('routine rule payload supports calendar, runtime and combined schedules', (
   })
   assert.equal(routineScheduleLabel(combined.schedule), '每月 + 每运行 500 小时（任一到期）')
   assert.equal('status' in combined, false)
+})
+
+test('one equipment may summarize simultaneous daily, weekly, monthly and runtime rules by routine type', () => {
+  const summary = routineScheduleSummary([
+    { rule: { routineType: 'INSPECTION', schedule: { mode: 'CALENDAR', calendar: { unit: 'DAY' } } } },
+    { rule: { routineType: 'INSPECTION', schedule: { mode: 'CALENDAR', calendar: { unit: 'WEEK' } } } },
+    {
+      rule: {
+        routineType: 'INSPECTION',
+        schedule: { mode: 'COMBINED', calendar: { unit: 'MONTH' }, runtime: { intervalHours: 500 } }
+      }
+    },
+    { rule: { routineType: 'MAINTENANCE', schedule: { mode: 'RUNTIME_HOURS', runtime: { intervalHours: 200 } } } },
+    { rule: { routineType: 'MAINTENANCE', schedule: { mode: 'MANUAL' } } }
+  ])
+
+  assert.deepEqual(summary.INSPECTION, {
+    total: 3,
+    DAY: 1,
+    WEEK: 1,
+    MONTH: 1,
+    RUNTIME_HOURS: 1,
+    MANUAL: 0
+  })
+  assert.deepEqual(summary.MAINTENANCE, {
+    total: 2,
+    DAY: 0,
+    WEEK: 0,
+    MONTH: 0,
+    RUNTIME_HOURS: 1,
+    MANUAL: 1
+  })
+})
+
+test('routine due state prefers the authoritative open-plan status', () => {
+  assert.equal(effectiveRoutineDueState({ planStatus: 'OVERDUE', status: 'UPCOMING' }), 'OVERDUE')
+  assert.equal(effectiveRoutineDueState({ planStatus: 'IN_WINDOW', status: 'OVERDUE' }), 'DUE')
+  assert.equal(effectiveRoutineDueState({ planStatus: 'PLANNED', status: 'OVERDUE' }), 'UPCOMING')
+  assert.equal(effectiveRoutineDueState({ dueState: 'WAITING_FOR_READING', status: 'UPCOMING' }), 'WAITING_FOR_READING')
 })
 
 test('routine execution and runtime reading payloads contain only accepted fields', () => {

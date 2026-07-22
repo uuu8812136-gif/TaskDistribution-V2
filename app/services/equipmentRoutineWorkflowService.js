@@ -329,6 +329,14 @@ function exceptionAuditResource(routineType) {
     : AUDIT_RESOURCE_TYPES.MAINTENANCE_EXCEPTION;
 }
 
+function recordExportAuditResource(requestedRoutineType, routineTypes) {
+  const distinctTypes = [...new Set(routineTypes.filter(Boolean))];
+  const effectiveType = requestedRoutineType || (distinctTypes.length === 1 ? distinctTypes[0] : null);
+  if (effectiveType === 'INSPECTION') return AUDIT_RESOURCE_TYPES.INSPECTION_RECORD;
+  if (effectiveType === 'MAINTENANCE') return AUDIT_RESOURCE_TYPES.MAINTENANCE_RECORD;
+  return AUDIT_RESOURCE_TYPES.SYSTEM;
+}
+
 function createEquipmentRoutineWorkflowService({
   EquipmentAssetModel = EquipmentAsset,
   EquipmentRoutineExceptionModel = EquipmentRoutineException,
@@ -528,6 +536,26 @@ function createEquipmentRoutineWorkflowService({
     })), total, page, pageSize };
   }
 
+  async function getPlan({ authContext, requestedTeamId, method = 'GET', planId, query = {} }) {
+    assertOnlyKeys(query, ['teamId'], 'query');
+    assertPermission(authContext, 'equipment.view');
+    const teamId = await resolveReadTeamId(authContext, requestedTeamId);
+    const filter = await readFilter({
+      authContext,
+      teamId,
+      method,
+      id: normalizeRelatedId(planId)
+    });
+    const document = await EquipmentRoutinePlanModel.findOne(filter).lean();
+    if (!document) throw notFound();
+    const [enriched] = await enrichRows([document]);
+    return {
+      ...serializePlan(enriched),
+      equipment: enriched.equipment,
+      orgUnit: enriched.orgUnit
+    };
+  }
+
   async function listExceptions({ authContext, requestedTeamId, method = 'GET', query = {} }) {
     assertOnlyKeys(query, [
       'teamId', 'page', 'pageSize', 'routineType', 'status', 'stage', 'equipmentId', 'orgUnitId', 'from', 'to'
@@ -672,7 +700,7 @@ function createEquipmentRoutineWorkflowService({
     }
   }
 
-  async function exportRecords({ authContext, requestedTeamId, method = 'GET', query = {} }) {
+  async function exportRecords({ authContext, req, requestedTeamId, method = 'GET', query = {} }) {
     assertOnlyKeys(query, [
       'teamId', 'routineType', 'equipmentId', 'orgUnitId', 'overallResult', 'from', 'to'
     ], 'query');
@@ -707,8 +735,29 @@ function createEquipmentRoutineWorkflowService({
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '设备编号': '' }], { cellDates: true });
     XLSX.utils.book_append_sheet(workbook, worksheet, '点检保养记录');
+    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellDates: true });
+    const routineTypes = [...new Set(records.map(({ routineType }) => routineType).filter(Boolean))].sort();
+    await auditService.record({
+      req,
+      authContext,
+      action: AUDIT_ACTIONS.EXPORT,
+      resourceType: recordExportAuditResource(userFilter.routineType, routineTypes),
+      after: {
+        routineTypes,
+        filters: {
+          routineType: userFilter.routineType || null,
+          equipmentId: userFilter.equipmentId ? normalizeId(userFilter.equipmentId) : null,
+          orgUnitId: userFilter.orgUnitId ? normalizeId(userFilter.orgUnitId) : null,
+          overallResult: userFilter.overallResult || null,
+          from: userFilter.performedAt?.$gte?.toISOString() || null,
+          to: userFilter.performedAt?.$lte?.toISOString() || null
+        },
+        count: rows.length
+      },
+      targetTeamId: teamId
+    });
     return {
-      buffer: XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellDates: true }),
+      buffer,
       count: rows.length,
       fileName: `equipment-routines-${new Date().toISOString().slice(0, 10)}.xlsx`
     };
@@ -718,6 +767,7 @@ function createEquipmentRoutineWorkflowService({
     createExceptionForRecord,
     exportRecords,
     getException,
+    getPlan,
     listExceptions,
     listPlans,
     notifyExceptionStage,

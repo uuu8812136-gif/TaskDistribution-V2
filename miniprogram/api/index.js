@@ -54,10 +54,12 @@ export const uploadTaskAttachment = async (file) => {
   return { fileId }
 }
 
-export const downloadTaskAttachment = (file) => {
+export const downloadTaskAttachment = (file, params = {}) => {
   const fileId = managedFileId(file)
   if (!fileId) throw new TypeError('Managed attachment fileId is required')
-  return download(`/files/${fileId}/download`)
+  const teamId = typeof params.teamId === 'string' ? params.teamId : ''
+  const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''
+  return download(`/files/${fileId}/download${query}`)
 }
 
 // ==================== 任务模块 ====================
@@ -81,8 +83,8 @@ export const getAllTasks = (params) => {
 /**
  * 获取任务详情
  */
-export const getTaskDetail = (id) => {
-  return get(`/tasks/${id}`)
+export const getTaskDetail = (id, params = {}) => {
+  return get(`/tasks/${id}`, params)
 }
 
 /**
@@ -127,10 +129,6 @@ export const completeTask = (id, data) => {
  */
 export const reviewTask = async (id, data) => {
   try {
-    console.log('=== reviewTask API 调用 ===')
-    console.log('id:', id)
-    console.log('data:', data)
-    
     // 直接使用传入的数据，不再重新处理
     // review.vue 已经处理好了附件上传
     const requestData = {
@@ -139,9 +137,6 @@ export const reviewTask = async (id, data) => {
       rating: data.rating,
       attachments: data.attachments || []  // 直接使用传入的 attachments
     }
-    
-    console.log('=== 准备发送的请求数据 ===')
-    console.log('requestData:', JSON.stringify(requestData, null, 2))
     
     return post(`/tasks/${id}/review`, requestData)
     
@@ -154,15 +149,15 @@ export const reviewTask = async (id, data) => {
 /**
  * 确认任务（管理员）
  */
-export const confirmTask = (id) => {
-  return post(`/tasks/${id}/confirm`)
+export const confirmTask = (id, data = {}) => {
+  return post(`/tasks/${id}/confirm`, data)
 }
 
 /**
  * 获取任务审核记录
  */
-export const getTaskReviews = (id) => {
-  return get(`/tasks/${id}/reviews`)
+export const getTaskReviews = (id, params = {}) => {
+  return get(`/tasks/${id}/reviews`, params)
 }
 
 // ==================== 延期申请模块 ====================
@@ -191,8 +186,8 @@ export const getExtensions = (params) => {
 /**
  * 获取任务延期历史
  */
-export const getExtensionHistory = (taskId) => {
-  return get(`/extensions/history/${taskId}`)
+export const getExtensionHistory = (taskId, params = {}) => {
+  return get(`/extensions/history/${taskId}`, params)
 }
 
 // ==================== 消息模块 ====================
@@ -280,6 +275,10 @@ export const getEquipmentRoutineRecords = (params = {}) => {
 
 export const getEquipmentRoutinePlans = (params = {}) => {
   return get('/equipment/routine-plans', params)
+}
+
+export const getEquipmentRoutinePlan = (planId, params = {}) => {
+  return get(`/equipment/routine-plans/${encodeURIComponent(planId)}`, params)
 }
 
 export const getEquipmentRoutineExceptions = (params = {}) => {

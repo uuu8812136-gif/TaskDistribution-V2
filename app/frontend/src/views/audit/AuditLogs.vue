@@ -88,7 +88,7 @@
         <el-table-column label="操作人" min-width="140" show-overflow-tooltip>
           <template #default="{ row }">{{ row.actor?.name || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="134">
+        <el-table-column label="操作类型" width="134">
           <template #default="{ row }">
             <el-tag effect="plain" :type="actionTone(row.action)">
               {{ auditActionLabel(row.action) }}
@@ -104,7 +104,7 @@
         <el-table-column prop="requestId" label="请求 ID" min-width="190" show-overflow-tooltip>
           <template #default="{ row }">{{ row.requestId || '-' }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="86" fixed="right" align="center">
+        <el-table-column label="详情" width="86" fixed="right" align="center">
           <template #default="{ row }">
             <el-button text type="primary" @click="openDetail(row)">详情</el-button>
           </template>
@@ -119,7 +119,9 @@
         :page-size="filters.pageSize"
         :total="total"
         :page-sizes="[20, 50, 100]"
+        :pager-count="5"
         layout="sizes, prev, pager, next"
+        class="audit-pagination"
         @size-change="handlePageSizeChange"
         @current-change="handlePageChange"
       />
@@ -131,10 +133,11 @@
       size="min(780px, 96vw)"
       destroy-on-close
       append-to-body
+      @closed="closeDetail"
     >
       <div v-loading="detailLoading" class="detail-body">
         <template v-if="selectedLog">
-          <el-descriptions :column="2" border size="small" class="detail-grid">
+          <el-descriptions :column="detailColumns" border size="small" class="detail-grid">
             <el-descriptions-item label="时间">{{ formatDateTime(selectedLog.createdAt) }}</el-descriptions-item>
             <el-descriptions-item label="目标团队">{{ selectedLog.targetTeam?.name || '系统级' }}</el-descriptions-item>
             <el-descriptions-item label="操作人">{{ selectedLog.actor?.name || '-' }}</el-descriptions-item>
@@ -143,10 +146,10 @@
             <el-descriptions-item label="资源">{{ auditResourceLabel(selectedLog.resourceType) }}</el-descriptions-item>
             <el-descriptions-item label="资源 ID">{{ selectedLog.resourceId || '-' }}</el-descriptions-item>
             <el-descriptions-item label="请求 ID">{{ selectedLog.requestId || '-' }}</el-descriptions-item>
-            <el-descriptions-item label="请求" :span="2">
+            <el-descriptions-item label="请求" :span="detailColumns">
               {{ [selectedLog.requestMethod, selectedLog.requestPath].filter(Boolean).join(' ') || '-' }}
             </el-descriptions-item>
-            <el-descriptions-item label="原因" :span="2">{{ selectedLog.reason || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="原因" :span="detailColumns">{{ selectedLog.reason || '-' }}</el-descriptions-item>
           </el-descriptions>
 
           <section class="snapshot-section">
@@ -169,7 +172,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import dayjs from 'dayjs'
 import { getAuditLog, getAuditLogs } from '@/api/auditLog'
 import { useSessionStore } from '@/stores/session'
@@ -189,6 +192,11 @@ const loading = ref(false)
 const detailLoading = ref(false)
 const detailVisible = ref(false)
 const selectedLog = ref(null)
+const compactDetail = ref(false)
+
+let listRequestId = 0
+let detailRequestId = 0
+let detailMediaQuery = null
 
 const filters = reactive({
   timeRange: [],
@@ -213,6 +221,7 @@ const scopeLabel = computed(() => (
     ? '全部团队与系统级日志'
     : session.activeTeam?.name || '当前项目团队'
 ))
+const detailColumns = computed(() => compactDetail.value ? 1 : 2)
 
 function formatDateTime(value) {
   return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '-'
@@ -235,15 +244,20 @@ function actionTone(action) {
 }
 
 async function loadAuditLogs() {
+  const requestId = ++listRequestId
+  const query = buildAuditQuery(filters, { global: session.isGlobalReadOnly })
+  auditLogs.value = []
+  total.value = 0
   loading.value = true
   try {
-    const result = await getAuditLogs(buildAuditQuery(filters, { global: session.isGlobalReadOnly }))
+    const result = await getAuditLogs(query)
+    if (requestId !== listRequestId) return
     auditLogs.value = result.auditLogs || []
     total.value = result.total || 0
     filters.page = result.page || filters.page
     filters.pageSize = result.pageSize || filters.pageSize
   } finally {
-    loading.value = false
+    if (requestId === listRequestId) loading.value = false
   }
 }
 
@@ -278,18 +292,41 @@ function handlePageChange(page) {
 }
 
 async function openDetail(row) {
+  const requestId = ++detailRequestId
   detailVisible.value = true
   detailLoading.value = true
   selectedLog.value = null
   try {
     const result = await getAuditLog(row._id)
+    if (requestId !== detailRequestId) return
     selectedLog.value = result.auditLog || null
   } finally {
-    detailLoading.value = false
+    if (requestId === detailRequestId) detailLoading.value = false
   }
 }
 
-onMounted(loadAuditLogs)
+function closeDetail() {
+  detailRequestId += 1
+  detailLoading.value = false
+  selectedLog.value = null
+}
+
+function syncDetailLayout(event) {
+  compactDetail.value = event.matches
+}
+
+onMounted(() => {
+  detailMediaQuery = window.matchMedia('(max-width: 680px)')
+  syncDetailLayout(detailMediaQuery)
+  detailMediaQuery.addEventListener('change', syncDetailLayout)
+  loadAuditLogs()
+})
+
+onBeforeUnmount(() => {
+  detailMediaQuery?.removeEventListener('change', syncDetailLayout)
+  listRequestId += 1
+  detailRequestId += 1
+})
 </script>
 
 <style scoped lang="scss">
@@ -410,6 +447,17 @@ onMounted(loadAuditLogs)
   .pagination-row {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .audit-pagination {
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .audit-pagination :deep(.el-pagination__sizes) {
+    display: none;
   }
 }
 </style>

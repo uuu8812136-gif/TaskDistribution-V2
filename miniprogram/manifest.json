@@ -54,6 +54,14 @@
         "setting" : {
             "urlCheck" : false
         },
+        "permission" : {
+            "scope.userLocation" : {
+                "desc" : "用于设备点检和保养现场照片记录位置水印"
+            }
+        },
+        "requiredPrivateInfos" : [
+            "getLocation"
+        ],
         "usingComponents" : true
     },
     "mp-alipay" : {

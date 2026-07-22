@@ -67,7 +67,63 @@ node ops/retention.js --env-file E:\TaskDistribution-V2-Secrets\operations.env -
 
 先保存 `--dry-run` 输出。保留工具只会删除 `BACKUP_ROOT` 下通过清单校验的直系 `backup-*` 目录。
 
-## 4. 恢复演练
+## 4. Task / TaskReview 审核轮次索引显式迁移
+
+`Task.reviewRound`、`TaskReview.stage/reviewRound` 和轮次唯一索引属于数据库状态，不随 release 切换自动应用。迁移工具默认严格 dry-run；API 启动、NSSM/systemd、Web 构建和 release 脚本均不得自动调用它。
+
+### 4.1 维护窗口与备份门禁
+
+1. 公告维护窗口，停止 API、设备例行 worker、导入任务和所有其他写入入口；MongoDB 保持运行。确认没有旁路客户端继续写库。
+2. 使用第 3 节命令创建紧邻本次迁移的备份，再用 `ops/verify-backup.js` 全量验证。记录 `backupId`、备份目录、`manifestSha256` 和该目录内 `manifest.json` 的绝对路径。
+3. `--backup-directory` 必须指向上述已验证的完整备份目录；该目录内必须同时存在原始 `manifest.json` 和 `manifest.sha256`。执行模式会复核清单哈希和清单声明的全部文件；空目录、未验证目录或只复制清单而缺少声明文件的目录都不能通过门禁。
+4. dry-run 报告和 execute 报告使用两个不同的绝对路径，并与变更单一起归档。不得覆盖预检证据。
+
+### 4.2 默认 dry-run
+
+在候选 release 的 `app` 目录执行；真实环境文件仍通过受保护的 `ENV_FILE` 提供：
+
+```powershell
+$env:ENV_FILE='E:\TaskDistribution-V2-Secrets\app.env'
+Push-Location E:\TaskDistribution-V2-Releases\current\app
+npm run migrate:task-review-stages -- --report E:\TaskDistribution-V2-Reports\task-review-stages-dry-run.json
+Pop-Location
+Remove-Item Env:ENV_FILE
+```
+
+未传 `--execute` 时只生成计划和验证报告，不回填字段、不创建或删除索引。审核报告中的实际数据库名、Task/TaskReview 待回填轮次数量、待推断 stage 数量、无效/冲突数据、新索引计划，以及 key 精确等于 `{ task, reviewer }`、`{ teamId, task, reviewer }` 或 `{ teamId, task, reviewer, stage }` 的待删除旧 unique 索引名称；有阻断项时不得进入执行阶段。
+
+### 4.3 显式执行与验证
+
+保持维护窗口停写，用已审核的精确数据库名和已验证备份清单执行：
+
+```powershell
+$env:ENV_FILE='E:\TaskDistribution-V2-Secrets\app.env'
+Push-Location E:\TaskDistribution-V2-Releases\current\app
+npm run migrate:task-review-stages -- `
+  --execute `
+  --confirm-database task_distribution_v2 `
+  --backup-directory E:\TaskDistribution-V2-Backups\backup-YYYYMMDDTHHMMSSZ-xxxxxxxx `
+  --report E:\TaskDistribution-V2-Reports\task-review-stages-execute.json
+Pop-Location
+Remove-Item Env:ENV_FILE
+```
+
+执行模式缺少 `--confirm-database`、已验证的 `--backup-directory` 或 `--report` 时必须失败。工具内部顺序不可调整：
+
+1. 将缺少的 `Task.reviewRound` 和 `TaskReview.reviewRound` 回填为 `1`，根据审核/最终确认审计证据推断并回填缺少的 `TaskReview.stage`；无 stage 证据、证据冲突或轮次不是大于等于 `1` 的整数时阻断，并验证五字段候选唯一键和数据数量；
+2. 创建 `{ teamId, task, reviewer, stage, reviewRound }` 新唯一索引 `uq_task_review_stage_round`；
+3. 重新读取 Task、TaskReview 和索引，确认字段回填完整、新唯一索引 key/unique/name 均准确；
+4. 只按报告中的精确索引名称删除 key 等于 `{ task, reviewer }`、`{ teamId, task, reviewer }` 或 `{ teamId, task, reviewer, stage }` 的三类旧限制性 unique 索引，再验证三类旧 unique key 均不存在；其他索引不删除。
+
+禁止手工执行 `dropIndexes()`、按名称猜测删除、先删旧索引或用 `syncIndexes()` 代替迁移。执行成功后保存退出码和 execute 报告，再启动 API，至少完成一次“抄送审核拒绝 -> 第 2 轮重提 -> 审核通过 -> 管理员最终确认”闭环，并核对 Task 当前轮次和不同 `stage/reviewRound` 的 TaskReview 历史。
+
+### 4.4 Forward-only 与旧快照恢复
+
+当同一 `teamId/task/reviewer/stage` 已存在多个 `reviewRound`，或同一人员同时存在审核与最终确认记录后，旧两字段、三字段和四字段 stage 唯一索引都无法重建；不识别 `reviewRound` 的旧代码也不再兼容。不得通过普通 release 回滚直接恢复旧索引或旧代码；后续只能部署兼容五字段索引和多轮历史的版本。确需回到迁移前状态时，必须作为独立整库恢复变更处理，明确恢复点及将丢失的迁移后写入并重新审批。
+
+从迁移前旧快照恢复出的测试库同样没有可信的新字段/索引状态。每次恢复后都必须针对新测试数据库重新运行 4.2 dry-run 和 4.3 显式迁移，生成新的报告；不能复用源库或上一次恢复库的 migration 报告。完成迁移后才能用当前 API 进行测试。
+
+## 5. 恢复演练
 
 1. 在环境文件中设置新的、空的 loopback 测试库，例如 `task_distribution_20260717_restore_test`。
 2. 确认 `RESTORE_ROOT` 与备份盘、活动附件目录都不重叠。
@@ -86,9 +142,9 @@ node ops/restore.js --env-file E:\TaskDistribution-V2-Secrets\operations.env --b
 
 业务抽查至少覆盖 `users`、`tasks`、`equipmentassets`、提报相关集合及 5 个附件字节。清理测试库和恢复目录不是脚本职责；必须在演练报告签字确认目标名称后，由管理员用独立命令处理，避免误删。
 
-### 4.1 2026-07-17 本地隔离真实演练基线
+### 5.1 2026-07-17 本地隔离真实演练历史基线
 
-本地开发环境已使用 MongoDB Database Tools `100.17.0` 完成一次真实 `mongodump`/`mongorestore` 演练。该结论只适用于 E 盘隔离测试环境，不代表客户宿主机已经安装或验收。
+本地开发环境已使用 MongoDB Database Tools `100.17.0` 完成一次真实 `mongodump`/`mongorestore` 演练。该快照已被2026-07-21最终客户测试基线取代，但仍作为恢复工具链的历史演练证据。该结论只适用于 E 盘隔离测试环境，不代表客户宿主机已经安装或验收。
 
 - 源库：`mongodb://127.0.0.1:27140/final_e2e_v2_test`，副本集 `v2_local_e2e_rs`。
 - 恢复库：演练前为空的 `final_e2e_v2_restore_test`。
@@ -109,9 +165,23 @@ node ops/restore.js --env-file E:\TaskDistribution-V2-Secrets\operations.env --b
 - `.test-data/operations-backups/backup-20260717T120212Z-1f611af3/manifest.json`
 - `.test-data/operations-restore/restore-20260717T120212Z-1f611af3-b62801e9/restore-report.json`
 
+### 5.2 2026-07-21 最终客户测试干净基线
+
+完成浏览器验收并清除仅由验收产生的登录会话和审计记录后，重新创建并独立验证最终恢复点：
+
+- 源库：`mongodb://127.0.0.1:27140/final_clean_v2_test`，副本集 `v2_local_e2e_rs`。
+- `backupId`：`backup-20260721T141605Z-03560577`。
+- 清单 SHA256：`8f6bb074da2015763b92927cac407eb9f58ae990961c72d041974b10e6ef3044`。
+- 33个数据库集合；`audit_logs=0`、`authsessions=0`。
+- 141条设备、43个生产月份、6条运输、7条出勤。
+- 241条 `FileAsset` 引用与241个物理上传文件全部通过大小和SHA256校验，总字节数117,731,100。
+- 备份目录及验证结果位于Git忽略的 `.test-data/client-test-clean-backups/` 与 `operations.jsonl`，不得提交Git。
+
+该恢复点是当前隔离客户测试的回滚基线。正式上线前仍须在客户选定宿主机创建新的上线前备份并完成恢复演练，不能直接把本地测试恢复点当作生产备份。
+
 客户宿主机仍须单独完成：受保护环境文件配置、计划任务或 systemd 安装、至少一个真实调度周期观察、登录健康终端自启动、批准的告警通道接入，以及在客户维护窗口按本节流程复演并归档客户签字报告。在这些步骤完成前，只能称“本地隔离演练已通过”，不能称“客户宿主机备份恢复已验收”。
 
-## 5. 健康终端
+## 6. 健康终端
 
 单次检查适用于监控系统，退出码 `0` 表示全部健康、`2` 表示降级：
 
@@ -129,7 +199,7 @@ node ops/health-terminal.js --env-file E:\TaskDistribution-V2-Secrets\operations
 
 告警系统应每 5 分钟执行一次 `--once --json`，连续 2 次退出码非零时通知值班人；备份失败、备份超过 26 小时、磁盘低于阈值应立即升级。通知通道和收件人必须在上线前由客户确认。
 
-## 6. Windows 计划任务
+## 7. Windows 计划任务
 
 先执行 dry run：
 
@@ -157,7 +227,7 @@ Get-ScheduledTaskInfo -TaskName 'TaskDistribution-V2-Backup'
 
 不要用计划任务启动、停止或重启现有 API、Web、MongoDB。
 
-## 7. Linux systemd 示例
+## 8. Linux systemd 示例
 
 先按实际 release、账号和挂载点修改 `ops/linux/*.service`，并创建权限为 `0600` 的 `/etc/taskdistribution-v2/operations.env`。预览及安装：
 
@@ -175,7 +245,7 @@ systemd-analyze verify /etc/systemd/system/taskdistribution-v2-*.service /etc/sy
 logrotate --debug /etc/logrotate.d/taskdistribution-v2
 ```
 
-## 8. 故障处置和证据
+## 9. 故障处置和证据
 
 - `BACKUP_ALREADY_RUNNING`：确认现有进程；不要手工删除仍有活进程持有的锁。
 - `UPLOAD_CHANGED_DURING_BACKUP`：等待上传低峰后重试，保留失败日志。

@@ -67,27 +67,28 @@
             :key="window._localKey"
             class="window-row"
           >
-            <el-switch v-model="window.enabled" aria-label="启用执行窗口" />
-            <el-input v-model="window.name" maxlength="100" placeholder="窗口名称" />
+            <el-switch v-model="window.enabled" class="window-enabled" aria-label="启用执行窗口" />
+            <el-input v-model="window.name" maxlength="100" placeholder="窗口名称" class="window-name" />
             <el-time-picker
               v-model="window.startTime"
               format="HH:mm"
               value-format="HH:mm"
               placeholder="开始"
-              class="window-time"
+              class="window-time window-time--start"
             />
             <el-time-picker
               v-model="window.endTime"
               format="HH:mm"
               value-format="HH:mm"
               placeholder="结束"
-              class="window-time"
+              class="window-time window-time--end"
             />
             <el-button
               v-if="!readOnly"
               text
               circle
               type="danger"
+              class="window-remove"
               :disabled="form.executionConfig.windows.length === 1"
               aria-label="删除执行窗口"
               @click="removeExecutionWindow(index)"
@@ -147,7 +148,7 @@
       <section class="form-section">
         <div class="section-heading">
           <div>
-            <h3>检查项目</h3>
+            <h3>{{ routineProjectTitle }}</h3>
             <p>同一规则内的项目使用相同周期，执行时逐项填写结果。</p>
           </div>
           <el-button
@@ -328,6 +329,8 @@ const props = defineProps({
   routineType: { type: String, default: 'INSPECTION' },
   allowedRoutineTypes: { type: Array, default: () => ['INSPECTION', 'MAINTENANCE'] },
   categories: { type: Array, default: () => [] },
+  defaultCategoryId: { type: String, default: '' },
+  schedulePreset: { type: String, default: '' },
   submitting: { type: Boolean, default: false },
   readOnly: { type: Boolean, default: false }
 })
@@ -343,6 +346,9 @@ const dialogTitle = computed(() => {
   if (props.copy) return '复制点检/保养规则'
   return isEditing.value ? '编辑点检/保养规则' : '新增点检/保养规则'
 })
+const routineProjectTitle = computed(() => (
+  form.routineType === 'MAINTENANCE' ? '保养项目' : '点检项目'
+))
 const routineTypeOptions = computed(() => ROUTINE_TYPE_OPTIONS
   .filter((item) => props.allowedRoutineTypes.includes(item.value)))
 const calendarUnitOptions = ROUTINE_CALENDAR_UNIT_OPTIONS.map((item) => ({
@@ -404,6 +410,24 @@ function defaultFirstDueAt() {
   return value
 }
 
+function defaultSchedule() {
+  const calendarUnits = new Set(['DAY', 'WEEK', 'MONTH'])
+  const preset = String(props.schedulePreset || '')
+  const mode = preset === 'RUNTIME_HOURS'
+    ? 'RUNTIME_HOURS'
+    : preset === 'COMBINED' ? 'COMBINED' : 'CALENDAR'
+  return {
+    mode,
+    duePolicy: 'ANY',
+    calendar: {
+      unit: calendarUnits.has(preset) ? preset : 'DAY',
+      interval: 1,
+      firstDueAt: defaultFirstDueAt()
+    },
+    runtime: { intervalHours: 200 }
+  }
+}
+
 function createExecutionWindow(source = {}, index = 0) {
   localKeySequence += 1
   const defaults = index === 0
@@ -423,16 +447,11 @@ function createExecutionWindow(source = {}, index = 0) {
 function emptyForm() {
   return {
     routineType: props?.routineType || 'INSPECTION',
-    categoryId: '',
+    categoryId: props?.defaultCategoryId || '',
     name: '',
     description: '',
     checklistItems: [createChecklistItem()],
-    schedule: {
-      mode: 'CALENDAR',
-      duePolicy: 'ANY',
-      calendar: { unit: 'DAY', interval: 1, firstDueAt: defaultFirstDueAt() },
-      runtime: { intervalHours: 200 }
-    },
+    schedule: defaultSchedule(),
     photoPolicy: 'ON_ABNORMAL',
     abnormalNoteRequired: true,
     executionConfig: {
@@ -582,7 +601,13 @@ watch(() => props.modelValue, (visible) => {
 .schedule-grid { align-items: end; }
 .window-editor { display: grid; gap: 8px; margin-bottom: 16px; }
 .window-row { display: grid; grid-template-columns: 44px minmax(120px, 1fr) 160px 160px 34px; align-items: center; gap: 8px; }
-.window-time { width: 100%; }
+.window-row > * { min-width: 0; }
+.window-row .window-time {
+  --el-date-editor-width: 100%;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: 100%;
+}
 .execution-grid { align-items: end; }
 @media (max-width: 760px) {
   .form-grid { grid-template-columns: 1fr; }
@@ -590,7 +615,11 @@ watch(() => props.modelValue, (visible) => {
   .section-heading { align-items: stretch; flex-direction: column; }
   .add-checklist-button { width: 100%; }
   .checklist-editor { overflow-x: auto; }
-  .window-row { grid-template-columns: 40px minmax(110px, 1fr) 1fr; }
-  .window-row .window-time { grid-column: span 1; }
+  .window-row { grid-template-columns: 40px repeat(4, minmax(0, 1fr)) 34px; }
+  .window-enabled { grid-column: 1; grid-row: 1; }
+  .window-name { grid-column: 2 / 6; grid-row: 1; }
+  .window-remove { grid-column: 6; grid-row: 1; }
+  .window-time--start { grid-column: 1 / 4; grid-row: 2; }
+  .window-time--end { grid-column: 4 / 7; grid-row: 2; }
 }
 </style>
