@@ -142,7 +142,7 @@ V2 干净客户测试基线备份：
 
 - 测试域名当前未配置 HSTS；HTTPS、证书链和 HTTP 跳转均正常，这不是客户测试阻断项。
 - 自动化为避免污染真实数据，未点击新增、保存、编辑、导入、审批、导出或删除；这些写流程由客户使用专用测试前缀执行后再清理。
-- 当前客户账号按设计只能证明项目管理员团队隔离，不能证明超级管理员跨团队和全局只读；该要求已有本地超级管理员浏览器及自动化证据，公网客户演示需另建可见超级管理员账号。
+- 公网已经创建客户可见、非系统的超级管理员账号，并验证默认全局只读、进入变速箱/发动机团队、返回全局及认证审计；凭据不进入本报告或Git。
 - 小程序不在本次公网交付范围内；微信开发者工具和真机的扫码、相机、定位、授权拒绝和水印像素仍须单独验收。
 - 本报告不替代正式生产迁移、备份周期观察、恢复演练和签字回滚演练。
 
@@ -155,3 +155,19 @@ V2 干净客户测试基线备份：
 - 最终自动化：`.test-data/final-validation-20260722T180848/`
 - 证书续期基线：`C:\ProgramData\taskdistribution-v2-test\evidence\certificate-renewal-20260722T100429Z\baseline.json`
 - 证书续期试跑：`C:\ProgramData\taskdistribution-v2-test\evidence\certificate-renewal-run-20260722T101618Z\verification.json`
+
+## 11. 2026-07-23 运行事故补充
+
+客户报告登录页“项目团队加载失败”后，公网静态HTML/JS仍为HTTP 200，但`/health`与`/api/auth/login-teams`均为502。DNS、TLS、旧服务器Nginx、`38130`反向隧道及旧版`38080`均正常；故障收敛到客户本地服务器Linux虚拟机内的V2依赖链。
+
+根因是隧道身份初始化辅助脚本把共享目录`/etc/taskdistribution-v2-test`覆盖为`0750 root:taskdistributionv2test`。独立MongoDB以`mongodb-v2`运行，无法穿过父目录读取`mongod-v2-test.conf`，持续崩溃并带停API。修复只给`mongodb-v2`增加目录穿越ACL，没有授予`app.env`或隧道密钥读取权限；随后按MongoDB、API、隧道顺序恢复。
+
+恢复后权威复验：
+
+- `mongod-v2-test.service`、`taskdistribution-v2-test-api.service`、`taskdistribution-v2-test-tunnel.service`均为`active/running`，修复后重启计数为0；
+- `27150`、`18120`、`18130`均监听；副本集`customer_acceptance_v2_rs`为writable primary；
+- 公网`/health`和`/api/auth/login-teams`均为HTTP 200，并返回变速箱物流部和发动机物流部；
+- 客户可见超级管理员完成全局只读、两个团队切换、返回全局及审计核对，验证会话已退出；
+- 旧版`https://www.horselink.cn/health`保持HTTP 200，生产数据未修改。
+
+事故报告：`INCIDENT_20260723_V2_TEST_502.md`。服务器证据目录：`/var/log/taskdistribution-v2-test/incident-config-acl-20260723T075516Z`。
