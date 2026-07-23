@@ -59,6 +59,9 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const {
+  isAcceptanceTimeRestrictionBypassed
+} = require('../config/acceptanceTesting');
 
 const { REPORT_CHANGE_TYPES } = ReportChangeRecord;
 const {
@@ -89,6 +92,7 @@ const INPUT_FIELDS = Object.freeze([
 ]);
 const ATTENDANCE_DEADLINE_HOUR = 9;
 const REVIEW_RETRY_ATTEMPTS = 5;
+const ACCEPTANCE_TIME_BYPASS_AUDIT_REASON = '验收测试账号临时关闭出勤时间限制';
 const ATTENDANCE_MONTHLY_EXPORT_HEADERS = Object.freeze([
   '日期', '部门', '编制人数', '在册人数',
   '实际出勤', '休班', '请假', '未入职', '待离职', '旷工',
@@ -209,7 +213,14 @@ function assertAttendanceReviewActor(context) {
   return policy;
 }
 
-function assertSubmissionTiming({ context, policy, reportDate, input, now }) {
+function assertSubmissionTiming({
+  context,
+  policy,
+  reportDate,
+  input,
+  now,
+  timeRestrictionsBypassed = false
+}) {
   const deadlineReached = isAttendanceDeadlineReached(reportDate, now);
   if (!policy.isOfficer) {
     if (!sameId(context.membership?.orgUnitId, input.orgUnitId || context.membership?.orgUnitId)) {
@@ -219,14 +230,14 @@ function assertSubmissionTiming({ context, policy, reportDate, input, now }) {
         'Division attendance reporters may submit only for their assigned division'
       );
     }
-    if (reportDate !== businessDateInShanghai(now)) {
+    if (!timeRestrictionsBypassed && reportDate !== businessDateInShanghai(now)) {
       throw reportError(
         409,
         'ATTENDANCE_REPORTER_DATE_LOCKED',
         'Division attendance reporters may submit only the current business date'
       );
     }
-    if (deadlineReached) {
+    if (!timeRestrictionsBypassed && deadlineReached) {
       throw reportError(
         409,
         'ATTENDANCE_REPORTER_DEADLINE_LOCKED',
@@ -234,14 +245,19 @@ function assertSubmissionTiming({ context, policy, reportDate, input, now }) {
       );
     }
   }
-  if (policy.isOfficer && deadlineReached && !normalizeReason(input.reason)) {
+  if (
+    !timeRestrictionsBypassed &&
+    policy.isOfficer &&
+    deadlineReached &&
+    !normalizeReason(input.reason)
+  ) {
     throw reportError(
       400,
       'ATTENDANCE_LATE_REASON_REQUIRED',
       'A correction reason is required for attendance officer changes at or after 09:00'
     );
   }
-  return { deadlineReached };
+  return { deadlineReached, timeRestrictionsBypassed };
 }
 
 function isRetryableWriteError(error) {
@@ -456,13 +472,23 @@ function serializeAttendanceDailyReview(document) {
   };
 }
 
-function submissionAccessPolicy(document, authContext, now) {
+function submissionAccessPolicy(
+  document,
+  authContext,
+  now,
+  { timeRestrictionsBypassed = false } = {}
+) {
   const value = serializeAttendanceSubmission(document);
   const actor = attendanceActorPolicy(authContext);
   if (value.reviewStatus === ATTENDANCE_REVIEW_STATUSES.REVIEWED) {
     return { editable: false, lockReason: 'REVIEWED_PERMANENT_LOCK' };
   }
-  if (!actor.isOfficer && actor.isReporter && isAttendanceDeadlineReached(value.reportDate, now)) {
+  if (
+    !timeRestrictionsBypassed &&
+    !actor.isOfficer &&
+    actor.isReporter &&
+    isAttendanceDeadlineReached(value.reportDate, now)
+  ) {
     return { editable: false, lockReason: 'REPORTER_09_00_LOCK' };
   }
   if (!actor.isOfficer && !actor.isReporter) {
@@ -471,7 +497,12 @@ function submissionAccessPolicy(document, authContext, now) {
   return {
     editable: true,
     lockReason: null,
-    lateReasonRequired: actor.isOfficer && isAttendanceDeadlineReached(value.reportDate, now)
+    lateReasonRequired: (
+      !timeRestrictionsBypassed &&
+      actor.isOfficer &&
+      isAttendanceDeadlineReached(value.reportDate, now)
+    ),
+    timeRestrictionsBypassed
   };
 }
 
@@ -816,8 +847,14 @@ function createAttendanceSubmissionService({
   UserModel = User,
   auditService = createAuditService(),
   connection = mongoose.connection,
-  clock = () => new Date()
+  clock = () => new Date(),
+  timeRestrictionBypass = (authContext, now) => (
+    isAcceptanceTimeRestrictionBypassed(authContext, process.env, now)
+  )
 } = {}) {
+  if (typeof timeRestrictionBypass !== 'function') {
+    throw new TypeError('timeRestrictionBypass must be a function');
+  }
   async function expectedOrgUnits(teamId, session = null) {
     const query = OrgUnitModel.find({
       teamId,
@@ -979,8 +1016,10 @@ function createAttendanceSubmissionService({
       ProjectTeamModel
     });
     const actor = attendanceActorPolicy(authContext);
-    const currentBusinessDate = businessDateInShanghai(clock());
-    const deadlineReached = isAttendanceDeadlineReached(currentBusinessDate, clock());
+    const now = clock();
+    const currentBusinessDate = businessDateInShanghai(now);
+    const deadlineReached = isAttendanceDeadlineReached(currentBusinessDate, now);
+    const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(authContext, now));
     return {
       ...result,
       attendancePolicy: {
@@ -991,8 +1030,12 @@ function createAttendanceSubmissionService({
         timeZone: 'Asia/Shanghai',
         currentBusinessDate,
         deadlineReached,
-        lateReasonRequired: actor.isOfficer && deadlineReached,
-        canCreate: actor.isOfficer || (actor.isReporter && !deadlineReached)
+        lateReasonRequired: !timeRestrictionsBypassed && actor.isOfficer && deadlineReached,
+        canCreate: (
+          actor.isOfficer ||
+          (actor.isReporter && (timeRestrictionsBypassed || !deadlineReached))
+        ),
+        timeRestrictionsBypassed
       }
     };
   }
@@ -1013,10 +1056,14 @@ function createAttendanceSubmissionService({
         .lean(),
       AttendanceSubmissionModel.countDocuments(filter)
     ]);
+    const now = clock();
+    const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(authContext, now));
     return {
       attendanceSubmissions: documents.map((document) => ({
         ...serializeAttendanceSubmission(document),
-        accessPolicy: submissionAccessPolicy(document, authContext, clock())
+        accessPolicy: submissionAccessPolicy(document, authContext, now, {
+          timeRestrictionsBypassed
+        })
       })),
       total,
       page,
@@ -1040,9 +1087,13 @@ function createAttendanceSubmissionService({
     if (!document) {
       throw reportError(404, 'REPORT_RECORD_NOT_FOUND', 'Attendance submission does not exist');
     }
+    const now = clock();
+    const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(authContext, now));
     return {
       ...serializeAttendanceSubmission(document),
-      accessPolicy: submissionAccessPolicy(document, authContext, clock())
+      accessPolicy: submissionAccessPolicy(document, authContext, now, {
+        timeRestrictionsBypassed
+      })
     };
   }
 
@@ -1276,6 +1327,7 @@ function createAttendanceSubmissionService({
     const policy = assertAttendanceSubmitActor(context);
     assertNoClientTeamId(input);
     const now = clock();
+    const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(context, now));
     const requestedDate = input.reportDate === undefined
       ? businessDateInShanghai(now)
       : naturalDate(input.reportDate);
@@ -1293,7 +1345,8 @@ function createAttendanceSubmissionService({
           policy,
           reportDate: requestedDate,
           input: { ...input, orgUnitId: normalizeId(orgUnit._id) },
-          now
+          now,
+          timeRestrictionsBypassed
         });
         const permanentReview = await execute(AttendanceDailyReviewModel.findOne({
           teamId: context.activeTeamId,
@@ -1344,14 +1397,20 @@ function createAttendanceSubmissionService({
           orgUnit,
           before,
           after,
-          input,
+          input: (
+            timeRestrictionsBypassed && !normalizeReason(input.reason)
+              ? { ...input, reason: ACCEPTANCE_TIME_BYPASS_AUDIT_REASON }
+              : input
+          ),
           created,
           now,
           session
         });
         return {
           ...after,
-          accessPolicy: submissionAccessPolicy(document, context, now),
+          accessPolicy: submissionAccessPolicy(document, context, now, {
+            timeRestrictionsBypassed
+          }),
           overwritten: !created
         };
       }, connection));
@@ -1377,6 +1436,7 @@ function createAttendanceSubmissionService({
       permissionKey: 'report.submit'
     });
     const now = clock();
+    const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(context, now));
     try {
       return await retryConcurrentWrite(() => runWithOptionalTransaction(async (session) => {
         const document = await execute(AttendanceSubmissionModel.findOne(filter), session);
@@ -1407,7 +1467,8 @@ function createAttendanceSubmissionService({
           policy,
           reportDate: targetDate,
           input: { ...input, orgUnitId: normalizeId(orgUnit._id) },
-          now
+          now,
+          timeRestrictionsBypassed
         });
         const permanentReview = await execute(AttendanceDailyReviewModel.findOne({
           teamId: context.activeTeamId,
@@ -1434,14 +1495,20 @@ function createAttendanceSubmissionService({
           orgUnit,
           before,
           after,
-          input,
+          input: (
+            timeRestrictionsBypassed && !normalizeReason(input.reason)
+              ? { ...input, reason: ACCEPTANCE_TIME_BYPASS_AUDIT_REASON }
+              : input
+          ),
           created: false,
           now,
           session
         });
         return {
           ...after,
-          accessPolicy: submissionAccessPolicy(document, context, now),
+          accessPolicy: submissionAccessPolicy(document, context, now, {
+            timeRestrictionsBypassed
+          }),
           overwritten: true
         };
       }, connection));
@@ -1648,6 +1715,7 @@ function createAttendanceSubmissionService({
 }
 
 module.exports = {
+  ACCEPTANCE_TIME_BYPASS_AUDIT_REASON,
   ATTENDANCE_DEADLINE_HOUR,
   INPUT_FIELDS,
   NAMED_QUANTITY_FIELDS,

@@ -95,6 +95,7 @@ import {
   selectExecutableRoutinePlan
 } from '@/utils/equipment.js'
 import { useUserStore } from '@/stores/user.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
   name: 'EquipmentRoutineExecute',
@@ -276,7 +277,7 @@ export default {
           } catch (error) {
             uni.showModal({
               title: '水印照片生成失败',
-              content: error.message || '未生成水印照片，请重新拍摄。',
+              content: requestErrorMessage(error, '未生成水印照片，请重新拍摄。'),
               showCancel: false
             })
           }
@@ -369,7 +370,7 @@ export default {
           setTimeout(() => uni.navigateBack(), 500)
           return
         }
-        uni.showToast({ title: error.message || '提交失败', icon: 'none' })
+        uni.showToast({ title: requestErrorMessage(error, '提交失败'), icon: 'none' })
       } finally {
         submitting.value = false
       }
@@ -379,7 +380,10 @@ export default {
       equipmentId.value = options.equipmentId || ''
       ruleId.value = options.ruleId || ''
       idempotencyKey.value = `routine-${Date.now()}-${Math.random().toString(16).slice(2)}`
-      load().catch((error) => uni.showToast({ title: error.message || '加载失败', icon: 'none' }))
+      load().catch((error) => uni.showToast({
+        title: requestErrorMessage(error, '点检保养规则加载失败'),
+        icon: 'none'
+      }))
     })
     return {
       rule, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,

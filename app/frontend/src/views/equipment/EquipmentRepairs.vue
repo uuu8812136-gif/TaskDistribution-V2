@@ -228,6 +228,7 @@ import {
 import { deleteFile, getFileMetadata, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
 import { prepareAttachmentReferences } from '@/utils/attachments'
+import { requestErrorMessage } from '@/utils/request'
 import {
   REPAIR_STATUS_LABELS,
   REPAIR_TYPE_OPTIONS,
@@ -427,7 +428,8 @@ async function submitCreate() {
     await loadRepairs()
   } catch (error) {
     await cleanupUnboundTemporaryFiles([...uploadedFileIds, ...(error.uploadedFileIds || [])])
-    ElMessage.error(error.message || '维修单提交失败')
+    console.error('维修单提交失败:', error)
+    ElMessage.error(requestErrorMessage(error, '维修单提交失败，请稍后重试'))
   } finally {
     submitting.value = false
   }

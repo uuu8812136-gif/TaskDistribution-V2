@@ -65,7 +65,7 @@ test('a stale token is rejected even before an epoch advance', () => {
   const tracker = createRequestContextTracker(() => token)
   const request = tracker.capture()
   token = 'unexpected-token'
-  assert.throws(() => tracker.assertCurrent(request), /inactive authentication context/)
+  assert.throws(() => tracker.assertCurrent(request), /登录状态已变更/)
 })
 
 test('non-context login responses are not coupled to the previous session', () => {
@@ -83,7 +83,7 @@ test('business cache keys always include user and active team identity', () => {
   assert.match(key, /^v2:business:user%2Fa:team%2Fb:/)
   assert.equal(belongsToScopedIdentity(key, identity), true)
   assert.equal(belongsToScopedIdentity(key, { ...identity, activeTeamId: 'team-c' }), false)
-  assert.throws(() => createScopedCacheKey('tasks', { userId: 'user-a' }), /activeTeamId/)
+  assert.throws(() => createScopedCacheKey('tasks', { userId: 'user-a' }), /会话缓存标识不完整/)
 })
 
 test('timezone-less extension dates use an iOS-compatible parse path', () => {

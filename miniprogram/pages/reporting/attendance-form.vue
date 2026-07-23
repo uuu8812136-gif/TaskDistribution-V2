@@ -1,5 +1,8 @@
 <template>
   <view class="form-page">
+    <view v-if="policy.timeRestrictionsBypassed" class="acceptance-test-notice">
+      验收测试账号已临时关闭出勤日期和 09:00 时间限制
+    </view>
     <view class="form-section">
       <text class="section-title">基本信息</text>
       <view class="field-row">
@@ -108,6 +111,7 @@ import {
   buildAttendancePayload,
   createEmptyAttendanceForm
 } from '@/utils/reporting.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
   name: 'AttendanceForm',
@@ -196,7 +200,7 @@ export default {
           throw new TypeError('09:00后补报或修正必须填写原因')
         }
       } catch (error) {
-        uni.showToast({ title: error.message, icon: 'none' })
+        uni.showToast({ title: requestErrorMessage(error, '出勤日报内容校验失败'), icon: 'none' })
         return
       }
       submitting.value = true
@@ -233,6 +237,7 @@ export default {
 
 <style scoped lang="scss">
 .form-page { min-height: 100vh; box-sizing: border-box; padding: 20rpx 24rpx 150rpx; background: var(--zl-page-bg, #eef3fb); }
+.acceptance-test-notice { padding: 18rpx 22rpx; margin-bottom: 20rpx; background: #fff7e6; border: 1px solid #ffd591; border-radius: 12rpx; color: #ad6800; font-size: 24rpx; line-height: 1.5; }
 .form-section { padding: 24rpx; margin-bottom: 20rpx; background: rgba(255,255,255,.97); border: 1px solid var(--zl-border, rgba(100,116,139,.18)); border-radius: 16rpx; box-shadow: 0 8rpx 28rpx rgba(15,23,42,.05); }
 .section-title { display: block; padding-bottom: 18rpx; margin-bottom: 8rpx; border-bottom: 1px solid #ebeef5; font-size: 30rpx; font-weight: 600; color: #303133; }
 .field-row { min-width: 0; margin-top: 20rpx; }

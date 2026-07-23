@@ -124,12 +124,18 @@ const IMPORT_FIELD_LABELS = Object.freeze({
   status: '设备状态',
   remark: '备注',
   photoFileIds: '设备照片',
-  sourceRow: '原始行'
+  sourceRow: '原始行',
+  _source: '原始数据',
+  _sourceIdentity: '来源标识',
+  _photos: '设备照片'
 })
 
 const IMPORT_EXCEPTION_LABELS = Object.freeze({
+  ASSET_CODE_COLLISION_EXISTING: '资产编号与现有测试数据冲突',
+  ASSET_CODE_GENERATED_FOR_TEST: '已生成测试资产编号',
   ASSET_CODE_MISSING: '资产编号缺失',
   ASSET_CODE_TOO_LONG: '资产编号过长',
+  BOOK_QUANTITY_INVALID: '账存数量无效',
   CATEGORY_AMBIGUOUS: '设备分类匹配到多项',
   CATEGORY_ID_INVALID: '设备分类标识无效',
   CATEGORY_NOT_FOUND: '未找到设备分类',
@@ -137,23 +143,79 @@ const IMPORT_EXCEPTION_LABELS = Object.freeze({
   CUSTODIAN_ID_INVALID: '保管人标识无效',
   CUSTODIAN_NOT_FOUND: '未找到保管人',
   DATE_INVALID: '日期格式无效',
+  DUPLICATE_ASSET_CODE: '资产编号重复',
   DUPLICATE_ASSET_CODE_EXISTING: '资产编号已存在',
   DUPLICATE_ASSET_CODE_IN_FILE: '文件内资产编号重复',
+  DUPLICATE_SOURCE_IDENTIFIER_IN_FILE: '来源标识与文件内其他设备重复',
   FIELD_MISALIGNMENT: '字段疑似错位',
   HEADER_NOT_RECOGNIZED: '表头无法识别',
+  INVALID_WORKBOOK_MEDIA: '工作簿内存在无效图片',
+  MERGED_SOURCE_CELL: '合并单元格跨越多条设备记录',
   MULTI_ASSET_ROW: '一行包含多台设备',
   NAME_MISSING: '设备名称缺失',
   NAME_TOO_LONG: '设备名称过长',
+  ORIGINALVALUE_INVALID: '设备原值无效',
   ORG_UNIT_AMBIGUOUS: '所属组织匹配到多项',
   ORG_UNIT_ID_INVALID: '所属组织标识无效',
   ORG_UNIT_NOT_FOUND: '未找到所属组织',
   ORG_UNIT_OUT_OF_SCOPE: '所属组织超出数据范围',
   PARTIAL_DATE: '日期信息不完整',
+  PENDING_IDLE_SOURCE_ROW: '存在待确认的闲置来源记录',
+  PHYSICAL_QUANTITY_INVALID: '实盘数量无效',
+  PHOTO_MAPPING_COUNT_MISMATCH: '设备照片数量与来源引用不一致',
   PHOTO_MAPPING_PENDING: '照片映射待确认',
+  POSSIBLE_IDLE_DUPLICATE: '闲置记录可能与在用设备重复',
+  QUANTITY_UNIT_EMBEDDED: '数量中包含单位',
   QUANTITY_MISMATCH: '数量信息冲突',
+  SOURCE_ASSET_CODE_DUPLICATE: '来源表中的资产编号重复',
   STATUS_CONFLICT: '设备状态冲突',
   STATUS_MISSING: '设备状态缺失',
-  STATUS_UNRECOGNIZED: '设备状态无法识别'
+  STATUS_UNRECOGNIZED: '设备状态无法识别',
+  DATA_QUALITY_ISSUE: '其他数据异常'
+})
+
+const IMPORT_EXCEPTION_ACTIONS = Object.freeze({
+  ASSET_CODE_COLLISION_EXISTING: '请核对并填写未被占用的资产编号',
+  ASSET_CODE_GENERATED_FOR_TEST: '请核对来源资产编号，确认是否采用系统生成的测试编号',
+  ASSET_CODE_MISSING: '请填写唯一的资产编号，或跳过该行',
+  ASSET_CODE_TOO_LONG: '请缩短资产编号后再确认',
+  BOOK_QUANTITY_INVALID: '请核对账存数量并填写有效数字',
+  CATEGORY_AMBIGUOUS: '请选择正确的设备分类',
+  CATEGORY_ID_INVALID: '请选择有效的设备分类',
+  CATEGORY_NOT_FOUND: '请选择正确的设备分类',
+  CUSTODIAN_AMBIGUOUS: '请选择该组织内正确的保管人，也可确认暂不指定',
+  CUSTODIAN_ID_INVALID: '请选择有效的保管人，也可确认暂不指定',
+  CUSTODIAN_NOT_FOUND: '请选择该组织内的在用成员，也可确认暂不指定',
+  DATE_INVALID: '请核对原始日期并填写有效日期',
+  DUPLICATE_ASSET_CODE: '请填写唯一的资产编号，或跳过重复记录',
+  DUPLICATE_ASSET_CODE_EXISTING: '请填写新的资产编号，或跳过该行',
+  DUPLICATE_ASSET_CODE_IN_FILE: '请为重复记录填写不同的资产编号，或跳过该行',
+  DUPLICATE_SOURCE_IDENTIFIER_IN_FILE: '请核对重复来源标识，确认保留或跳过该行',
+  FIELD_MISALIGNMENT: '请核对原始表格列位置并填写正确值',
+  HEADER_NOT_RECOGNIZED: '请使用规定的设备导入模板并检查表头',
+  INVALID_WORKBOOK_MEDIA: '请检查工作簿内的图片，删除损坏图片或重新插入后再导入',
+  MERGED_SOURCE_CELL: '请拆分跨行合并单元格，或逐行核对后确认',
+  MULTI_ASSET_ROW: '请确认该行数量，必要时拆分为一台设备一行',
+  NAME_MISSING: '请填写设备名称，或跳过该行',
+  NAME_TOO_LONG: '请缩短设备名称后再确认',
+  ORIGINALVALUE_INVALID: '请核对设备原值并填写有效数字',
+  ORG_UNIT_AMBIGUOUS: '请选择正确的所属组织',
+  ORG_UNIT_ID_INVALID: '请选择有效的所属组织',
+  ORG_UNIT_NOT_FOUND: '请选择正确的所属组织',
+  ORG_UNIT_OUT_OF_SCOPE: '请选择当前数据范围内的所属组织',
+  PARTIAL_DATE: '请核对日期精度，确认保留原值或填写完整日期',
+  PENDING_IDLE_SOURCE_ROW: '请核对闲置表来源记录，确认是否更新现有设备',
+  PHYSICAL_QUANTITY_INVALID: '请核对实盘数量并填写有效数字',
+  PHOTO_MAPPING_COUNT_MISMATCH: '请核对来源图片与设备行的对应关系',
+  PHOTO_MAPPING_PENDING: '请核对工作簿图片与设备行的对应关系',
+  POSSIBLE_IDLE_DUPLICATE: '请核对是否为同一设备，确认更新或跳过重复记录',
+  QUANTITY_UNIT_EMBEDDED: '请核对拆分后的数量和单位',
+  QUANTITY_MISMATCH: '请核对账存数量与实盘数量后确认',
+  SOURCE_ASSET_CODE_DUPLICATE: '请核对来源表中的重复资产编号',
+  STATUS_CONFLICT: '请选择设备当前的正确状态',
+  STATUS_MISSING: '请选择设备状态',
+  STATUS_UNRECOGNIZED: '请选择系统支持的设备状态',
+  DATA_QUALITY_ISSUE: '请核对原始数据后选择处理方式'
 })
 
 export function optionForValue(options, value) {
@@ -169,13 +231,13 @@ export function entityName(items, id, fallback = '-') {
 }
 
 export function appendChecklistItem(items, item) {
-  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  if (!Array.isArray(items)) throw new TypeError('检查项目列表格式不正确')
   items.push(item)
   return items.length
 }
 
 export function removeChecklistItemAt(items, index) {
-  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  if (!Array.isArray(items)) throw new TypeError('检查项目列表格式不正确')
   if (!Number.isInteger(index) || index < 0 || index >= items.length || items.length <= 1) {
     return false
   }
@@ -184,7 +246,7 @@ export function removeChecklistItemAt(items, index) {
 }
 
 export function moveChecklistItem(items, index, direction) {
-  if (!Array.isArray(items)) throw new TypeError('Checklist items must be an array')
+  if (!Array.isArray(items)) throw new TypeError('检查项目列表格式不正确')
   if (!Number.isInteger(index) || ![-1, 1].includes(direction)) return false
   const target = index + direction
   if (index < 0 || index >= items.length || target < 0 || target >= items.length) return false
@@ -218,7 +280,7 @@ export function buildEquipmentPayload(form) {
 function positiveInteger(value, fieldName) {
   const normalized = Number(value)
   if (!Number.isInteger(normalized) || normalized < 1) {
-    throw new TypeError(`${fieldName} must be a positive integer`)
+    throw new TypeError(`${fieldName}必须为正整数`)
   }
   return normalized
 }
@@ -226,7 +288,7 @@ function positiveInteger(value, fieldName) {
 function positiveNumber(value, fieldName) {
   const normalized = Number(value)
   if (!Number.isFinite(normalized) || normalized <= 0) {
-    throw new TypeError(`${fieldName} must be greater than zero`)
+    throw new TypeError(`${fieldName}必须大于0`)
   }
   return normalized
 }
@@ -234,32 +296,32 @@ function positiveNumber(value, fieldName) {
 function isoDateTime(value, fieldName) {
   const date = value instanceof Date ? value : new Date(value)
   if (!value || Number.isNaN(date.getTime())) {
-    throw new TypeError(`${fieldName} must be a valid date time`)
+    throw new TypeError(`${fieldName}格式不正确`)
   }
   return date.toISOString()
 }
 
 function buildCalendarSchedule(calendar = {}) {
   if (!ROUTINE_CALENDAR_UNIT_OPTIONS.some((option) => option.value === calendar.unit)) {
-    throw new TypeError('calendar.unit is invalid')
+    throw new TypeError('请选择有效的日历周期单位')
   }
   return {
     unit: calendar.unit,
-    interval: positiveInteger(calendar.interval, 'calendar.interval'),
-    firstDueAt: isoDateTime(calendar.firstDueAt, 'calendar.firstDueAt')
+    interval: positiveInteger(calendar.interval, '日历周期间隔'),
+    firstDueAt: isoDateTime(calendar.firstDueAt, '首次到期时间')
   }
 }
 
 function buildRuntimeSchedule(runtime = {}) {
   return {
-    intervalHours: positiveNumber(runtime.intervalHours, 'runtime.intervalHours')
+    intervalHours: positiveNumber(runtime.intervalHours, '运行小时间隔')
   }
 }
 
 export function buildRoutineSchedule(schedule = {}) {
   const mode = schedule.mode
   if (!ROUTINE_SCHEDULE_MODE_OPTIONS.some((option) => option.value === mode)) {
-    throw new TypeError('schedule.mode is invalid')
+    throw new TypeError('请选择有效的触发方式')
   }
   if (mode === 'MANUAL') return { mode }
   if (mode === 'CALENDAR') {
@@ -269,7 +331,7 @@ export function buildRoutineSchedule(schedule = {}) {
     return { mode, runtime: buildRuntimeSchedule(schedule.runtime) }
   }
   if (!ROUTINE_DUE_POLICY_OPTIONS.some((option) => option.value === schedule.duePolicy)) {
-    throw new TypeError('schedule.duePolicy is invalid')
+    throw new TypeError('请选择组合规则的到期条件')
   }
   return {
     mode,
@@ -282,11 +344,11 @@ export function buildRoutineSchedule(schedule = {}) {
 export function buildRoutineRulePayload(form) {
   const routineType = String(form.routineType || '')
   if (!ROUTINE_TYPE_OPTIONS.some((option) => option.value === routineType)) {
-    throw new TypeError('routineType is invalid')
+    throw new TypeError('请选择点检或保养业务类型')
   }
   const checklistItems = (form.checklistItems || []).map((item, index) => {
     const name = String(item.name || '').trim()
-    if (!name) throw new TypeError('Every checklist item requires a name')
+    if (!name) throw new TypeError('每个检查项目都必须填写名称')
     const normalized = {
       name,
       description: String(item.description || '').trim(),
@@ -296,12 +358,12 @@ export function buildRoutineRulePayload(form) {
     if (item.key) normalized.key = String(item.key)
     return normalized
   })
-  if (!checklistItems.length) throw new TypeError('At least one checklist item is required')
+  if (!checklistItems.length) throw new TypeError('至少需要添加一个检查项目')
   if (!ROUTINE_PHOTO_POLICY_OPTIONS.some((option) => option.value === form.photoPolicy)) {
-    throw new TypeError('photoPolicy is invalid')
+    throw new TypeError('请选择有效的拍照要求')
   }
   if (!ROUTINE_RULE_STATUS_OPTIONS.some((option) => option.value === (form.status || 'ACTIVE'))) {
-    throw new TypeError('status is invalid')
+    throw new TypeError('请选择有效的规则状态')
   }
 
     const payload = {
@@ -327,21 +389,21 @@ export function buildRoutineRulePayload(form) {
         !window.key || !window.name || !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.startTime) ||
         !/^([01]\d|2[0-3]):[0-5]\d$/.test(window.endTime)
       ))) {
-        throw new TypeError('Execution windows require a name and HH:mm start/end time')
+        throw new TypeError('执行时段必须填写名称以及 HH:mm 格式的开始和结束时间')
       }
       if (!windows.some((window) => window.enabled)) {
-        throw new TypeError('At least one execution window must be enabled')
+        throw new TypeError('至少需要启用一个执行时段')
       }
       const locationPolicy = String(form.executionConfig.locationPolicy || 'PENDING_CONFIRMATION')
       if (!['PENDING_CONFIRMATION', 'OPTIONAL', 'REQUIRED'].includes(locationPolicy)) {
-        throw new TypeError('locationPolicy is invalid')
+        throw new TypeError('请选择有效的定位要求')
       }
       const precisionSource = form.executionConfig.locationPrecisionMeters
       const locationPrecisionMeters = precisionSource === '' || precisionSource == null
         ? null
         : Number(precisionSource)
       if (locationPrecisionMeters !== null && (!Number.isFinite(locationPrecisionMeters) || locationPrecisionMeters < 1)) {
-        throw new TypeError('locationPrecisionMeters must be a positive number')
+        throw new TypeError('定位精度必须为大于0的数值')
       }
       payload.executionConfig = {
         timeZone: String(form.executionConfig.timeZone || 'Asia/Shanghai'),
@@ -354,7 +416,7 @@ export function buildRoutineRulePayload(form) {
       }
     }
   if (!payload.categoryId || !payload.name) {
-    throw new TypeError('categoryId and name are required')
+    throw new TypeError('请选择设备类型并填写规则名称')
   }
   return payload
 }
@@ -445,7 +507,7 @@ export function buildRoutineRecordPayload(form) {
   if (!form.ruleId || !itemResults.length || itemResults.some((item) => (
     !item.itemKey || !ROUTINE_ITEM_RESULT_OPTIONS.some((option) => option.value === item.result)
   ))) {
-    throw new TypeError('A rule and complete item results are required')
+    throw new TypeError('请选择规则并填写所有检查项目结果')
   }
   const payload = {
     ruleId: String(form.ruleId),
@@ -456,7 +518,7 @@ export function buildRoutineRecordPayload(form) {
   if (form.runtimeHours !== '' && form.runtimeHours !== null && form.runtimeHours !== undefined) {
     const runtimeHours = Number(form.runtimeHours)
     if (!Number.isFinite(runtimeHours) || runtimeHours < 0) {
-      throw new TypeError('runtimeHours must be a non-negative number')
+      throw new TypeError('累计运行小时必须为大于或等于0的数值')
     }
     payload.runtimeHours = runtimeHours
   }
@@ -480,7 +542,7 @@ export function buildRoutineRecordPayload(form) {
 export function buildRuntimeReadingPayload(form) {
   const hours = Number(form.hours)
   if (!Number.isFinite(hours) || hours < 0) {
-    throw new TypeError('hours must be a non-negative number')
+    throw new TypeError('运行小时读数必须为大于或等于0的数值')
   }
   const payload = {
     hours,
@@ -532,17 +594,43 @@ export function equipmentImportDecisionOptions(exception) {
 }
 
 export function equipmentImportFieldLabel(field) {
-  return IMPORT_FIELD_LABELS[field] || field || '-'
+  if (!field) return '-'
+  if (IMPORT_FIELD_LABELS[field]) return IMPORT_FIELD_LABELS[field]
+  return /[\u3400-\u9fff]/u.test(String(field)) ? String(field) : '其他字段'
 }
 
 export function equipmentImportExceptionLabel(exceptionType) {
-  return IMPORT_EXCEPTION_LABELS[exceptionType] || exceptionType || '-'
+  if (!exceptionType) return '其他数据异常'
+  return IMPORT_EXCEPTION_LABELS[exceptionType] || '其他数据异常'
 }
 
 export function formatEquipmentImportValue(value) {
   if (value === null || value === undefined || value === '') return '空值'
   if (typeof value === 'object') return JSON.stringify(value)
   return String(value)
+}
+
+export function equipmentImportOriginalValue(exception = {}) {
+  if (exception?.exceptionType === 'INVALID_WORKBOOK_MEDIA') {
+    return '图片内容无效或无法读取'
+  }
+  return formatEquipmentImportValue(exception?.originalValue)
+}
+
+export function equipmentImportSuggestedAction(exception = {}) {
+  const hasSuggestedValue = exception?.hasSuggestedValue === true || (
+    Object.prototype.hasOwnProperty.call(exception, 'suggestedValue') &&
+    exception.suggestedValue !== null &&
+    exception.suggestedValue !== undefined
+  )
+  if (hasSuggestedValue) {
+    return `建议值：${formatEquipmentImportValue(exception.suggestedValue)}`
+  }
+  const exceptionType = exception?.exceptionType || exception?.code || exception?.type || 'DATA_QUALITY_ISSUE'
+  if (IMPORT_EXCEPTION_ACTIONS[exceptionType]) return IMPORT_EXCEPTION_ACTIONS[exceptionType]
+  const suppliedAction = String(exception?.suggestedAction || '').trim()
+  if (/[\u3400-\u9fff]/u.test(suppliedAction)) return suppliedAction
+  return IMPORT_EXCEPTION_ACTIONS.DATA_QUALITY_ISSUE
 }
 
 export function isEquipmentImportDecisionComplete(decision) {
@@ -553,14 +641,14 @@ export function isEquipmentImportDecisionComplete(decision) {
 
 export function buildEquipmentImportConfirmation(importJob, decisions, reason) {
   if (!importJob || importJob.status !== 'PREVIEW_READY') {
-    throw new TypeError('Only a preview-ready import can be confirmed')
+    throw new TypeError('只能确认已经生成预览的导入任务')
   }
   if (!Number.isInteger(importJob.version) || importJob.version < 0) {
-    throw new TypeError('Import preview version is invalid')
+    throw new TypeError('导入预览版本无效，请刷新后重试')
   }
   const normalizedReason = String(reason || '').trim()
   if (!normalizedReason || normalizedReason.length > 2000) {
-    throw new TypeError('A confirmation reason between 1 and 2000 characters is required')
+    throw new TypeError('请填写1至2000个字符的确认说明')
   }
   const values = Array.isArray(decisions) ? decisions : Object.values(decisions || {})
   return {
@@ -568,7 +656,7 @@ export function buildEquipmentImportConfirmation(importJob, decisions, reason) {
     reason: normalizedReason,
     decisions: values.map((decision) => {
       if (!decision?.exceptionId || !isEquipmentImportDecisionComplete(decision)) {
-        throw new TypeError('Every import exception requires a valid decision')
+        throw new TypeError('请为每条导入异常选择有效的处理决定')
       }
       const payload = {
         exceptionId: decision.exceptionId,

@@ -91,6 +91,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { requestErrorMessage } from '@/utils/request'
 import {
   ROUTINE_TYPE_OPTIONS,
   buildRoutineRecordPayload,
@@ -170,7 +171,8 @@ function submitForm() {
   try {
     emit('submit', buildRoutineRecordPayload(form))
   } catch (error) {
-    ElMessage.warning(error.message || '请完善执行结果')
+    console.error('点检或保养执行结果校验失败:', error)
+    ElMessage.warning(requestErrorMessage(error, '请完善执行结果'))
   }
 }
 

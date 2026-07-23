@@ -117,6 +117,7 @@ import {
 } from '@/api/message'
 import { fromNow, messageTypeIcon } from '@/utils/format'
 import { hasMessageResource, messageResourceLocation } from '@/utils/messageNavigation'
+import { requestErrorMessage } from '@/utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const messageStore = useMessageStore()
@@ -196,7 +197,7 @@ const openRelatedResource = async (row) => {
       await markRowAsRead(row)
     } catch (error) {
       console.error('打开消息前标记已读失败:', error)
-      ElMessage.error(error?.response?.data?.message || '消息标记已读失败，请重试后再打开')
+      ElMessage.error(requestErrorMessage(error, '消息标记已读失败，请重试后再打开'))
       return
     } finally {
       setRowAction(row, '')
@@ -214,7 +215,7 @@ const handleMarkRead = async (row) => {
     await fetchData()
   } catch (error) {
     console.error('标记已读失败:', error)
-    ElMessage.error(error?.response?.data?.message || '标记已读失败，请稍后重试')
+    ElMessage.error(requestErrorMessage(error, '标记已读失败，请稍后重试'))
   } finally {
     setRowAction(row, '')
   }
@@ -238,7 +239,7 @@ const handleMarkAllRead = () => {
       await fetchData()
     } catch (error) {
       console.error('操作失败:', error)
-      ElMessage.error(error?.response?.data?.message || '全部标记已读失败，请稍后重试')
+      ElMessage.error(requestErrorMessage(error, '全部标记已读失败，请稍后重试'))
     } finally {
       bulkAction.value = ''
     }
@@ -263,7 +264,7 @@ const handleClearRead = () => {
       await fetchData()
     } catch (error) {
       console.error('清空失败:', error)
-      ElMessage.error(error?.response?.data?.message || '清空已读消息失败，请稍后重试')
+      ElMessage.error(requestErrorMessage(error, '清空已读消息失败，请稍后重试'))
     } finally {
       bulkAction.value = ''
     }
@@ -291,7 +292,7 @@ const handleDelete = (row) => {
       await fetchData()
     } catch (error) {
       console.error('删除失败:', error)
-      ElMessage.error(error?.response?.data?.message || '删除消息失败，请稍后重试')
+      ElMessage.error(requestErrorMessage(error, '删除消息失败，请稍后重试'))
     } finally {
       setRowAction(row, '')
     }

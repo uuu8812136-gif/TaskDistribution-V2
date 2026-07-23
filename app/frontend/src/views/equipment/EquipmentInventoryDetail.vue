@@ -214,6 +214,7 @@ import {
 } from '@/api/equipment'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { cleanupTemporaryFiles, prepareAttachmentReferences } from '@/utils/attachments'
+import { requestErrorMessage } from '@/utils/request'
 import {
   EQUIPMENT_STATUS_OPTIONS,
   INVENTORY_STAGE_LABELS,
@@ -341,7 +342,8 @@ async function saveItem() {
       [...uploadedFileIds, ...(error.uploadedFileIds || [])],
       deleteFile
     )
-    ElMessage.error(error.response?.data?.message || error.message || '盘点结果保存失败')
+    console.error('盘点结果保存失败:', error)
+    ElMessage.error(requestErrorMessage(error, '盘点结果保存失败，请稍后重试'))
   } finally {
     savingItem.value = false
   }

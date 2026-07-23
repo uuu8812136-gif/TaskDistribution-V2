@@ -1,6 +1,6 @@
 export class StaleContextResponseError extends Error {
   constructor() {
-    super('Response belongs to an inactive authentication context')
+    super('登录状态已变更，本次请求结果已失效')
     this.name = 'StaleContextResponseError'
     this.code = 'ERR_AUTH_CONTEXT_STALE'
   }
@@ -11,7 +11,7 @@ export function isStaleContextResponseError(error) {
 }
 
 export function createRequestContextTracker(readToken, initialEpoch = 0) {
-  if (typeof readToken !== 'function') throw new TypeError('readToken must be a function')
+  if (typeof readToken !== 'function') throw new TypeError('会话读取配置无效')
 
   let epoch = initialEpoch
   return {
@@ -42,7 +42,7 @@ export function createScopedCacheKey(namespace, identity) {
   const userId = identity?.userId
   const activeTeamId = identity?.activeTeamId
   if (!namespace || !userId || activeTeamId === undefined || activeTeamId === null) {
-    throw new TypeError('Scoped cache keys require namespace, userId and activeTeamId')
+    throw new TypeError('会话缓存标识不完整')
   }
   return `v2:business:${encodeKeyPart(userId)}:${encodeKeyPart(activeTeamId)}:${encodeKeyPart(namespace)}`
 }

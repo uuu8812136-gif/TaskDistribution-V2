@@ -119,6 +119,7 @@ import { ElMessage } from 'element-plus'
 import { createEquipmentStatusApplication, getEquipmentList, getEquipmentDetail, getEquipmentStatusApplications } from '@/api/equipment'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { cleanupTemporaryFiles, prepareAttachmentReferences } from '@/utils/attachments'
+import { requestErrorMessage } from '@/utils/request'
 import {
   STATUS_APPLICATION_TYPES,
   statusApplicationTypeLabel,
@@ -229,7 +230,8 @@ async function submitCreate() {
     await router.push({ name: 'EquipmentStatusApplicationDetail', params: { applicationId: result.application._id } })
   } catch (error) {
     await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
-    ElMessage.error(error.message || '提交失败')
+    console.error('设备状态申请提交失败:', error)
+    ElMessage.error(requestErrorMessage(error, '设备状态申请提交失败，请稍后重试'))
   } finally {
     submitting.value = false
   }

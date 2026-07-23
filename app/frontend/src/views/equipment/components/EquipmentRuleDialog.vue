@@ -309,6 +309,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { requestErrorMessage } from '@/utils/request'
 import {
   ROUTINE_CALENDAR_UNIT_OPTIONS,
   ROUTINE_DUE_POLICY_OPTIONS,
@@ -555,7 +556,8 @@ async function submitForm() {
   try {
     emit('submit', buildRoutineRulePayload(form))
   } catch (error) {
-    ElMessage.warning(error.message || '请完善规则配置')
+    console.error('规则配置校验失败:', error)
+    ElMessage.warning(requestErrorMessage(error, '请完善规则配置'))
   }
 }
 

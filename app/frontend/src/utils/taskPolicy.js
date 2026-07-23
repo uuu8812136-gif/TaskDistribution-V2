@@ -203,7 +203,7 @@ export function canReviewAssignedTask({
 
 export function buildTaskReviewPayload(form = {}, attachments = []) {
   if (!['approved', 'rejected'].includes(form.result)) {
-    throw new TypeError('Task review result must be approved or rejected')
+    throw new TypeError('任务审核结果必须选择通过或驳回')
   }
   return {
     content: form.content,

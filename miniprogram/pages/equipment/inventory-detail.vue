@@ -130,6 +130,7 @@ import {
   uploadEquipmentInventoryPhoto
 } from '@/api/index.js'
 import { parseEquipmentQrPayload } from '@/utils/equipment.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 import {
   EQUIPMENT_STATUS_OPTIONS,
   approvalStageLabel,
@@ -250,7 +251,7 @@ export default {
         await loadDetail()
       } catch (error) {
         await Promise.allSettled(uploadedIds.map((fileId) => deleteTemporaryPrivateFile(fileId)))
-        uni.showToast({ title: error.message || '保存失败', icon: 'none' })
+        uni.showToast({ title: requestErrorMessage(error, '盘点结果保存失败'), icon: 'none' })
       } finally {
         savingItem.value = false
       }
@@ -270,7 +271,7 @@ export default {
         onlyFromCamera: true,
         scanType: ['qrCode'],
         success: ({ result }) => handleScanResult(result).catch((error) => {
-          uni.showToast({ title: error.message || '该设备不在本批次', icon: 'none' })
+          uni.showToast({ title: requestErrorMessage(error, '该设备不在本批次'), icon: 'none' })
         }),
         fail: (error) => {
           if (!String(error?.errMsg || '').includes('cancel')) {

@@ -144,6 +144,7 @@ import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
 import { taskDetailLocation } from '@/utils/taskPolicy'
+import { requestErrorMessage } from '@/utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
@@ -329,7 +330,7 @@ const handleBatchExport = async () => {
     console.error('错误对象:', error)
     console.error('错误消息:', error.message)
     console.error('错误响应:', error.response)
-    ElMessage.error(`导出失败: ${error.message || '未知错误'}`)
+    ElMessage.error(requestErrorMessage(error, '任务导出失败，请稍后重试'))
   } finally {
     exportLoading.value = false
   }

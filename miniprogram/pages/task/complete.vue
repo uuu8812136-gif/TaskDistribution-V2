@@ -91,6 +91,7 @@ import { completeTask, getTaskDetail, uploadTaskAttachment } from '@/api/index.j
 import { useUserStore } from '@/stores/user.js'
 import { isTaskOverdue } from '@/utils/format.js'
 import { canCompleteAssignedTask } from '@/utils/taskPolicy.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
 	name: 'TaskComplete',
@@ -129,7 +130,7 @@ export default {
 					setTimeout(() => uni.navigateBack(), 300)
 				}
 			} catch (error) {
-				uni.showToast({ title: error.message || '任务校验失败', icon: 'none' })
+				uni.showToast({ title: requestErrorMessage(error, '任务校验失败'), icon: 'none' })
 				setTimeout(() => uni.navigateBack(), 300)
 			} finally {
 				checkingAccess.value = false
@@ -343,7 +344,7 @@ export default {
 				uni.hideLoading()
 				console.error('提交失败:', error)
 				uni.showToast({
-					title: error.message || '提交失败',
+					title: requestErrorMessage(error, '任务完成结果提交失败'),
 					icon: 'none'
 				})
 			}

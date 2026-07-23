@@ -64,6 +64,7 @@ import { getTaskList } from '@/api/task'
 import { useSessionStore } from '@/stores/session'
 import { formatDate, priorityMap, priorityType } from '@/utils/format'
 import { taskDetailLocation, taskEntityId, taskTeamId } from '@/utils/taskPolicy'
+import { requestErrorMessage } from '@/utils/request'
 
 const router = useRouter()
 const session = useSessionStore()
@@ -152,7 +153,7 @@ const fetchData = async () => {
     console.error('获取任务失败:', error)
     if (requestId !== latestRequestId) return
     tasks.value = []
-    loadError.value = error?.message || '请检查网络连接后重试。'
+    loadError.value = requestErrorMessage(error, '任务看板加载失败，请检查网络连接后重试。')
   } finally {
     if (requestId === latestRequestId) loading.value = false
   }

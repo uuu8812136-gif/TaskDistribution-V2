@@ -49,6 +49,12 @@ export const ATTENDANCE_QUALITY_STATUSES = Object.freeze({
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION'
 })
 
+const ATTENDANCE_QUALITY_ISSUE_MESSAGES = Object.freeze({
+  SOURCE_REGISTERED_TOTAL_MISMATCH: '在册人数汇总与分部明细不一致，等待客户确认',
+  SOURCE_DAY_ACTUAL_TOTAL_MISMATCH: '白班实际出勤汇总与分部明细不一致，等待客户确认',
+  SOURCE_PENDING_DEPARTURE_TOTAL_MISMATCH: '待离职人数汇总与分部明细不一致，等待客户确认'
+})
+
 const TRANSPORT_FIELD_LABELS = Object.freeze({
   orgUnitId: '所属组织',
   reportDate: '提报日期',
@@ -143,6 +149,14 @@ export function attendanceNamesText(value) {
   return splitNames(value).join('、') || '-'
 }
 
+export function attendanceQualityIssueMessage(issue = {}) {
+  const code = String(issue?.code || '').trim()
+  const suppliedMessage = String(issue?.message || '').trim()
+  if (/[\u3400-\u9fff]/u.test(suppliedMessage)) return suppliedMessage
+  if (ATTENDANCE_QUALITY_ISSUE_MESSAGES[code]) return ATTENDANCE_QUALITY_ISSUE_MESSAGES[code]
+  return '出勤数据存在待确认差异，请核对原始提报表并联系管理员确认。'
+}
+
 export function attendanceShiftSummary(shift = {}) {
   return ATTENDANCE_NAMED_FIELDS.reduce((result, { key }) => {
     result[key] = integerOrZero(shift[key]?.count)
@@ -177,10 +191,10 @@ export function buildTransportPayload(form, photoFileIds) {
 
 export function naturalMonthRange(month) {
   const match = /^(\d{4})-(\d{2})$/.exec(month || '')
-  if (!match) throw new TypeError('month must use YYYY-MM format')
+  if (!match) throw new TypeError('月份必须使用 YYYY-MM 格式')
   const year = Number(match[1])
   const monthNumber = Number(match[2])
-  if (monthNumber < 1 || monthNumber > 12) throw new TypeError('month is invalid')
+  if (monthNumber < 1 || monthNumber > 12) throw new TypeError('月份无效，请选择1月至12月')
   const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()
   return {
     dateFrom: `${month}-01`,
@@ -313,7 +327,7 @@ export function dailyReportSourceSummary(report) {
 
 export async function copyPlainText(value, dependencies = {}) {
   const text = String(value || '')
-  if (!text) throw new TypeError('copy text cannot be empty')
+  if (!text) throw new TypeError('没有可复制的文字内容')
   const clipboard = dependencies.clipboard || globalThis.navigator?.clipboard
   if (clipboard?.writeText) {
     await clipboard.writeText(text)
@@ -321,7 +335,7 @@ export async function copyPlainText(value, dependencies = {}) {
   }
   const documentRef = dependencies.document || globalThis.document
   if (!documentRef?.createElement || !documentRef.body) {
-    throw new Error('Clipboard is unavailable')
+    throw new Error('当前浏览器无法使用剪贴板')
   }
   const textarea = documentRef.createElement('textarea')
   textarea.value = text
@@ -332,6 +346,6 @@ export async function copyPlainText(value, dependencies = {}) {
   textarea.select()
   const copied = documentRef.execCommand?.('copy') === true
   textarea.remove()
-  if (!copied) throw new Error('Clipboard copy failed')
+  if (!copied) throw new Error('复制失败，请使用系统复制功能')
   return true
 }

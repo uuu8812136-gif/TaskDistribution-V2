@@ -1,3 +1,5 @@
+import { requestErrorMessage } from './requestErrorMessages.js'
+
 export const MEMBERSHIP_ROLES = Object.freeze({
   PROJECT_ADMIN: 'PROJECT_ADMIN',
   MEMBER: 'MEMBER'
@@ -210,5 +212,5 @@ export function managementErrorMessage(error, fallback = '操作失败') {
     MANAGEMENT_CONCURRENT_UPDATE: '数据已被其他人修改，请刷新后重试',
     MANAGEMENT_RESOURCE_NOT_FOUND: '记录不存在或不属于当前团队'
   }
-  return messages[code] || error?.response?.data?.message || fallback
+  return messages[code] || requestErrorMessage(error, fallback)
 }

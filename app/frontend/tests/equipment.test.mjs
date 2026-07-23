@@ -16,6 +16,9 @@ import {
   entityName,
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
+  equipmentImportFieldLabel,
+  equipmentImportOriginalValue,
+  equipmentImportSuggestedAction,
   isEquipmentImportDecisionComplete,
   moveChecklistItem,
   normalizeRuntimeHours,
@@ -138,6 +141,56 @@ test('equipment import decisions expose only actions accepted by the backend', (
     IMPORT_DECISION_ACTIONS.SKIP_ROW
   ])
   assert.equal(equipmentImportExceptionLabel('ASSET_CODE_MISSING'), '资产编号缺失')
+})
+
+test('equipment import issues always expose localized labels and actions', () => {
+  for (const exceptionType of [
+    'BOOK_QUANTITY_INVALID',
+    'PHYSICAL_QUANTITY_INVALID',
+    'ORIGINALVALUE_INVALID',
+    'QUANTITY_UNIT_EMBEDDED',
+    'MERGED_SOURCE_CELL',
+    'DUPLICATE_SOURCE_IDENTIFIER_IN_FILE',
+    'PHOTO_MAPPING_COUNT_MISMATCH',
+    'INVALID_WORKBOOK_MEDIA',
+    'ASSET_CODE_GENERATED_FOR_TEST',
+    'SOURCE_ASSET_CODE_DUPLICATE',
+    'POSSIBLE_IDLE_DUPLICATE',
+    'PENDING_IDLE_SOURCE_ROW',
+    'ASSET_CODE_COLLISION_EXISTING'
+  ]) {
+    assert.match(equipmentImportExceptionLabel(exceptionType), /[\u3400-\u9fff]/u)
+  }
+
+  assert.equal(equipmentImportExceptionLabel('UNKNOWN_BACKEND_CODE'), '其他数据异常')
+  assert.equal(equipmentImportFieldLabel('_sourceIdentity'), '来源标识')
+  assert.equal(equipmentImportFieldLabel('untrustedField'), '其他字段')
+  assert.equal(equipmentImportSuggestedAction({
+    exceptionType: 'DUPLICATE_ASSET_CODE_EXISTING',
+    suggestedAction: 'Choose a new asset code or skip this row'
+  }), '请填写新的资产编号，或跳过该行')
+  assert.equal(equipmentImportSuggestedAction({
+    exceptionType: 'UNKNOWN_BACKEND_CODE',
+    suggestedAction: 'Do something technical'
+  }), '请核对原始数据后选择处理方式')
+  assert.equal(equipmentImportSuggestedAction({
+    exceptionType: 'UNKNOWN_BACKEND_CODE',
+    suggestedAction: '请联系管理员确认原始表格'
+  }), '请联系管理员确认原始表格')
+  assert.equal(equipmentImportOriginalValue({
+    exceptionType: 'INVALID_WORKBOOK_MEDIA',
+    originalValue: [{ validationError: 'Media bytes are unavailable' }]
+  }), '图片内容无效或无法读取')
+})
+
+test('equipment import dialog never renders raw backend error text', () => {
+  const dialog = fs.readFileSync(
+    path.join(root, 'src/views/equipment/components/EquipmentImportDialog.vue'),
+    'utf8'
+  )
+  assert.doesNotMatch(dialog, /row\.suggestedAction/)
+  assert.match(dialog, /equipmentImportOriginalValue\(row\)/)
+  assert.match(dialog, /equipmentImportSuggestedAction\(row\)/)
 })
 
 test('equipment import confirmation carries the optimistic version and explicit decisions', () => {
@@ -306,12 +359,12 @@ test('routine builders reject incomplete schedules and checklist results', () =>
     checklistItems: [{ name: '润滑' }],
     schedule: { mode: 'RUNTIME_HOURS', runtime: { intervalHours: 0 } },
     photoPolicy: 'ALWAYS'
-  }), /greater than zero/)
+  }), /运行小时间隔必须大于0/)
 
   assert.throws(() => buildRoutineRecordPayload({
     ruleId: 'rule-1',
     itemResults: [{ itemKey: 'item-1', result: '' }]
-  }), /complete item results/)
+  }), /请选择规则并填写所有检查项目结果/)
 })
 
 test('maintenance records accept completed and skipped results without leaking item photos', () => {

@@ -121,6 +121,7 @@
 import { ref, onMounted } from 'vue'
 import { reviewTask, uploadTaskAttachment } from '@/api/index.js'
 import { useUserStore } from '@/stores/user.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
 	name: 'TaskReview',
@@ -382,7 +383,7 @@ export default {
 				uni.hideLoading()
 				console.error('提交失败:', error)
 				uni.showToast({
-					title: error.message || '提交失败',
+					title: requestErrorMessage(error, '任务审核提交失败'),
 					icon: 'none'
 				})
 			}

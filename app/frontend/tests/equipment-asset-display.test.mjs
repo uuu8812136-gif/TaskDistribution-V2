@@ -95,6 +95,45 @@ test('legacy quantities, file ids and both data-quality shapes remain readable',
   assert.equal(equipmentQualityIssues({ dataQualityIssues: ['待确认'] })[0], '待确认')
 })
 
+test('equipment quality issues localize persisted English descriptions', () => {
+  const generatedCode = equipmentQualityIssueView({
+    exceptionType: 'ASSET_CODE_GENERATED_FOR_TEST',
+    severity: 'WARNING',
+    field: 'assetCode',
+    suggestedValue: 'CUST26-HDL-001',
+    message: 'Source asset code is missing, too long, or duplicated'
+  })
+  assert.equal(generatedCode.title, '已生成测试资产编号')
+  assert.equal(generatedCode.field, '资产编号')
+  assert.equal(generatedCode.detail, '建议值：CUST26-HDL-001')
+  assert.doesNotMatch(JSON.stringify(generatedCode), /Source asset code/u)
+
+  const invalidMedia = equipmentQualityIssueView({
+    exceptionType: 'INVALID_WORKBOOK_MEDIA',
+    field: '_photos',
+    originalValue: [{ validationError: 'Media bytes are unavailable' }],
+    suggestedAction: 'Replace the invalid media'
+  })
+  assert.equal(invalidMedia.title, '工作簿内存在无效图片')
+  assert.equal(invalidMedia.field, '设备照片')
+  assert.equal(invalidMedia.originalValue, '图片内容无效或无法读取')
+  assert.doesNotMatch(JSON.stringify(invalidMedia), /Media bytes|Replace the invalid/u)
+
+  const unknownEnglish = equipmentQualityIssueView('Unknown source issue')
+  assert.equal(unknownEnglish.title, '其他数据异常')
+  assert.match(unknownEnglish.detail, /[\u3400-\u9fff]/u)
+
+  const unknownChinese = equipmentQualityIssueView({
+    code: 'FUTURE_QUALITY_ISSUE',
+    field: 'futureField',
+    message: '客户补充数据需要确认',
+    detail: '请核对客户原表'
+  })
+  assert.equal(unknownChinese.title, '客户补充数据需要确认')
+  assert.equal(unknownChinese.field, '其他字段')
+  assert.equal(unknownChinese.detail, '请核对客户原表')
+})
+
 test('import preview candidates retain sheet and row provenance', () => {
   const candidate = equipmentImportCandidate({
     sheetName: '物流信息装备',

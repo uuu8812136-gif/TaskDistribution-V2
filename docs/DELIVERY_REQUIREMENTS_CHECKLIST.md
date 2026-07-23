@@ -63,6 +63,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Source row, raw values, date precision/display, quantities, and data-quality issues are retained.
 - [x] WPS cell images and ordinary drawing images can be extracted and mapped to source rows.
 - [x] Web list, detail, import preview, photos, and exception display are implemented.
+- [x] Equipment import and persisted data-quality issues use Chinese labels, field names, handling guidance, and safe fallbacks for every current exception type; historic English `message`/`suggestedAction` values and invalid-media diagnostics are not rendered to users.
 - [x] Apply the real workbook to the local test database: 144 source rows, 141 publishable assets, and 3 idle duplicate rows retained as pending confirmation without duplicate asset creation.
 - [x] Connect workbook image extraction to the normal web upload-preview-confirm-publish workflow; 228 image references survive strict validation and WPS JPEG normalization tests.
 - [x] Equipment Excel preview lifecycle has per-request upload progress/timeout, explicit upload-parse-write UI states, local non-sensitive job-id recovery, cancel-on-close/new-import, transaction-first bounded physical staging cleanup with retry/audit metadata, and a 24-hour expiry cleanup CLI; focused cleanup tests and the 98,035,547-byte workbook benchmark pass.
@@ -103,6 +104,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Attendance implements one active reporter per branch, pre-09:00 replacement, post-09:00 officer changes with reason/before/after audit, missing-branch blocking/reminders, permanent review lock, manager notification, and copyable final text across Web and mini-program tests.
 - [x] Attendance monthly report is generated only from reviewed daily submissions, merges sick leave into leave, and exports the fixed A:R format with natural-month tests.
 - [x] The seven real 2026-07-14 branch rows are present in the isolated local test database, retain source-summary inconsistencies as visible data-quality exceptions, and the importer has idempotency/manual-conflict tests.
+- [x] Attendance data-quality messages preserve trusted Chinese source explanations, map all current issue codes to Chinese, and replace unknown English messages with a Chinese confirmation prompt.
 - [ ] Attendance submission, 08:59/09:00 behavior, missing reminders, review lock, manager notification, final-text copy, and monthly export are runtime verified end to end against the latest API.
   - The running Web attendance page displays all 7 source rows; boundary-time writes, notifications, permanent review, copy, and download remain pending.
 
@@ -134,6 +136,7 @@ If any source conflicts with another, use the least-complete status and keep the
 
 ## Final Verification
 
+- [x] The 2026-07-23 user-facing Chinese-message pass succeeds: backend `360/360`, Web `138/138` plus production build, mini-program `88/88`, 43 SFC checks and environment isolation; 278 relevant source/test files pass strict UTF-8 decoding with no replacement character, and Web/mini-program request-error maps remain byte-identical.
 - [x] Backend full test suite passes after all current changes (356/356 on 2026-07-22), including the multi-period/`ANY`/`ALL` worker and rule-version regression cases.
 - [x] Web unit tests (125/125) and production build pass (2026-07-22); the equipment-focused Web run is 23/23.
 - [x] Mini-program tests (81/81), equipment-focused run (21/21; 29/29 across equipment-related suites), 43 SFC/static checks, environment isolation, and the latest HBuilderX 5.15 WeChat build pass (2026-07-22).

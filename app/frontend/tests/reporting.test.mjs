@@ -10,6 +10,7 @@ import {
   TRANSPORT_LOAD_FIELDS,
   aggregateDriverMonthly,
   attendanceNamesText,
+  attendanceQualityIssueMessage,
   buildAttendancePayload,
   buildDailySchedulePayload,
   buildMonthlySchedulePayload,
@@ -60,6 +61,35 @@ test('attendance monthly view downloads the reviewed-only fixed A:R workbook', (
   assert.match(viewSource, /导出 A:R 月报/)
   assert.match(viewSource, /exportAttendanceMonthlySummary/)
   assert.match(viewSource, /仅包含已审核日报/)
+})
+
+test('attendance quality issues never expose untrusted English messages', () => {
+  assert.equal(attendanceQualityIssueMessage({
+    code: 'SOURCE_REGISTERED_TOTAL_MISMATCH',
+    message: 'source mismatch'
+  }), '在册人数汇总与分部明细不一致，等待客户确认')
+  assert.equal(attendanceQualityIssueMessage({
+    code: 'SOURCE_DAY_ACTUAL_TOTAL_MISMATCH',
+    message: 'source mismatch'
+  }), '白班实际出勤汇总与分部明细不一致，等待客户确认')
+  assert.equal(attendanceQualityIssueMessage({
+    code: 'SOURCE_PENDING_DEPARTURE_TOTAL_MISMATCH',
+    message: 'source mismatch'
+  }), '待离职人数汇总与分部明细不一致，等待客户确认')
+  assert.equal(attendanceQualityIssueMessage({
+    code: 'FUTURE_IMPORT_ISSUE',
+    message: 'unexpected source data'
+  }), '出勤数据存在待确认差异，请核对原始提报表并联系管理员确认。')
+  assert.equal(attendanceQualityIssueMessage({
+    code: 'FUTURE_IMPORT_ISSUE',
+    message: '客户原始汇总值需要确认'
+  }), '客户原始汇总值需要确认')
+  assert.equal(attendanceQualityIssueMessage(), '出勤数据存在待确认差异，请核对原始提报表并联系管理员确认。')
+
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/AttendanceReports.vue`, 'utf8')
+  assert.doesNotMatch(viewSource, /\{\{\s*issue\.message\s*\}\}/)
+  assert.equal((viewSource.match(/attendanceQualityIssueMessage\(issue\)/g) || []).length, 2)
 })
 
 test('attendance views clear incompatible data and only accept their latest requests', () => {
@@ -216,6 +246,7 @@ test('production daily report page wires fixed generation, versions, tracing and
   const apiSource = fs.readFileSync(`${root}/src/api/reporting.js`, 'utf8')
   const viewSource = fs.readFileSync(`${root}/src/views/reporting/GeneratedDailyReports.vue`, 'utf8')
   const requestSource = fs.readFileSync(`${root}/src/utils/request.js`, 'utf8')
+  const requestErrorMessagesSource = fs.readFileSync(`${root}/src/utils/requestErrorMessages.js`, 'utf8')
   const routerSource = fs.readFileSync(`${root}/src/router/index.js`, 'utf8')
 
   assert.match(apiSource, /generated-daily-reports/)
@@ -232,12 +263,13 @@ test('production daily report page wires fixed generation, versions, tracing and
     'DAILY_REPORT_PRODUCTION_SCHEDULE_REQUIRED',
     'DAILY_REPORT_VERSION_LIMIT_REACHED'
   ]) {
-    assert.match(requestSource, new RegExp(`${code}: '[^']+'`))
+    assert.match(requestErrorMessagesSource, new RegExp(`${code}: '[^']+'`))
   }
-  assert.match(requestSource, /const localErrorMessage = error\?\.response \? '' : error\?\.message/)
-  assert.match(requestSource, /REQUEST_ERROR_CODE_MESSAGES\[code\] \|\| data\?\.message \|\| localErrorMessage \|\| fallback/)
+  assert.match(requestErrorMessagesSource, /containsChineseText\(message\)/)
+  assert.match(requestErrorMessagesSource, /REQUEST_ERROR_CODE_MESSAGES\[code\]/)
+  assert.match(requestSource, /localizeRequestError\(error, fallback\)/)
   assert.match(requestSource, /if \(status === 401 && hadToken && !isLoginRequest\)/)
-  assert.match(requestSource, /return Promise\.reject\(error\)/)
+  assert.match(requestSource, /return Promise\.reject\(localizedError\)/)
   assert.match(routerSource, /GeneratedDailyReports/)
 })
 

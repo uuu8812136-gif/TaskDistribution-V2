@@ -218,6 +218,7 @@ import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import AuthenticatedAttachments from '@/components/AuthenticatedAttachments.vue'
+import { requestErrorMessage } from '@/utils/request'
 import { getEquipmentRepair, transitionEquipmentRepair } from '@/api/equipment'
 import {
   REPAIR_ACTION_TONES,
@@ -392,7 +393,8 @@ async function submitAction() {
     ElMessage.success('维修流程已更新')
   } catch (error) {
     if (error.code === 'EQUIPMENT_REPAIR_CONFLICT') await loadRepair()
-    ElMessage.error(error.message || '处理失败')
+    console.error('维修流程处理失败:', error)
+    ElMessage.error(requestErrorMessage(error, '维修流程处理失败，请稍后重试'))
   } finally {
     submitting.value = false
   }

@@ -38,8 +38,8 @@ export function existingAttachmentFileList(attachments) {
 }
 
 export async function prepareAttachmentReferences(fileList, uploadFile) {
-  if (!Array.isArray(fileList)) throw new TypeError('fileList must be an array')
-  if (typeof uploadFile !== 'function') throw new TypeError('uploadFile must be a function')
+  if (!Array.isArray(fileList)) throw new TypeError('附件列表格式不正确')
+  if (typeof uploadFile !== 'function') throw new TypeError('附件上传方法不可用')
 
   const references = []
   const uploadedFileIds = []
@@ -50,10 +50,10 @@ export async function prepareAttachmentReferences(fileList, uploadFile) {
         references.push({ fileId: existingId })
         continue
       }
-      if (!item?.raw) throw new TypeError('A selected attachment is missing its file data')
+      if (!item?.raw) throw new TypeError('所选附件缺少文件数据，请重新选择')
       const response = await uploadFile(item.raw)
       const uploadedId = managedFileId(response)
-      if (!uploadedId) throw new TypeError('Upload response is missing a valid file id')
+      if (!uploadedId) throw new TypeError('附件上传结果缺少有效文件编号')
       references.push({ fileId: uploadedId })
       uploadedFileIds.push(uploadedId)
     }

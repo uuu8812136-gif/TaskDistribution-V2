@@ -90,7 +90,7 @@ export const useSessionStore = defineStore('session', {
     },
 
     commitRotatedSession(payload, reason, { keepTeams = true } = {}) {
-      if (!payload?.token) throw new TypeError('The authentication response did not include a token')
+      if (!payload?.token) throw new TypeError('登录响应缺少身份凭证')
 
       replaceAuthToken(payload.token)
       this.token = payload.token
@@ -121,7 +121,7 @@ export const useSessionStore = defineStore('session', {
       this.token = readAuthToken()
       if (!this.token) {
         this.clearLocalSession('missing-token')
-        throw new Error('Authentication token is missing')
+        throw new Error('登录凭证不存在，请重新登录')
       }
 
       if (
@@ -138,7 +138,7 @@ export const useSessionStore = defineStore('session', {
         this.bootstrapStatus = 'loading'
         try {
           const payload = await getCurrentUser()
-          if (this.token !== tokenAtStart) throw new Error('Authentication context changed while loading')
+          if (this.token !== tokenAtStart) throw new Error('登录状态已变化，请重新加载')
 
           this.user = payload.user
           this.applyContext(payload.context, {

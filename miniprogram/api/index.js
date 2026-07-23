@@ -56,7 +56,7 @@ export const uploadTaskAttachment = async (file) => {
 
 export const downloadTaskAttachment = (file, params = {}) => {
   const fileId = managedFileId(file)
-  if (!fileId) throw new TypeError('Managed attachment fileId is required')
+  if (!fileId) throw new TypeError('附件文件编号无效')
   const teamId = typeof params.teamId === 'string' ? params.teamId : ''
   const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''
   return download(`/files/${fileId}/download${query}`)
@@ -418,25 +418,25 @@ export const uploadTransportPhoto = async (file) => {
 
 export const getPrivateFileMetadata = (fileId, params = {}) => {
   const normalized = managedFileId({ fileId })
-  if (!normalized) throw new TypeError('Managed fileId is required')
+  if (!normalized) throw new TypeError('文件编号无效')
   return get(`/files/${normalized}`, params)
 }
 
 export const getPrivateFileMetadataSilently = (fileId) => {
   const normalized = managedFileId({ fileId })
-  if (!normalized) throw new TypeError('Managed fileId is required')
+  if (!normalized) throw new TypeError('文件编号无效')
   return get(`/files/${normalized}`, {}, { showLoading: false, silentError: true })
 }
 
 export const deleteTemporaryPrivateFile = (fileId, reason = 'Client upload cleanup') => {
   const normalized = managedFileId({ fileId })
-  if (!normalized) throw new TypeError('Managed fileId is required')
+  if (!normalized) throw new TypeError('文件编号无效')
   return del(`/files/${normalized}`, { reason }, { showLoading: false, silentError: true })
 }
 
 export const downloadPrivateFile = (fileId, params = {}) => {
   const normalized = managedFileId({ fileId })
-  if (!normalized) throw new TypeError('Managed fileId is required')
+  if (!normalized) throw new TypeError('文件编号无效')
   const teamId = typeof params.teamId === 'string' ? params.teamId : ''
   const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''
   return download(`/files/${normalized}/download${query}`)
@@ -444,7 +444,7 @@ export const downloadPrivateFile = (fileId, params = {}) => {
 
 export const getDailyProductionSchedules = (slot, params = {}) => {
   if (slot !== 'previous' && slot !== 'current') {
-    throw new TypeError('Daily production slot must be previous or current')
+    throw new TypeError('日排产查询范围仅支持上月或当月')
   }
   return get(`/production-schedules/daily/${slot}`, params)
 }

@@ -136,6 +136,7 @@ import {
   createEmptyTransportLoad,
   transportLoadTotal
 } from '@/utils/reporting.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 function photoName(file, index) {
   const path = String(file?.path || file?.tempFilePath || '')
@@ -256,7 +257,7 @@ export default {
           throw new TypeError('现场照片必须为2至10张')
         }
       } catch (error) {
-        uni.showToast({ title: error.message, icon: 'none' })
+        uni.showToast({ title: requestErrorMessage(error, '运输记录内容校验失败'), icon: 'none' })
         return
       }
 

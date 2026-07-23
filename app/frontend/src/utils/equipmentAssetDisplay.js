@@ -1,4 +1,10 @@
 import dayjs from 'dayjs'
+import {
+  equipmentImportExceptionLabel,
+  equipmentImportFieldLabel,
+  equipmentImportOriginalValue,
+  equipmentImportSuggestedAction
+} from './equipment.js'
 
 export const EQUIPMENT_ASSET_TYPE_OPTIONS = Object.freeze([
   { value: 'TRANSPORT_EQUIPMENT', label: '运输装备', sheetName: '运输装备' },
@@ -326,16 +332,33 @@ export function equipmentImportCandidate(row = {}) {
 
 export function equipmentQualityIssueView(issue, index = 0) {
   if (typeof issue === 'string') {
-    return { key: `${index}-${issue}`, severity: 'WARNING', title: issue, field: '-', detail: '' }
+    const title = /[\u3400-\u9fff]/u.test(issue) ? issue : '其他数据异常'
+    return {
+      key: `${index}-${issue}`,
+      severity: 'WARNING',
+      title,
+      field: '-',
+      detail: '请核对原始数据后选择处理方式'
+    }
   }
   const severity = String(issue?.severity || issue?.level || 'WARNING').toUpperCase()
   const code = issue?.exceptionType || issue?.code || issue?.type || 'DATA_QUALITY_ISSUE'
+  const mappedTitle = equipmentImportExceptionLabel(code)
+  const suppliedTitle = [issue?.message, issue?.label]
+    .map((value) => String(value || '').trim())
+    .find((value) => /[\u3400-\u9fff]/u.test(value))
+  const mappedDetail = equipmentImportSuggestedAction({ ...issue, exceptionType: code })
+  const suppliedDetail = [issue?.detail, issue?.description, issue?.suggestedAction]
+    .map((value) => String(value || '').trim())
+    .find((value) => /[\u3400-\u9fff]/u.test(value))
   return {
     key: issue?._id || issue?.id || `${index}-${code}`,
     severity,
-    title: issue?.message || issue?.label || code,
-    field: issue?.field || '-',
-    detail: issue?.detail || issue?.description || issue?.suggestedAction || '',
-    originalValue: issue?.originalValue
+    title: mappedTitle === '其他数据异常' && suppliedTitle ? suppliedTitle : mappedTitle,
+    field: equipmentImportFieldLabel(issue?.field),
+    detail: mappedDetail === '请核对原始数据后选择处理方式' && suppliedDetail
+      ? suppliedDetail
+      : mappedDetail,
+    originalValue: equipmentImportOriginalValue({ ...issue, exceptionType: code })
   }
 }

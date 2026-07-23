@@ -1,5 +1,10 @@
 import config from '@/config/index.js'
 import {
+  REQUEST_ERROR_CODE_MESSAGES,
+  localizeRequestError,
+  resolveRequestErrorMessage
+} from './requestErrorMessages.js'
+import {
   createRequestContextTracker,
   isStaleContextResponseError
 } from './sessionCore.js'
@@ -18,6 +23,7 @@ let loadingCount = 0
 export const getRequestContextEpoch = () => tracker.getEpoch()
 export const advanceRequestContextEpoch = () => tracker.advance()
 export { isStaleContextResponseError }
+export { REQUEST_ERROR_CODE_MESSAGES }
 
 export function setUnauthorizedHandler(handler) {
   unauthorizedHandler = typeof handler === 'function' ? handler : null
@@ -51,23 +57,49 @@ function buildHeaders(options, token) {
 }
 
 function resolveUrl(url) {
-  if (typeof url !== 'string' || !url) throw new TypeError('Request URL is required')
+  if (typeof url !== 'string' || !url) throw new TypeError('请求地址不能为空')
   if (/^https?:\/\//i.test(url)) {
     if (url !== config.baseURL && !url.startsWith(`${config.baseURL}/`)) {
-      throw new Error('Authenticated requests cannot target an external origin')
+      throw Object.assign(new Error('认证请求不能访问系统 API 以外的地址'), {
+        code: 'REQUEST_EXTERNAL_ORIGIN_DENIED'
+      })
     }
     return url
   }
   return `${config.baseURL}${url}`
 }
 
-function notifyError(statusCode, data, options) {
+function responseFallback(statusCode, options) {
+  if (typeof options.errorMessage === 'string' && options.errorMessage.trim()) {
+    return options.errorMessage.trim()
+  }
+  if (statusCode === 401) return '登录状态已失效，请重新登录'
+  if (statusCode === 403) return '没有执行该操作的权限'
+  if (statusCode === 404) return '请求的记录不存在或已被删除'
+  if (statusCode >= 500) return '服务器暂时无法处理请求，请稍后重试'
+  return '请求失败，请稍后重试'
+}
+
+function responseErrorMessage(statusCode, data, options) {
+  return resolveRequestErrorMessage({
+    code: data?.code,
+    message: data?.message,
+    statusCode
+  }, responseFallback(statusCode, options))
+}
+
+function notifyError(title, options) {
   if (options.silentError === true) return
-  let title = data?.message || '请求失败'
-  if (statusCode === 403 && !data?.message) title = '没有权限'
-  if (statusCode === 404 && !data?.message) title = '请求的资源不存在'
-  if (statusCode >= 500 && !data?.message) title = '服务器错误'
   uni.showToast({ title, icon: 'none', duration: 2000 })
+}
+
+function createResponseError(statusCode, data, options) {
+  const message = responseErrorMessage(statusCode, data, options)
+  return Object.assign(new Error(message), {
+    statusCode,
+    code: data?.code,
+    data: data && typeof data === 'object' ? { ...data, message } : { message }
+  })
 }
 
 function handleUnauthorized(options, requestContext) {
@@ -93,18 +125,15 @@ function handleResponse(response, options, requestContext) {
   const { statusCode, data } = response
   if (statusCode >= 200 && statusCode < 300) return data
 
+  const responseError = createResponseError(statusCode, data, options)
+
   if (statusCode === 401 && handleUnauthorized(options, requestContext)) {
-    throw Object.assign(new Error(data?.message || '登录已过期'), {
-      statusCode,
-      code: data?.code || 'AUTH_UNAUTHORIZED'
-    })
+    if (!responseError.code) responseError.code = 'AUTH_UNAUTHORIZED'
+    throw responseError
   }
 
-  notifyError(statusCode, data, options)
-  throw Object.assign(new Error(data?.message || '请求失败'), {
-    statusCode,
-    code: data?.code
-  })
+  notifyError(responseError.message, options)
+  throw responseError
 }
 
 const request = (rawOptions) => {
@@ -128,10 +157,14 @@ const request = (rawOptions) => {
       fail: (error) => {
         try {
           tracker.assertCurrent(requestContext)
-          if (!isStaleContextResponseError(error) && options.silentError !== true) {
-            uni.showToast({ title: '网络错误，请检查网络连接', icon: 'none' })
+          const localizedError = localizeRequestError(
+            error,
+            options.errorMessage || '网络错误，请检查网络连接'
+          )
+          if (!isStaleContextResponseError(localizedError) && options.silentError !== true) {
+            uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(error)
+          reject(localizedError)
         } catch (staleError) {
           reject(staleError)
         }
@@ -193,16 +226,26 @@ export const upload = (url, filePath, formData = {}, options = {}) => {
           const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data
           resolve(handleResponse({ ...response, data }, options, requestContext))
         } catch (error) {
-          reject(error)
+          const localizedError = error?.statusCode
+            ? error
+            : localizeRequestError(error, options.errorMessage || '上传响应异常，请稍后重试')
+          if (!error?.statusCode && options.silentError !== true) {
+            uni.showToast({ title: localizedError.message, icon: 'none' })
+          }
+          reject(localizedError)
         }
       },
       fail: (error) => {
         try {
           tracker.assertCurrent(requestContext)
+          const localizedError = localizeRequestError(
+            error,
+            options.errorMessage || '上传失败，请检查网络后重试'
+          )
           if (options.silentError !== true) {
-            uni.showToast({ title: '上传失败', icon: 'none' })
+            uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(error)
+          reject(localizedError)
         } catch (staleError) {
           reject(staleError)
         }
@@ -243,10 +286,14 @@ export const download = (url, options = {}) => {
       fail: (error) => {
         try {
           tracker.assertCurrent(requestContext)
+          const localizedError = localizeRequestError(
+            error,
+            options.errorMessage || '下载失败，请检查网络后重试'
+          )
           if (options.silentError !== true) {
-            uni.showToast({ title: '下载失败', icon: 'none' })
+            uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(error)
+          reject(localizedError)
         } catch (staleError) {
           reject(staleError)
         }

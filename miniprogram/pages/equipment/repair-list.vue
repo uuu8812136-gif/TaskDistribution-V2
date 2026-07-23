@@ -62,6 +62,7 @@ import {
   getEquipmentRoutineSchedule
 } from '@/api/index.js'
 import { classifyEquipmentScanFailure, lookupEquipmentFromQr } from '@/utils/equipment.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 import {
   repairStatusLabel,
   repairStatusTone,
@@ -180,7 +181,10 @@ export default {
               url: `/pages/equipment/repair-form?equipmentId=${lookup.equipment._id}`
             })
           } catch (error) {
-            uni.showToast({ title: error.message || '无法识别设备二维码', icon: 'none' })
+            uni.showToast({
+              title: requestErrorMessage(error, '无法识别设备二维码'),
+              icon: 'none'
+            })
           }
         },
         fail: (error) => {

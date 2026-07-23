@@ -47,6 +47,7 @@ import { createEquipmentRuntimeReading, getEquipmentRuntimeReadings } from '@/ap
 import { formatDate } from '@/utils/format.js'
 import { buildRuntimeReadingPayload } from '@/utils/equipment.js'
 import { useUserStore } from '@/stores/user.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
   name: 'EquipmentRuntimeReading',
@@ -104,7 +105,7 @@ export default {
         uni.showToast({ title: '运行小时已记录', icon: 'success' })
         setTimeout(() => uni.navigateBack(), 500)
       } catch (error) {
-        uni.showToast({ title: error.message || '提交失败', icon: 'none' })
+        uni.showToast({ title: requestErrorMessage(error, '运行小时提交失败'), icon: 'none' })
       } finally {
         submitting.value = false
       }

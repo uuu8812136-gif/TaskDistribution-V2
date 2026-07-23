@@ -79,7 +79,7 @@ function isNaturalDate(value) {
 
 export function businessNaturalDate(now = new Date()) {
   const date = now instanceof Date ? now : new Date(now)
-  if (Number.isNaN(date.getTime())) throw new TypeError('Invalid date')
+  if (Number.isNaN(date.getTime())) throw new TypeError('日期格式无效')
   return new Date(date.getTime() + (8 * 60 * 60 * 1000)).toISOString().slice(0, 10)
 }
 

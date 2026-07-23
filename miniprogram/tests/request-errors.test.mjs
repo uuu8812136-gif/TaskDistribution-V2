@@ -1,0 +1,44 @@
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+
+import {
+  REQUEST_ERROR_CODE_MESSAGES,
+  localizeRequestError,
+  resolveRequestErrorMessage
+} from '../utils/requestErrorMessages.js'
+
+test('mini-program maps attendance cutoff errors to Chinese', () => {
+  assert.equal(
+    resolveRequestErrorMessage({
+      code: 'ATTENDANCE_LATE_REASON_REQUIRED',
+      message: 'A correction reason is required for attendance officer changes at or after 09:00',
+      statusCode: 400
+    }, '保存失败'),
+    '09:00 后补报或修改出勤时，请填写修正原因'
+  )
+  assert.equal(REQUEST_ERROR_CODE_MESSAGES.EQUIPMENT_IMPORT_NOT_CLEANABLE, '请先取消设备导入预览，再清理暂存文件')
+  assert.equal(Object.keys(REQUEST_ERROR_CODE_MESSAGES).length >= 200, true)
+})
+
+test('mini-program preserves Chinese API details but hides unknown English', () => {
+  assert.equal(
+    resolveRequestErrorMessage({ code: 'UNKNOWN', message: '该流程已经结束' }, '提交失败'),
+    '该流程已经结束'
+  )
+  assert.equal(
+    resolveRequestErrorMessage({ code: 'UNKNOWN', message: 'Workflow is already closed' }, '提交失败'),
+    '提交失败'
+  )
+
+  const nativeError = new Error('request:fail timeout')
+  assert.equal(localizeRequestError(nativeError, '网络错误，请检查网络连接').message, '网络错误，请检查网络连接')
+})
+
+test('mini-program request wrapper displays and throws the same localized response error', () => {
+  const source = readFileSync(new URL('../utils/request.js', import.meta.url), 'utf8')
+  assert.match(source, /const responseError = createResponseError\(statusCode, data, options\)/)
+  assert.match(source, /notifyError\(responseError\.message, options\)/)
+  assert.match(source, /throw responseError/)
+  assert.doesNotMatch(source, /let title = data\?\.message/)
+})

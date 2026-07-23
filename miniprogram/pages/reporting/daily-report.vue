@@ -91,6 +91,7 @@ import {
   dailyReportSourceSummary,
   scopedReportingParams
 } from '@/utils/reporting.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
   name: 'GeneratedDailyReport',
@@ -140,7 +141,7 @@ export default {
       if (code === 'DAILY_REPORT_ATTENDANCE_SOURCE_MISSING') return '已审核出勤来源记录不完整。'
       if (code === 'DAILY_REPORT_PRODUCTION_SCHEDULE_REQUIRED') return '今日、昨日或累计口径所需排产尚未维护完整。'
       if (code === 'DAILY_REPORT_VERSION_LIMIT_REACHED') return '该日期已达到 50 个版本，已禁止继续生成。'
-      return error?.data?.message || error?.message || '生产日报生成失败。'
+      return requestErrorMessage(error, '生产日报生成失败。')
     }
 
     const loadList = async () => {

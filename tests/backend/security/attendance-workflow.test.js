@@ -19,6 +19,7 @@ const TeamMembership = require('../../../app/models/TeamMembership');
 const User = require('../../../app/models/User');
 const permissions = require('../../../app/config/permissions');
 const {
+  ACCEPTANCE_TIME_BYPASS_AUDIT_REASON,
   createAttendanceSubmissionService,
   attendanceMonthlyExportRows,
   isAttendanceDeadlineReached
@@ -352,6 +353,55 @@ test('reporters overwrite only their division before 09:00 and officers need a l
     authContext: ordinaryContext(),
     input: submissionInput(fixture.divisions[0], 10)
   }), (error) => error.code === 'ATTENDANCE_SUBMITTER_ROLE_REQUIRED');
+});
+
+test('acceptance test account bypasses date and 09:00 restrictions but keeps permanent locks', async () => {
+  now = new Date('2026-07-14T06:00:00.000Z');
+  const bypassedUserIds = new Set([
+    String(fixture.officer),
+    String(fixture.reporters[0])
+  ]);
+  const service = createAttendanceSubmissionService({
+    clock: () => now,
+    timeRestrictionBypass: (authContext) => bypassedUserIds.has(String(authContext.userId))
+  });
+
+  const options = await service.listOptions({ authContext: officerContext() });
+  assert.equal(options.attendancePolicy.deadlineReached, true);
+  assert.equal(options.attendancePolicy.timeRestrictionsBypassed, true);
+  assert.equal(options.attendancePolicy.lateReasonRequired, false);
+  assert.equal(options.attendancePolicy.canCreate, true);
+
+  const officerCreated = await service.createSubmission({
+    authContext: officerContext(),
+    input: submissionInput(fixture.divisions[0], 13)
+  });
+  assert.equal(officerCreated.accessPolicy.timeRestrictionsBypassed, true);
+  assert.equal(officerCreated.accessPolicy.lateReasonRequired, false);
+  const officerChange = await ReportChangeRecord.findOne({ resourceId: officerCreated._id }).lean();
+  assert.equal(officerChange.reason, ACCEPTANCE_TIME_BYPASS_AUDIT_REASON);
+
+  const reporterCreated = await service.createSubmission({
+    authContext: reporterContext(0),
+    input: submissionInput(fixture.divisions[0], 11, { reportDate: '2026-07-13' })
+  });
+  assert.equal(reporterCreated.reportDate, '2026-07-13');
+  assert.equal(reporterCreated.accessPolicy.editable, true);
+
+  await AttendanceDailyReview.collection.insertOne({
+    teamId: fixture.team,
+    reportDate: '2026-07-12',
+    expectedOrgUnitIds: fixture.divisions,
+    submissionIds: [],
+    summarySnapshot: {},
+    finalText: 'locked',
+    reviewedBy: fixture.officer,
+    reviewedAt: now
+  });
+  await assert.rejects(service.createSubmission({
+    authContext: officerContext(),
+    input: submissionInput(fixture.divisions[1], 10, { reportDate: '2026-07-12' })
+  }), (error) => error.code === 'ATTENDANCE_SUBMISSION_REVIEWED');
 });
 
 test('fixed A:R attendance export preserves 28, 29, 30, and 31-day natural months', () => {

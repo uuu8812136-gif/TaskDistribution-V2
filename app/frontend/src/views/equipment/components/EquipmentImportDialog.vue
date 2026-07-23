@@ -169,12 +169,10 @@
                   <template #default="{ row }">{{ equipmentImportExceptionLabel(row.exceptionType) }}</template>
                 </el-table-column>
                 <el-table-column label="原始值" min-width="130" show-overflow-tooltip>
-                  <template #default="{ row }">{{ formatEquipmentImportValue(row.originalValue) }}</template>
+                  <template #default="{ row }">{{ equipmentImportOriginalValue(row) }}</template>
                 </el-table-column>
                 <el-table-column label="建议处理" min-width="190" show-overflow-tooltip>
-                  <template #default="{ row }">
-                    {{ row.hasSuggestedValue ? `建议值：${formatEquipmentImportValue(row.suggestedValue)}` : row.suggestedAction }}
-                  </template>
+                  <template #default="{ row }">{{ equipmentImportSuggestedAction(row) }}</template>
                 </el-table-column>
                 <el-table-column v-if="importJob.status === 'PREVIEW_READY'" label="客户决定" min-width="190">
                   <template #default="{ row }">
@@ -322,6 +320,8 @@ import {
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
   equipmentImportFieldLabel,
+  equipmentImportOriginalValue,
+  equipmentImportSuggestedAction,
   formatEquipmentImportValue,
   isEquipmentImportDecisionComplete,
   optionForValue

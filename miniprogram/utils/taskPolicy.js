@@ -24,7 +24,7 @@ export function taskDetailUrl(task, {
   teamId = ''
 } = {}) {
   const taskId = taskEntityId(task)
-  if (!taskId) throw new TypeError('Task id is required')
+  if (!taskId) throw new TypeError('任务编号缺失')
 
   const query = [`id=${encodeURIComponent(taskId)}`]
   if (type) query.push(`type=${encodeURIComponent(type)}`)

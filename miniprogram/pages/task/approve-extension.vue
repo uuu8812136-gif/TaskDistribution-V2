@@ -136,6 +136,7 @@ import { ref, reactive, onMounted } from "vue";
 import { formatDate } from "@/utils/format.js";
 import { approveExtension } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
+import { requestErrorMessage } from "@/utils/requestErrorMessages.js";
 
 export default {
   name: "ApproveExtension",
@@ -239,7 +240,7 @@ export default {
         uni.hideLoading();
         console.error("审批失败:", error);
         uni.showToast({
-          title: error.message || "审批失败",
+          title: requestErrorMessage(error, "延期审批失败"),
           icon: "none",
         });
       }

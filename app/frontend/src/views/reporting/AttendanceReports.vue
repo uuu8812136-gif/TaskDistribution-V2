@@ -309,7 +309,7 @@
         <div v-for="issue in dailySummary.dataQuality.issues" :key="issue.code" class="quality-issue-row">
           <el-icon><Warning /></el-icon>
           <div>
-            <strong>{{ issue.message }}</strong>
+            <strong>{{ attendanceQualityIssueMessage(issue) }}</strong>
             <span>模板值 {{ issue.sourceValue }}，按分部原始行计算 {{ issue.calculatedValue }} · {{ issue.sourceReference }}</span>
           </div>
         </div>
@@ -371,6 +371,14 @@
       append-to-body
       @closed="resetForm"
     >
+      <el-alert
+        v-if="attendancePolicy.timeRestrictionsBypassed"
+        class="acceptance-test-notice"
+        title="验收测试账号已临时关闭出勤日期和 09:00 时间限制"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" status-icon>
         <div class="form-grid four-columns">
           <el-form-item label="所属分部" prop="orgUnitId">
@@ -493,7 +501,7 @@
           <div class="section-heading"><h2>数据质量异常</h2></div>
           <div v-for="issue in detail.dataQualityIssues" :key="issue.code" class="quality-issue-row">
             <el-icon><Warning /></el-icon>
-            <div><strong>{{ issue.message }}</strong><span>{{ issue.sourceReference }}</span></div>
+            <div><strong>{{ attendanceQualityIssueMessage(issue) }}</strong><span>{{ issue.sourceReference }}</span></div>
           </div>
         </div>
       </div>
@@ -521,6 +529,7 @@ import { useSessionStore } from '@/stores/session'
 import {
   ATTENDANCE_NAMED_FIELDS,
   attendanceNamesText,
+  attendanceQualityIssueMessage,
   buildAttendancePayload,
   emptyAttendanceForm,
   entityName,
@@ -932,6 +941,10 @@ onMounted(async () => {
 </script>
 
 <style scoped lang="scss">
+.acceptance-test-notice {
+  margin-bottom: 16px;
+}
+
 .attendance-page {
   display: flex;
   flex-direction: column;

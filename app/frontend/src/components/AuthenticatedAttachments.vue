@@ -45,6 +45,7 @@ import { onBeforeUnmount, ref } from 'vue'
 import { Document, Download, Picture, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { downloadFileBlob } from '@/api/file'
+import { requestErrorMessage } from '@/utils/request'
 import {
   attachmentName,
   isImageAttachment,
@@ -99,7 +100,8 @@ async function preview(attachment) {
     previewName.value = attachmentName(attachment)
     previewVisible.value = true
   } catch (error) {
-    ElMessage.error(error.message || '附件预览失败')
+    console.error('附件预览失败:', error)
+    ElMessage.error(requestErrorMessage(error, '附件预览失败，请稍后重试'))
   }
 }
 
@@ -113,7 +115,8 @@ async function download(attachment) {
     link.click()
     setTimeout(() => URL.revokeObjectURL(objectUrl), 1000)
   } catch (error) {
-    ElMessage.error(error.message || '附件下载失败')
+    console.error('附件下载失败:', error)
+    ElMessage.error(requestErrorMessage(error, '附件下载失败，请稍后重试'))
   }
 }
 

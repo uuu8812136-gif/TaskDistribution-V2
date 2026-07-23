@@ -48,6 +48,7 @@
 <script setup>
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import { requestErrorMessage } from '@/utils/request'
 import { buildRuntimeReadingPayload, normalizeRuntimeHours } from '@/utils/equipment'
 
 const props = defineProps({
@@ -86,7 +87,8 @@ async function submitForm() {
   try {
     emit('submit', buildRuntimeReadingPayload(form))
   } catch (error) {
-    ElMessage.warning(error.message || '请完善运行小时读数')
+    console.error('运行小时读数校验失败:', error)
+    ElMessage.warning(requestErrorMessage(error, '请完善运行小时读数'))
   }
 }
 

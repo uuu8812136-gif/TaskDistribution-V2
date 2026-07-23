@@ -201,7 +201,7 @@ test('the Web review payload preserves the explicit approve or reject decision',
   })
   assert.throws(
     () => buildTaskReviewPayload({ content: 'invalid', result: 'pending' }),
-    /approved or rejected/
+    /任务审核结果必须选择通过或驳回/
   )
 })
 

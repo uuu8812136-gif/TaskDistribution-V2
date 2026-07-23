@@ -556,7 +556,7 @@ import { Upload } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useSessionStore } from '@/stores/session'
-import request from '@/utils/request'
+import request, { requestErrorMessage } from '@/utils/request'
 
 const route = useRoute()
 const router = useRouter()
@@ -859,7 +859,7 @@ const submitWithAttachments = async (fileList, submit) => {
 
 const showLocalSubmitError = (error, fallback) => {
   if (error?.config || error?.code === 'ERR_AUTH_CONTEXT_STALE') return
-  ElMessage.error(error?.message || fallback)
+  ElMessage.error(requestErrorMessage(error, fallback))
 }
 
 const handleCompleteSubmit = async () => {

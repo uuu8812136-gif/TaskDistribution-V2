@@ -1,7 +1,14 @@
+import { requestErrorMessage } from './requestErrorMessages.js'
+
 const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i
 const QR_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,86}$/
 const QR_PAYLOAD_KEYS = Object.freeze(['token', 'type', 'v'])
 const QR_URL_TOKEN_KEYS = Object.freeze(['token', 'qrToken', 'qr_token'])
+const OBJECT_ID_FIELD_LABELS = Object.freeze({
+  photoFileId: '照片文件编号',
+  planId: '执行计划编号',
+  ruleId: '点检保养规则编号'
+})
 
 export const ROUTINE_TYPES = Object.freeze({
   INSPECTION: 'INSPECTION',
@@ -31,14 +38,16 @@ const DUE_STATE_LABELS = Object.freeze({
 
 function requiredObjectId(value, field) {
   const normalized = String(value || '').trim()
-  if (!OBJECT_ID_PATTERN.test(normalized)) throw new TypeError(`${field} is invalid`)
+  if (!OBJECT_ID_PATTERN.test(normalized)) {
+    throw new TypeError(`${OBJECT_ID_FIELD_LABELS[field] || '记录编号'}无效`)
+  }
   return normalized.toLowerCase()
 }
 
 function normalizedPhotoIds(value) {
   const ids = Array.isArray(value) ? value.map((item) => requiredObjectId(item, 'photoFileId')) : []
   if (ids.length > 10 || new Set(ids).size !== ids.length) {
-    throw new TypeError('Photo file ids are invalid')
+    throw new TypeError('现场照片文件无效、重复或数量超出限制')
   }
   return ids
 }
@@ -143,7 +152,7 @@ export function classifyEquipmentScanFailure(error) {
 export function equipmentLookupFailureMessage(error) {
   if (Number(error?.statusCode) === 404) return '未找到设备，或该设备不属于当前团队'
   if (Number(error?.statusCode) === 403) return '当前账号无权查看该设备'
-  return error?.message || '设备查询失败，请检查网络后重试'
+  return requestErrorMessage(error, '设备查询失败，请检查网络后重试')
 }
 
 export function routineTypeLabel(value) {
@@ -241,7 +250,7 @@ export function groupRoutineSchedules(schedules = []) {
 
 export function equipmentBusinessMonthRange(now = new Date()) {
   const date = now instanceof Date ? now : new Date(now)
-  if (Number.isNaN(date.getTime())) throw new TypeError('Invalid date')
+  if (Number.isNaN(date.getTime())) throw new TypeError('日期格式无效')
   const shanghai = new Date(date.getTime() + (8 * 60 * 60 * 1000))
   const year = shanghai.getUTCFullYear()
   const month = shanghai.getUTCMonth() + 1
@@ -261,7 +270,7 @@ export async function loadEquipmentMonthlyActivity(equipmentId, {
   now = new Date()
 } = {}) {
   if (typeof fetchRecords !== 'function' || typeof fetchRepairs !== 'function') {
-    throw new TypeError('Monthly activity APIs are required')
+    throw new TypeError('设备活动查询服务配置异常')
   }
   const range = equipmentBusinessMonthRange(now)
   const common = {
@@ -289,7 +298,7 @@ export async function lookupEquipmentFromQr(rawValue, {
   fetchSchedule
 } = {}) {
   if (typeof fetchEquipment !== 'function' || typeof fetchSchedule !== 'function') {
-    throw new TypeError('Equipment QR lookup dependencies are required')
+    throw new TypeError('设备扫码查询服务配置异常')
   }
   const { token } = parseEquipmentQrPayload(rawValue)
   const params = teamId ? { teamId } : {}
@@ -333,7 +342,7 @@ export function buildRoutineRecordPayload({
   const ruleId = requiredObjectId(rule?._id, 'ruleId')
   const routineType = rule?.routineType
   if (!Object.values(ROUTINE_TYPES).includes(routineType)) {
-    throw new TypeError('Routine type is invalid')
+    throw new TypeError('点检保养类型无效')
   }
   const items = Array.isArray(rule.checklistItems) ? rule.checklistItems : []
   if (items.length === 0) throw new TypeError('规则没有可执行项目')

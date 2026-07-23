@@ -104,6 +104,7 @@ import AuthenticatedAttachments from '@/components/AuthenticatedAttachments.vue'
 import { getEquipmentStatusApplication, transitionEquipmentStatusApplication } from '@/api/equipment'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { cleanupTemporaryFiles, existingAttachmentFileList, prepareAttachmentReferences } from '@/utils/attachments'
+import { requestErrorMessage } from '@/utils/request'
 import {
   statusApplicationActionLabel,
   statusApplicationActionTone,
@@ -186,7 +187,8 @@ async function submitAction() {
   } catch (error) {
     await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
     if (error.code === 'EQUIPMENT_STATUS_APPLICATION_CONFLICT') await load()
-    ElMessage.error(error.message || '处理失败')
+    console.error('设备状态申请处理失败:', error)
+    ElMessage.error(requestErrorMessage(error, '设备状态申请处理失败，请稍后重试'))
   } finally {
     submitting.value = false
   }

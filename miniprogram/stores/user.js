@@ -165,7 +165,7 @@ export const useUserStore = defineStore('user', {
       this.token = readAuthToken()
       if (!this.token) {
         this.clearLocalSession('missing-token')
-        throw new Error('Authentication token is missing')
+        throw new Error('登录状态已失效，请重新登录')
       }
 
       if (!force && this.bootstrapStatus === 'ready' && this.bootstrappedToken === this.token) {
@@ -178,7 +178,7 @@ export const useUserStore = defineStore('user', {
         this.bootstrapStatus = 'loading'
         try {
           const payload = await getCurrentUser()
-          if (this.token !== tokenAtStart) throw new Error('Authentication context changed while loading')
+          if (this.token !== tokenAtStart) throw new Error('登录状态已变更，请重新操作')
 
           this.userInfo = payload.user
           this.applyContext(payload.context, {
