@@ -32,7 +32,7 @@
 
 ## 预览与上传
 
-- 预览二维码：`.test-data/wechat-public-preview-20260723-r2/preview-qrcode-latest.png`。
+- 预览二维码：`.test-data/wechat-public-preview-20260723-r2/preview-qrcode-latest.jpg`。
 - 上传版本：`0.9.20260723.2`。
 - 上传代码包：1,247,592 bytes。
 - 官方 MCP 返回：`success: true`。
