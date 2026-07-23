@@ -171,3 +171,14 @@ V2 干净客户测试基线备份：
 - 旧版`https://www.horselink.cn/health`保持HTTP 200，生产数据未修改。
 
 事故报告：`INCIDENT_20260723_V2_TEST_502.md`。服务器证据目录：`/var/log/taskdistribution-v2-test/incident-config-acl-20260723T075516Z`。
+
+## 11. 2026-07-23 用户提示中文化增量发布
+
+- Web源码提交：`976e8cdba121c0607e3219b0b17dbb0e94373a99`。
+- V2 release：`/opt/taskdistribution-v2-test/releases/web-localization-976e8cd-20260723T104552Z`。
+- 回滚点：`/opt/taskdistribution-v2-test/releases/acceptance-time-20260723T100135Z`。
+- 仅替换隔离V2的`app/frontend/dist`并原子切换`current`；API、MongoDB、隧道及旧版服务均未重启。
+- 公网`index.html` SHA256为`C96CF840C352D7F0C78D2E579507F58D551AF46E79E2E49DE17BEB7D95570DE2`，与本地生产构建一致；设备异常和出勤异常中文资源也逐文件哈希一致。
+- 公网`/`、`/login`、`/health`、`/api/auth/login-teams`及旧版`/health`均返回HTTP 200；`mongod-v2-test`、V2 API、V2隧道均为`active/running`且`NRestarts=0`。
+- 服务器证据目录：`/var/log/taskdistribution-v2-test/deploy-web-localization-976e8cd-20260723T104552Z`。
+- 本次完成HTTP与运行资源验证，没有新增浏览器点击或微信开发者工具证据；用户界面行为由Web`138/138`和小程序`88/88`自动化覆盖。
