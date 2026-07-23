@@ -296,20 +296,12 @@ export default {
 			// 上传附件
 			let attachments = []
 			if (fileList.value.length > 0) {
-				uni.showLoading({
-					title: '上传附件中...',
-					mask: true
-				})
-				
 				try {
 					for (const file of fileList.value) {
 						const uploadRes = await uploadTaskAttachment(file)
 						attachments.push(uploadRes)
 					}
-					
-					uni.hideLoading()
 				} catch (error) {
-					uni.hideLoading()
 					console.error('上传附件失败:', error)
 					uni.showToast({
 						title: '附件上传失败',
@@ -320,18 +312,12 @@ export default {
 			}
 			
 			// 提交完成
-			uni.showLoading({
-				title: '提交中...',
-				mask: true
-			})
-			
 			try {
 				await completeTask(taskId.value, {
 					completionNote: form.value.completionNote,
 					attachments
 				})
 				
-				uni.hideLoading()
 				uni.showToast({
 					title: '提交成功',
 					icon: 'success'
@@ -341,7 +327,6 @@ export default {
 					uni.navigateBack()
 				}, 1500)
 			} catch (error) {
-				uni.hideLoading()
 				console.error('提交失败:', error)
 				uni.showToast({
 					title: requestErrorMessage(error, '任务完成结果提交失败'),

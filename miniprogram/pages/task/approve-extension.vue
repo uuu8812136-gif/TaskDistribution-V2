@@ -216,8 +216,6 @@ export default {
       }
 
       // 提交审批
-      uni.showLoading({ title: "提交中..." });
-
       try {
         await approveExtension(extensionData.value._id, {
           status: form.status,
@@ -225,8 +223,6 @@ export default {
             form.status === "approved" ? form.approvedDays : undefined,
           approvalNote: form.approvalNote.trim(),
         });
-
-        uni.hideLoading();
         uni.showToast({
           title: "审批成功",
           icon: "success",
@@ -237,7 +233,6 @@ export default {
           uni.navigateBack();
         }, 1500);
       } catch (error) {
-        uni.hideLoading();
         console.error("审批失败:", error);
         uni.showToast({
           title: requestErrorMessage(error, "延期审批失败"),

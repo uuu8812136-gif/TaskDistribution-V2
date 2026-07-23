@@ -98,11 +98,6 @@
 
         <!-- 空状态 -->
         <view v-else-if="!loading" class="empty-state">
-          <image
-            class="empty-img"
-            src="/static/empty.png"
-            mode="aspectFit"
-          ></image>
           <text class="empty-text">暂无任务</text>
         </view>
 
@@ -522,12 +517,6 @@ export default {
 .empty-state {
   text-align: center;
   padding: 120rpx 0;
-
-  .empty-img {
-    width: 400rpx;
-    height: 300rpx;
-    margin-bottom: 32rpx;
-  }
 
   .empty-text {
     display: block;

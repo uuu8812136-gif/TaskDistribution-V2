@@ -26,14 +26,7 @@ export const useMessageStore = defineStore('message', {
 
   actions: {
     updateBadge() {
-      if (this.unreadCount > 0) {
-        uni.setTabBarBadge({
-          index: 3,
-          text: this.unreadCount > 99 ? '99+' : String(this.unreadCount)
-        })
-      } else {
-        uni.removeTabBarBadge({ index: 3 })
-      }
+      // The project uses a custom tab bar, whose badge reads this store directly.
       uni.$emit('message-unread-changed', this.unreadCount)
     },
 
@@ -68,7 +61,6 @@ export const useMessageStore = defineStore('message', {
 
     resetContext() {
       this.unreadCount = 0
-      uni.removeTabBarBadge({ index: 3 })
       uni.$emit('message-unread-changed', 0)
     }
   }

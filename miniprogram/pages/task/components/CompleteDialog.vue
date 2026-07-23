@@ -115,20 +115,13 @@ export default {
 			// 如果有附件，先上传附件
 			let attachments = []
 			if (fileList.value.length > 0) {
-				uni.showLoading({
-					title: '上传附件中...',
-					mask: true
-				})
-				
 				try {
 					for (const file of fileList.value) {
 						const uploadRes = await uploadTaskAttachment(file)
 						attachments.push(uploadRes)
 					}
 					
-					uni.hideLoading()
 				} catch (error) {
-					uni.hideLoading()
 					console.error('上传附件失败:', error)
 					uni.showToast({
 						title: '附件上传失败',

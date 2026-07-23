@@ -15,6 +15,7 @@ import {
   clearSessionSnapshot,
   readAuthToken
 } from './sessionRuntime.js'
+import { createRequestSettlement } from './requestSettlement.js'
 
 const tracker = createRequestContextTracker(readAuthToken)
 let unauthorizedHandler = null
@@ -39,7 +40,8 @@ function showLoading(options) {
 
 function hideLoading(options) {
   if (options.showLoading === false) return
-  loadingCount = Math.max(0, loadingCount - 1)
+  if (loadingCount === 0) return
+  loadingCount -= 1
   if (loadingCount === 0) uni.hideLoading()
 }
 
@@ -112,7 +114,6 @@ function handleUnauthorized(options, requestContext) {
     clearSessionSnapshot()
     clearLegacyCredentialCaches()
     clearScopedCaches()
-    uni.removeTabBarBadge({ index: 3 })
     uni.$emit('auth-context-changed', { reason: 'unauthorized' })
     uni.showToast({ title: '登录已过期，请重新登录', icon: 'none' })
     setTimeout(() => uni.reLaunch({ url: '/pages/login/index' }), 300)
@@ -145,17 +146,18 @@ const request = (rawOptions) => {
 
   return new Promise((resolve, reject) => {
     showLoading(options)
-    uni.request({
-      ...options,
-      success: (response) => {
-        try {
-          resolve(handleResponse(response, options, requestContext))
-        } catch (error) {
-          reject(error)
-        }
-      },
-      fail: (error) => {
-        try {
+    const settlement = createRequestSettlement({
+      finishLoading: () => hideLoading(options),
+      resolve,
+      reject
+    })
+    try {
+      uni.request({
+        ...options,
+        success: (response) => settlement.resolveWith(
+          () => handleResponse(response, options, requestContext)
+        ),
+        fail: (error) => settlement.rejectWith(() => {
           tracker.assertCurrent(requestContext)
           const localizedError = localizeRequestError(
             error,
@@ -164,13 +166,13 @@ const request = (rawOptions) => {
           if (!isStaleContextResponseError(localizedError) && options.silentError !== true) {
             uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(localizedError)
-        } catch (staleError) {
-          reject(staleError)
-        }
-      },
-      complete: () => hideLoading(options)
-    })
+          return localizedError
+        }),
+        complete: settlement.complete
+      })
+    } catch (error) {
+      settlement.rejectWith(() => error)
+    }
   })
 }
 
@@ -214,29 +216,33 @@ export const upload = (url, filePath, formData = {}, options = {}) => {
   const token = options.auth === false ? '' : requestContext.token
 
   return new Promise((resolve, reject) => {
-    showLoading({ loadingText: '上传中...', ...options })
-    uni.uploadFile({
-      url: resolveUrl(url),
-      filePath,
-      name: options.name || 'file',
-      formData,
-      header: buildHeaders({ ...options, contentType: false, header: options.header }, token),
-      success: (response) => {
-        try {
+    const loadingOptions = { loadingText: '上传中...', ...options }
+    showLoading(loadingOptions)
+    const settlement = createRequestSettlement({
+      finishLoading: () => hideLoading(loadingOptions),
+      resolve,
+      reject
+    })
+    try {
+      uni.uploadFile({
+        url: resolveUrl(url),
+        filePath,
+        name: options.name || 'file',
+        formData,
+        header: buildHeaders({ ...options, contentType: false, header: options.header }, token),
+        success: (response) => settlement.resolveWith(() => {
           const data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data
-          resolve(handleResponse({ ...response, data }, options, requestContext))
-        } catch (error) {
+          return handleResponse({ ...response, data }, options, requestContext)
+        }, (error) => {
           const localizedError = error?.statusCode
             ? error
             : localizeRequestError(error, options.errorMessage || '上传响应异常，请稍后重试')
           if (!error?.statusCode && options.silentError !== true) {
             uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(localizedError)
-        }
-      },
-      fail: (error) => {
-        try {
+          return localizedError
+        }),
+        fail: (error) => settlement.rejectWith(() => {
           tracker.assertCurrent(requestContext)
           const localizedError = localizeRequestError(
             error,
@@ -245,13 +251,13 @@ export const upload = (url, filePath, formData = {}, options = {}) => {
           if (options.silentError !== true) {
             uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(localizedError)
-        } catch (staleError) {
-          reject(staleError)
-        }
-      },
-      complete: () => hideLoading(options)
-    })
+          return localizedError
+        }),
+        complete: settlement.complete
+      })
+    } catch (error) {
+      settlement.rejectWith(() => error)
+    }
   })
 }
 
@@ -260,31 +266,32 @@ export const download = (url, options = {}) => {
   const token = options.auth === false ? '' : requestContext.token
 
   return new Promise((resolve, reject) => {
-    showLoading({ loadingText: '下载中...', ...options })
-    uni.downloadFile({
-      url: resolveUrl(url),
-      header: buildHeaders({ ...options, contentType: false, header: options.header }, token),
-      success: (response) => {
-        try {
+    const loadingOptions = { loadingText: '下载中...', ...options }
+    showLoading(loadingOptions)
+    const settlement = createRequestSettlement({
+      finishLoading: () => hideLoading(loadingOptions),
+      resolve,
+      reject
+    })
+    try {
+      uni.downloadFile({
+        url: resolveUrl(url),
+        header: buildHeaders({ ...options, contentType: false, header: options.header }, token),
+        success: (response) => settlement.resolveWith(() => {
           tracker.assertCurrent(requestContext)
           if (response.statusCode >= 200 && response.statusCode < 300) {
-            resolve({
+            return {
               tempFilePath: response.tempFilePath,
               statusCode: response.statusCode
-            })
-            return
+            }
           }
           let data = response.data
           if (typeof data === 'string') {
             try { data = JSON.parse(data) } catch { data = {} }
           }
-          handleResponse({ ...response, data: data || {} }, options, requestContext)
-        } catch (error) {
-          reject(error)
-        }
-      },
-      fail: (error) => {
-        try {
+          return handleResponse({ ...response, data: data || {} }, options, requestContext)
+        }),
+        fail: (error) => settlement.rejectWith(() => {
           tracker.assertCurrent(requestContext)
           const localizedError = localizeRequestError(
             error,
@@ -293,13 +300,13 @@ export const download = (url, options = {}) => {
           if (options.silentError !== true) {
             uni.showToast({ title: localizedError.message, icon: 'none' })
           }
-          reject(localizedError)
-        } catch (staleError) {
-          reject(staleError)
-        }
-      },
-      complete: () => hideLoading(options)
-    })
+          return localizedError
+        }),
+        complete: settlement.complete
+      })
+    } catch (error) {
+      settlement.rejectWith(() => error)
+    }
   })
 }
 
