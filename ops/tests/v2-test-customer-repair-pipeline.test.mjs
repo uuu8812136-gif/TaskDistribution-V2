@@ -35,6 +35,7 @@ const migrationCollections = [
   'attendancedailyreviews',
   'generateddailyreports'
 ]
+const requiredBackupCollections = [...migrationCollections, 'authsessions']
 
 test('release package and candidate preparation require and syntax-check both protected migrations', () => {
   for (const file of migrationFiles) {
@@ -53,9 +54,22 @@ test('release package and candidate preparation require and syntax-check both pr
   assert.match(prepare, /node --check "\$temporary\/ops\/lib\/v2MigrationPreviewInvariant\.js"/)
 })
 
+test('candidate preparation accepts a stopped forward fix only with sealed migration evidence', () => {
+  assert.match(prepare, /--forward-fix-migration-started/)
+  assert.match(prepare, /task-distribution-v2-migration-started\/v1/)
+  assert.match(prepare, /started\.releaseId !== expectedReleaseId/)
+  assert.match(prepare, /started\.migrationPreviewSha256 !== previewSha256/)
+  assert.match(prepare, /started\.codeOnlyRollbackAllowed !== false/)
+  assert.match(prepare, /v2_require_inactive "\$V2_API_UNIT"/)
+  assert.match(prepare, /v2_require_inactive "\$V2_TUNNEL_UNIT"/)
+  assert.match(prepare, /Forward-fix evidence directory must be root-owned/)
+})
+
 test('stopped-state digest and both on-host and D: backup gates cover all migration inputs', () => {
   for (const collection of migrationCollections) {
     assert.ok(common.includes(`"${collection}"`), `migration digest is missing ${collection}`)
+  }
+  for (const collection of requiredBackupCollections) {
     assert.ok(backup.includes(`'${collection}'`), `on-host backup gate is missing ${collection}`)
     assert.ok(offHostCopy.includes(`'${collection}'`), `D: receipt gate is missing ${collection}`)
     assert.ok(activate.includes(`'${collection}'`), `activation receipt gate is missing ${collection}`)

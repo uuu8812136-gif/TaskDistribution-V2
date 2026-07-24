@@ -144,6 +144,7 @@ const required = [
   'transportrecords',
   'equipmentassets',
   'equipmentroutineplans',
+  'authsessions',
   'productionschedules',
   'attendancesubmissions',
   'attendancedailyreviews',

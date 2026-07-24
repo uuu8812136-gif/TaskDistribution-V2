@@ -134,6 +134,17 @@ sudo /usr/bin/env bash "$TOOLS/prepare-v2-test-candidate.sh" \
   --source-commit "$COMMIT"
 ```
 
+如果上一 release 已写入 `migration-started.json` 后失败，禁止为了通过候选准备门禁而重启旧 V2。
+保持 API 和 tunnel 均停止，并在上述 dry-run 和 execute 命令中增加：
+
+```bash
+--forward-fix-migration-started \
+  /var/log/taskdistribution-v2-test/releases/<失败release-id>/migration-started.json
+```
+
+脚本会验证 evidence 目录为 root 所有、`migration-started.json` 身份字段、绑定的 preview SHA256 和
+`codeOnlyRollbackAllowed=false`；没有这组不可变证据时仍要求 V2 API/tunnel 正常运行。
+
 dry-run 成功后显式执行：
 
 ```bash

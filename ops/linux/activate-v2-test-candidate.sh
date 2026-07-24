@@ -105,6 +105,7 @@ const requiredCollections = [
   'transportrecords',
   'equipmentassets',
   'equipmentroutineplans',
+  'authsessions',
   'productionschedules',
   'attendancesubmissions',
   'attendancedailyreviews',

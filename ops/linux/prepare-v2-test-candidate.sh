@@ -10,6 +10,7 @@ archive_sha256=''
 release_id=''
 source_commit=''
 confirm_instance=''
+forward_fix_migration_started=''
 execute=0
 
 usage() {
@@ -18,7 +19,8 @@ Prepare an immutable V2 customer-test candidate without switching current or res
 
 Dry-run (default):
   prepare-v2-test-candidate.sh --archive <absolute.tar.gz> --archive-sha256 <sha256> \
-    --release-id <id> --source-commit <40-hex-commit>
+    --release-id <id> --source-commit <40-hex-commit> \
+    [--forward-fix-migration-started <absolute migration-started.json>]
 
 Execute:
   prepare-v2-test-candidate.sh ... --execute \
@@ -32,6 +34,7 @@ while test "$#" -gt 0; do
     --archive-sha256) archive_sha256="${2:-}"; shift 2 ;;
     --release-id) release_id="${2:-}"; shift 2 ;;
     --source-commit) source_commit="${2:-}"; shift 2 ;;
+    --forward-fix-migration-started) forward_fix_migration_started="${2:-}"; shift 2 ;;
     --confirm-instance) confirm_instance="${2:-}"; shift 2 ;;
     --execute) execute=1; shift ;;
     --help|-h) usage; exit 0 ;;
@@ -55,8 +58,45 @@ test ! -e "$candidate" && test ! -L "$candidate" || v2_die "Release already exis
 v2_assert_legacy_healthy
 v2_assert_mongo_primary
 v2_assert_app_environment
-v2_require_active "$V2_API_UNIT"
-v2_require_active "$V2_TUNNEL_UNIT"
+if test -z "$forward_fix_migration_started"; then
+  v2_require_active "$V2_API_UNIT"
+  v2_require_active "$V2_TUNNEL_UNIT"
+else
+  test "${forward_fix_migration_started#/}" != "$forward_fix_migration_started" || \
+    v2_die '--forward-fix-migration-started must be absolute'
+  test -f "$forward_fix_migration_started" && test ! -L "$forward_fix_migration_started" || \
+    v2_die 'Forward-fix migration-started evidence must be a real file'
+  forward_fix_migration_started=$(readlink -f "$forward_fix_migration_started")
+  forward_fix_evidence_dir=$(dirname -- "$forward_fix_migration_started")
+  case "$forward_fix_migration_started" in
+    "${V2_EVIDENCE_ROOT}/"*/migration-started.json) ;;
+    *) v2_die 'Forward-fix evidence escaped the V2 release evidence root' ;;
+  esac
+  test "$(stat -c '%U:%G' "$forward_fix_evidence_dir")" = root:root || \
+    v2_die 'Forward-fix evidence directory must be root-owned'
+  test -f "$forward_fix_evidence_dir/migration-preview.json" && \
+    test ! -L "$forward_fix_evidence_dir/migration-preview.json" || \
+    v2_die 'Forward-fix migration preview evidence is missing'
+  v2_require_inactive "$V2_API_UNIT"
+  v2_require_inactive "$V2_TUNNEL_UNIT"
+  /usr/bin/node - "$forward_fix_migration_started" "$forward_fix_evidence_dir/migration-preview.json" <<'NODE'
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [startedPath, previewPath] = process.argv.slice(2);
+const started = JSON.parse(fs.readFileSync(startedPath, 'utf8'));
+const expectedReleaseId = path.basename(path.dirname(startedPath));
+const previewSha256 = createHash('sha256').update(fs.readFileSync(previewPath)).digest('hex');
+if (
+  started.format !== 'task-distribution-v2-migration-started/v1' ||
+  started.releaseId !== expectedReleaseId ||
+  !/^backup-\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(started.backupId || '') ||
+  !/^[a-f0-9]{64}$/.test(started.migrationPreviewSha256 || '') ||
+  started.migrationPreviewSha256 !== previewSha256 ||
+  started.codeOnlyRollbackAllowed !== false
+) throw new Error('Forward-fix migration-started evidence is invalid');
+NODE
+fi
 
 if test "$execute" -ne 1; then
   printf '{"status":"DRY_RUN_READY","action":"prepare-candidate","releaseId":"%s","candidate":"%s","archiveSha256":"%s"}\n' \
