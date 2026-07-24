@@ -130,7 +130,8 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'activate-v2-test-restored-rollback.sh'
     )
     foreach ($script in $expectedShellScripts) {
-      Write-TestFile -Path (Join-Path $fixtureRoot "ops/linux/$script") -Value "#!/usr/bin/env bash`ntrue`n"
+      Write-TestFile -Path (Join-Path $fixtureRoot "ops/linux/$script") `
+        -Value "#!/usr/bin/env bash`r`ntrue`r`n"
     }
 
     Write-TestFile -Path (Join-Path $fixtureRoot 'ops/linux/repair-v2-test-config-acl.sh') `
@@ -231,6 +232,12 @@ exit /b 91
     )) {
       Test-Path -LiteralPath (Join-Path $installedToolRoot "ops/linux/../lib/$library") -PathType Leaf |
         Should Be $true
+    }
+    foreach ($script in $expectedShellScripts) {
+      $packagedScript = Join-Path $installedToolRoot "ops/linux/$script"
+      $scriptText = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($packagedScript))
+      $scriptText.Contains("`r`n") | Should Be $false
+      $scriptText.Contains("`n") | Should Be $true
     }
 
     Write-TestFile -Path (Join-Path $fixtureRoot 'app/should-not-package.env') `

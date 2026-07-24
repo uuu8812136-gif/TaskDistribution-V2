@@ -93,6 +93,51 @@ function Get-RelativePackagePath {
   return $fileFull.Substring($rootFull.Length + 1).Replace('\', '/')
 }
 
+function Convert-ShellScriptsToLf {
+  param([Parameter(Mandatory = $true)][string]$Root)
+
+  foreach ($script in @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File -Filter '*.sh')) {
+    $source = [IO.File]::ReadAllBytes($script.FullName)
+    $normalized = New-Object IO.MemoryStream
+    try {
+      for ($index = 0; $index -lt $source.Length; $index++) {
+        if (
+          $source[$index] -eq 13 -and
+          $index + 1 -lt $source.Length -and
+          $source[$index + 1] -eq 10
+        ) {
+          $normalized.WriteByte(10)
+          $index++
+        }
+        else {
+          $normalized.WriteByte($source[$index])
+        }
+      }
+      $result = $normalized.ToArray()
+    }
+    finally {
+      $normalized.Dispose()
+    }
+    if ($result.Length -ne $source.Length) {
+      [IO.File]::WriteAllBytes($script.FullName, $result)
+    }
+  }
+}
+
+function Assert-ShellScriptsUseLf {
+  param([Parameter(Mandatory = $true)][string]$Root)
+
+  foreach ($script in @(Get-ChildItem -LiteralPath $Root -Recurse -Force -File -Filter '*.sh')) {
+    $bytes = [IO.File]::ReadAllBytes($script.FullName)
+    for ($index = 0; $index + 1 -lt $bytes.Length; $index++) {
+      if ($bytes[$index] -eq 13 -and $bytes[$index + 1] -eq 10) {
+        $relativePath = Get-RelativePackagePath -Root $Root -FullName $script.FullName
+        throw "Packaged shell script contains CRLF line endings: $relativePath"
+      }
+    }
+  }
+}
+
 if ($ReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{5,95}$') {
   throw 'ReleaseId must be 6-96 safe ASCII characters'
 }
@@ -237,6 +282,8 @@ try {
   ) + $releaseArchivePaths
   Invoke-NativeChecked -FilePath $git -Arguments $archiveArguments
   Invoke-NativeChecked -FilePath $tar -Arguments @('-xf', $sourceTar, '-C', $packageRoot)
+  Convert-ShellScriptsToLf -Root $packageRoot
+  Assert-ShellScriptsUseLf -Root $packageRoot
 
   $deployLinux = Join-Path $packageRoot 'deploy\linux'
   New-Item -ItemType Directory -Force -Path $deployLinux | Out-Null
