@@ -244,8 +244,8 @@ v2_run_app_node_sealed_report "$V2_APP_ENV" \
 const report = JSON.parse(require('node:fs').readFileSync(process.argv[2], 'utf8'));
 if (report.status !== 'EXECUTED' || report.writePerformed !== true ||
     report.backup?.backupId !== process.argv[3] ||
-    report.backup?.manifestSha256 !== process.argv[4] || report.dataWrites !== 3 ||
-    report.auditLogsCreated !== 3 || report.after?.state !== 'ALREADY_APPLIED' ||
+    report.backup?.manifestSha256 !== process.argv[4] || report.dataWrites !== 4 ||
+    report.auditLogsCreated !== 4 || report.after?.state !== 'ALREADY_APPLIED' ||
     report.after?.plannedWriteCount !== 0 || report.after?.blockerCount !== 0) process.exit(1);
 NODE
 
@@ -342,16 +342,24 @@ test "$healthy" -eq 1 || v2_die 'Candidate API did not become healthy'
 indexes_ready=0
 for _ in $(seq 1 30); do
   if mongosh --quiet --host 127.0.0.1 --port 27150 --eval '
-      const names=db.getSiblingDB("customer_acceptance_v2_test").transport_master_data.getIndexes().map(x=>x.name);
-      quit(names.includes("uq_transport_master_team_kind_key") &&
-        names.includes("ix_transport_master_team_kind_status_sort") ? 0 : 2);
+      const d=db.getSiblingDB("customer_acceptance_v2_test");
+      const transportNames=d.transport_master_data.getIndexes().map(x=>x.name);
+      const productionIndex=d.productionschedules.getIndexes()
+        .find(x=>x.name==="uq_production_schedule_team_month");
+      const productionIndexReady=productionIndex?.unique===true &&
+        productionIndex.key?.teamId===1 && productionIndex.key?.month===1 &&
+        Object.keys(productionIndex.key).length===2;
+      quit(transportNames.includes("uq_transport_master_team_kind_key") &&
+        transportNames.includes("ix_transport_master_team_kind_status_sort") &&
+        productionIndexReady ? 0 : 2);
     ' >/dev/null 2>&1; then
     indexes_ready=1
     break
   fi
   sleep 1
 done
-test "$indexes_ready" -eq 1 || v2_die 'Transport master-data indexes were not created'
+test "$indexes_ready" -eq 1 || \
+  v2_die 'Required transport and production schedule indexes were not created'
 
 systemctl start "$V2_TUNNEL_UNIT"
 v2_require_active "$V2_TUNNEL_UNIT"

@@ -174,7 +174,53 @@ async function seed() {
     dailyEntry('2026-07-23', 20),
     dailyEntry('2026-07-24', 30)
   ];
+  const juneCanonicalEntries = [
+    dailyEntry('2026-06-23', 240),
+    dailyEntry('2026-06-24', 239)
+  ];
+  const juneDuplicateEntries = juneCanonicalEntries.map((entry) => ({
+    ...entry,
+    aLineNight: 0,
+    northLine: 0,
+    transferCaseLine: 0,
+    bLineDay: 0,
+    bLineNight: 0
+  }));
   await ProductionSchedule.collection.insertMany([
+    {
+      _id: oid(TARGETS.juneCanonicalScheduleId),
+      teamId,
+      orgUnitId: rootOrgUnitId,
+      month: TARGETS.juneMonth,
+      dailyEntries: juneCanonicalEntries,
+      productionPlanForecast: TARGETS.juneCanonicalProductionPlanForecast,
+      monthlyTotals: TARGETS.juneCanonicalMonthlyTotals,
+      createdBy: reviewerId,
+      updatedBy: reviewerId,
+      createdAt,
+      updatedAt: createdAt,
+      __v: 0
+    },
+    {
+      _id: oid(TARGETS.juneDuplicateScheduleId),
+      teamId,
+      orgUnitId: secondOrgUnitId,
+      month: TARGETS.juneMonth,
+      dailyEntries: juneDuplicateEntries,
+      productionPlanForecast: null,
+      monthlyTotals: {
+        aLine: null,
+        northLine: null,
+        transferCaseLine: null,
+        bLineDay: null,
+        bLineNight: null
+      },
+      createdBy: reviewerId,
+      updatedBy: reviewerId,
+      createdAt,
+      updatedAt: createdAt,
+      __v: 0
+    },
     {
       _id: oid(TARGETS.canonicalScheduleId),
       teamId,
@@ -341,7 +387,7 @@ after(async () => {
   if (replicaSet) await replicaSet.stop();
 });
 
-test('dry-run identifies exactly three writes and does not mutate acceptance data', async () => {
+test('dry-run identifies exactly four writes and does not mutate acceptance data', async () => {
   const beforeHashes = {
     schedules: JSON.stringify(await ProductionSchedule.find({}).sort({ _id: 1 }).lean()),
     submissions: JSON.stringify(await AttendanceSubmission.find({}).sort({ _id: 1 }).lean()),
@@ -350,10 +396,11 @@ test('dry-run identifies exactly three writes and does not mutate acceptance dat
   const report = await service().run();
   assert.equal(report.status, 'DRY_RUN_READY');
   assert.equal(report.writePerformed, false);
-  assert.equal(report.before.plannedWriteCount, 3);
-  assert.equal(report.before.plannedAuditCount, 3);
+  assert.equal(report.before.plannedWriteCount, 4);
+  assert.equal(report.before.plannedAuditCount, 4);
   assert.equal(report.before.blockerCount, 0);
   assert.deepEqual(report.before.operations.map(({ type }) => type), [
+    'DELETE_DUPLICATE_JUNE_PRODUCTION_SCHEDULE',
     'DELETE_DUPLICATE_PRODUCTION_SCHEDULE',
     'MIGRATE_TEMPORARY_WORKER_ATTENDANCE',
     'RECOMPUTE_ATTENDANCE_DAILY_REVIEW'
@@ -374,14 +421,17 @@ test('execute repairs all fixed records transactionally and the second dry-run i
   });
   assert.equal(report.status, 'EXECUTED');
   assert.equal(report.writePerformed, true);
-  assert.equal(report.dataWrites, 3);
-  assert.equal(report.auditLogsCreated, 3);
+  assert.equal(report.dataWrites, 4);
+  assert.equal(report.auditLogsCreated, 4);
   assert.equal(report.after.state, 'ALREADY_APPLIED');
   assert.equal(report.after.plannedWriteCount, 0);
 
-  assert.equal(await ProductionSchedule.countDocuments({}), 1);
+  assert.equal(await ProductionSchedule.countDocuments({}), 2);
   assert.equal(await ProductionSchedule.countDocuments({
     _id: oid(TARGETS.duplicateScheduleId)
+  }), 0);
+  assert.equal(await ProductionSchedule.countDocuments({
+    _id: oid(TARGETS.juneDuplicateScheduleId)
   }), 0);
   const canonical = await ProductionSchedule.findById(TARGETS.canonicalScheduleId).lean();
   assert.equal(String(canonical.orgUnitId), String(fixture.rootOrgUnitId));
@@ -401,7 +451,7 @@ test('execute repairs all fixed records transactionally and the second dry-run i
   assert.equal(review.finalText.includes('legacy doubled schedule text'), false);
 
   const audits = await AuditLog.find({}).sort({ createdAt: 1 }).lean();
-  assert.equal(audits.length, 3);
+  assert.equal(audits.length, 4);
   assert.deepEqual(new Set(audits.map(({ resourceType }) => resourceType)), new Set([
     permissions.AUDIT_RESOURCE_TYPES.PRODUCTION_SCHEDULE,
     permissions.AUDIT_RESOURCE_TYPES.ATTENDANCE_SUBMISSION,
@@ -417,7 +467,7 @@ test('execute repairs all fixed records transactionally and the second dry-run i
   assert.equal(repeated.before.state, 'ALREADY_APPLIED');
   assert.equal(repeated.before.plannedWriteCount, 0);
   assert.equal(repeated.writePerformed, false);
-  assert.equal(await AuditLog.countDocuments({}), 3);
+  assert.equal(await AuditLog.countDocuments({}), 4);
 });
 
 test('any unrelated teamId + month conflict blocks the fixed migration', async () => {
@@ -490,11 +540,28 @@ test('a changed fixed duplicate is a blocker and is never guessed or merged', as
   assert.equal(report.status, 'DRY_RUN_BLOCKED');
   assert.equal(report.before.plannedWriteCount, 0);
   assert.ok(report.before.blockers.some(({ code }) => code === 'DUPLICATE_SCHEDULE_FORECAST_NOT_EMPTY'));
-  assert.equal(await ProductionSchedule.countDocuments({}), 2);
+  assert.equal(await ProductionSchedule.countDocuments({}), 4);
   assert.equal((await AttendanceSubmission.findById(TARGETS.attendanceSubmissionId).lean()).otherRemark, TARGETS.sourceRemark);
 });
 
-test('an audit failure rolls back all three business mutations', async () => {
+test('a changed fixed June duplicate blocks migration instead of being deleted', async () => {
+  await ProductionSchedule.collection.updateOne({
+    _id: oid(TARGETS.juneDuplicateScheduleId)
+  }, {
+    $set: { 'dailyEntries.0.aLineDay': 241 }
+  });
+  const report = await service().run();
+  assert.equal(report.status, 'DRY_RUN_BLOCKED');
+  assert.equal(report.before.plannedWriteCount, 0);
+  assert.ok(report.before.blockers.some(({ code }) => code === 'JUNE_DUPLICATE_SCHEDULE_DAILY_VALUES_DIFFER'));
+  assert.equal(await ProductionSchedule.countDocuments({}), 4);
+  assert.equal(await ProductionSchedule.countDocuments({
+    _id: oid(TARGETS.juneDuplicateScheduleId)
+  }), 1);
+  assert.equal((await AttendanceSubmission.findById(TARGETS.attendanceSubmissionId).lean()).otherRemark, TARGETS.sourceRemark);
+});
+
+test('an audit failure rolls back all four business mutations', async () => {
   let auditCalls = 0;
   const failingAuditService = {
     async recordSystem() {
@@ -507,7 +574,7 @@ test('an audit failure rolls back all three business mutations', async () => {
     confirmDatabase: DATABASE_NAME,
     backupDirectory: path.resolve(os.tmpdir(), 'acceptance-july-repair-backup')
   }), /simulated audit persistence failure/);
-  assert.equal(await ProductionSchedule.countDocuments({}), 2);
+  assert.equal(await ProductionSchedule.countDocuments({}), 4);
   const submission = await AttendanceSubmission.findById(TARGETS.attendanceSubmissionId).lean();
   assert.equal(submission.otherRemark, TARGETS.sourceRemark);
   assert.equal(submission.dayShift.temporaryWorker?.count || 0, 0);

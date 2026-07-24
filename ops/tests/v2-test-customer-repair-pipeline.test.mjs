@@ -149,3 +149,14 @@ test('post-activation verification rechecks customer repair reports and live dat
   assert.match(verify, /v2_verify_customer_repair_state/)
   assert.match(verify, /V2 customer equipment and acceptance repair invariants failed/)
 })
+
+test('activation and verification require the unique production team-month index', () => {
+  for (const script of [activate, verify]) {
+    assert.match(script, /uq_production_schedule_team_month/)
+    assert.match(script, /productionIndex(?:Ready|Valid)|productionScheduleIndexValid/)
+    assert.match(script, /\.unique===true/)
+    assert.match(script, /\.key\?\.teamId===1/)
+    assert.match(script, /\.key\?\.month===1/)
+    assert.match(script, /Object\.keys\([^\n]+\.key\)\.length===2/)
+  }
+})

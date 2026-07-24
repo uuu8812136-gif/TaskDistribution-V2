@@ -27,12 +27,23 @@ const { runWithRequiredTransaction } = require('./transactionService');
 
 const MIGRATION_REPORT_FORMAT = 'acceptance-july-2026-data-repair/v1';
 const ALLOWED_EXECUTION_DATABASE = 'customer_acceptance_v2_test';
-const MIGRATION_REASON = 'Repair the verified July 2026 acceptance schedule and temporary-worker attendance data';
+const MIGRATION_REASON = 'Repair the verified June/July 2026 acceptance schedules and temporary-worker attendance data';
 const TARGETS = Object.freeze({
   month: '2026-07',
+  juneMonth: '2026-06',
   reportDate: '2026-07-24',
   canonicalScheduleId: '6a588ae29ad35af9cfd73c9c',
   duplicateScheduleId: '6a62bd82e4e630b273cd7156',
+  juneCanonicalScheduleId: '6a59e5eefe119695fb20f639',
+  juneDuplicateScheduleId: '6a62d614e4e630b273cfbf1f',
+  juneCanonicalProductionPlanForecast: 12500,
+  juneCanonicalMonthlyTotals: Object.freeze({
+    aLine: 5429,
+    northLine: 0,
+    transferCaseLine: 223,
+    bLineDay: 4686,
+    bLineNight: 1662
+  }),
   attendanceSubmissionId: '6a62af14e4e630b273cc3174',
   attendanceDailyReviewId: '6a62cccee4e630b273cedbcd',
   sourceRemark: '临时工2人'
@@ -46,6 +57,14 @@ const COLLECTIONS = Object.freeze({
 const REQUIRED_BACKUP_COLLECTIONS = Object.freeze(Object.values(COLLECTIONS));
 const MONTHLY_TOTAL_FIELDS = Object.freeze([
   'aLine',
+  'northLine',
+  'transferCaseLine',
+  'bLineDay',
+  'bLineNight'
+]);
+const DAILY_QUANTITY_FIELDS = Object.freeze([
+  'aLineDay',
+  'aLineNight',
   'northLine',
   'transferCaseLine',
   'bLineDay',
@@ -169,6 +188,20 @@ function monthlyTotalsAreEmpty(monthlyTotals) {
   return MONTHLY_TOTAL_FIELDS.every((field) => monthlyTotals?.[field] === null || monthlyTotals?.[field] === undefined);
 }
 
+function normalizedDailyEntries(entries) {
+  return (entries || []).map((entry) => ({
+    date: entry.date,
+    ...Object.fromEntries(DAILY_QUANTITY_FIELDS.map((field) => [
+      field,
+      entry[field] === null || entry[field] === undefined ? 0 : entry[field]
+    ]))
+  }));
+}
+
+function dailyEntriesSemanticallyEqual(left, right) {
+  return snapshot(normalizedDailyEntries(left)).sha256 === snapshot(normalizedDailyEntries(right)).sha256;
+}
+
 function namedQuantity(value, count) {
   return Boolean(
     value &&
@@ -265,6 +298,8 @@ async function analyzeAcceptanceJuly2026DataRepair({
   const scheduleById = new Map(schedules.map((document) => [normalizeId(document._id), document]));
   const canonicalSchedule = scheduleById.get(TARGETS.canonicalScheduleId) || null;
   const duplicateSchedule = scheduleById.get(TARGETS.duplicateScheduleId) || null;
+  const juneCanonicalSchedule = scheduleById.get(TARGETS.juneCanonicalScheduleId) || null;
+  const juneDuplicateSchedule = scheduleById.get(TARGETS.juneDuplicateScheduleId) || null;
   const productionScheduleConflicts = groupScheduleConflicts(schedules);
 
   if (!canonicalSchedule) {
@@ -277,9 +312,17 @@ async function analyzeAcceptanceJuly2026DataRepair({
   }
 
   const canonicalTeamId = normalizeId(canonicalSchedule?.teamId);
-  const canonicalOrgUnit = canonicalSchedule
-    ? await findOne(OrgUnitModel, { _id: canonicalSchedule.orgUnitId }, { session })
-    : null;
+  const [canonicalOrgUnit, juneCanonicalOrgUnit, juneDuplicateOrgUnit] = await Promise.all([
+    canonicalSchedule
+      ? findOne(OrgUnitModel, { _id: canonicalSchedule.orgUnitId }, { session })
+      : null,
+    juneCanonicalSchedule
+      ? findOne(OrgUnitModel, { _id: juneCanonicalSchedule.orgUnitId }, { session })
+      : null,
+    juneDuplicateSchedule
+      ? findOne(OrgUnitModel, { _id: juneDuplicateSchedule.orgUnitId }, { session })
+      : null
+  ]);
   if (canonicalSchedule && (
     !canonicalOrgUnit ||
     !sameId(canonicalOrgUnit.teamId, canonicalSchedule.teamId) ||
@@ -291,13 +334,44 @@ async function analyzeAcceptanceJuly2026DataRepair({
     blockers.push(blocker('CANONICAL_SCHEDULE_NOT_ROOT_DEPARTMENT', 'The canonical schedule is not attached to the active root department'));
   }
 
-  const targetConflictIds = [TARGETS.canonicalScheduleId, TARGETS.duplicateScheduleId].sort();
+  if (!juneCanonicalSchedule) {
+    blockers.push(blocker('JUNE_CANONICAL_SCHEDULE_NOT_FOUND', 'The fixed canonical June 2026 production schedule was not found'));
+  }
+  if (juneCanonicalSchedule && (
+    juneCanonicalSchedule.month !== TARGETS.juneMonth ||
+    !canonicalSchedule ||
+    !sameId(juneCanonicalSchedule.teamId, canonicalSchedule.teamId) ||
+    !sameId(juneCanonicalSchedule.orgUnitId, canonicalSchedule.orgUnitId) ||
+    !juneCanonicalOrgUnit ||
+    !sameId(juneCanonicalOrgUnit._id, canonicalOrgUnit?._id)
+  )) {
+    blockers.push(blocker('JUNE_CANONICAL_SCHEDULE_SCOPE_MISMATCH', 'The fixed June canonical schedule is outside the active root team/month scope'));
+  }
+  if (
+    juneCanonicalSchedule &&
+    juneCanonicalSchedule.productionPlanForecast !== TARGETS.juneCanonicalProductionPlanForecast
+  ) {
+    blockers.push(blocker('JUNE_CANONICAL_SCHEDULE_FORECAST_MISMATCH', 'The fixed June canonical forecast changed from the verified value'));
+  }
+  if (
+    juneCanonicalSchedule &&
+    snapshot(juneCanonicalSchedule.monthlyTotals || {}).sha256 !==
+      snapshot(TARGETS.juneCanonicalMonthlyTotals).sha256
+  ) {
+    blockers.push(blocker('JUNE_CANONICAL_SCHEDULE_TOTALS_MISMATCH', 'The fixed June canonical monthly totals changed from the verified values'));
+  }
+
+  const fixedConflictIds = new Map([
+    [TARGETS.month, [TARGETS.canonicalScheduleId, TARGETS.duplicateScheduleId].sort()],
+    [TARGETS.juneMonth, [TARGETS.juneCanonicalScheduleId, TARGETS.juneDuplicateScheduleId].sort()]
+  ]);
   for (const conflict of productionScheduleConflicts) {
+    const expectedIds = fixedConflictIds.get(conflict.month);
     const isFixedTarget = (
       canonicalSchedule &&
       conflict.teamId === canonicalTeamId &&
-      conflict.month === TARGETS.month &&
-      conflict.scheduleIds.join(',') === targetConflictIds.join(',')
+      expectedIds &&
+      conflict.scheduleIds.join(',') === expectedIds.join(',')
     );
     if (!isFixedTarget) {
       blockers.push(blocker('UNEXPECTED_TEAM_MONTH_SCHEDULE_CONFLICT', 'A teamId + month schedule conflict exists outside the fixed migration pair', conflict));
@@ -316,6 +390,41 @@ async function analyzeAcceptanceJuly2026DataRepair({
     }
     if (!monthlyTotalsAreEmpty(duplicateSchedule.monthlyTotals)) {
       blockers.push(blocker('DUPLICATE_SCHEDULE_MONTHLY_TOTALS_NOT_EMPTY', 'The fixed duplicate schedule has non-empty monthly totals'));
+    }
+  }
+  if (juneDuplicateSchedule) {
+    if (
+      !juneCanonicalSchedule ||
+      !sameId(juneDuplicateSchedule.teamId, juneCanonicalSchedule.teamId) ||
+      juneDuplicateSchedule.month !== TARGETS.juneMonth
+    ) {
+      blockers.push(blocker('JUNE_DUPLICATE_SCHEDULE_SCOPE_MISMATCH', 'The fixed June duplicate is outside the canonical team and month'));
+    }
+    if (!dailyEntriesSemanticallyEqual(
+      juneDuplicateSchedule.dailyEntries,
+      juneCanonicalSchedule?.dailyEntries
+    )) {
+      blockers.push(blocker('JUNE_DUPLICATE_SCHEDULE_DAILY_VALUES_DIFFER', 'The fixed June duplicate does not preserve the canonical daily quantities'));
+    }
+    if (
+      juneDuplicateSchedule.productionPlanForecast !== null &&
+      juneDuplicateSchedule.productionPlanForecast !== undefined
+    ) {
+      blockers.push(blocker('JUNE_DUPLICATE_SCHEDULE_FORECAST_NOT_EMPTY', 'The fixed June duplicate has a non-empty production forecast'));
+    }
+    if (!monthlyTotalsAreEmpty(juneDuplicateSchedule.monthlyTotals)) {
+      blockers.push(blocker('JUNE_DUPLICATE_SCHEDULE_MONTHLY_TOTALS_NOT_EMPTY', 'The fixed June duplicate has non-empty monthly totals'));
+    }
+    if (
+      !juneDuplicateOrgUnit ||
+      !juneCanonicalOrgUnit ||
+      !sameId(juneDuplicateOrgUnit.teamId, juneCanonicalSchedule?.teamId) ||
+      !sameId(juneDuplicateOrgUnit.parentId, juneCanonicalOrgUnit._id) ||
+      juneDuplicateOrgUnit.type !== ORG_UNIT_TYPES.SUB_DEPARTMENT ||
+      juneDuplicateOrgUnit.level !== 2 ||
+      juneDuplicateOrgUnit.status !== ORG_UNIT_STATUSES.ACTIVE
+    ) {
+      blockers.push(blocker('JUNE_DUPLICATE_SCHEDULE_ORG_MISMATCH', 'The fixed June duplicate is not attached to the verified active subdepartment scope'));
     }
   }
 
@@ -443,7 +552,10 @@ async function analyzeAcceptanceJuly2026DataRepair({
           reportDate: TARGETS.reportDate,
           summary: targetSummary,
           yesterdaySummary,
-          productionSchedules: schedules.filter(({ _id }) => !sameId(_id, TARGETS.duplicateScheduleId)),
+          productionSchedules: schedules.filter(({ _id }) => (
+            !sameId(_id, TARGETS.duplicateScheduleId) &&
+            !sameId(_id, TARGETS.juneDuplicateScheduleId)
+          )),
           reviewerName: reviewer.name || reviewer.username
         });
         targetReview = {
@@ -472,8 +584,14 @@ async function analyzeAcceptanceJuly2026DataRepair({
   let state = 'BLOCKED';
   const operations = [];
   if (blockers.length === 0) {
-    if (duplicateSchedule && beforeAttendance && !reviewMatchesTarget) {
+    if (duplicateSchedule && juneDuplicateSchedule && beforeAttendance && !reviewMatchesTarget) {
       state = 'READY';
+      operations.push(reportOperation(
+        'DELETE_DUPLICATE_JUNE_PRODUCTION_SCHEDULE',
+        juneDuplicateSchedule._id,
+        juneDuplicateSchedule,
+        { deleted: true, canonicalScheduleId: TARGETS.juneCanonicalScheduleId }
+      ));
       operations.push(reportOperation(
         'DELETE_DUPLICATE_PRODUCTION_SCHEDULE',
         duplicateSchedule._id,
@@ -492,11 +610,12 @@ async function analyzeAcceptanceJuly2026DataRepair({
         attendanceDailyReview,
         targetReview
       ));
-    } else if (!duplicateSchedule && afterAttendance && reviewMatchesTarget) {
+    } else if (!duplicateSchedule && !juneDuplicateSchedule && afterAttendance && reviewMatchesTarget) {
       state = 'ALREADY_APPLIED';
     } else {
       blockers.push(blocker('MIGRATION_STATE_PARTIAL_OR_UNEXPECTED', 'The fixed records are neither the complete known before-state nor the complete target state', {
-        duplicatePresent: Boolean(duplicateSchedule),
+        julyDuplicatePresent: Boolean(duplicateSchedule),
+        juneDuplicatePresent: Boolean(juneDuplicateSchedule),
         attendanceBeforeState: beforeAttendance,
         attendanceAfterState: afterAttendance,
         reviewMatchesTarget
@@ -513,6 +632,8 @@ async function analyzeAcceptanceJuly2026DataRepair({
     documents: {
       canonicalSchedule,
       duplicateSchedule,
+      juneCanonicalSchedule,
+      juneDuplicateSchedule,
       attendanceSubmission,
       attendanceDailyReview,
       targetAttendance,
@@ -524,6 +645,8 @@ async function analyzeAcceptanceJuly2026DataRepair({
       rootOrgUnitId: normalizeId(canonicalOrgUnit?._id),
       canonicalSchedule: canonicalSchedule ? snapshot(canonicalSchedule) : null,
       duplicateSchedule: duplicateSchedule ? snapshot(duplicateSchedule) : null,
+      juneCanonicalSchedule: juneCanonicalSchedule ? snapshot(juneCanonicalSchedule) : null,
+      juneDuplicateSchedule: juneDuplicateSchedule ? snapshot(juneDuplicateSchedule) : null,
       attendanceSubmission: attendanceSubmission ? snapshot(attendanceSubmission) : null,
       attendanceDailyReview: attendanceDailyReview ? snapshot(attendanceDailyReview) : null,
       targetAttendanceSubmission: targetAttendance ? snapshot(targetAttendance) : null,
@@ -633,6 +756,8 @@ function newestDocumentInstant(analysis) {
   const documents = [
     analysis.documents.canonicalSchedule,
     analysis.documents.duplicateSchedule,
+    analysis.documents.juneCanonicalSchedule,
+    analysis.documents.juneDuplicateSchedule,
     analysis.documents.attendanceSubmission,
     analysis.documents.attendanceDailyReview
   ].filter(Boolean);
@@ -740,7 +865,7 @@ function createAcceptanceJuly2026DataRepairService({
         backup,
         before: reportAnalysis(before)
       };
-      if (before.blockers.length > 0 || before.state !== 'READY' || before.operations.length !== 3) {
+      if (before.blockers.length > 0 || before.state !== 'READY' || before.operations.length !== 4) {
         fail('TARGET_STATE_CHANGED_BEFORE_EXECUTION', 'Fixed target records changed after backup verification', {
           backup,
           before: reportAnalysis(before),
@@ -749,7 +874,25 @@ function createAcceptanceJuly2026DataRepairService({
         });
       }
 
-      const { duplicateSchedule, attendanceSubmission, attendanceDailyReview, targetAttendance, targetReview } = before.documents;
+      const {
+        duplicateSchedule,
+        juneDuplicateSchedule,
+        attendanceSubmission,
+        attendanceDailyReview,
+        targetAttendance,
+        targetReview
+      } = before.documents;
+      const juneDeleteResult = await ProductionScheduleModel.deleteOne({
+        _id: juneDuplicateSchedule._id,
+        teamId: juneDuplicateSchedule.teamId,
+        orgUnitId: juneDuplicateSchedule.orgUnitId,
+        month: TARGETS.juneMonth,
+        __v: juneDuplicateSchedule.__v ?? 0
+      }, { session });
+      if (juneDeleteResult.deletedCount !== 1) {
+        fail('JUNE_DUPLICATE_SCHEDULE_CHANGED', 'The fixed June duplicate schedule changed during migration');
+      }
+
       const deleteResult = await ProductionScheduleModel.deleteOne({
         _id: duplicateSchedule._id,
         teamId: duplicateSchedule.teamId,
@@ -801,6 +944,13 @@ function createAcceptanceJuly2026DataRepairService({
         {
           action: AUDIT_ACTIONS.DELETE,
           resourceType: AUDIT_RESOURCE_TYPES.PRODUCTION_SCHEDULE,
+          resourceId: juneDuplicateSchedule._id,
+          before: snapshot(juneDuplicateSchedule),
+          after: snapshot({ deleted: true, canonicalScheduleId: TARGETS.juneCanonicalScheduleId })
+        },
+        {
+          action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.PRODUCTION_SCHEDULE,
           resourceId: duplicateSchedule._id,
           before: snapshot(duplicateSchedule),
           after: snapshot({ deleted: true, canonicalScheduleId: TARGETS.canonicalScheduleId })
@@ -843,7 +993,7 @@ function createAcceptanceJuly2026DataRepairService({
         ...transactionalBase,
         status: 'EXECUTED',
         writePerformed: true,
-        dataWrites: 3,
+        dataWrites: 4,
         auditLogsCreated: auditInputs.length,
         after: reportAnalysis(after)
       };
@@ -872,6 +1022,7 @@ module.exports = {
   groupScheduleConflicts,
   liveCollectionInventory,
   monthlyTotalsAreEmpty,
+  normalizedDailyEntries,
   reportAnalysis,
   snapshot,
   verifyExecutionBackup

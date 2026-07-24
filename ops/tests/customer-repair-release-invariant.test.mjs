@@ -35,7 +35,7 @@ function acceptanceReport(overrides = {}) {
     status: 'DRY_RUN_READY',
     mode: 'dry-run',
     database: { name: 'customer_acceptance_v2_test' },
-    before: { state: 'READY', plannedWriteCount: 3, blockerCount: 0 },
+    before: { state: 'READY', plannedWriteCount: 4, blockerCount: 0 },
     writePerformed: false,
     dataWrites: 0,
     auditLogsCreated: 0,
@@ -82,8 +82,8 @@ function baseInput() {
         mode: 'execute',
         backup,
         writePerformed: true,
-        dataWrites: 3,
-        auditLogsCreated: 3,
+        dataWrites: 4,
+        auditLogsCreated: 4,
         after: { state: 'ALREADY_APPLIED', plannedWriteCount: 0, blockerCount: 0 }
       }),
       idempotent: acceptanceReport({
@@ -103,6 +103,8 @@ function baseInput() {
       acceptance: {
         canonicalScheduleCount: 1,
         duplicateScheduleCount: 0,
+        juneCanonicalScheduleCount: 1,
+        juneDuplicateScheduleCount: 0,
         teamMonthConflictCount: 0,
         productionTotals: { '2026-07-23': 466, '2026-07-24': 461 },
         attendanceSubmissionCount: 1,

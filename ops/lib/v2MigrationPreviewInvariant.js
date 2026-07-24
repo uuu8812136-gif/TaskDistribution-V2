@@ -130,7 +130,7 @@ function validateReportSet(evidenceDirectory) {
   expect(acceptance.writePerformed === false, 'acceptance.writePerformed');
   expect(acceptance.database?.name === EXPECTED.database, 'acceptance.database');
   expect(acceptance.before?.state === 'READY', 'acceptance.state');
-  expect(acceptance.before?.plannedWriteCount === 3, 'acceptance.plannedWriteCount');
+  expect(acceptance.before?.plannedWriteCount === 4, 'acceptance.plannedWriteCount');
   expect(acceptance.before?.blockerCount === 0, 'acceptance.blockerCount');
 
   if (mismatches.length) fail('Migration preview report mismatch', mismatches);

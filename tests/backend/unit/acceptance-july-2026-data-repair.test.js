@@ -11,6 +11,7 @@ const {
   canonicalize,
   groupScheduleConflicts,
   monthlyTotalsAreEmpty,
+  normalizedDailyEntries,
   snapshot,
   verifyExecutionBackup
 } = require('../../../app/services/acceptanceJuly2026DataRepairService');
@@ -20,12 +21,23 @@ const {
   usage
 } = require('../../../app/script/repairAcceptanceJuly2026Data');
 
-test('acceptance repair is fixed to the four audited record IDs', () => {
+test('acceptance repair is fixed to the six audited record IDs', () => {
   assert.deepEqual(TARGETS, {
     month: '2026-07',
+    juneMonth: '2026-06',
     reportDate: '2026-07-24',
     canonicalScheduleId: '6a588ae29ad35af9cfd73c9c',
     duplicateScheduleId: '6a62bd82e4e630b273cd7156',
+    juneCanonicalScheduleId: '6a59e5eefe119695fb20f639',
+    juneDuplicateScheduleId: '6a62d614e4e630b273cfbf1f',
+    juneCanonicalProductionPlanForecast: 12500,
+    juneCanonicalMonthlyTotals: {
+      aLine: 5429,
+      northLine: 0,
+      transferCaseLine: 223,
+      bLineDay: 4686,
+      bLineNight: 1662
+    },
     attendanceSubmissionId: '6a62af14e4e630b273cc3174',
     attendanceDailyReviewId: '6a62cccee4e630b273cedbcd',
     sourceRemark: '临时工2人'
@@ -85,6 +97,26 @@ test('schedule conflicts are grouped strictly by teamId and month', () => {
     bLineNight: null
   }), true);
   assert.equal(monthlyTotalsAreEmpty({ aLine: 0 }), false);
+});
+
+test('June daily comparison normalizes only missing quantities to numeric zero', () => {
+  assert.deepEqual(normalizedDailyEntries([{
+    date: '2026-06-01',
+    aLineDay: null,
+    aLineNight: undefined,
+    northLine: 0,
+    transferCaseLine: 7,
+    bLineDay: '0',
+    bLineNight: '7'
+  }]), [{
+    date: '2026-06-01',
+    aLineDay: 0,
+    aLineNight: 0,
+    northLine: 0,
+    transferCaseLine: 7,
+    bLineDay: '0',
+    bLineNight: '7'
+  }]);
 });
 
 test('CLI is dry-run by default and rejects unknown or missing values', () => {

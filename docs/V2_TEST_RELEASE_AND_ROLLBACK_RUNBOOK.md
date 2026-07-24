@@ -248,7 +248,7 @@ sudo /usr/bin/env bash "$TOOLS/activate-v2-test-candidate.sh" \
 
 - 岗位层级无 blocker；运输主数据无冲突；
 - 设备归属待迁移 86 台、点检计划 630 条，冲突为 0；
-- 2026 年 7 月验收数据计划写入 3 条，blocker 为 0；
+- 2026 年 6/7 月验收数据计划写入 4 条，blocker 为 0；
 - 所有报告的 `writePerformed` 都是 `false`。
 
 迁移进程使用受限应用账号连接数据库，但报告先写入隔离 staging，再由 root 以 `0640` 封存到
@@ -276,7 +276,7 @@ sudo /usr/bin/env bash "$TOOLS/activate-v2-test-candidate.sh" \
 2. 复验 preview 绑定的 release、commit、备份 manifest 和停写输入摘要。
 3. 再次逐文件验签 Linux 备份，并再次确认停写后的迁移输入未变化。
 4. 写入包含 preview SHA256 的 `migration-started.json`，从此禁止 code-only rollback。
-5. 显式执行固定 2026 年 7 月排产/出勤修复，随后重复执行一次证明幂等。
+5. 显式执行固定 2026 年 6/7 月排产/出勤修复，随后重复执行一次证明幂等。
 6. 显式执行岗位层级和运输主数据迁移并验收报告。
 7. 显式执行设备归属/点检计划回填，随后重复执行一次证明幂等；审计操作者必须是显式传入的活动账号。
 8. 验证两项客户修复的执行报告均绑定同一个已验签 backup ID 和 manifest SHA256。

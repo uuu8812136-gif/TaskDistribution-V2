@@ -79,15 +79,21 @@ database_result=$(mongosh --quiet --host 127.0.0.1 --port 27150 --eval '
   const indexNames=d.transport_master_data.getIndexes().map(x=>x.name);
   const requiredIndexes=["uq_transport_master_team_kind_key","ix_transport_master_team_kind_status_sort"];
   const missingIndexes=requiredIndexes.filter(name=>!indexNames.includes(name));
+  const productionScheduleIndex=d.productionschedules.getIndexes()
+    .find(x=>x.name==="uq_production_schedule_team_month");
+  const productionScheduleIndexValid=productionScheduleIndex?.unique===true &&
+    productionScheduleIndex.key?.teamId===1 && productionScheduleIndex.key?.month===1 &&
+    Object.keys(productionScheduleIndex.key).length===2;
   const result={
     database:d.getName(),
     wrongPositionLevels,
     transportRecords:d.transportrecords.countDocuments({}),
     transportMasterData:d.transport_master_data.countDocuments({}),
-    missingIndexes
+    missingIndexes,
+    productionScheduleIndexValid
   };
   print(JSON.stringify(result));
-  if (wrongPositionLevels || missingIndexes.length) quit(2);
+  if (wrongPositionLevels || missingIndexes.length || !productionScheduleIndexValid) quit(2);
 ' 2>/dev/null) || v2_die 'V2 database invariant verification failed'
 
 if test "$skip_public" -ne 1; then

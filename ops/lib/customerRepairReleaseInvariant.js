@@ -70,14 +70,14 @@ function validateAcceptanceReports({ dryRun, execute, idempotent, backupId, mani
   expectEqual(mismatches, 'ACCEPTANCE_DRY_WRITE', dryRun?.writePerformed, false);
   expectEqual(mismatches, 'ACCEPTANCE_DRY_DATABASE', dryRun?.database?.name, EXPECTED_DATABASE);
   expectEqual(mismatches, 'ACCEPTANCE_DRY_STATE', dryRun?.before?.state, 'READY');
-  expectEqual(mismatches, 'ACCEPTANCE_DRY_PLANNED_WRITES', dryRun?.before?.plannedWriteCount, 3);
+  expectEqual(mismatches, 'ACCEPTANCE_DRY_PLANNED_WRITES', dryRun?.before?.plannedWriteCount, 4);
   expectEqual(mismatches, 'ACCEPTANCE_DRY_BLOCKERS', dryRun?.before?.blockerCount, 0);
 
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_STATUS', execute?.status, 'EXECUTED');
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_MODE', execute?.mode, 'execute');
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_WRITE', execute?.writePerformed, true);
-  expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_DATA_WRITES', execute?.dataWrites, 3);
-  expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_AUDITS', execute?.auditLogsCreated, 3);
+  expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_DATA_WRITES', execute?.dataWrites, 4);
+  expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_AUDITS', execute?.auditLogsCreated, 4);
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_AFTER_STATE', execute?.after?.state, 'ALREADY_APPLIED');
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_AFTER_WRITES', execute?.after?.plannedWriteCount, 0);
   expectEqual(mismatches, 'ACCEPTANCE_EXECUTE_AFTER_BLOCKERS', execute?.after?.blockerCount, 0);
@@ -106,6 +106,8 @@ function validateLiveState(state, mismatches) {
   );
   expectEqual(mismatches, 'LIVE_CANONICAL_SCHEDULE', state?.acceptance?.canonicalScheduleCount, 1);
   expectEqual(mismatches, 'LIVE_DUPLICATE_SCHEDULE', state?.acceptance?.duplicateScheduleCount, 0);
+  expectEqual(mismatches, 'LIVE_JUNE_CANONICAL_SCHEDULE', state?.acceptance?.juneCanonicalScheduleCount, 1);
+  expectEqual(mismatches, 'LIVE_JUNE_DUPLICATE_SCHEDULE', state?.acceptance?.juneDuplicateScheduleCount, 0);
   expectEqual(mismatches, 'LIVE_TEAM_MONTH_CONFLICTS', state?.acceptance?.teamMonthConflictCount, 0);
   expectEqual(mismatches, 'LIVE_PRODUCTION_2026_07_23', state?.acceptance?.productionTotals?.['2026-07-23'], 466);
   expectEqual(mismatches, 'LIVE_PRODUCTION_2026_07_24', state?.acceptance?.productionTotals?.['2026-07-24'], 461);

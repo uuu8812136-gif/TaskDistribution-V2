@@ -87,7 +87,7 @@ function createFixture(t) {
     status: 'DRY_RUN_READY',
     mode: 'dry-run',
     database: { name: 'customer_acceptance_v2_test' },
-    before: { state: 'READY', plannedWriteCount: 3, blockerCount: 0 },
+    before: { state: 'READY', plannedWriteCount: 4, blockerCount: 0 },
     writePerformed: false
   })
   return { candidate, evidenceDir, handoffPath, previewPath, releasePath }

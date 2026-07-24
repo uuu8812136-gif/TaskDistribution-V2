@@ -39,7 +39,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    'Repair the fixed July 2026 V2 acceptance schedule and attendance records (strict dry-run by default).',
+    'Repair the fixed June/July 2026 V2 acceptance schedules and attendance records (strict dry-run by default).',
     '',
     'Dry-run:',
     '  node script/repairAcceptanceJuly2026Data.js --report <immutable-report.json>',
@@ -50,7 +50,7 @@ function usage() {
     '    --backup-directory <verified-complete-backup-directory> \\',
     '    --report <immutable-report.json>',
     '',
-    'The migration is fixed to four known record IDs. Any other teamId + month conflict,',
+    'The migration is fixed to six known record IDs. Any other teamId + month conflict,',
     'partial target state, existing GeneratedDailyReport, stale backup, or missing shared',
     'temporary-worker summary support blocks execution. No index is created by this script.'
   ].join('\n');

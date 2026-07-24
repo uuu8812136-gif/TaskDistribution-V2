@@ -583,6 +583,8 @@ v2_customer_repair_state_json() {
 
     const canonicalId=ObjectId("6a588ae29ad35af9cfd73c9c");
     const duplicateId=ObjectId("6a62bd82e4e630b273cd7156");
+    const juneCanonicalId=ObjectId("6a59e5eefe119695fb20f639");
+    const juneDuplicateId=ObjectId("6a62d614e4e630b273cfbf1f");
     const submissionId=ObjectId("6a62af14e4e630b273cc3174");
     const reviewId=ObjectId("6a62cccee4e630b273cedbcd");
     const canonical=d.productionschedules.findOne({_id:canonicalId});
@@ -611,6 +613,8 @@ v2_customer_repair_state_json() {
       acceptance:{
         canonicalScheduleCount:d.productionschedules.countDocuments({_id:canonicalId}),
         duplicateScheduleCount:d.productionschedules.countDocuments({_id:duplicateId}),
+        juneCanonicalScheduleCount:d.productionschedules.countDocuments({_id:juneCanonicalId}),
+        juneDuplicateScheduleCount:d.productionschedules.countDocuments({_id:juneDuplicateId}),
         teamMonthConflictCount:conflicts.length,
         productionTotals,
         attendanceSubmissionCount:d.attendancesubmissions.countDocuments({_id:submissionId}),
