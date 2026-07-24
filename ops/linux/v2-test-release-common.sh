@@ -211,6 +211,113 @@ if (
 NODE
 }
 
+v2_assert_customer_repair_resume_evidence() {
+  local source_release_id="$1"
+  local evidence_dir="${V2_EVIDENCE_ROOT}/${source_release_id}"
+  local source_candidate
+  local required
+  local mode
+
+  v2_validate_release_id "$source_release_id"
+  source_candidate=$(v2_release_path "$source_release_id")
+  test -d "$source_candidate" && test ! -L "$source_candidate" || \
+    v2_die 'Customer repair source candidate is missing or is a symbolic link'
+  v2_assert_release_metadata "$source_candidate" "$source_release_id" ''
+  test -d "$evidence_dir" && test ! -L "$evidence_dir" || \
+    v2_die 'Customer repair source evidence directory is missing or is a symbolic link'
+  test "$(stat -c '%U:%G:%a' "$evidence_dir")" = root:root:750 || \
+    v2_die 'Customer repair source evidence directory must be sealed and root-owned'
+  test ! -e "$evidence_dir/activation-result.json" && \
+    test ! -L "$evidence_dir/activation-result.json" || \
+    v2_die 'Customer repair source release already has activation evidence'
+
+  for required in \
+    backup-handoff.json migration-preview.json migration-started.json migration-after.json \
+    position-levels-dry-run.json position-levels-execute.json \
+    transport-master-data-dry-run.json transport-master-data-execute.json \
+    equipment-ownership-dry-run.json equipment-ownership-execute.json \
+    equipment-ownership-idempotent.json acceptance-july-2026-dry-run.json \
+    acceptance-july-2026-execute.json acceptance-july-2026-idempotent.json \
+    transport-references.before.json transport-reference-invariants.json \
+    customer-repair-invariants.json; do
+    test -f "$evidence_dir/$required" && test ! -L "$evidence_dir/$required" || \
+      v2_die "Customer repair source evidence is missing or unsafe: $required"
+    test "$(stat -c '%U:%G' "$evidence_dir/$required")" = root:root || \
+      v2_die "Customer repair source evidence is not root-owned: $required"
+    mode=$(stat -c '%a' "$evidence_dir/$required")
+    case "$mode" in
+      640|644) ;;
+      *) v2_die "Customer repair source evidence mode is unsafe: $required" ;;
+    esac
+  done
+
+  /usr/bin/node - "$source_release_id" "$evidence_dir" <<'NODE'
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [sourceReleaseId, evidenceDir] = process.argv.slice(2);
+const read = name => JSON.parse(fs.readFileSync(path.join(evidenceDir, name), 'utf8'));
+const sha256 = name => createHash('sha256')
+  .update(fs.readFileSync(path.join(evidenceDir, name))).digest('hex');
+const handoff = read('backup-handoff.json');
+const preview = read('migration-preview.json');
+const started = read('migration-started.json');
+const after = read('migration-after.json');
+const position = read('position-levels-execute.json');
+const transport = read('transport-master-data-execute.json');
+const transportInvariant = read('transport-reference-invariants.json');
+const failedInvariant = read('customer-repair-invariants.json');
+const failures = [];
+const expect = (condition, code) => { if (!condition) failures.push(code); };
+
+expect(handoff.format === 'task-distribution-v2-release-backup-handoff/v1', 'handoff.format');
+expect(handoff.releaseId === sourceReleaseId, 'handoff.releaseId');
+expect(handoff.database === 'customer_acceptance_v2_test', 'handoff.database');
+expect(handoff.servicesHeldStopped === true, 'handoff.servicesHeldStopped');
+expect(started.format === 'task-distribution-v2-migration-started/v1', 'started.format');
+expect(started.releaseId === sourceReleaseId, 'started.releaseId');
+expect(started.backupId === handoff.backupId, 'started.backupId');
+expect(started.migrationPreviewSha256 === sha256('migration-preview.json'), 'started.previewSha256');
+expect(started.codeOnlyRollbackAllowed === false, 'started.codeOnlyRollbackAllowed');
+expect(preview.releaseId === sourceReleaseId, 'preview.releaseId');
+expect(preview.backupId === handoff.backupId, 'preview.backupId');
+expect(preview.manifestSha256 === handoff.manifestSha256, 'preview.manifestSha256');
+expect(after.database === 'customer_acceptance_v2_test', 'after.database');
+expect(after.transportRecords === 23 && after.transportMasterData === 29, 'after.transportCounts');
+expect(after.importedEquipmentAssets === 141 && after.importedEquipmentRoutinePlans === 684,
+  'after.equipmentCounts');
+expect(after.productionSchedules === 43 && after.attendanceDailyReviews === 1,
+  'after.acceptanceCounts');
+expect(position.status === 'EXECUTED', 'position.status');
+expect(position.backup?.backupId === handoff.backupId, 'position.backupId');
+expect(position.backup?.manifestSha256 === handoff.manifestSha256, 'position.manifestSha256');
+expect(position.after?.plannedUpdateCount === 0, 'position.plannedUpdateCount');
+expect(Array.isArray(position.after?.blockers) && position.after.blockers.length === 0,
+  'position.blockers');
+expect(transport.status === 'EXECUTED', 'transport.status');
+expect(transport.backup?.backupId === handoff.backupId, 'transport.backupId');
+expect(transport.backup?.manifestSha256 === handoff.manifestSha256, 'transport.manifestSha256');
+expect(Array.isArray(transport.conflicts) && transport.conflicts.length === 0,
+  'transport.conflicts');
+expect(transportInvariant.status === 'TRANSPORT_REFERENCE_INVARIANTS_OK' &&
+  transportInvariant.mismatchCount === 0, 'transport.invariants');
+expect(failedInvariant.status === 'CUSTOMER_REPAIR_INVARIANTS_FAILED' &&
+  failedInvariant.mismatchCount === 2, 'customerRepair.failureStatus');
+const mismatchCodes = new Set((failedInvariant.mismatches || []).map(value => value.code));
+expect(mismatchCodes.size === 2 && mismatchCodes.has('LIVE_ATTENDANCE_RAW_ACTUAL') &&
+  mismatchCodes.has('LIVE_ATTENDANCE_NOT_EMPLOYED'), 'customerRepair.failureCodes');
+expect(failedInvariant.acceptance?.attendanceRawActual === 18 &&
+  failedInvariant.acceptance?.attendanceNotYetEmployed === 0,
+  'customerRepair.authoritativeRawAttendance');
+expect(failedInvariant.acceptance?.reviewActualAttendance === 125 &&
+  failedInvariant.acceptance?.attendanceTemporaryWorker === 2,
+  'customerRepair.authoritativeReview');
+if (failures.length) {
+  throw new Error(`Customer repair resume evidence mismatch: ${failures.join(', ')}`);
+}
+NODE
+}
+
 v2_assert_v2_tunnel_configuration() {
   local tunnel_exec
   tunnel_exec=$(systemctl show "$V2_TUNNEL_UNIT" -p ExecStart --value 2>/dev/null || true)

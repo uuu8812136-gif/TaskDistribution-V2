@@ -32,6 +32,7 @@ $releaseOpsPaths = @(
   'ops/linux/prepare-v2-test-candidate.sh',
   'ops/linux/create-v2-test-release-backup.sh',
   'ops/linux/activate-v2-test-candidate.sh',
+  'ops/linux/resume-v2-test-candidate-activation.sh',
   'ops/linux/verify-v2-test-release.sh',
   'ops/linux/restore-v2-test-backup.sh',
   'ops/linux/activate-v2-test-restored-rollback.sh'

@@ -10,6 +10,7 @@ const releaseScripts = [
   'prepare-v2-test-candidate.sh',
   'create-v2-test-release-backup.sh',
   'activate-v2-test-candidate.sh',
+  'resume-v2-test-candidate-activation.sh',
   'verify-v2-test-release.sh',
   'restore-v2-test-backup.sh',
   'activate-v2-test-restored-rollback.sh'

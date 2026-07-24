@@ -112,8 +112,8 @@ function validateLiveState(state, mismatches) {
   expectEqual(mismatches, 'LIVE_PRODUCTION_2026_07_23', state?.acceptance?.productionTotals?.['2026-07-23'], 466);
   expectEqual(mismatches, 'LIVE_PRODUCTION_2026_07_24', state?.acceptance?.productionTotals?.['2026-07-24'], 461);
   expectEqual(mismatches, 'LIVE_ATTENDANCE_SUBMISSION', state?.acceptance?.attendanceSubmissionCount, 1);
-  expectEqual(mismatches, 'LIVE_ATTENDANCE_RAW_ACTUAL', state?.acceptance?.attendanceRawActual, 122);
-  expectEqual(mismatches, 'LIVE_ATTENDANCE_NOT_EMPLOYED', state?.acceptance?.attendanceNotYetEmployed, 1);
+  expectEqual(mismatches, 'LIVE_ATTENDANCE_RAW_ACTUAL', state?.acceptance?.attendanceRawActual, 18);
+  expectEqual(mismatches, 'LIVE_ATTENDANCE_NOT_EMPLOYED', state?.acceptance?.attendanceNotYetEmployed, 0);
   expectEqual(mismatches, 'LIVE_ATTENDANCE_TEMPORARY', state?.acceptance?.attendanceTemporaryWorker, 2);
   expectEqual(mismatches, 'LIVE_ATTENDANCE_REMARK', state?.acceptance?.attendanceOtherRemark, '');
   expectEqual(mismatches, 'LIVE_ATTENDANCE_REVIEW', state?.acceptance?.attendanceReviewCount, 1);

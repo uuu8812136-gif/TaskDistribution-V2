@@ -108,8 +108,8 @@ function baseInput() {
         teamMonthConflictCount: 0,
         productionTotals: { '2026-07-23': 466, '2026-07-24': 461 },
         attendanceSubmissionCount: 1,
-        attendanceRawActual: 122,
-        attendanceNotYetEmployed: 1,
+        attendanceRawActual: 18,
+        attendanceNotYetEmployed: 0,
         attendanceTemporaryWorker: 2,
         attendanceOtherRemark: '',
         attendanceReviewCount: 1,
@@ -141,6 +141,20 @@ test('rejects equipment ownership, production and attendance drift', () => {
       'LIVE_ROUTINE_PLAN_OWNERSHIP_MISMATCHES',
       'LIVE_PRODUCTION_2026_07_24',
       'LIVE_REVIEW_ACTUAL'
+    ])
+  )
+})
+
+test('rejects branch attendance raw-input drift independently from the department review', () => {
+  const input = baseInput()
+  input.state.acceptance.attendanceRawActual = 122
+  input.state.acceptance.attendanceNotYetEmployed = 1
+  const result = validateCustomerRepairReleaseState(input)
+  assert.deepEqual(
+    new Set(result.mismatches.map(({ code }) => code)),
+    new Set([
+      'LIVE_ATTENDANCE_RAW_ACTUAL',
+      'LIVE_ATTENDANCE_NOT_EMPLOYED'
     ])
   )
 })

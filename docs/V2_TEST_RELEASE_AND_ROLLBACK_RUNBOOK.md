@@ -332,6 +332,45 @@ sudo /usr/bin/env bash "$TOOLS/verify-v2-test-release.sh" \
 
 不要删除或覆盖任何失败报告，不要复用 evidence 路径，不要自动 drop 数据库。
 
+### 8.1 已完成迁移后的专用恢复激活
+
+仅当 `migration-started.json` 已写入、全部 migration execute/idempotent 报告已封存、V2 仍停止，且失败
+仅来自客户修复 release invariant 的已确认期望值错误时，使用专用恢复脚本。先用新 commit 构建并按第 4 节
+传入旧 `migration-started.json` 准备新候选；不得重跑第 5 至第 7 节的迁移。
+
+执行前须在物理机重新只读确认原 D 盘备份副本仍完整。Linux 侧先 dry-run：
+
+```bash
+NEW_RELEASE_ID='<新候选release-id>'
+FAILED_RELEASE_ID='<已完成迁移但激活失败的release-id>'
+TOOLS="/opt/taskdistribution-v2-test/releases/$NEW_RELEASE_ID/ops/linux"
+
+sudo /usr/bin/env bash "$TOOLS/resume-v2-test-candidate-activation.sh" \
+  --release-id "$NEW_RELEASE_ID" \
+  --source-release-id "$FAILED_RELEASE_ID"
+```
+
+脚本只接受 root 封存且没有 `activation-result.json` 的旧 evidence；会绑定原 handoff、preview SHA256、
+backup ID、execute/idempotent 报告、迁移后计数和精确的已知 invariant 失败。它重新验签主机备份、运输
+快照、岗位层级和现库客户修复状态，但不会调用任何 migration 脚本。
+
+dry-run 返回 `DRY_RUN_READY` 且 `migrationWrites=0` 后执行：
+
+```bash
+BACKUP_ID='<旧 evidence 中的 backup-id>'
+sudo /usr/bin/env bash "$TOOLS/resume-v2-test-candidate-activation.sh" \
+  --release-id "$NEW_RELEASE_ID" \
+  --source-release-id "$FAILED_RELEASE_ID" \
+  --execute \
+  --confirm-instance task-distribution-v2-customer-test \
+  --confirm-database customer_acceptance_v2_test \
+  --confirm-backup-id "$BACKUP_ID"
+```
+
+成功结果必须为 `ACTIVATED_AND_VERIFIED` 和 `migrationWrites=0`。新 evidence 目录会记录旧证据逐文件
+SHA256、恢复前现库基线、备份复验、客户/运输 invariant、公网发布复验及激活结果；旧 evidence 不会
+被覆盖。任一步失败时 V2 保持停止，不自动切回旧代码。
+
 ## 9. 恢复到全新 `*_v2_test` 数据库
 
 此操作从已验签备份创建新的数据库和新的附件恢复目录，不触碰活动数据库/附件。首先在仓库外

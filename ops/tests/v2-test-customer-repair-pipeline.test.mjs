@@ -13,6 +13,7 @@ const common = read('../linux/v2-test-release-common.sh')
 const prepare = read('../linux/prepare-v2-test-candidate.sh')
 const backup = read('../linux/create-v2-test-release-backup.sh')
 const activate = read('../linux/activate-v2-test-candidate.sh')
+const resume = read('../linux/resume-v2-test-candidate-activation.sh')
 const verify = read('../linux/verify-v2-test-release.sh')
 const previewInvariant = read('../lib/v2MigrationPreviewInvariant.js')
 
@@ -67,6 +68,34 @@ test('candidate preparation accepts a stopped forward fix only with sealed migra
   assert.match(common, /v2_require_inactive "\$V2_API_UNIT"/)
   assert.match(common, /v2_require_inactive "\$V2_TUNNEL_UNIT"/)
   assert.match(common, /Forward-fix evidence directory must be sealed and root-owned/)
+})
+
+test('resume activation accepts only the sealed known customer-repair failure', () => {
+  assert.match(resume, /v2_assert_stopped_forward_fix_evidence "\$source_started"/)
+  assert.match(resume, /v2_assert_customer_repair_resume_evidence "\$source_release_id"/)
+  assert.match(common, /Customer repair source release already has activation evidence/)
+  assert.match(common, /LIVE_ATTENDANCE_RAW_ACTUAL/)
+  assert.match(common, /LIVE_ATTENDANCE_NOT_EMPLOYED/)
+  assert.match(common, /attendanceRawActual === 18/)
+  assert.match(common, /attendanceNotYetEmployed === 0/)
+  assert.match(common, /reviewActualAttendance === 125/)
+})
+
+test('resume activation reuses sealed reports and never reruns migration scripts', () => {
+  for (const migration of [
+    'migratePositionLevels.js',
+    'backfillTransportMasterData.js',
+    'backfillCustomerEquipmentOwnership.js',
+    'repairAcceptanceJuly2026Data.js'
+  ]) assert.doesNotMatch(resume, new RegExp(`app/script/${migration.replace('.', '\\.')}`))
+  assert.match(resume, /v2_verify_customer_repair_state "\$candidate" "\$source_evidence_dir"/)
+  assert.match(resume, /v2_verify_transport_release_state "\$candidate" "\$source_baseline"/)
+  assert.match(resume, /cmp -s "\$runtime_probe" "\$source_evidence_dir\/migration-after\.json"/)
+  assert.match(resume, /"migrationWritesPerformed": 0|migrationWritesPerformed: 0/)
+  assert.match(resume, /--migration-evidence-release-id "\$source_release_id"/)
+  const customerInvariant = resume.indexOf('v2_verify_customer_repair_state')
+  const switchCurrent = resume.indexOf('ln -s "$candidate" "$new_link"')
+  assert.ok(customerInvariant >= 0 && switchCurrent > customerInvariant)
 })
 
 test('stopped-state digest and both on-host and D: backup gates cover all migration inputs', () => {
@@ -166,6 +195,8 @@ test('post-activation verification rechecks customer repair reports and live dat
   assert.match(verify, /v2_validate_migration_preview_summary/)
   assert.match(verify, /v2_verify_customer_repair_state/)
   assert.match(verify, /V2 customer equipment and acceptance repair invariants failed/)
+  assert.match(verify, /--migration-evidence-release-id/)
+  assert.match(verify, /v2_assert_customer_repair_resume_evidence/)
 })
 
 test('activation and verification require the unique production team-month index', () => {

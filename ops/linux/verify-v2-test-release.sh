@@ -6,6 +6,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$SCRIPT_DIR/v2-test-release-common.sh"
 
 release_id=''
+migration_evidence_release_id=''
 expected_transport_snapshot=''
 expected_reference_baseline=''
 public_origin='https://v2-test.horselink.cn'
@@ -16,6 +17,7 @@ usage() {
 Read-only verification for an activated isolated V2 customer-test release.
 
   verify-v2-test-release.sh --release-id <id> \
+    [--migration-evidence-release-id <failed-migration-id>] \
     --expected-transport-snapshot <sha256> \
     --expected-reference-baseline <absolute.json> [--skip-public]
 EOF
@@ -24,6 +26,7 @@ EOF
 while test "$#" -gt 0; do
   case "$1" in
     --release-id) release_id="${2:-}"; shift 2 ;;
+    --migration-evidence-release-id) migration_evidence_release_id="${2:-}"; shift 2 ;;
     --expected-transport-snapshot) expected_transport_snapshot="${2:-}"; shift 2 ;;
     --expected-reference-baseline) expected_reference_baseline="${2:-}"; shift 2 ;;
     --public-origin) public_origin="${2:-}"; shift 2 ;;
@@ -43,9 +46,19 @@ test "${expected_reference_baseline#/}" != "$expected_reference_baseline" && \
   v2_die 'Expected transport reference baseline must be an existing absolute file'
 
 candidate=$(v2_release_path "$release_id")
-evidence_dir="${V2_EVIDENCE_ROOT}/${release_id}"
+if test -n "$migration_evidence_release_id"; then
+  v2_validate_release_id "$migration_evidence_release_id"
+  test "$migration_evidence_release_id" != "$release_id" || \
+    v2_die 'Migration evidence release must differ from the activated resume candidate'
+  evidence_dir="${V2_EVIDENCE_ROOT}/${migration_evidence_release_id}"
+  preview_candidate=$(v2_release_path "$migration_evidence_release_id")
+  v2_assert_customer_repair_resume_evidence "$migration_evidence_release_id"
+else
+  evidence_dir="${V2_EVIDENCE_ROOT}/${release_id}"
+  preview_candidate="$candidate"
+fi
 test "$expected_reference_baseline" = \
-  "${V2_EVIDENCE_ROOT}/${release_id}/transport-references.before.json" || \
+  "$evidence_dir/transport-references.before.json" || \
   v2_die 'Transport reference baseline is outside the release evidence directory'
 test "$(readlink -f "$V2_CURRENT_LINK" 2>/dev/null || true)" = "$candidate" || \
   v2_die 'Current V2 release does not match the expected release'
@@ -64,7 +77,7 @@ test "$(v2_transport_snapshot_digest)" = "$expected_transport_snapshot" || \
 transport_reference_result=$(v2_verify_transport_release_state \
   "$candidate" "$expected_reference_baseline") || \
   v2_die 'V2 transport reference invariants failed'
-v2_validate_migration_preview_summary "$candidate" "$evidence_dir" || \
+v2_validate_migration_preview_summary "$preview_candidate" "$evidence_dir" || \
   v2_die 'V2 migration preview evidence is invalid'
 customer_repair_result=$(v2_verify_customer_repair_state \
   "$candidate" "$evidence_dir") || \
