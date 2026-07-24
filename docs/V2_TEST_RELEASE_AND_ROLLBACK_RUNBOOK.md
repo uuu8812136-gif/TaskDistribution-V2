@@ -254,6 +254,10 @@ sudo /usr/bin/env bash "$TOOLS/activate-v2-test-candidate.sh" \
 迁移进程使用受限应用账号连接数据库，但报告先写入隔离 staging，再由 root 以 `0640` 封存到
 root-owned release evidence 目录；handoff、preview、dry-run、execute 和幂等报告均不可由应用账号覆盖。
 
+执行前的完整备份门禁必须验签 `authsessions.bson`。由于 MongoDB TTL monitor 在停写期间仍会清理
+过期会话，只允许 `authsessions` 的 live 数量小于或等于备份数量，并把差值写入执行报告的
+`backup.ttlCountDrifts`；会话数量增加、缺少该 BSON，或任何其他集合的文档数量变化都必须阻断执行。
+
 这一步不能携带 `--execute`，也不需要设备审计操作人。预览失败或证据文件已存在时不要删除、覆盖或
 复用证据目录；排查后使用新的 release ID 重新走完整流程。确认 `migration-preview.json` 后执行：
 

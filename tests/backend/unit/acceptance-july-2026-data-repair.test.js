@@ -21,6 +21,35 @@ const {
   usage
 } = require('../../../app/script/repairAcceptanceJuly2026Data');
 
+function createBackupVerifier({
+  databaseName,
+  collections,
+  files = collections.map(({ name }) => ({
+    file: `database/${databaseName}/${name}.bson`
+  })),
+  manifestSha256 = 'a'.repeat(64)
+}) {
+  return async () => ({
+    backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
+    manifestSha256,
+    manifest: {
+      backupId: 'backup-20260724T120000Z-12345678',
+      completedAt: '2026-07-24T12:00:00.000Z',
+      database: {
+        name: databaseName,
+        collectionCount: collections.length,
+        collections
+      },
+      uploads: { fileCount: 0, bytes: 0 },
+      consistency: {
+        restoreSet: 'database-and-uploads',
+        databaseFileAssetsVerifiedAgainstUploadBytes: true
+      },
+      files
+    }
+  });
+}
+
 test('acceptance repair is fixed to the six audited record IDs', () => {
   assert.deepEqual(TARGETS, {
     month: '2026-07',
@@ -150,32 +179,20 @@ test('CLI is dry-run by default and rejects unknown or missing values', () => {
 test('execute backup guard requires a complete current database-and-uploads restore set', async () => {
   const databaseName = 'customer_acceptance_v2_test';
   const liveCollections = [
+    { name: 'authsessions', documentCount: 19 },
     { name: 'attendancedailyreviews', documentCount: 1 },
     { name: 'attendancesubmissions', documentCount: 2 },
     { name: 'generateddailyreports', documentCount: 0 },
     { name: 'productionschedules', documentCount: 2 }
   ];
-  const files = liveCollections.map(({ name }) => ({
-    file: `database/${databaseName}/${name}.bson`
-  }));
-  const backupVerifier = async () => ({
-    backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
-    manifestSha256: 'a'.repeat(64),
-    manifest: {
-      backupId: 'backup-20260724T120000Z-12345678',
-      completedAt: '2026-07-24T12:00:00.000Z',
-      database: {
-        name: databaseName,
-        collectionCount: liveCollections.length,
-        collections: liveCollections
-      },
-      uploads: { fileCount: 0, bytes: 0 },
-      consistency: {
-        restoreSet: 'database-and-uploads',
-        databaseFileAssetsVerifiedAgainstUploadBytes: true
-      },
-      files
-    }
+  const backupCollections = liveCollections.map((collection) => (
+    collection.name === 'authsessions'
+      ? { ...collection, documentCount: 21 }
+      : { ...collection }
+  ));
+  const backupVerifier = createBackupVerifier({
+    databaseName,
+    collections: backupCollections
   });
   const result = await verifyExecutionBackup({
     backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
@@ -186,6 +203,9 @@ test('execute backup guard requires a complete current database-and-uploads rest
   });
   assert.equal(result.collectionCountsVerified, true);
   assert.equal(result.completeRestoreSetVerified, true);
+  assert.deepEqual(result.ttlCountDrifts, [
+    { name: 'authsessions', live: 19, backup: 21 }
+  ]);
 
   await assert.rejects(verifyExecutionBackup({
     backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
@@ -197,4 +217,103 @@ test('execute backup guard requires a complete current database-and-uploads rest
     },
     liveCollections
   }), (error) => error.code === 'BACKUP_DATABASE_STATE_INCOMPLETE');
+});
+
+test('execute backup guard blocks authsessions growth after backup', async () => {
+  const databaseName = 'customer_acceptance_v2_test';
+  const backupCollections = [
+    { name: 'authsessions', documentCount: 21 },
+    { name: 'attendancedailyreviews', documentCount: 1 },
+    { name: 'attendancesubmissions', documentCount: 2 },
+    { name: 'generateddailyreports', documentCount: 0 },
+    { name: 'productionschedules', documentCount: 2 }
+  ];
+  const backupVerifier = createBackupVerifier({
+    databaseName,
+    collections: backupCollections,
+    manifestSha256: 'b'.repeat(64)
+  });
+
+  await assert.rejects(verifyExecutionBackup({
+    backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
+    databaseName,
+    backupVerifier,
+    liveCollections: backupCollections.map((collection) => (
+      collection.name === 'authsessions'
+        ? { ...collection, documentCount: 22 }
+        : { ...collection }
+    ))
+  }), (error) => {
+    assert.equal(error.code, 'BACKUP_DATABASE_STATE_INCOMPLETE');
+    assert.deepEqual(error.details.countMismatches, [
+      { name: 'authsessions', live: 22, backup: 21 }
+    ]);
+    return true;
+  });
+});
+
+test('execute backup guard blocks every business collection count change', async () => {
+  const databaseName = 'customer_acceptance_v2_test';
+  const backupCollections = [
+    { name: 'authsessions', documentCount: 21 },
+    { name: 'attendancedailyreviews', documentCount: 1 },
+    { name: 'attendancesubmissions', documentCount: 2 },
+    { name: 'generateddailyreports', documentCount: 0 },
+    { name: 'productionschedules', documentCount: 2 }
+  ];
+  const backupVerifier = createBackupVerifier({
+    databaseName,
+    collections: backupCollections,
+    manifestSha256: 'c'.repeat(64)
+  });
+
+  for (const documentCount of [1, 3]) {
+    await assert.rejects(verifyExecutionBackup({
+      backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
+      databaseName,
+      backupVerifier,
+      liveCollections: backupCollections.map((collection) => (
+        collection.name === 'attendancesubmissions'
+          ? { ...collection, documentCount }
+          : { ...collection }
+      ))
+    }), (error) => {
+      assert.equal(error.code, 'BACKUP_DATABASE_STATE_INCOMPLETE');
+      assert.deepEqual(error.details.countMismatches, [
+        { name: 'attendancesubmissions', live: documentCount, backup: 2 }
+      ]);
+      return true;
+    });
+  }
+});
+
+test('execute backup guard requires the authsessions BSON restore asset', async () => {
+  const databaseName = 'customer_acceptance_v2_test';
+  const liveCollections = [
+    { name: 'authsessions', documentCount: 0 },
+    { name: 'attendancedailyreviews', documentCount: 1 },
+    { name: 'attendancesubmissions', documentCount: 2 },
+    { name: 'generateddailyreports', documentCount: 0 },
+    { name: 'productionschedules', documentCount: 2 }
+  ];
+  const missingFile = `database/${databaseName}/authsessions.bson`;
+  const backupVerifier = createBackupVerifier({
+    databaseName,
+    collections: liveCollections,
+    manifestSha256: 'd'.repeat(64),
+    files: liveCollections
+      .map(({ name }) => ({ file: `database/${databaseName}/${name}.bson` }))
+      .filter(({ file }) => file !== missingFile)
+  });
+
+  await assert.rejects(verifyExecutionBackup({
+    backupDirectory: path.resolve(os.tmpdir(), 'acceptance-repair-backup'),
+    databaseName,
+    backupVerifier,
+    liveCollections
+  }), (error) => {
+    assert.equal(error.code, 'BACKUP_DATABASE_STATE_INCOMPLETE');
+    assert.deepEqual(error.details.missingDumpFiles, [missingFile]);
+    return true;
+  });
 });

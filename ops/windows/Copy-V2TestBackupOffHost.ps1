@@ -27,6 +27,7 @@ $RequiredMigrationCollections = @(
   'transportrecords',
   'equipmentassets',
   'equipmentroutineplans',
+  'authsessions',
   'productionschedules',
   'attendancesubmissions',
   'attendancedailyreviews',

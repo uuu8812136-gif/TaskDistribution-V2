@@ -30,6 +30,7 @@ function New-VerifiedBackupFixture {
     'transportrecords',
     'equipmentassets',
     'equipmentroutineplans',
+    'authsessions',
     'productionschedules',
     'attendancesubmissions',
     'attendancedailyreviews',

@@ -54,7 +54,11 @@ const COLLECTIONS = Object.freeze({
   attendanceDailyReviews: 'attendancedailyreviews',
   generatedDailyReports: 'generateddailyreports'
 });
-const REQUIRED_BACKUP_COLLECTIONS = Object.freeze(Object.values(COLLECTIONS));
+const AUTH_SESSION_COLLECTION = 'authsessions';
+const REQUIRED_BACKUP_COLLECTIONS = Object.freeze([
+  ...Object.values(COLLECTIONS),
+  AUTH_SESSION_COLLECTION
+]);
 const MONTHLY_TOTAL_FIELDS = Object.freeze([
   'aLine',
   'northLine',
@@ -705,11 +709,15 @@ async function verifyExecutionBackup({
   const fileNames = new Set((manifest.files || []).map(({ file }) => file));
   const missingRequiredCollections = REQUIRED_BACKUP_COLLECTIONS.filter((name) => !manifestCollections.has(name));
   const missingLiveCollections = liveCollections.filter(({ name }) => !manifestCollections.has(name));
+  const ttlCountDrifts = [];
   const countMismatches = liveCollections.flatMap(({ name, documentCount }) => {
     const backedUp = manifestCollections.get(name);
-    return backedUp && backedUp.documentCount !== documentCount
-      ? [{ name, live: documentCount, backup: backedUp.documentCount }]
-      : [];
+    if (!backedUp || backedUp.documentCount === documentCount) return [];
+    if (name === AUTH_SESSION_COLLECTION && documentCount < backedUp.documentCount) {
+      ttlCountDrifts.push({ name, live: documentCount, backup: backedUp.documentCount });
+      return [];
+    }
+    return [{ name, live: documentCount, backup: backedUp.documentCount }];
   });
   const missingDumpFiles = liveCollections
     .map(({ name }) => `database/${databaseName}/${name}.bson`)
@@ -721,7 +729,7 @@ async function verifyExecutionBackup({
     countMismatches.length ||
     missingDumpFiles.length
   ) {
-    fail('BACKUP_DATABASE_STATE_INCOMPLETE', 'Verified backup does not completely match the current database collection set', {
+    fail('BACKUP_DATABASE_STATE_INCOMPLETE', 'Verified backup does not satisfy the current database collection guards', {
       missingRequiredCollections,
       missingLiveCollections,
       countMismatches,
@@ -748,6 +756,7 @@ async function verifyExecutionBackup({
     manifestSha256: verified.manifestSha256,
     collectionCount: liveCollections.length,
     collectionCountsVerified: true,
+    ttlCountDrifts,
     completeRestoreSetVerified: true
   };
 }

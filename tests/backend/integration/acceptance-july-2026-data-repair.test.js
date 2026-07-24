@@ -70,6 +70,7 @@ function dailyEntry(date, value) {
 
 async function createEmptyCollections() {
   for (const Model of MODELS) await Model.createCollection();
+  await mongoose.connection.db.createCollection('authsessions');
 }
 
 async function seed() {
