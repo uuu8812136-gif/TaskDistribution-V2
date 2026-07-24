@@ -9,6 +9,7 @@ release_id=''
 operations_env="$V2_OPERATIONS_ENV"
 confirm_instance=''
 confirm_database=''
+forward_fix_migration_started=''
 execute=0
 
 usage() {
@@ -17,7 +18,8 @@ Stop only the isolated V2 API/tunnel, create a fresh verified backup, and leave 
 The next phase is blocked until the backup is copied to physical-host D: and verified there.
 
 Dry-run (default):
-  create-v2-test-release-backup.sh --release-id <id> [--operations-env <absolute-file>]
+  create-v2-test-release-backup.sh --release-id <id> [--operations-env <absolute-file>] \
+    [--forward-fix-migration-started <absolute migration-started.json>]
 
 Execute:
   create-v2-test-release-backup.sh ... --execute \
@@ -32,6 +34,7 @@ while test "$#" -gt 0; do
     --operations-env) operations_env="${2:-}"; shift 2 ;;
     --confirm-instance) confirm_instance="${2:-}"; shift 2 ;;
     --confirm-database) confirm_database="${2:-}"; shift 2 ;;
+    --forward-fix-migration-started) forward_fix_migration_started="${2:-}"; shift 2 ;;
     --execute) execute=1; shift ;;
     --help|-h) usage; exit 0 ;;
     *) v2_die "Unknown option: $1" ;;
@@ -47,8 +50,12 @@ v2_assert_release_metadata "$candidate" "$release_id" ''
 v2_assert_app_environment
 v2_assert_legacy_healthy
 v2_assert_mongo_primary
-v2_require_active "$V2_API_UNIT"
-v2_require_active "$V2_TUNNEL_UNIT"
+if test -z "$forward_fix_migration_started"; then
+  v2_require_active "$V2_API_UNIT"
+  v2_require_active "$V2_TUNNEL_UNIT"
+else
+  v2_assert_stopped_forward_fix_evidence "$forward_fix_migration_started"
+fi
 
 current_before=$(readlink -f "$V2_CURRENT_LINK" 2>/dev/null || true)
 test -d "$current_before" || v2_die 'Current V2 release cannot be resolved'
@@ -84,6 +91,9 @@ v2_require_confirmations "$confirm_instance" "$confirm_database"
 
 stopped=0
 hold_stopped=0
+if test -n "$forward_fix_migration_started"; then
+  hold_stopped=1
+fi
 recover_before_migration() {
   status=$?
   trap - EXIT

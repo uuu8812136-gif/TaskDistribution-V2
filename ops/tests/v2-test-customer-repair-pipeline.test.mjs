@@ -56,13 +56,17 @@ test('release package and candidate preparation require and syntax-check both pr
 
 test('candidate preparation accepts a stopped forward fix only with sealed migration evidence', () => {
   assert.match(prepare, /--forward-fix-migration-started/)
-  assert.match(prepare, /task-distribution-v2-migration-started\/v1/)
-  assert.match(prepare, /started\.releaseId !== expectedReleaseId/)
-  assert.match(prepare, /started\.migrationPreviewSha256 !== previewSha256/)
-  assert.match(prepare, /started\.codeOnlyRollbackAllowed !== false/)
-  assert.match(prepare, /v2_require_inactive "\$V2_API_UNIT"/)
-  assert.match(prepare, /v2_require_inactive "\$V2_TUNNEL_UNIT"/)
-  assert.match(prepare, /Forward-fix evidence directory must be root-owned/)
+  assert.match(prepare, /v2_assert_stopped_forward_fix_evidence "\$forward_fix_migration_started"/)
+  assert.match(backup, /--forward-fix-migration-started/)
+  assert.match(backup, /v2_assert_stopped_forward_fix_evidence "\$forward_fix_migration_started"/)
+  assert.match(backup, /if test -n "\$forward_fix_migration_started"; then\s+hold_stopped=1/)
+  assert.match(common, /task-distribution-v2-migration-started\/v1/)
+  assert.match(common, /started\.releaseId !== expectedReleaseId/)
+  assert.match(common, /started\.migrationPreviewSha256 !== previewSha256/)
+  assert.match(common, /started\.codeOnlyRollbackAllowed !== false/)
+  assert.match(common, /v2_require_inactive "\$V2_API_UNIT"/)
+  assert.match(common, /v2_require_inactive "\$V2_TUNNEL_UNIT"/)
+  assert.match(common, /Forward-fix evidence directory must be sealed and root-owned/)
 })
 
 test('stopped-state digest and both on-host and D: backup gates cover all migration inputs', () => {

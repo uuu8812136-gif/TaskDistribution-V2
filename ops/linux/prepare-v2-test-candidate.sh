@@ -62,40 +62,7 @@ if test -z "$forward_fix_migration_started"; then
   v2_require_active "$V2_API_UNIT"
   v2_require_active "$V2_TUNNEL_UNIT"
 else
-  test "${forward_fix_migration_started#/}" != "$forward_fix_migration_started" || \
-    v2_die '--forward-fix-migration-started must be absolute'
-  test -f "$forward_fix_migration_started" && test ! -L "$forward_fix_migration_started" || \
-    v2_die 'Forward-fix migration-started evidence must be a real file'
-  forward_fix_migration_started=$(readlink -f "$forward_fix_migration_started")
-  forward_fix_evidence_dir=$(dirname -- "$forward_fix_migration_started")
-  case "$forward_fix_migration_started" in
-    "${V2_EVIDENCE_ROOT}/"*/migration-started.json) ;;
-    *) v2_die 'Forward-fix evidence escaped the V2 release evidence root' ;;
-  esac
-  test "$(stat -c '%U:%G' "$forward_fix_evidence_dir")" = root:root || \
-    v2_die 'Forward-fix evidence directory must be root-owned'
-  test -f "$forward_fix_evidence_dir/migration-preview.json" && \
-    test ! -L "$forward_fix_evidence_dir/migration-preview.json" || \
-    v2_die 'Forward-fix migration preview evidence is missing'
-  v2_require_inactive "$V2_API_UNIT"
-  v2_require_inactive "$V2_TUNNEL_UNIT"
-  /usr/bin/node - "$forward_fix_migration_started" "$forward_fix_evidence_dir/migration-preview.json" <<'NODE'
-const { createHash } = require('node:crypto');
-const fs = require('node:fs');
-const path = require('node:path');
-const [startedPath, previewPath] = process.argv.slice(2);
-const started = JSON.parse(fs.readFileSync(startedPath, 'utf8'));
-const expectedReleaseId = path.basename(path.dirname(startedPath));
-const previewSha256 = createHash('sha256').update(fs.readFileSync(previewPath)).digest('hex');
-if (
-  started.format !== 'task-distribution-v2-migration-started/v1' ||
-  started.releaseId !== expectedReleaseId ||
-  !/^backup-\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(started.backupId || '') ||
-  !/^[a-f0-9]{64}$/.test(started.migrationPreviewSha256 || '') ||
-  started.migrationPreviewSha256 !== previewSha256 ||
-  started.codeOnlyRollbackAllowed !== false
-) throw new Error('Forward-fix migration-started evidence is invalid');
-NODE
+  v2_assert_stopped_forward_fix_evidence "$forward_fix_migration_started"
 fi
 
 if test "$execute" -ne 1; then

@@ -168,6 +168,49 @@ v2_require_inactive() {
     v2_die "Service must be stopped: $unit"
 }
 
+v2_assert_stopped_forward_fix_evidence() {
+  local started_path="$1"
+  local evidence_dir preview_path
+  test "${started_path#/}" != "$started_path" || \
+    v2_die 'Forward-fix migration-started evidence must be absolute'
+  test -f "$started_path" && test ! -L "$started_path" || \
+    v2_die 'Forward-fix migration-started evidence must be a real file'
+  started_path=$(readlink -f "$started_path")
+  evidence_dir=$(dirname -- "$started_path")
+  case "$started_path" in
+    "${V2_EVIDENCE_ROOT}/"*/migration-started.json) ;;
+    *) v2_die 'Forward-fix evidence escaped the V2 release evidence root' ;;
+  esac
+  test "$(stat -c '%U:%G:%a' "$evidence_dir")" = root:root:750 || \
+    v2_die 'Forward-fix evidence directory must be sealed and root-owned'
+  test "$(stat -c '%U:%G:%a' "$started_path")" = root:root:640 || \
+    v2_die 'Forward-fix migration-started evidence must be sealed and root-owned'
+  preview_path="$evidence_dir/migration-preview.json"
+  test -f "$preview_path" && test ! -L "$preview_path" || \
+    v2_die 'Forward-fix migration preview evidence is missing'
+  test "$(stat -c '%U:%G:%a' "$preview_path")" = root:root:640 || \
+    v2_die 'Forward-fix migration preview evidence must be sealed and root-owned'
+  v2_require_inactive "$V2_API_UNIT"
+  v2_require_inactive "$V2_TUNNEL_UNIT"
+  /usr/bin/node - "$started_path" "$preview_path" <<'NODE'
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [startedPath, previewPath] = process.argv.slice(2);
+const started = JSON.parse(fs.readFileSync(startedPath, 'utf8'));
+const expectedReleaseId = path.basename(path.dirname(startedPath));
+const previewSha256 = createHash('sha256').update(fs.readFileSync(previewPath)).digest('hex');
+if (
+  started.format !== 'task-distribution-v2-migration-started/v1' ||
+  started.releaseId !== expectedReleaseId ||
+  !/^backup-\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(started.backupId || '') ||
+  !/^[a-f0-9]{64}$/.test(started.migrationPreviewSha256 || '') ||
+  started.migrationPreviewSha256 !== previewSha256 ||
+  started.codeOnlyRollbackAllowed !== false
+) throw new Error('Forward-fix migration-started evidence is invalid');
+NODE
+}
+
 v2_assert_v2_tunnel_configuration() {
   local tunnel_exec
   tunnel_exec=$(systemctl show "$V2_TUNNEL_UNIT" -p ExecStart --value 2>/dev/null || true)

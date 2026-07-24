@@ -170,6 +170,9 @@ sudo /usr/bin/env bash "$TOOLS/create-v2-test-release-backup.sh" \
   --operations-env "$OPS_ENV"
 ```
 
+stopped forward-fix 场景必须和候选准备阶段一样，在 dry-run 与 execute 命令中继续传入
+`--forward-fix-migration-started <绝对路径>`。此时任一步骤失败都保持 V2 停止，不会启动旧 release。
+
 确认输出中的 previous release 和独立备份根目录后执行：
 
 ```bash
