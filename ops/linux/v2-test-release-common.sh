@@ -318,6 +318,92 @@ if (failures.length) {
 NODE
 }
 
+v2_assert_failed_customer_repair_resume_evidence() {
+  local failed_release_id="$1"
+  local source_release_id="$2"
+  local failed_candidate
+  local failed_evidence_dir
+  local source_evidence_dir="${V2_EVIDENCE_ROOT}/${source_release_id}"
+  local required
+
+  v2_validate_release_id "$failed_release_id"
+  v2_validate_release_id "$source_release_id"
+  test "$failed_release_id" != "$source_release_id" || \
+    v2_die 'Failed resume release must differ from its migration evidence release'
+  failed_candidate=$(v2_release_path "$failed_release_id")
+  failed_evidence_dir="${V2_EVIDENCE_ROOT}/${failed_release_id}"
+  test -d "$failed_candidate" && test ! -L "$failed_candidate" || \
+    v2_die 'Failed resume candidate is missing or is a symbolic link'
+  v2_assert_release_metadata "$failed_candidate" "$failed_release_id" ''
+  test -d "$failed_evidence_dir" && test ! -L "$failed_evidence_dir" || \
+    v2_die 'Failed resume evidence directory is missing or is a symbolic link'
+  test "$(stat -c '%U:%G:%a' "$failed_evidence_dir")" = root:root:750 || \
+    v2_die 'Failed resume evidence directory must be sealed and root-owned'
+  test ! -e "$failed_evidence_dir/activation-result.json" && \
+    test ! -L "$failed_evidence_dir/activation-result.json" || \
+    v2_die 'Failed resume release already has activation evidence'
+  for required in \
+    previous-release.txt release-json.sha256 backup-verify-resume.json \
+    transport-reference-invariants.json customer-repair-invariants.json \
+    runtime-before-activation.json resume-source-evidence.json; do
+    test -f "$failed_evidence_dir/$required" && test ! -L "$failed_evidence_dir/$required" || \
+      v2_die "Failed resume evidence is missing or unsafe: $required"
+    test "$(stat -c '%U:%G:%a' "$failed_evidence_dir/$required")" = root:root:640 || \
+      v2_die "Failed resume evidence must be sealed and root-owned: $required"
+  done
+  test "$(readlink -f "$V2_CURRENT_LINK" 2>/dev/null || true)" = "$failed_candidate" || \
+    v2_die 'Current release does not match the failed resume candidate'
+  test "$(awk 'NR==1{print $1}' "$failed_evidence_dir/release-json.sha256")" = \
+    "$(sha256sum "$failed_candidate/deploy/RELEASE.json" | awk '{print $1}')" || \
+    v2_die 'Failed resume release metadata SHA256 mismatch'
+  v2_require_inactive "$V2_API_UNIT"
+  v2_require_inactive "$V2_TUNNEL_UNIT"
+
+  /usr/bin/node - "$failed_release_id" "$source_release_id" \
+    "$failed_evidence_dir" "$source_evidence_dir" <<'NODE'
+const { createHash } = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const [failedReleaseId, sourceReleaseId, failedEvidenceDir, sourceEvidenceDir] =
+  process.argv.slice(2);
+const read = (directory, name) => JSON.parse(fs.readFileSync(path.join(directory, name), 'utf8'));
+const sha256 = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+const source = read(failedEvidenceDir, 'resume-source-evidence.json');
+const customer = read(failedEvidenceDir, 'customer-repair-invariants.json');
+const transport = read(failedEvidenceDir, 'transport-reference-invariants.json');
+const backup = read(failedEvidenceDir, 'backup-verify-resume.json');
+const handoff = read(sourceEvidenceDir, 'backup-handoff.json');
+const failures = [];
+const expect = (condition, code) => { if (!condition) failures.push(code); };
+
+expect(source.format === 'task-distribution-v2-resume-source-evidence/v1', 'source.format');
+expect(source.releaseId === failedReleaseId, 'source.releaseId');
+expect(source.sourceReleaseId === sourceReleaseId, 'source.sourceReleaseId');
+expect(source.sourceEvidenceDirectory === sourceEvidenceDir, 'source.sourceEvidenceDirectory');
+expect(source.backupId === handoff.backupId, 'source.backupId');
+expect(source.manifestSha256 === handoff.manifestSha256, 'source.manifestSha256');
+expect(source.migrationWritesPerformed === 0, 'source.migrationWritesPerformed');
+expect(backup.backupId === handoff.backupId && backup.manifestSha256 === handoff.manifestSha256,
+  'backup.verification');
+expect(customer.status === 'CUSTOMER_REPAIR_INVARIANTS_OK' && customer.mismatchCount === 0,
+  'customer.status');
+expect(customer.backupId === handoff.backupId, 'customer.backupId');
+expect(customer.acceptance?.attendanceRawActual === 18 &&
+  customer.acceptance?.attendanceNotYetEmployed === 0 &&
+  customer.acceptance?.reviewActualAttendance === 125,
+  'customer.attendance');
+expect(transport.status === 'TRANSPORT_REFERENCE_INVARIANTS_OK' && transport.mismatchCount === 0,
+  'transport.status');
+expect(sha256(path.join(failedEvidenceDir, 'runtime-before-activation.json')) ===
+  sha256(path.join(sourceEvidenceDir, 'migration-after.json')), 'runtime.sha256');
+expect(fs.readFileSync(path.join(failedEvidenceDir, 'previous-release.txt'), 'utf8').trim() ===
+  handoff.previousRelease, 'previousRelease');
+if (failures.length) {
+  throw new Error(`Failed customer repair resume evidence mismatch: ${failures.join(', ')}`);
+}
+NODE
+}
+
 v2_assert_v2_tunnel_configuration() {
   local tunnel_exec
   tunnel_exec=$(systemctl show "$V2_TUNNEL_UNIT" -p ExecStart --value 2>/dev/null || true)
@@ -428,6 +514,26 @@ v2_assert_release_directory() {
   test ! -L "$release_path" || v2_die 'Release directory must not be a symbolic link'
 }
 
+v2_assert_staging_api_launcher() {
+  local candidate="$1"
+  /usr/bin/node - "$candidate/deploy/linux/staging-server.cjs" <<'NODE'
+const fs = require('node:fs');
+const source = fs.readFileSync(process.argv[2], 'utf8');
+const required = [
+  'loadEnvironment',
+  'mongoose.connect(config.mongodbUri)',
+  'createApp(config)',
+  'app.listen(config.port'
+];
+const forbidden = ['http.createServer', 'const port = 18130', 'V2 test Web'];
+const failures = [
+  ...required.filter(value => !source.includes(value)).map(value => `missing:${value}`),
+  ...forbidden.filter(value => source.includes(value)).map(value => `forbidden:${value}`)
+];
+if (failures.length) throw new Error(`Staging API launcher mismatch: ${failures.join(', ')}`);
+NODE
+}
+
 v2_assert_candidate_layout() {
   local candidate="$1"
   local required
@@ -458,6 +564,7 @@ v2_assert_candidate_layout() {
     deploy/linux/staging-server.cjs; do
     test -f "$candidate/$required" || v2_die "Candidate file is missing: $required"
   done
+  v2_assert_staging_api_launcher "$candidate"
 }
 
 v2_assert_release_metadata() {

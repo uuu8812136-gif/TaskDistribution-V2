@@ -7,6 +7,7 @@ SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 release_id=''
 source_release_id=''
+failed_resume_release_id=''
 operations_env="$V2_OPERATIONS_ENV"
 confirm_instance=''
 confirm_database=''
@@ -20,7 +21,8 @@ This workflow verifies sealed source evidence and live state without rerunning a
 
 Dry-run (default):
   resume-v2-test-candidate-activation.sh --release-id <new-id> \
-    --source-release-id <failed-id>
+    --source-release-id <failed-migration-id> \
+    [--failed-resume-release-id <failed-resume-id>]
 
 Execute:
   resume-v2-test-candidate-activation.sh ... --execute \
@@ -34,6 +36,7 @@ while test "$#" -gt 0; do
   case "$1" in
     --release-id) release_id="${2:-}"; shift 2 ;;
     --source-release-id) source_release_id="${2:-}"; shift 2 ;;
+    --failed-resume-release-id) failed_resume_release_id="${2:-}"; shift 2 ;;
     --operations-env) operations_env="${2:-}"; shift 2 ;;
     --confirm-instance) confirm_instance="${2:-}"; shift 2 ;;
     --confirm-database) confirm_database="${2:-}"; shift 2 ;;
@@ -47,6 +50,12 @@ done
 v2_validate_release_id "$release_id"
 v2_validate_release_id "$source_release_id"
 test "$release_id" != "$source_release_id" || v2_die 'Resume candidate must differ from the failed release'
+if test -n "$failed_resume_release_id"; then
+  v2_validate_release_id "$failed_resume_release_id"
+  test "$failed_resume_release_id" != "$release_id" && \
+    test "$failed_resume_release_id" != "$source_release_id" || \
+    v2_die 'Failed resume release must differ from the new and migration evidence releases'
+fi
 test "${operations_env#/}" != "$operations_env" && test -f "$operations_env" || \
   v2_die '--operations-env must be an existing absolute file'
 v2_assert_protected_environment_file "$operations_env"
@@ -67,17 +76,27 @@ v2_assert_mongo_primary
 v2_assert_stopped_forward_fix_evidence "$source_started"
 v2_assert_customer_repair_resume_evidence "$source_release_id"
 v2_validate_migration_preview_summary "$source_candidate" "$source_evidence_dir"
+if test -n "$failed_resume_release_id"; then
+  v2_assert_failed_customer_repair_resume_evidence \
+    "$failed_resume_release_id" "$source_release_id"
+fi
 test ! -e "$evidence_dir" && test ! -L "$evidence_dir" || \
   v2_die "Resume evidence path already exists: $evidence_dir"
 
 backup_id=$(v2_json_field "$source_handoff" backupId)
 backup_directory=$(v2_json_field "$source_handoff" backupDirectory)
 manifest_sha256=$(v2_json_field "$source_handoff" manifestSha256)
-previous_release=$(v2_json_field "$source_handoff" previousRelease)
+migration_previous_release=$(v2_json_field "$source_handoff" previousRelease)
 expected_transport_snapshot=$(v2_json_field "$source_handoff" transportSnapshotsSha256)
-test "$(readlink -f "$V2_CURRENT_LINK" 2>/dev/null || true)" = "$previous_release" || \
-  v2_die 'Current release changed after the failed migration activation'
-test "$previous_release" != "$candidate" || v2_die 'Resume candidate is already current'
+current_before=$(readlink -f "$V2_CURRENT_LINK" 2>/dev/null || true)
+if test -z "$failed_resume_release_id"; then
+  test "$current_before" = "$migration_previous_release" || \
+    v2_die 'Current release changed after the failed migration activation'
+else
+  test "$current_before" = "$(v2_release_path "$failed_resume_release_id")" || \
+    v2_die 'Current release changed after the failed resume activation'
+fi
+test "$current_before" != "$candidate" || v2_die 'Resume candidate is already current'
 
 backup_root=$(v2_operations_value "$candidate" "$operations_env" BACKUP_ROOT)
 test "$backup_directory" = "${backup_root}/${backup_id}" || \
@@ -141,7 +160,7 @@ trap on_failure EXIT
 
 install -d -o root -g root -m 0750 "$V2_EVIDENCE_ROOT"
 install -d -o root -g root -m 0750 "$evidence_dir"
-printf '%s\n' "$previous_release" > "$evidence_dir/previous-release.txt"
+printf '%s\n' "$current_before" > "$evidence_dir/previous-release.txt"
 sha256sum "$candidate/deploy/RELEASE.json" > "$evidence_dir/release-json.sha256"
 printf '%s\n' "$backup_verification" > "$evidence_dir/backup-verify-resume.json"
 printf '%s\n' "$transport_result" > "$evidence_dir/transport-reference-invariants.json"
@@ -151,11 +170,13 @@ chown root:root "$evidence_dir"/*
 chmod 0640 "$evidence_dir"/*
 
 /usr/bin/node - "$evidence_dir/resume-source-evidence.json" "$release_id" \
-  "$source_release_id" "$source_evidence_dir" "$backup_id" "$manifest_sha256" <<'NODE'
+  "$source_release_id" "$source_evidence_dir" "$backup_id" "$manifest_sha256" \
+  "$current_before" "$migration_previous_release" "$failed_resume_release_id" <<'NODE'
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const [file, releaseId, sourceReleaseId, sourceEvidenceDir, backupId, manifestSha256] =
+const [file, releaseId, sourceReleaseId, sourceEvidenceDir, backupId, manifestSha256,
+  previousRelease, migrationPreviousRelease, supersedesFailedResumeReleaseId] =
   process.argv.slice(2);
 const names = [
   'backup-handoff.json',
@@ -181,6 +202,9 @@ const value = {
   sourceEvidenceDirectory: sourceEvidenceDir,
   backupId,
   manifestSha256,
+  previousRelease,
+  migrationPreviousRelease,
+  supersedesFailedResumeReleaseId: supersedesFailedResumeReleaseId || null,
   migrationWritesPerformed: 0,
   sourceFiles: names.map(name => ({ file: name, sha256: sha256(name) }))
 };
@@ -195,6 +219,9 @@ new_link="${V2_RELEASE_ROOT}/current.new.${release_id}"
 test ! -e "$new_link" && test ! -L "$new_link" || v2_die "Temporary current link exists: $new_link"
 ln -s "$candidate" "$new_link"
 mv -Tf "$new_link" "$V2_CURRENT_LINK"
+if ss -H -ltn '( sport = :18120 )' | grep -q .; then
+  v2_die 'Isolated V2 API port 18120 is already in use before service start'
+fi
 systemctl start "$V2_API_UNIT"
 
 healthy=0
@@ -241,10 +268,10 @@ chown root:root "$evidence_dir/post-activation-verification.json"
 chmod 0640 "$evidence_dir/post-activation-verification.json"
 
 /usr/bin/node - "$evidence_dir/activation-result.json" "$release_id" "$source_release_id" \
-  "$previous_release" "$backup_id" "$manifest_sha256" <<'NODE'
+  "$current_before" "$backup_id" "$manifest_sha256" "$failed_resume_release_id" <<'NODE'
 const fs = require('node:fs');
-const [file, releaseId, sourceReleaseId, previousRelease, backupId, manifestSha256] =
-  process.argv.slice(2);
+const [file, releaseId, sourceReleaseId, previousRelease, backupId, manifestSha256,
+  supersedesFailedResumeReleaseId] = process.argv.slice(2);
 fs.writeFileSync(file, `${JSON.stringify({
   format: 'task-distribution-v2-resume-activation-result/v1',
   activatedAt: new Date().toISOString(),
@@ -254,6 +281,7 @@ fs.writeFileSync(file, `${JSON.stringify({
   previousRelease,
   backupId,
   manifestSha256,
+  supersedesFailedResumeReleaseId: supersedesFailedResumeReleaseId || null,
   migrationWritesPerformed: 0
 }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o640 });
 NODE
@@ -262,4 +290,4 @@ chmod 0640 "$evidence_dir/activation-result.json"
 
 trap - EXIT
 printf '{"status":"ACTIVATED_AND_VERIFIED","releaseId":"%s","sourceReleaseId":"%s","previous":"%s","backupId":"%s","migrationWrites":0}\n' \
-  "$release_id" "$source_release_id" "$previous_release" "$backup_id"
+  "$release_id" "$source_release_id" "$current_before" "$backup_id"

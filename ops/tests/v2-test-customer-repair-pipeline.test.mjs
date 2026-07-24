@@ -16,6 +16,7 @@ const activate = read('../linux/activate-v2-test-candidate.sh')
 const resume = read('../linux/resume-v2-test-candidate-activation.sh')
 const verify = read('../linux/verify-v2-test-release.sh')
 const previewInvariant = read('../lib/v2MigrationPreviewInvariant.js')
+const stagingLauncher = read('../../deploy/v2-test/linux/staging-server.cjs')
 
 const migrationFiles = [
   'app/script/backfillCustomerEquipmentOwnership.js',
@@ -55,6 +56,15 @@ test('release package and candidate preparation require and syntax-check both pr
   assert.match(prepare, /node --check "\$temporary\/ops\/lib\/v2MigrationPreviewInvariant\.js"/)
 })
 
+test('the packaged staging launcher starts only the isolated API behind the existing Nginx Web listener', () => {
+  assert.match(stagingLauncher, /mongoose\.connect\(config\.mongodbUri\)/)
+  assert.match(stagingLauncher, /createApp\(config\)/)
+  assert.match(stagingLauncher, /app\.listen\(config\.port, '127\.0\.0\.1'/)
+  assert.doesNotMatch(stagingLauncher, /http\.createServer|const port = 18130|V2 test Web/)
+  assert.match(common, /v2_assert_staging_api_launcher/)
+  assert.match(common, /Staging API launcher mismatch/)
+})
+
 test('candidate preparation accepts a stopped forward fix only with sealed migration evidence', () => {
   assert.match(prepare, /--forward-fix-migration-started/)
   assert.match(prepare, /v2_assert_stopped_forward_fix_evidence "\$forward_fix_migration_started"/)
@@ -79,6 +89,10 @@ test('resume activation accepts only the sealed known customer-repair failure', 
   assert.match(common, /attendanceRawActual === 18/)
   assert.match(common, /attendanceNotYetEmployed === 0/)
   assert.match(common, /reviewActualAttendance === 125/)
+  assert.match(resume, /--failed-resume-release-id/)
+  assert.match(resume, /v2_assert_failed_customer_repair_resume_evidence/)
+  assert.match(common, /source\.migrationWritesPerformed === 0/)
+  assert.match(common, /Failed customer repair resume evidence mismatch/)
 })
 
 test('resume activation reuses sealed reports and never reruns migration scripts', () => {

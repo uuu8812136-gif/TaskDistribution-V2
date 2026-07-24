@@ -371,6 +371,17 @@ sudo /usr/bin/env bash "$TOOLS/resume-v2-test-candidate-activation.sh" \
 SHA256、恢复前现库基线、备份复验、客户/运输 invariant、公网发布复验及激活结果；旧 evidence 不会
 被覆盖。任一步失败时 V2 保持停止，不自动切回旧代码。
 
+如果 resume 已切换 `current`，但在 API/索引/公网验证阶段失败，则继续保留该 release 的 evidence，
+使用另一个新 release ID 修复代码。下一次 dry-run 和 execute 除原 `--source-release-id` 外，还必须传入：
+
+```bash
+--failed-resume-release-id '<上一次失败的resume release-id>'
+```
+
+脚本只接受当前链接确实指向该失败 release、API/tunnel 均停止、没有成功 activation result、原迁移后
+基线未漂移、客户/运输 invariant 均通过且 `migrationWritesPerformed=0` 的失败 resume evidence。不得删除
+失败 evidence、把 `current` 手工切回迁移前代码，或跳过这条证据链。
+
 ## 9. 恢复到全新 `*_v2_test` 数据库
 
 此操作从已验签备份创建新的数据库和新的附件恢复目录，不触碰活动数据库/附件。首先在仓库外
