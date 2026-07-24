@@ -28,6 +28,8 @@ const { createFileAssetService } = require('./fileAssetService');
 const {
   buildScopedDetailFilter,
   buildScopedFilter,
+  buildScopedOrgUnitIdConstraint,
+  isOrgUnitInDataScope,
   normalizeObjectId
 } = require('./scopedQueryService');
 const {
@@ -41,6 +43,14 @@ const {
   runWithOptionalTransaction,
   supportsTransactions
 } = require('./transactionService');
+const {
+  canMembershipActAsSubDepartmentLeader,
+  leadershipOrgUnitIds,
+  lockSubDepartmentLeadership,
+  orgUnitsShareSubDepartment,
+  subDepartmentOrgUnitIds
+} = require('./subDepartmentLeadershipService');
+const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
 
 const { FILE_OWNER_TYPES } = FileAsset;
 const {
@@ -190,8 +200,13 @@ function normalizeIdArray(value, field, { min = 0, max = MAX_BATCH_ITEMS } = {})
   return ids;
 }
 
-function serializeSession(document, authContext = null) {
+function serializeSession(document, authContext = null, accessPolicy = null) {
   const value = plain(document);
+  const canApprove = typeof accessPolicy?.canApprove === 'boolean'
+    ? accessPolicy.canApprove
+    : authContext
+      ? canActorApprove(authContext, value)
+      : false;
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -216,7 +231,7 @@ function serializeSession(document, authContext = null) {
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     version: document?.__v ?? value.__v ?? 0,
-    canApprove: authContext ? canActorApprove(authContext, value) : false,
+    canApprove,
     canInventory: Boolean(
       authContext &&
       authContext.mode === SESSION_MODES.TEAM &&
@@ -297,8 +312,8 @@ function canActorApprove(authContext, inventorySession) {
   const stage = requiredPositionForStatus(inventorySession.status);
   const positionKey = authContext.membership.positionKey;
   if (stage === INVENTORY_APPROVAL_STAGES.SUB_DEPARTMENT_MANAGER) {
-    return positionKey === POSITION_KEYS.SUB_DEPARTMENT_MANAGER &&
-      sameId(authContext.membership.orgUnitId, inventorySession.orgUnitId);
+    // Branch-aware approval is resolved asynchronously by canActorApproveSession.
+    return false;
   }
   if (stage === INVENTORY_APPROVAL_STAGES.DEPARTMENT_DEPUTY_OR_ASSISTANT) {
     return [
@@ -452,7 +467,7 @@ function createEquipmentInventoryService({
     method = 'GET',
     session = null
   }) {
-    assertInventoryPermission(authContext);
+    const context = assertInventoryPermission(authContext);
     const teamId = authContext.mode === SESSION_MODES.TEAM
       ? normalizeObjectId(authContext.activeTeamId, 'activeTeamId')
       : await resolveReadTeamId(authContext, requestedTeamId);
@@ -464,21 +479,78 @@ function createEquipmentInventoryService({
       method
     });
     const inventorySession = await execute(InventorySessionModel.findOne(filter), session);
-    if (!inventorySession) throw notFound();
-    return inventorySession;
+    if (inventorySession) return inventorySession;
+
+    // A supervisor may be assigned to a level-3 group while acting for the
+    // level-2 sub-department. The normal ORG_UNIT scope intentionally stops
+    // at the assigned group, so retry only a pending sub-department approval
+    // after the shared leadership rule authorizes the candidate.
+    if (
+      context.mode === SESSION_MODES.TEAM &&
+      [
+        POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+        POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+        POSITION_KEYS.SUPERVISOR
+      ].includes(context.membership?.positionKey)
+    ) {
+      const candidate = await execute(InventorySessionModel.findOne({
+        _id: detailId(inventorySessionId),
+        teamId
+      }), session);
+      if (
+        candidate &&
+        requiredPositionForStatus(candidate.status) === INVENTORY_APPROVAL_STAGES.SUB_DEPARTMENT_MANAGER &&
+        await canActorApproveSession(context, candidate, session)
+      ) {
+        return candidate;
+      }
+    }
+    throw notFound();
+  }
+
+  async function canActorApproveSession(authContext, inventorySession, session = null) {
+    const value = plain(inventorySession);
+    if (requiredPositionForStatus(value.status) !== INVENTORY_APPROVAL_STAGES.SUB_DEPARTMENT_MANAGER) {
+      return canActorApprove(authContext, value);
+    }
+    if (!authContext?.membership || authContext.mode !== SESSION_MODES.TEAM) return false;
+    const orgUnitIds = await subDepartmentOrgUnitIds({
+      OrgUnitModel,
+      teamId: value.teamId,
+      orgUnitId: value.orgUnitId,
+      session
+    });
+    return canMembershipActAsSubDepartmentLeader({
+      TeamMembershipModel,
+      OrgUnitModel,
+      membership: authContext.membership,
+      teamId: value.teamId,
+      orgUnitIds,
+      session
+    });
+  }
+
+  async function serializeSessionForContext(document, authContext, session = null) {
+    return serializeSession(document, authContext, {
+      canApprove: await canActorApproveSession(authContext, document, session)
+    });
   }
 
   async function resolveCreateOrg(context, orgUnitId, session) {
     const normalizedOrgUnitId = relatedId(orgUnitId);
     const scope = resolveModuleDataScope(context, DATA_SCOPE_MODULES.EQUIPMENT);
-    if (scope.scope === DATA_SCOPES.ORG_UNIT && !sameId(scope.orgUnitId, normalizedOrgUnitId)) {
+    if (
+      scope.scope === DATA_SCOPES.ORG_UNIT &&
+      !isOrgUnitInDataScope(scope, normalizedOrgUnitId)
+    ) {
       throw notFound();
     }
-    const orgUnit = await execute(OrgUnitModel.findOne({
-      _id: normalizedOrgUnitId,
+    const orgUnit = await lockActiveOrgUnitReference({
+      OrgUnitModel,
       teamId: context.activeTeamId,
-      status: ORG_UNIT_STATUSES.ACTIVE
-    }), session);
+      orgUnitId: normalizedOrgUnitId,
+      session
+    });
     if (!orgUnit) throw notFound();
     return orgUnit;
   }
@@ -488,11 +560,22 @@ function createEquipmentInventoryService({
     const membership = await execute(TeamMembershipModel.findOne({
       teamId: context.activeTeamId,
       userId,
-      orgUnitId,
       status: MEMBERSHIP_STATUSES.ACTIVE,
       permissionKeys: 'equipment.inventory'
     }), session);
-    if (!membership) throw notFound('Inventory person is unavailable in the selected organization');
+    if (
+      !membership ||
+      !(await orgUnitsShareSubDepartment({
+        OrgUnitModel,
+        teamId: context.activeTeamId,
+        leftOrgUnitId: orgUnitId,
+        rightOrgUnitId: membership.orgUnitId,
+        requireActiveOrgUnits: true,
+        session
+      }))
+    ) {
+      throw notFound('Inventory person is unavailable in the selected organization');
+    }
     const user = await execute(UserModel.findOne({ _id: userId, status: 'active' }), session);
     if (!user) throw notFound('Inventory person is unavailable in the selected organization');
     return { membership, user };
@@ -506,7 +589,7 @@ function createEquipmentInventoryService({
     const scope = resolveModuleDataScope(context, DATA_SCOPE_MODULES.EQUIPMENT);
     const orgFilter = { teamId, status: ORG_UNIT_STATUSES.ACTIVE };
     if (context.mode === SESSION_MODES.TEAM && scope.scope === DATA_SCOPES.ORG_UNIT) {
-      orgFilter._id = scope.orgUnitId;
+      orgFilter._id = buildScopedOrgUnitIdConstraint(scope);
     }
     const orgUnits = await OrgUnitModel.find(orgFilter).sort({ level: 1, sortOrder: 1, name: 1 }).lean();
     const orgIds = orgUnits.map(({ _id }) => _id);
@@ -605,7 +688,7 @@ function createEquipmentInventoryService({
           bookLocation: asset.location || ''
         })), { ordered: true, session });
 
-        const after = serializeSession(inventorySession, context);
+        const after = await serializeSessionForContext(inventorySession, context, session);
         await auditService.record({
           req,
           authContext: context,
@@ -638,6 +721,7 @@ function createEquipmentInventoryService({
       ? context.activeTeamId
       : await resolveReadTeamId(context, requestedTeamId);
     const { page, pageSize } = pagination(query);
+    let leadershipScopeOverride = false;
     const userFilter = {};
     if (query.status) {
       if (!InventorySessionModel.INVENTORY_SESSION_STATUS_VALUES.includes(query.status)) {
@@ -654,6 +738,8 @@ function createEquipmentInventoryService({
     if (query.pendingOnly === 'true' || query.pendingOnly === true) {
       const statusByPosition = {
         [POSITION_KEYS.SUB_DEPARTMENT_MANAGER]: INVENTORY_SESSION_STATUSES.PENDING_SUB_DEPARTMENT_MANAGER,
+        [POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER]: INVENTORY_SESSION_STATUSES.PENDING_SUB_DEPARTMENT_MANAGER,
+        [POSITION_KEYS.SUPERVISOR]: INVENTORY_SESSION_STATUSES.PENDING_SUB_DEPARTMENT_MANAGER,
         [POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER]: INVENTORY_SESSION_STATUSES.PENDING_DEPARTMENT_DEPUTY_OR_ASSISTANT,
         [POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT]: INVENTORY_SESSION_STATUSES.PENDING_DEPARTMENT_DEPUTY_OR_ASSISTANT,
         [POSITION_KEYS.DEPARTMENT_MANAGER]: INVENTORY_SESSION_STATUSES.PENDING_DEPARTMENT_MANAGER
@@ -661,17 +747,48 @@ function createEquipmentInventoryService({
       const pendingStatus = statusByPosition[context.membership?.positionKey];
       if (!pendingStatus) return { inventorySessions: [], total: 0, page, pageSize };
       userFilter.status = pendingStatus;
-      if (context.membership.positionKey === POSITION_KEYS.SUB_DEPARTMENT_MANAGER) {
-        userFilter.orgUnitId = context.membership.orgUnitId;
+      if (pendingStatus === INVENTORY_SESSION_STATUSES.PENDING_SUB_DEPARTMENT_MANAGER) {
+        const orgUnitIds = await subDepartmentOrgUnitIds({
+          OrgUnitModel,
+          teamId,
+          orgUnitId: context.membership.orgUnitId
+        });
+        const canApproveSubDepartmentStage = await canMembershipActAsSubDepartmentLeader({
+          TeamMembershipModel,
+          OrgUnitModel,
+          membership: context.membership,
+          teamId,
+          orgUnitIds
+        });
+        if (!canApproveSubDepartmentStage) {
+          return { inventorySessions: [], total: 0, page, pageSize };
+        }
+        const leadershipScope = await leadershipOrgUnitIds({
+          OrgUnitModel,
+          teamId,
+          orgUnitIds
+        });
+        if (
+          query.orgUnitId &&
+          !leadershipScope.some((value) => sameId(value, query.orgUnitId))
+        ) {
+          return { inventorySessions: [], total: 0, page, pageSize };
+        }
+        userFilter.orgUnitId = query.orgUnitId
+          ? relatedId(query.orgUnitId)
+          : { $in: leadershipScope };
+        leadershipScopeOverride = true;
       }
     }
-    const filter = buildScopedFilter({
-      authContext: context,
-      moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
-      globalTeamId: teamId,
-      method,
-      userFilter
-    });
+    const filter = leadershipScopeOverride
+      ? { teamId, ...userFilter }
+      : buildScopedFilter({
+          authContext: context,
+          moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+          globalTeamId: teamId,
+          method,
+          userFilter
+        });
     const [documents, total] = await Promise.all([
       InventorySessionModel.find(filter)
         .sort({ createdAt: -1, _id: -1 })
@@ -680,7 +797,9 @@ function createEquipmentInventoryService({
       InventorySessionModel.countDocuments(filter)
     ]);
     return {
-      inventorySessions: documents.map((document) => serializeSession(document, context)),
+      inventorySessions: await Promise.all(
+        documents.map((document) => serializeSessionForContext(document, context))
+      ),
       total,
       page,
       pageSize
@@ -715,7 +834,7 @@ function createEquipmentInventoryService({
       InventoryApprovalModel.find(itemFilter).sort({ reviewRound: 1, sequence: 1 }).lean()
     ]);
     return {
-      inventorySession: serializeSession(inventorySession, authContext),
+      inventorySession: await serializeSessionForContext(inventorySession, authContext),
       items: items.map(serializeItem),
       approvals: approvals.map(serializeApproval),
       total,
@@ -905,7 +1024,7 @@ function createEquipmentInventoryService({
     });
     if (!item) throw notFound('Scanned equipment is not part of this inventory batch');
     return {
-      inventorySession: serializeSession(inventorySession, context),
+      inventorySession: await serializeSessionForContext(inventorySession, context),
       item: serializeItem(item)
     };
   }
@@ -1007,7 +1126,7 @@ function createEquipmentInventoryService({
           targetTeamId: context.activeTeamId,
           session
         });
-        return serializeSession(updated, context);
+        return serializeSessionForContext(updated, context, session);
       });
     } catch (error) {
       throw normalizePersistenceError(error);
@@ -1040,7 +1159,15 @@ function createEquipmentInventoryService({
         });
         if (current.__v !== expectedVersion) throw conflict();
         const transition = transitionForStatus(current.status);
-        if (!canActorApprove(context, current)) {
+        if (transition.stage === INVENTORY_APPROVAL_STAGES.SUB_DEPARTMENT_MANAGER) {
+          await lockSubDepartmentLeadership({
+            OrgUnitModel,
+            teamId: current.teamId,
+            orgUnitIds: [current.orgUnitId],
+            session
+          });
+        }
+        if (!(await canActorApproveSession(context, current, session))) {
           throw inventoryError(
             403,
             'EQUIPMENT_INVENTORY_APPROVAL_FORBIDDEN',
@@ -1111,7 +1238,7 @@ function createEquipmentInventoryService({
           targetTeamId: context.activeTeamId,
           session
         });
-        return serializeSession(updated, context);
+        return serializeSessionForContext(updated, context, session);
       });
     } catch (error) {
       throw normalizePersistenceError(error);

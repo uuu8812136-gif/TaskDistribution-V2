@@ -21,6 +21,24 @@ test('mini-program maps attendance cutoff errors to Chinese', () => {
   assert.equal(Object.keys(REQUEST_ERROR_CODE_MESSAGES).length >= 200, true)
 })
 
+test('mini-program maps dynamic task leadership errors to Chinese', () => {
+  const cases = {
+    TASK_LEADERSHIP_REQUIRED: '当前负责人已接管，主管不再具有主持权限，请刷新后重试',
+    TASK_LEADERSHIP_TRANSACTIONS_REQUIRED: '任务主持服务暂不可用，请稍后重试',
+    TASK_FILE_UPLOAD_DENIED: '当前任务或组织不允许上传附件，请刷新权限后重试',
+    TASK_FILE_SCOPE_REQUIRED: '上传任务附件时必须且只能指定任务或所属组织',
+    SUB_DEPARTMENT_LEADERSHIP_UNAVAILABLE: '分部负责人状态暂不可用，请稍后重试'
+  }
+
+  for (const [code, expected] of Object.entries(cases)) {
+    assert.equal(REQUEST_ERROR_CODE_MESSAGES[code], expected)
+    assert.equal(
+      resolveRequestErrorMessage({ code, message: 'Technical leadership error' }, '操作失败'),
+      expected
+    )
+  }
+})
+
 test('mini-program preserves Chinese API details but hides unknown English', () => {
   assert.equal(
     resolveRequestErrorMessage({ code: 'UNKNOWN', message: '该流程已经结束' }, '提交失败'),

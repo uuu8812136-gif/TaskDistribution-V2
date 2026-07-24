@@ -65,7 +65,7 @@ test('mobile authenticated shell removes the closed sidebar and starts main cont
 })
 
 test('browser title and visible product headings use one product name', () => {
-  const productName = 'Horselink 公司管理系统'
+  const productName = 'Horselink（马链）管理系统'
 
   assert.match(indexSource, new RegExp(`<title>${productName}</title>`))
   assert.match(loginSource, new RegExp(`<h1>${productName}</h1>`))

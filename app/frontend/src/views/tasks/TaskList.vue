@@ -110,12 +110,12 @@
             <el-progress :percentage="row.completionRate || 0" :stroke-width="6" />
           </template>
         </el-table-column>
-        <el-table-column label="操作" :width="canEdit ? 170 : 86" fixed="right" align="center">
+        <el-table-column label="操作" width="170" fixed="right" align="center">
           <template #default="{ row }">
             <div class="table-actions">
               <el-button type="primary" size="small" text @click="handleView(row)">查看</el-button>
-              <el-button v-if="canEdit" type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
-              <el-button v-if="canEdit" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
+              <el-button v-if="canEditRow(row)" type="primary" size="small" text @click="handleEdit(row)">编辑</el-button>
+              <el-button v-if="canDeleteRow(row)" type="danger" size="small" text @click="handleDelete(row)">删除</el-button>
             </div>
           </template>
         </el-table-column>
@@ -143,15 +143,19 @@ import { useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
-import { taskDetailLocation } from '@/utils/taskPolicy'
+import {
+  canCreateTask,
+  canDeleteTask,
+  canEditTask,
+  taskDetailLocation
+} from '@/utils/taskPolicy'
 import { requestErrorMessage } from '@/utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
 const router = useRouter()
 const session = useSessionStore()
-const canCreate = computed(() => session.can('task.create', { write: true, teamRequired: true }))
-const canEdit = computed(() => session.can('task.edit', { write: true, teamRequired: true }))
+const canCreate = ref(false)
 const canExport = computed(() => session.hasPermission('task.export'))
 
 const loading = ref(false)
@@ -185,11 +189,15 @@ const resolveTeamName = (task) => {
   return value?.name || teamNameById.value.get(teamId) || '未知团队'
 }
 
+const canEditRow = (task) => canEditTask(task)
+const canDeleteRow = (task) => canDeleteTask(task)
+
 const fetchData = async () => {
   const requestId = ++fetchRequestId
   loading.value = true
   taskList.value = []
   pagination.total = 0
+  canCreate.value = false
   try {
     const result = await getTaskList({
       page: pagination.page,
@@ -203,11 +211,13 @@ const fetchData = async () => {
     })
     if (requestId !== fetchRequestId) return
     taskList.value = result.tasks || []
+    canCreate.value = canCreateTask(result)
     pagination.total = result.pagination?.total || 0
   } catch (error) {
     if (requestId !== fetchRequestId) return
     taskList.value = []
     pagination.total = 0
+    canCreate.value = false
     console.error('获取任务列表失败:', error)
   } finally {
     if (requestId === fetchRequestId) loading.value = false
@@ -232,6 +242,7 @@ const handleReset = () => {
 }
 
 const handleCreate = () => {
+  if (!canCreate.value) return
   router.push('/tasks/create')
 }
 
@@ -240,10 +251,12 @@ const handleView = (row) => {
 }
 
 const handleEdit = (row) => {
+  if (!canEditRow(row)) return
   router.push(`/tasks/${row._id}/edit`)
 }
 
 const handleDelete = (row) => {
+  if (!canDeleteRow(row)) return
   ElMessageBox.confirm('确定要删除该任务吗？删除后无法恢复！', '提示', {
     confirmButtonText: '确定',
     cancelButtonText: '取消',
@@ -255,6 +268,7 @@ const handleDelete = (row) => {
       fetchData()
     } catch (error) {
       console.error('删除失败:', error)
+      await fetchData()
     }
   }).catch(() => {})
 }

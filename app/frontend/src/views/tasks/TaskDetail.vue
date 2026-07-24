@@ -324,17 +324,14 @@
           申请延期
         </el-button>
         <el-button
-          v-if="canReview && isCCUser"
+          v-if="canReview"
           type="success"
           :loading="reviewSubmitting"
           :disabled="actionSubmitting"
           @click="handleReviewClick"
         >
-          抄送审核
+          {{ reviewActionLabel }}
         </el-button>
-        <!-- <el-button v-if="canReview && !isCCUser" type="success" @click="handleReviewClick">
-          审批人审核任务
-        </el-button> -->
         <el-button
           v-if="canConfirm"
           type="primary"
@@ -427,7 +424,7 @@
       </el-form>
       <template #footer>
         <el-button @click="reviewDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="reviewSubmitting" @click="handleReviewSubmit">提交</el-button>
+        <el-button v-if="canReview" type="primary" :loading="reviewSubmitting" @click="handleReviewSubmit">提交</el-button>
       </template>
     </el-dialog>
 
@@ -463,7 +460,7 @@
       </el-form>
       <template #footer>
         <el-button @click="confirmDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="confirmSubmitting" @click="handleConfirmSubmit">确认完成</el-button>
+        <el-button v-if="canConfirm" type="primary" :loading="confirmSubmitting" @click="handleConfirmSubmit">确认完成</el-button>
       </template>
     </el-dialog>
 
@@ -521,7 +518,7 @@
       </el-form>
       <template #footer>
         <el-button @click="approveExtensionDialogVisible = false">取消</el-button>
-        <el-button type="primary" :loading="extensionApprovalSubmitting" @click="handleApproveExtensionSubmit">提交</el-button>
+        <el-button v-if="canApproveExtension" type="primary" :loading="extensionApprovalSubmitting" @click="handleApproveExtensionSubmit">提交</el-button>
       </template>
     </el-dialog>
   </div>
@@ -532,7 +529,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { getTaskDetail, getTaskReviews, completeTask, reviewTask, confirmTask } from '@/api/task'
 import { applyExtension, approveExtension } from '@/api/extension'
-import { deleteFile, uploadTemporaryFile } from '@/api/file'
+import { deleteFile, uploadTaskTemporaryFile, uploadTemporaryFile } from '@/api/file'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
 import {
   cleanupTemporaryFiles,
@@ -546,7 +543,6 @@ import {
   canRequestTaskExtension,
   canReviewAssignedTask,
   hasReviewedTaskRound,
-  isTaskExecutor,
   taskEntityId,
   taskReadParams,
   taskTeamId
@@ -627,6 +623,9 @@ const confirmForm = ref({
 const fetchData = async () => {
   loading.value = true
   loadError.value = ''
+  reviewDialogVisible.value = false
+  confirmDialogVisible.value = false
+  approveExtensionDialogVisible.value = false
   try {
     const result = await getTaskDetail(route.params.id, taskReadParams(route.query.teamId))
     task.value = result.task
@@ -744,20 +743,11 @@ const completedExecutorCount = computed(() => {
   return task.value.executorCompletions.filter(ec => ec.status === 'completed').length
 })
 
-const isExecutor = computed(() => {
-  return isTaskExecutor(task.value, userStore.userInfo?._id)
-})
-
 const isCCUser = computed(() => {
   if (!task.value || !userStore.userInfo) return false
   return task.value.ccUsers?.some(
     (user) => taskEntityId(user) === taskEntityId(userStore.userInfo._id)
   )
-})
-
-const isCreator = computed(() => {
-  if (!task.value || !userStore.userInfo) return false
-  return task.value.creator?._id === userStore.userInfo._id
 })
 
 // 判断是否可以完成任务（执行人 && 进行中状态 && 未过期）
@@ -771,8 +761,9 @@ const canComplete = computed(() => {
   })
 })
 
-// 判断是否可以审核（抄送人或管理员，但每人只能审核一次）
+// 审核资格由服务端按当前负责人状态动态计算；本地只阻止当前轮次重复提交。
 const canReview = computed(() => {
+  if (loading.value) return false
   const hasReviewed = hasReviewedTaskRound(
     reviewRecords.value,
     userStore.userInfo?._id,
@@ -780,24 +771,13 @@ const canReview = computed(() => {
   )
   return canReviewAssignedTask({
     task: task.value,
-    userId: userStore.userInfo?._id,
-    isTeamMode: session.isTeamMode,
-    isReadOnly: session.isReadOnly,
-    hasReviewPermission: session.can('task.review', { write: true, teamRequired: true }),
     hasReviewed
   })
 })
 
-// 最终确认由任务创建人、项目管理员或超级管理员执行。
+// 最终确认资格由服务端按当前负责人状态动态计算。
 const canConfirm = computed(() => {
-  return canConfirmTask({
-    task: task.value,
-    userId: userStore.userInfo?._id,
-    isTeamMode: session.isTeamMode,
-    isReadOnly: session.isReadOnly,
-    isSuperAdmin: session.isSuperAdmin,
-    membershipRole: session.context.membership?.role
-  })
+  return !loading.value && canConfirmTask({ task: task.value })
 })
 
 // 判断是否可以申请延期（执行人 && 进行中状态 && 未申请过）
@@ -810,30 +790,17 @@ const canApplyExtension = computed(() => {
   })
 })
 
-// 判断是否可以审批延期（管理员 && 延期待审批状态）
+// 延期审批资格由服务端按当前负责人状态动态计算。
 const canApproveExtension = computed(() => {
-  return canApproveTaskExtension({
-    task: task.value,
-    userId: userStore.userInfo?._id,
-    isTeamMode: session.isTeamMode,
-    isReadOnly: session.isReadOnly,
-    hasReviewPermission: session.can('task.review', { write: true, teamRequired: true }),
-    isSuperAdmin: session.isSuperAdmin,
-    membershipRole: session.context.membership?.role
-  })
+  return !loading.value && canApproveTaskExtension({ task: task.value })
 })
 
-// 审核弹窗标题（区分抄送者和管理者）
-const reviewDialogTitle = computed(() => {
-  if (isCCUser.value) {
-    return '抄送审核'
-  } else {
-    return '最终确认'
-  }
-})
+const reviewActionLabel = computed(() => isCCUser.value ? '抄送审核' : '主管审核')
+const reviewDialogTitle = computed(() => reviewActionLabel.value)
 
 // 提交完成处理
 const handleCompleteClick = () => {
+  if (!canComplete.value) return
   completeForm.value = {
     completionNote: '',
     attachments: []
@@ -845,10 +812,14 @@ const handleCompleteFileChange = (file, fileList) => {
   completeForm.value.attachments = fileList
 }
 
-const submitWithAttachments = async (fileList, submit) => {
+const uploadTaskActionFile = (file) => uploadTaskTemporaryFile(file, {
+  taskId: route.params.id
+})
+
+const submitWithAttachments = async (fileList, submit, uploadFile = uploadTemporaryFile) => {
   let uploadedFileIds = []
   try {
-    const prepared = await prepareAttachmentReferences(fileList || [], uploadTemporaryFile)
+    const prepared = await prepareAttachmentReferences(fileList || [], uploadFile)
     uploadedFileIds = prepared.uploadedFileIds
     return await submit(prepared.references)
   } catch (error) {
@@ -862,8 +833,13 @@ const showLocalSubmitError = (error, fallback) => {
   ElMessage.error(requestErrorMessage(error, fallback))
 }
 
+const refreshAfterMutationError = async (error, fallback) => {
+  showLocalSubmitError(error, fallback)
+  await fetchData()
+}
+
 const handleCompleteSubmit = async () => {
-  if (completeSubmitting.value) return
+  if (completeSubmitting.value || !canComplete.value) return
   if (!completeForm.value.completionNote) {
     ElMessage.warning('请填写完成说明')
     return
@@ -883,7 +859,7 @@ const handleCompleteSubmit = async () => {
     await fetchData()
   } catch (error) {
     console.error('提交完成失败:', error)
-    showLocalSubmitError(error, '提交失败')
+    await refreshAfterMutationError(error, '提交失败')
   } finally {
     completeSubmitting.value = false
   }
@@ -891,6 +867,7 @@ const handleCompleteSubmit = async () => {
 
 // 审核评论处理
 const handleReviewClick = () => {
+  if (!canReview.value) return
   reviewForm.value = {
     content: '',
     result: 'approved',
@@ -905,7 +882,7 @@ const handleReviewFileChange = (file, fileList) => {
 }
 
 const handleReviewSubmit = async () => {
-  if (reviewSubmitting.value) return
+  if (reviewSubmitting.value || !canReview.value) return
   if (!reviewForm.value.content) {
     ElMessage.warning('请填写审核意见')
     return
@@ -915,14 +892,14 @@ const handleReviewSubmit = async () => {
   try {
     await submitWithAttachments(reviewForm.value.attachments, (attachments) => (
       reviewTask(route.params.id, buildTaskReviewPayload(reviewForm.value, attachments))
-    ))
+    ), uploadTaskActionFile)
     
     ElMessage.success('审核成功')
     reviewDialogVisible.value = false
     await fetchData()
   } catch (error) {
     console.error('审核失败:', error)
-    showLocalSubmitError(error, '审核失败')
+    await refreshAfterMutationError(error, '审核失败')
   } finally {
     reviewSubmitting.value = false
   }
@@ -930,6 +907,7 @@ const handleReviewSubmit = async () => {
 
 // 确认任务处理
 const handleConfirmClick = () => {
+  if (!canConfirm.value) return
   confirmForm.value = {
     content: '',
     rating: 5,
@@ -943,7 +921,7 @@ const handleConfirmFileChange = (file, fileList) => {
 }
 
 const handleConfirmSubmit = async () => {
-  if (confirmSubmitting.value) return
+  if (confirmSubmitting.value || !canConfirm.value) return
   if (!confirmForm.value.content) {
     ElMessage.warning('请填写确认意见')
     return
@@ -957,14 +935,14 @@ const handleConfirmSubmit = async () => {
         rating: confirmForm.value.rating,
         attachments
       })
-    ))
+    ), uploadTaskActionFile)
 
     ElMessage.success('审核成功，任务已完结')
     confirmDialogVisible.value = false
     await fetchData()
   } catch (error) {
     console.error('确认失败:', error)
-    showLocalSubmitError(error, '确认失败')
+    await refreshAfterMutationError(error, '确认失败')
   } finally {
     confirmSubmitting.value = false
   }
@@ -972,6 +950,7 @@ const handleConfirmSubmit = async () => {
 
 // 申请延期处理
 const handleExtensionClick = () => {
+  if (!canApplyExtension.value) return
   extensionForm.value = {
     reason: '',
     requestedDays: 1
@@ -980,7 +959,7 @@ const handleExtensionClick = () => {
 }
 
 const handleExtensionSubmit = async () => {
-  if (extensionSubmitting.value) return
+  if (extensionSubmitting.value || !canApplyExtension.value) return
   if (!extensionForm.value.reason) {
     ElMessage.warning('请填写延期理由')
     return
@@ -998,7 +977,7 @@ const handleExtensionSubmit = async () => {
     await fetchData()
   } catch (error) {
     console.error('申请延期失败:', error)
-    showLocalSubmitError(error, '申请失败')
+    await refreshAfterMutationError(error, '申请失败')
   } finally {
     extensionSubmitting.value = false
   }
@@ -1006,6 +985,7 @@ const handleExtensionSubmit = async () => {
 
 // 审批延期处理
 const handleApproveExtensionClick = () => {
+  if (!canApproveExtension.value) return
   // 从延期历史中查找待审批的申请
   const pendingExtension = extensionHistory.value?.find(ext => ext.status === 'pending')
   if (!pendingExtension) {
@@ -1023,7 +1003,7 @@ const handleApproveExtensionClick = () => {
 }
 
 const handleApproveExtensionSubmit = async () => {
-  if (extensionApprovalSubmitting.value) return
+  if (extensionApprovalSubmitting.value || !canApproveExtension.value) return
   if (!approveExtensionForm.value.approvalNote) {
     ElMessage.warning('请填写审批意见')
     return
@@ -1052,7 +1032,7 @@ const handleApproveExtensionSubmit = async () => {
     await fetchData()
   } catch (error) {
     console.error('审批失败:', error)
-    showLocalSubmitError(error, '审批失败')
+    await refreshAfterMutationError(error, '审批失败')
   } finally {
     extensionApprovalSubmitting.value = false
   }

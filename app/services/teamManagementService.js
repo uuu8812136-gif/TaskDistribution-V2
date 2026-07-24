@@ -14,7 +14,6 @@ const {
   MEMBERSHIP_ROLE_VALUES,
   MEMBERSHIP_STATUSES,
   ORG_UNIT_TYPES,
-  ORG_UNIT_STATUS_VALUES,
   ORG_UNIT_STATUSES,
   ORG_UNIT_TYPE_VALUES,
   PERMISSION_KEYS,
@@ -28,6 +27,9 @@ const {
 } = require('../config/permissions');
 const { normalizeId } = require('./authSessionService');
 const { createAuditService } = require('./auditService');
+const { findOrgUnitDependency } = require('./orgUnitDependencyService');
+const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
+const { lockSubDepartmentLeadership } = require('./subDepartmentLeadershipService');
 const {
   AUTH_ERROR_CODES,
   AuthContextError
@@ -39,7 +41,10 @@ const functionalRoleKeySet = new Set(FUNCTIONAL_ROLE_KEY_VALUES);
 const membershipRoleSet = new Set(MEMBERSHIP_ROLE_VALUES);
 const positionKeySet = new Set(POSITION_KEY_VALUES);
 const teamStatusSet = new Set(TEAM_STATUS_VALUES);
-const orgStatusSet = new Set(ORG_UNIT_STATUS_VALUES);
+const manageableOrgStatusSet = new Set([
+  ORG_UNIT_STATUSES.ACTIVE,
+  ORG_UNIT_STATUSES.DISABLED
+]);
 const orgTypeSet = new Set(ORG_UNIT_TYPE_VALUES);
 
 const DEFAULT_PROJECT_ADMIN_PERMISSIONS = Object.freeze([
@@ -207,6 +212,16 @@ function serializeOrgUnit(orgUnit) {
   };
 }
 
+function serializeOrgUnitTombstone(orgUnit) {
+  const value = typeof orgUnit.toObject === 'function' ? orgUnit.toObject() : orgUnit;
+  return {
+    ...serializeOrgUnit(value),
+    deletedAt: value.deletedAt,
+    deletedBy: normalizeId(value.deletedBy),
+    deletionReason: value.deletionReason
+  };
+}
+
 function serializeUser(user) {
   if (!user) return null;
   const value = typeof user.toObject === 'function'
@@ -341,7 +356,7 @@ function normalizePersistenceError(error) {
     return inputError(error.message, 'MANAGEMENT_VALIDATION_FAILED');
   }
   if (error?.name === 'VersionError') {
-    return managementError(409, 'MANAGEMENT_CONCURRENT_UPDATE', 'The record changed; reload and try again');
+    return managementError(409, 'MANAGEMENT_CONCURRENT_UPDATE', '数据已被其他人修改，请刷新后重试');
   }
   return error;
 }
@@ -352,7 +367,9 @@ function createTeamManagementService({
   ProjectTeamModel = ProjectTeam,
   OrgUnitModel = OrgUnit,
   TeamMembershipModel = TeamMembership,
-  auditService = createAuditService()
+  orgUnitDependencyFinder = findOrgUnitDependency,
+  auditService = createAuditService(),
+  clock = () => new Date()
 } = {}) {
   async function transaction(work) {
     const session = await connection.startSession();
@@ -492,9 +509,12 @@ function createTeamManagementService({
   async function listOrgUnits({ authContext, status } = {}) {
     assertTeamAdministrativePermission(authContext, 'org.manage');
     const teamId = activeTeamId(authContext);
-    const query = { teamId };
+    const query = {
+      teamId,
+      status: { $in: [...manageableOrgStatusSet] }
+    };
     if (status !== undefined) {
-      if (!orgStatusSet.has(status)) throw inputError('status is invalid');
+      if (!manageableOrgStatusSet.has(status)) throw inputError('status is invalid');
       query.status = status;
     }
     const units = await OrgUnitModel.find(query)
@@ -508,19 +528,27 @@ function createTeamManagementService({
     const normalizedParentId = normalizeObjectId(parentId, 'Parent organization unit');
     const parent = await OrgUnitModel.findOne({
       _id: normalizedParentId,
-      teamId
+      teamId,
+      status: { $in: [...manageableOrgStatusSet] }
     }).session(session);
     if (!parent) throw notFound('Parent organization unit');
     if (parent.status !== ORG_UNIT_STATUSES.ACTIVE) {
       throw inputError('parentId must reference an active organization unit');
     }
+    const lockedParent = await lockActiveOrgUnitReference({
+      OrgUnitModel,
+      teamId,
+      orgUnitId: parent._id,
+      session
+    });
+    if (!lockedParent) throw notFound('Parent organization unit');
     if (movingUnit) {
       const movingId = normalizeId(movingUnit._id);
       if (normalizeId(parent._id) === movingId || parent.path.includes(`/${movingId}/`)) {
         throw inputError('An organization unit cannot be moved below itself');
       }
     }
-    return parent;
+    return lockedParent;
   }
 
   async function createOrgUnit({ authContext, req, input } = {}) {
@@ -532,7 +560,7 @@ function createTeamManagementService({
     if (input.type !== undefined && !orgTypeSet.has(input.type)) {
       throw inputError('type is invalid');
     }
-    if (input.status !== undefined && !orgStatusSet.has(input.status)) {
+    if (input.status !== undefined && !manageableOrgStatusSet.has(input.status)) {
       throw inputError('status is invalid');
     }
     if (
@@ -585,7 +613,9 @@ function createTeamManagementService({
       throw inputError('At least one organization unit field must be supplied');
     }
     if (input.type !== undefined && !orgTypeSet.has(input.type)) throw inputError('type is invalid');
-    if (input.status !== undefined && !orgStatusSet.has(input.status)) throw inputError('status is invalid');
+    if (input.status !== undefined && !manageableOrgStatusSet.has(input.status)) {
+      throw inputError('status is invalid');
+    }
     if (
       input.sortOrder !== undefined &&
       (!Number.isInteger(input.sortOrder) || input.sortOrder < 0)
@@ -596,7 +626,8 @@ function createTeamManagementService({
     return transaction(async (session) => {
       const orgUnit = await OrgUnitModel.findOne({
         _id: requestedOrgUnitId,
-        teamId
+        teamId,
+        status: { $in: [...manageableOrgStatusSet] }
       }).session(session);
       if (!orgUnit) throw notFound('Organization unit');
       const before = serializeOrgUnit(orgUnit);
@@ -615,6 +646,7 @@ function createTeamManagementService({
       const oldDescendantPrefix = `${orgUnit.path}${normalizeId(orgUnit._id)}/`;
       const descendants = await OrgUnitModel.find({
         teamId,
+        status: { $in: [...manageableOrgStatusSet] },
         path: { $regex: `^${oldDescendantPrefix}` }
       }).session(session);
       const deepestLevel = descendants.reduce(
@@ -684,6 +716,71 @@ function createTeamManagementService({
     });
   }
 
+  async function deleteOrgUnit({ authContext, req, orgUnitId, input = {} } = {}) {
+    assertTeamAdministrativePermission(authContext, 'org.manage');
+    const teamId = activeTeamId(authContext);
+    const requestedOrgUnitId = normalizeObjectId(orgUnitId, 'Organization unit');
+    assertAllowedKeys(input, new Set(['reason']));
+    const reason = requiredString(input.reason, 'reason', { max: 2000 });
+
+    return transaction(async (session) => {
+      const orgUnit = await OrgUnitModel.findOne({
+        _id: requestedOrgUnitId,
+        teamId,
+        status: { $in: [...manageableOrgStatusSet] }
+      }).session(session);
+      if (!orgUnit) throw notFound('Organization unit');
+
+      const childExists = await OrgUnitModel.exists({
+        teamId,
+        parentId: orgUnit._id,
+        status: { $in: [...manageableOrgStatusSet] }
+      }).session(session);
+      if (childExists) {
+        throw managementError(
+          409,
+          'ORG_UNIT_DELETE_HAS_CHILDREN',
+          '该组织仍有下级组织，请先删除下级组织'
+        );
+      }
+
+      const dependency = await orgUnitDependencyFinder({
+        teamId,
+        orgUnitId: orgUnit._id,
+        session
+      });
+      if (dependency) {
+        throw managementError(
+          409,
+          'ORG_UNIT_DELETE_HAS_REFERENCES',
+          '该组织仍有关联成员或业务数据，不能删除'
+        );
+      }
+
+      const before = serializeOrgUnit(orgUnit);
+      orgUnit.status = ORG_UNIT_STATUSES.DELETED;
+      orgUnit.deletedAt = clock();
+      orgUnit.deletedBy = authContext.userId;
+      orgUnit.deletionReason = reason;
+      orgUnit.$locals.allowOrgUnitSoftDelete = true;
+      await orgUnit.save({ session });
+      const after = serializeOrgUnitTombstone(orgUnit);
+      await auditService.record({
+        req,
+        authContext,
+        action: AUDIT_ACTIONS.DELETE,
+        resourceType: AUDIT_RESOURCE_TYPES.ORG_UNIT,
+        resourceId: orgUnit._id,
+        before,
+        after,
+        reason,
+        targetTeamId: teamId,
+        session
+      });
+      return before;
+    });
+  }
+
   async function listMembers({ authContext, filters = {} } = {}) {
     assertTeamContext(authContext);
     if (!authContext.permissionKeys?.includes('member.view')) {
@@ -750,16 +847,18 @@ function createTeamManagementService({
 
   async function findActiveOrgUnit(teamId, orgUnitId, session) {
     const requestedOrgId = normalizeObjectId(orgUnitId, 'Organization unit');
-    const orgUnit = await OrgUnitModel.findOne({
-      _id: requestedOrgId,
+    const orgUnit = await lockActiveOrgUnitReference({
+      OrgUnitModel,
       teamId,
-      status: ORG_UNIT_STATUSES.ACTIVE
-    }).session(session);
+      orgUnitId: requestedOrgId,
+      session
+    });
     if (!orgUnit) throw notFound('Organization unit');
     return orgUnit;
   }
 
-  function changesAttendanceReporterAssignment(
+  function changesFunctionalRoleAssignment(
+    role,
     beforeRoles = [],
     afterRoles = [],
     beforeStatus = null,
@@ -767,7 +866,6 @@ function createTeamManagementService({
     beforeOrgUnitId = null,
     afterOrgUnitId = null
   ) {
-    const role = FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER;
     const beforeAssigned = beforeRoles.includes(role);
     const afterAssigned = afterRoles.includes(role);
     const beforeEffective = beforeAssigned && beforeStatus === MEMBERSHIP_STATUSES.ACTIVE;
@@ -784,7 +882,7 @@ function createTeamManagementService({
     );
   }
 
-  function assertAttendanceReporterAssignment({
+  function assertReporterRoleAssignment({
     context,
     beforeRoles,
     afterRoles,
@@ -795,21 +893,29 @@ function createTeamManagementService({
     orgUnit
   }) {
     const afterAssigned = afterRoles.includes(FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER);
-    if (afterAssigned && orgUnit?.type !== ORG_UNIT_TYPES.SUB_DEPARTMENT) {
+    if (
+      afterAssigned &&
+      (orgUnit?.type !== ORG_UNIT_TYPES.SUB_DEPARTMENT || orgUnit?.level !== 2)
+    ) {
       throw inputError(
         'An attendance reporter must be assigned to a sub-department',
         'ATTENDANCE_REPORTER_ORG_REQUIRED'
       );
     }
+    const protectedReporterRoleChanged = [
+      FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER,
+      FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER
+    ].some((role) => changesFunctionalRoleAssignment(
+      role,
+      beforeRoles,
+      afterRoles,
+      beforeStatus,
+      afterStatus,
+      beforeOrgUnitId,
+      afterOrgUnitId
+    ));
     if (
-      changesAttendanceReporterAssignment(
-        beforeRoles,
-        afterRoles,
-        beforeStatus,
-        afterStatus,
-        beforeOrgUnitId,
-        afterOrgUnitId
-      ) &&
+      protectedReporterRoleChanged &&
       context.isSuperAdmin !== true &&
       !context.permissionKeys?.includes('reporter.assign')
     ) {
@@ -846,7 +952,7 @@ function createTeamManagementService({
 
     return transaction(async (session) => {
       const orgUnit = await findActiveOrgUnit(teamId, input.orgUnitId, session);
-      assertAttendanceReporterAssignment({
+      assertReporterRoleAssignment({
         context: authContext,
         beforeRoles: [],
         afterRoles: functionalRoleKeys,
@@ -909,6 +1015,12 @@ function createTeamManagementService({
         status: input.status || MEMBERSHIP_STATUSES.ACTIVE
       });
       applyDerivedMembershipFields(membership);
+      await lockSubDepartmentLeadership({
+        OrgUnitModel,
+        teamId,
+        orgUnitIds: [membership.orgUnitId],
+        session
+      });
       await membership.save({ session });
       const after = serializeMembership(membership, { user, orgUnit });
       await auditService.record({
@@ -961,6 +1073,7 @@ function createTeamManagementService({
       }).session(session);
       if (!user) throw notFound('Team membership');
       const before = memberAuditSnapshot(membership, user);
+      const beforeOrgUnitId = membership.orgUnitId;
       let orgUnit = null;
       if (input.orgUnitId !== undefined) {
         orgUnit = await findActiveOrgUnit(teamId, input.orgUnitId, session);
@@ -979,7 +1092,7 @@ function createTeamManagementService({
         }).session(session);
       }
       if (!orgUnit) throw notFound('Organization unit');
-      assertAttendanceReporterAssignment({
+      assertReporterRoleAssignment({
         context: authContext,
         beforeRoles: before.functionalRoleKeys,
         afterRoles: membership.functionalRoleKeys,
@@ -990,6 +1103,12 @@ function createTeamManagementService({
         orgUnit
       });
       applyDerivedMembershipFields(membership);
+      await lockSubDepartmentLeadership({
+        OrgUnitModel,
+        teamId,
+        orgUnitIds: [beforeOrgUnitId, membership.orgUnitId],
+        session
+      });
       await membership.save({ session });
       const after = memberAuditSnapshot(membership, user);
 
@@ -1042,6 +1161,7 @@ function createTeamManagementService({
     createMember,
     createOrgUnit,
     createTeam,
+    deleteOrgUnit,
     disableMember,
     enableTeam,
     listMembers,

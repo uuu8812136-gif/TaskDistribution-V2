@@ -134,14 +134,13 @@
 <script>
 import { ref, reactive, onMounted } from "vue";
 import { formatDate } from "@/utils/format.js";
-import { approveExtension } from "@/api/index.js";
-import { useUserStore } from "@/stores/user.js";
+import { approveExtension, getExtensionRequest } from "@/api/index.js";
 import { requestErrorMessage } from "@/utils/requestErrorMessages.js";
+import { canApproveExtensionRequest } from "@/utils/taskPolicy.js";
 
 export default {
   name: "ApproveExtension",
   setup() {
-    const userStore = useUserStore();
     const extensionData = ref({});
     const taskId = ref("");
 
@@ -151,12 +150,7 @@ export default {
       approvalNote: "",
     });
 
-    onMounted(() => {
-      if (!userStore.can('task.review', { write: true, teamRequired: true })) {
-        uni.showToast({ title: '无权限执行该操作', icon: 'none' });
-        setTimeout(() => uni.navigateBack(), 300);
-        return;
-      }
+    onMounted(async () => {
       // 从URL参数获取延期申请数据
       const pages = getCurrentPages();
       const currentPage = pages[pages.length - 1];
@@ -167,7 +161,7 @@ export default {
           extensionData.value = JSON.parse(decodeURIComponent(options.data));
           form.approvedDays = extensionData.value.requestedDays || 1;
           taskId.value = options.taskId || "";
-          console.log("延期申请数据:", extensionData.value);
+          await refreshAuthorizedRequest();
         } catch (error) {
           console.error("解析延期申请数据失败:", error);
           uni.showToast({
@@ -178,8 +172,39 @@ export default {
             uni.navigateBack();
           }, 1500);
         }
+      } else {
+        denyEntry();
       }
     });
+
+    const denyEntry = () => {
+      uni.showToast({ title: '当前延期申请不可审批，请刷新后重试', icon: 'none' });
+      setTimeout(() => uni.navigateBack(), 300);
+    };
+
+    const refreshAuthorizedRequest = async ({ preserveApprovedDays = false } = {}) => {
+      const requestId = extensionData.value?._id;
+      if (!requestId) {
+        denyEntry();
+        return false;
+      }
+      try {
+        const response = await getExtensionRequest(requestId);
+        if (!canApproveExtensionRequest({ request: response.request })) {
+          denyEntry();
+          return false;
+        }
+        extensionData.value = response.request;
+        if (!preserveApprovedDays) {
+          form.approvedDays = response.request.requestedDays || 1;
+        }
+        return true;
+      } catch (error) {
+        console.error('校验延期审批权限失败:', error);
+        denyEntry();
+        return false;
+      }
+    };
 
     // 返回上一页
     const goBack = () => {
@@ -214,6 +239,8 @@ export default {
           return;
         }
       }
+
+      if (!await refreshAuthorizedRequest({ preserveApprovedDays: true })) return;
 
       // 提交审批
       try {

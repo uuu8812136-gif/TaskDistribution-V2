@@ -175,7 +175,13 @@ function objectId() {
   return new mongoose.Types.ObjectId();
 }
 
-function context({ teamId, orgUnitId, userId, scope = permissions.DATA_SCOPES.TEAM }) {
+function context({
+  teamId,
+  orgUnitId,
+  userId,
+  scope = permissions.DATA_SCOPES.TEAM,
+  equipmentOrgUnitScopeIds = undefined
+}) {
   return Object.freeze({
     authenticated: true,
     sessionId: String(objectId()),
@@ -198,6 +204,9 @@ function context({ teamId, orgUnitId, userId, scope = permissions.DATA_SCOPES.TE
     actorRole: permissions.AUDIT_ACTOR_ROLES.PROJECT_ADMIN,
     permissionKeys: Object.freeze(['equipment.import']),
     moduleDataScopes: Object.freeze({ equipment: scope }),
+    ...(equipmentOrgUnitScopeIds
+      ? { equipmentOrgUnitScopeIds: Object.freeze(equipmentOrgUnitScopeIds.map(String)) }
+      : {}),
     readOnly: false,
     canAccessBusiness: true
   });
@@ -552,6 +561,130 @@ test('preview stages rows without touching the registry and confirmation publish
     }
   }), (error) => error.code === 'EQUIPMENT_IMPORT_ALREADY_PUBLISHED');
   assert.equal(await EquipmentAsset.countDocuments({ assetCode: 'IMPORT-001' }), 1);
+});
+
+test('a second-level equipment row accepts a custodian from its child group only', async () => {
+  const service = createEquipmentImportService();
+  const subDepartment = objectId();
+  const childGroup = objectId();
+  const otherSubDepartment = objectId();
+  const branchCustodian = objectId();
+  await OrgUnit.collection.insertMany([
+    {
+      _id: subDepartment,
+      teamId: fixture.teamA,
+      parentId: fixture.orgA1,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'IMPORT_SUB_A',
+      name: 'Import Sub A',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 2,
+      path: `/${fixture.orgA1}/`
+    },
+    {
+      _id: childGroup,
+      teamId: fixture.teamA,
+      parentId: subDepartment,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'IMPORT_GROUP_A',
+      name: 'Import Group A',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 3,
+      path: `/${fixture.orgA1}/${subDepartment}/`
+    },
+    {
+      _id: otherSubDepartment,
+      teamId: fixture.teamA,
+      parentId: fixture.orgA1,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'IMPORT_SUB_A2',
+      name: 'Import Sub A2',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 1,
+      level: 2,
+      path: `/${fixture.orgA1}/`
+    }
+  ]);
+  await User.collection.insertOne({
+    _id: branchCustodian,
+    username: 'branch-import-custodian',
+    usernameNormalized: 'branch-import-custodian',
+    password: 'unused',
+    name: 'Branch Import Custodian',
+    roles: [],
+    isSuperAdmin: false,
+    tokenVersion: 0,
+    status: 'active'
+  });
+  await TeamMembership.collection.insertOne({
+    _id: objectId(),
+    teamId: fixture.teamA,
+    userId: branchCustodian,
+    orgUnitId: childGroup,
+    role: permissions.MEMBERSHIP_ROLES.MEMBER,
+    positionLevel: permissions.POSITION_LEVEL_BY_KEY[permissions.POSITION_KEYS.EMPLOYEE],
+    positionKey: permissions.POSITION_KEYS.EMPLOYEE,
+    functionalRoleKeys: [],
+    permissionKeys: [],
+    moduleDataScopes: permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVEL_BY_KEY[permissions.POSITION_KEYS.EMPLOYEE]
+    }),
+    status: permissions.MEMBERSHIP_STATUSES.ACTIVE,
+    joinedAt: new Date()
+  });
+  const branchContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: childGroup,
+    userId: fixture.userA1,
+    scope: permissions.DATA_SCOPES.ORG_UNIT,
+    equipmentOrgUnitScopeIds: [subDepartment, childGroup]
+  });
+
+  const preview = await service.createPreview({
+    authContext: branchContext,
+    upload: workbookUpload([validRow({
+      资产编码: 'BRANCH-IMPORT-001',
+      所在部室: 'Import Sub A',
+      使用人: 'Branch Import Custodian'
+    })]),
+    input: {}
+  });
+  assert.equal(preview.exceptionCount, 0);
+  assert.equal(preview.importJob.validRows, 1);
+  assert.equal(preview.importJob.rows[0].candidate.custodianUserId, String(branchCustodian));
+  const confirmed = await service.confirmImport({
+    authContext: branchContext,
+    importJobId: preview.importJob._id,
+    input: {
+      expectedVersion: preview.importJob.version,
+      reason: 'Confirm child-group custodian for second-level equipment',
+      decisions: []
+    }
+  });
+  assert.equal(confirmed.importJob.publishedRows, 1);
+  const asset = await EquipmentAsset.findOne({ assetCode: 'BRANCH-IMPORT-001' }).lean();
+  assert.equal(String(asset.orgUnitId), String(subDepartment));
+  assert.equal(String(asset.custodianUserId), String(branchCustodian));
+
+  const outOfScopePreview = await service.createPreview({
+    authContext: branchContext,
+    upload: workbookUpload([validRow({
+      资产编码: 'BRANCH-IMPORT-OUTSIDE',
+      产品编码: 'PRODUCT-OUTSIDE',
+      所在部室: 'Import Sub A2',
+      使用人: ''
+    })]),
+    input: {}
+  });
+  const outOfScopeExceptions = await service.listExceptions({
+    authContext: branchContext,
+    importJobId: outOfScopePreview.importJob._id
+  });
+  assert.ok(outOfScopeExceptions.exceptions.some(
+    ({ exceptionType }) => exceptionType === 'ORG_UNIT_OUT_OF_SCOPE'
+  ));
 });
 
 test('embedded workbook images stage under the import and bind to equipment only after publication', async () => {

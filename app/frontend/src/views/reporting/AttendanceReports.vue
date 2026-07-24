@@ -99,10 +99,16 @@
           <el-table-column prop="authorizedHeadcount" label="编制" width="78" align="right" />
           <el-table-column prop="registeredHeadcount" label="在册" width="78" align="right" />
           <el-table-column label="白班实到" width="92" align="right">
-            <template #default="{ row }">{{ row.dayShift.actualAttendanceCount }}</template>
+            <template #default="{ row }">{{ attendanceEffectiveActualCount(row.dayShift) }}</template>
           </el-table-column>
           <el-table-column label="夜班实到" width="92" align="right">
-            <template #default="{ row }">{{ row.nightShift.actualAttendanceCount }}</template>
+            <template #default="{ row }">{{ attendanceEffectiveActualCount(row.nightShift) }}</template>
+          </el-table-column>
+          <el-table-column label="白班临时工" width="106" align="right">
+            <template #default="{ row }">{{ row.dayShift?.temporaryWorker?.count || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="夜班临时工" width="106" align="right">
+            <template #default="{ row }">{{ row.nightShift?.temporaryWorker?.count || 0 }}</template>
           </el-table-column>
           <el-table-column prop="pendingDepartureCount" label="待离职" width="86" align="right" />
           <el-table-column label="帮产人员" min-width="140" show-overflow-tooltip>
@@ -304,6 +310,14 @@
         </div>
       </section>
 
+      <section v-if="dailyOtherRemarks.length" class="summary-panel support-panel">
+        <div class="section-heading"><h2>各分部其他情况</h2></div>
+        <div v-for="(item, index) in dailyOtherRemarks" :key="`${item.orgUnitName}-${index}`" class="support-row">
+          <strong>{{ item.orgUnitName || '分部备注' }}</strong>
+          <span>{{ item.remark }}</span>
+        </div>
+      </section>
+
       <section v-if="dailySummary.dataQuality?.issues?.length" class="quality-issues">
         <div class="section-heading"><h2>数据质量异常</h2><span>需客户确认</span></div>
         <div v-for="issue in dailySummary.dataQuality.issues" :key="issue.code" class="quality-issue-row">
@@ -348,6 +362,12 @@
           </el-table-column>
           <el-table-column label="夜班实到" width="92" align="right">
             <template #default="{ row }">{{ row.nightShift.actualAttendanceCount }}</template>
+          </el-table-column>
+          <el-table-column label="白班临时工" width="106" align="right">
+            <template #default="{ row }">{{ row.dayShift?.temporaryWorker?.count || 0 }}</template>
+          </el-table-column>
+          <el-table-column label="夜班临时工" width="106" align="right">
+            <template #default="{ row }">{{ row.nightShift?.temporaryWorker?.count || 0 }}</template>
           </el-table-column>
           <el-table-column label="帮产人员" min-width="180" show-overflow-tooltip>
             <template #default="{ row }">{{ supportSummaryText(row.support) }}</template>
@@ -483,8 +503,10 @@
           <el-descriptions-item label="分部">{{ orgName(detail.orgUnitId) }}</el-descriptions-item>
           <el-descriptions-item label="编制">{{ detail.authorizedHeadcount ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="在册">{{ detail.registeredHeadcount ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="白班实际出勤">{{ detail.dayShift?.actualAttendanceCount ?? '-' }}</el-descriptions-item>
-          <el-descriptions-item label="夜班实际出勤">{{ detail.nightShift?.actualAttendanceCount ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="白班实际出勤">{{ attendanceEffectiveActualCount(detail.dayShift) }}</el-descriptions-item>
+          <el-descriptions-item label="夜班实际出勤">{{ attendanceEffectiveActualCount(detail.nightShift) }}</el-descriptions-item>
+          <el-descriptions-item label="帮产情况">{{ supportText(detail.support) }}</el-descriptions-item>
+          <el-descriptions-item label="其他情况">{{ detail.otherRemark || '-' }}</el-descriptions-item>
         </el-descriptions>
         <div v-for="shift in shiftForms" :key="`detail-${shift.key}`" class="detail-section">
           <div class="section-heading"><h2>{{ shift.label }}</h2></div>
@@ -528,8 +550,11 @@ import {
 import { useSessionStore } from '@/stores/session'
 import {
   ATTENDANCE_NAMED_FIELDS,
+  attendanceEffectiveActualCount,
   attendanceNamesText,
+  attendanceOtherRemarkRows,
   attendanceQualityIssueMessage,
+  attendanceReportingOrgUnits,
   buildAttendancePayload,
   emptyAttendanceForm,
   entityName,
@@ -609,6 +634,9 @@ const activeLoading = computed(() => (
   viewMode.value === 'records' ? loading.value :
     viewMode.value === 'daily' ? dailyLoading.value : monthlyLoading.value
 ))
+const dailyOtherRemarks = computed(() => (
+  attendanceOtherRemarkRows(dailySummary.value.otherRemarks, orgUnits.value)
+))
 const rules = {
   orgUnitId: [{ required: true, message: '请选择所属分部', trigger: 'change' }],
   reportDate: [{ required: true, message: '请选择提报日期', trigger: 'change' }]
@@ -646,7 +674,7 @@ async function loadOptions() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   const result = await getAttendanceOptions(params)
   if (requestId !== optionsRequestId) return
-  orgUnits.value = result.orgUnits || []
+  orgUnits.value = attendanceReportingOrgUnits(result.orgUnits)
   attendancePolicy.value = result.attendancePolicy || {}
 }
 

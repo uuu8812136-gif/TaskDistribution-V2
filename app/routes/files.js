@@ -14,6 +14,9 @@ const {
   assertTemporaryUploadPermission,
   createFileAssetService
 } = require('../services/fileAssetService');
+const {
+  resolveTaskTemporaryUploadContext
+} = require('../services/taskLeadershipAccessService');
 const { validatedExtension } = require('../services/fileStorageService');
 
 function createUpload(maxFileSize) {
@@ -77,8 +80,21 @@ function createFilesRouter({ storageRoot, maxFileSize, temporaryFileLimits } = {
   async function requireTemporaryUploadCapacity(req, res, next) {
     try {
       await service.assertTemporaryUploadCapacity({
-        authContext: req.authContext,
+        authContext: req.temporaryUploadAuthContext || req.authContext,
         incomingBytes: 1
+      });
+      return next();
+    } catch (error) {
+      return next(error);
+    }
+  }
+
+  async function requireTaskTemporaryUploadPermission(req, res, next) {
+    try {
+      req.temporaryUploadAuthContext = await resolveTaskTemporaryUploadContext({
+        authContext: req.authContext,
+        taskId: req.query?.taskId,
+        orgUnitId: req.query?.orgUnitId
       });
       return next();
     } catch (error) {
@@ -92,6 +108,15 @@ function createFilesRouter({ storageRoot, maxFileSize, temporaryFileLimits } = {
     requireTeamContext,
     businessWriteGuard,
     requireTemporaryUploadPermission,
+    requireTemporaryUploadCapacity,
+    uploadMiddleware(upload),
+    controller.uploadTemporary
+  );
+  router.post(
+    '/task-temporary',
+    requireTeamContext,
+    businessWriteGuard,
+    requireTaskTemporaryUploadPermission,
     requireTemporaryUploadCapacity,
     uploadMiddleware(upload),
     controller.uploadTemporary

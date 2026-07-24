@@ -56,7 +56,7 @@
       type="warning"
       :closable="false"
       show-icon
-      title="该批次已退回。盘点人需要修改明细后重新提交，新的审批轮次会从分部经理重新开始。"
+      title="该批次已退回。盘点人需要修改明细后重新提交，新的审批轮次会从分部负责人重新开始。"
     />
 
     <section class="table-shell">

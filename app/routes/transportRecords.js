@@ -21,6 +21,29 @@ router.use(
 );
 
 router.get('/options', requirePermission('report.view'), transportRecordController.listOptions);
+router.get(
+  '/master-data',
+  requirePermission('report.view'),
+  transportRecordController.listMasterData
+);
+router.post(
+  '/master-data',
+  requireTeamContext,
+  requirePermission('report.transport.master.manage'),
+  transportRecordController.createMasterData
+);
+router.patch(
+  '/master-data/:masterDataId/status',
+  requireTeamContext,
+  requirePermission('report.transport.master.manage'),
+  transportRecordController.setMasterDataStatus
+);
+router.patch(
+  '/master-data/:masterDataId',
+  requireTeamContext,
+  requirePermission('report.transport.master.manage'),
+  transportRecordController.updateMasterData
+);
 
 router.get(
   '/export',

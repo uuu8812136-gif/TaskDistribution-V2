@@ -25,7 +25,7 @@ function createFileController({ storageRoot, service: providedService } = {}) {
     async uploadTemporary(req, res, next) {
       try {
         const file = await service.uploadTemporary({
-          authContext: req.authContext,
+          authContext: req.temporaryUploadAuthContext || req.authContext,
           req,
           upload: req.file,
           requestedOriginalName: req.body?.originalName

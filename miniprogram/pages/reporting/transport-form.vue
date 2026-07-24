@@ -41,25 +41,39 @@
 
       <view class="field-row">
         <text class="field-label required">运输车次</text>
-        <input v-model="form.tripLabel" class="text-field" maxlength="50" placeholder="例如：第1车" />
+        <picker :range="tripOptions" range-key="label" :value="tripIndex" @change="onTripChange">
+          <view class="picker-field">{{ selectedTripLabel || '请选择运输车次' }}</view>
+        </picker>
       </view>
       <view class="field-row">
         <text class="field-label required">运输路线</text>
-        <input v-model="form.route" class="text-field" maxlength="200" placeholder="请输入运输路线" />
+        <picker :range="routeOptions" range-key="label" :value="routeIndex" @change="onRouteChange">
+          <view class="picker-field">{{ selectedRouteLabel || '请选择运输路线' }}</view>
+        </picker>
       </view>
-      <view class="field-grid">
-        <view class="field-row compact">
-          <text class="field-label required">车牌号</text>
-          <input v-model="form.vehiclePlate" class="text-field" maxlength="50" placeholder="车牌号" />
-        </view>
-        <view class="field-row compact">
-          <text class="field-label">车型</text>
-          <input v-model="form.vehicleType" class="text-field" maxlength="100" placeholder="车型" />
-        </view>
+      <view class="field-row">
+        <text class="field-label required">车牌号</text>
+        <picker :range="vehiclePlateOptions" range-key="label" :value="vehiclePlateIndex" @change="onVehiclePlateChange">
+          <view class="picker-field">{{ selectedVehiclePlateLabel || '请选择车牌号' }}</view>
+        </picker>
+      </view>
+      <view class="field-row">
+        <text class="field-label">车型</text>
+        <picker
+          :range="vehicleTypeOptions"
+          range-key="label"
+          :value="vehicleTypeIndex"
+          data-testid="transport-vehicle-type-picker"
+          @change="onVehicleTypeChange"
+        >
+          <view class="picker-field">{{ selectedVehicleTypeLabel || '请选择车型（选填）' }}</view>
+        </picker>
       </view>
       <view class="field-row">
         <text class="field-label required">司机姓名</text>
-        <input v-model="form.driverName" class="text-field" maxlength="100" placeholder="请输入司机姓名" />
+        <picker :range="driverOptions" range-key="label" :value="driverIndex" @change="onDriverChange">
+          <view class="picker-field">{{ selectedDriverLabel || '请选择司机姓名' }}</view>
+        </picker>
       </view>
     </view>
 
@@ -118,9 +132,10 @@
 import { computed, reactive, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import {
-  createTransportRecord,
-  getOrgUnits,
-  getUsers,
+    createTransportRecord,
+    getOrgUnits,
+    getTransportMasterData,
+    getUsers,
   uploadTransportPhoto
 } from '@/api/index.js'
 import { useUserStore } from '@/stores/user.js'
@@ -134,6 +149,7 @@ import {
   buildTransportPayload,
   businessNaturalDate,
   createEmptyTransportLoad,
+  optionalVehicleTypeOptions,
   transportLoadTotal
 } from '@/utils/reporting.js'
 import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
@@ -153,11 +169,16 @@ export default {
       orgUnitId: userStore.context?.orgUnit?._id || '',
       reportDate: businessNaturalDate(),
       shift: TRANSPORT_SHIFT_OPTIONS[0],
+      tripMasterId: '',
       tripLabel: '',
+      routeMasterId: '',
       route: '',
       dispatchType: TRANSPORT_DISPATCH_OPTIONS[0],
+      vehiclePlateMasterId: '',
       vehiclePlate: '',
+      vehicleTypeMasterId: '',
       vehicleType: '',
+      driverMasterId: '',
       driverName: '',
       loadDetails: createEmptyTransportLoad(),
       remark: ''
@@ -167,6 +188,14 @@ export default {
     const submitting = ref(false)
     const orgUnits = ref(userStore.context?.orgUnit ? [userStore.context.orgUnit] : [])
     const orgUsers = ref([])
+    const masterData = ref([])
+    const canSubmit = computed(() => (
+      userStore.can('report.submit', { write: true, teamRequired: true }) &&
+      (
+        userStore.isSuperAdmin ||
+        userStore.context.membership?.functionalRoleKeys?.includes('TRANSPORT_REPORTER')
+      )
+    ))
     const isTeamScope = computed(() => (
       userStore.moduleDataScopes[REPORTING_MODULE_SCOPES.TRANSPORT] === 'TEAM'
     ))
@@ -182,6 +211,35 @@ export default {
     ))
     const shiftIndex = computed(() => TRANSPORT_SHIFT_OPTIONS.indexOf(form.shift))
     const dispatchIndex = computed(() => TRANSPORT_DISPATCH_OPTIONS.indexOf(form.dispatchType))
+    const optionsFor = (kind) => computed(() => masterData.value
+       .filter((item) => item.kind === kind && item.status === 'ACTIVE')
+       .map((item) => ({
+         value: item._id,
+         label: item.name,
+         item
+       })))
+    const tripOptions = optionsFor('TRIP')
+    const routeOptions = optionsFor('ROUTE')
+    const vehiclePlateOptions = optionsFor('VEHICLE_PLATE')
+    const vehicleTypeOptions = computed(() => optionalVehicleTypeOptions(masterData.value))
+    const driverOptions = optionsFor('DRIVER')
+    const optionIndex = (options, value) => Math.max(
+      0,
+      options.value.findIndex((option) => option.value === value)
+    )
+    const optionLabel = (options, value) => (
+      options.value.find((option) => option.value === value)?.label || ''
+    )
+    const tripIndex = computed(() => optionIndex(tripOptions, form.tripMasterId))
+    const routeIndex = computed(() => optionIndex(routeOptions, form.routeMasterId))
+    const vehiclePlateIndex = computed(() => optionIndex(vehiclePlateOptions, form.vehiclePlateMasterId))
+    const vehicleTypeIndex = computed(() => optionIndex(vehicleTypeOptions, form.vehicleTypeMasterId))
+    const driverIndex = computed(() => optionIndex(driverOptions, form.driverMasterId))
+    const selectedTripLabel = computed(() => optionLabel(tripOptions, form.tripMasterId))
+    const selectedRouteLabel = computed(() => optionLabel(routeOptions, form.routeMasterId))
+    const selectedVehiclePlateLabel = computed(() => optionLabel(vehiclePlateOptions, form.vehiclePlateMasterId))
+    const selectedVehicleTypeLabel = computed(() => optionLabel(vehicleTypeOptions, form.vehicleTypeMasterId))
+    const selectedDriverLabel = computed(() => optionLabel(driverOptions, form.driverMasterId))
     const loadTotal = computed(() => transportLoadTotal(form.loadDetails))
 
     const loadOrganizations = async () => {
@@ -203,13 +261,24 @@ export default {
       }
     }
 
+    const loadMasterData = async () => {
+      const response = await getTransportMasterData()
+      masterData.value = response.masterData || []
+    }
+
     onLoad(() => {
-      if (!userStore.can('report.submit', { write: true, teamRequired: true })) {
+      if (!canSubmit.value) {
         uni.showToast({ title: '无权限提交运输记录', icon: 'none' })
         setTimeout(() => uni.navigateBack(), 300)
         return
       }
-      loadOrganizations()
+      Promise.all([loadOrganizations(), loadMasterData()]).catch((error) => {
+        console.error('加载运输基础资料失败:', error)
+        uni.showToast({
+          title: requestErrorMessage(error, '运输基础资料加载失败，请稍后重试'),
+          icon: 'none'
+        })
+      })
     })
 
     const onOrgChange = (event) => {
@@ -221,6 +290,31 @@ export default {
     }
     const onDispatchChange = (event) => {
       form.dispatchType = TRANSPORT_DISPATCH_OPTIONS[Number(event.detail.value)]
+    }
+    const onTripChange = (event) => {
+      const selected = tripOptions.value[Number(event.detail.value)]
+      form.tripMasterId = selected?.value || ''
+      form.tripLabel = selected?.item?.name || ''
+    }
+    const onRouteChange = (event) => {
+      const selected = routeOptions.value[Number(event.detail.value)]
+      form.routeMasterId = selected?.value || ''
+      form.route = selected?.item?.name || ''
+    }
+    const onVehiclePlateChange = (event) => {
+      const selected = vehiclePlateOptions.value[Number(event.detail.value)]
+      form.vehiclePlateMasterId = selected?.value || ''
+      form.vehiclePlate = selected?.item?.name || ''
+    }
+    const onVehicleTypeChange = (event) => {
+      const selected = vehicleTypeOptions.value[Number(event.detail.value)]
+      form.vehicleTypeMasterId = selected?.value || ''
+      form.vehicleType = selected?.item?.name || ''
+    }
+    const onDriverChange = (event) => {
+      const selected = driverOptions.value[Number(event.detail.value)]
+      form.driverMasterId = selected?.value || ''
+      form.driverName = selected?.item?.name || ''
     }
 
     const choosePhotos = () => {
@@ -252,6 +346,10 @@ export default {
       if (submitting.value) return
       try {
         if (isTeamScope.value && !form.orgUnitId) throw new TypeError('请选择所属组织')
+        if (!form.tripMasterId) throw new TypeError('请选择运输车次')
+        if (!form.routeMasterId) throw new TypeError('请选择运输路线')
+        if (!form.vehiclePlateMasterId) throw new TypeError('请选择车牌号')
+        if (!form.driverMasterId) throw new TypeError('请选择司机姓名')
         buildTransportFields(form)
         if (photos.value.length < 2 || photos.value.length > 10) {
           throw new TypeError('现场照片必须为2至10张')
@@ -292,12 +390,32 @@ export default {
       shiftIndex,
       dispatchOptions: TRANSPORT_DISPATCH_OPTIONS,
       dispatchIndex,
+      tripOptions,
+      tripIndex,
+      selectedTripLabel,
+      routeOptions,
+      routeIndex,
+      selectedRouteLabel,
+      vehiclePlateOptions,
+      vehiclePlateIndex,
+      selectedVehiclePlateLabel,
+      vehicleTypeOptions,
+      vehicleTypeIndex,
+      selectedVehicleTypeLabel,
+      driverOptions,
+      driverIndex,
+      selectedDriverLabel,
       loadFields: TRANSPORT_LOAD_FIELDS,
       loadTotal,
       onOrgChange,
       onDateChange,
       onShiftChange,
       onDispatchChange,
+      onTripChange,
+      onRouteChange,
+      onVehiclePlateChange,
+      onVehicleTypeChange,
+      onDriverChange,
       choosePhotos,
       previewPhoto,
       removePhoto,

@@ -76,7 +76,8 @@ const NAMED_QUANTITY_FIELDS = Object.freeze([
   'sickLeave',
   'absenteeism',
   'notYetEmployed',
-  'pendingDeparture'
+  'pendingDeparture',
+  'temporaryWorker'
 ]);
 const SHIFT_FIELDS = Object.freeze(['actualAttendanceCount', ...NAMED_QUANTITY_FIELDS]);
 const INPUT_FIELDS = Object.freeze([
@@ -91,6 +92,7 @@ const INPUT_FIELDS = Object.freeze([
   'reason'
 ]);
 const ATTENDANCE_DEADLINE_HOUR = 9;
+const ATTENDANCE_ORG_UNIT_LEVEL = 2;
 const REVIEW_RETRY_ATTEMPTS = 5;
 const ACCEPTANCE_TIME_BYPASS_AUDIT_REASON = '验收测试账号临时关闭出勤时间限制';
 const ATTENDANCE_MONTHLY_EXPORT_HEADERS = Object.freeze([
@@ -179,6 +181,21 @@ function attendanceActorPolicy(context) {
       ? normalizeId(context?.membership?.orgUnitId)
       : null
   });
+}
+
+function isAttendanceOrgUnitShape(orgUnit) {
+  return (
+    orgUnit?.type === ORG_UNIT_TYPES.SUB_DEPARTMENT &&
+    orgUnit?.level === ATTENDANCE_ORG_UNIT_LEVEL
+  );
+}
+
+function attendanceOrgUnitInvalid() {
+  return reportError(
+    400,
+    'ATTENDANCE_ORG_UNIT_INVALID',
+    '所属分部只能选择当前团队已启用的二级分部'
+  );
 }
 
 function assertAttendanceSubmitActor(context) {
@@ -395,11 +412,20 @@ function serializeNamedQuantity(value = {}) {
 function serializeShift(value = {}) {
   return {
     actualAttendanceCount: value.actualAttendanceCount || 0,
+    effectiveActualAttendanceCount: effectiveActualAttendanceCount(value),
     ...Object.fromEntries(NAMED_QUANTITY_FIELDS.map((field) => [
       field,
       serializeNamedQuantity(value[field])
     ]))
   };
+}
+
+function effectiveActualAttendanceCount(value = {}) {
+  return (
+    (value.actualAttendanceCount || 0) +
+    (value.notYetEmployed?.count || 0) +
+    (value.temporaryWorker?.count || 0)
+  );
 }
 
 function serializeAttendanceSubmission(document) {
@@ -449,8 +475,8 @@ function serializeAttendanceSubmission(document) {
       (value.nightShift?.pendingDeparture?.count || 0)
     ),
     actualAttendanceCount: (
-      (value.dayShift?.actualAttendanceCount || 0) +
-      (value.nightShift?.actualAttendanceCount || 0)
+      effectiveActualAttendanceCount(value.dayShift) +
+      effectiveActualAttendanceCount(value.nightShift)
     )
   };
 }
@@ -543,6 +569,16 @@ function uniqueNames(values) {
   return [...new Set(values.filter(Boolean))];
 }
 
+function plannedAttendanceCount(summary = {}, field) {
+  const shift = summary[field] || {};
+  const hasShiftData = (
+    (shift.actualAttendanceCount || 0) > 0 ||
+    NAMED_QUANTITY_FIELDS.some((key) => (shift[key]?.count || 0) > 0)
+  );
+  if (!hasShiftData) return 0;
+  return Math.max(0, (summary.registeredHeadcount || 0) - (shift.rest?.count || 0));
+}
+
 function summarizeShift(documents, field) {
   const shift = (document) => document[field] || {};
   const named = Object.fromEntries(NAMED_QUANTITY_FIELDS.map((category) => [
@@ -557,10 +593,16 @@ function summarizeShift(documents, field) {
       ))
     }
   ]));
-  return {
-    actualAttendanceCount: documents.reduce(
+  const reportedActualAttendanceCount = documents.reduce(
       (sum, document) => sum + (shift(document).actualAttendanceCount || 0),
       0
+    );
+  return {
+    reportedActualAttendanceCount,
+    actualAttendanceCount: (
+      reportedActualAttendanceCount +
+      named.notYetEmployed.count +
+      named.temporaryWorker.count
     ),
     ...named,
     leaveWithSickCount: named.leave.count + named.sickLeave.count
@@ -599,9 +641,13 @@ function qualitySummary(documents) {
   };
 }
 
-function summarizeDocuments(documents, reportDate) {
+function summarizeDocuments(documents, reportDate, orgUnits = []) {
   const dayShift = summarizeShift(documents, 'dayShift');
   const nightShift = summarizeShift(documents, 'nightShift');
+  const orgUnitNames = new Map(orgUnits.map((orgUnit) => [
+    normalizeId(orgUnit._id),
+    orgUnit.name || ''
+  ]));
   const supportGroups = new Map();
   for (const document of documents) {
     const support = document.support || {};
@@ -635,7 +681,13 @@ function summarizeDocuments(documents, reportDate) {
       ...group,
       names: uniqueNames(group.names)
     })),
-    otherRemarks: uniqueNames(documents.map(({ otherRemark }) => otherRemark || '')),
+    otherRemarks: documents
+      .filter(({ otherRemark }) => Boolean(otherRemark))
+      .map(({ orgUnitId, otherRemark }) => ({
+        orgUnitId: normalizeId(orgUnitId),
+        orgUnitName: orgUnitNames.get(normalizeId(orgUnitId)) || '',
+        remark: otherRemark
+      })),
     dataQuality: qualitySummary(documents)
   };
 }
@@ -684,7 +736,11 @@ function attendanceMonthlyExportRows({ teamName, month, summaries = [] }) {
       summary.nightShift.pendingDeparture.count,
       summary.nightShift.absenteeism.count,
       attendanceSupportExportText(summary.support),
-      formulaSafe((summary.otherRemarks || []).join('；'))
+      formulaSafe((summary.otherRemarks || []).map((item) => (
+        typeof item === 'string'
+          ? item
+          : `${item.orgUnitName ? `${item.orgUnitName}：` : ''}${item.remark || ''}`
+      )).filter(Boolean).join('；'))
     ]);
   }
   return rows;
@@ -738,6 +794,24 @@ function productionMonthlyRangeTotal(schedules, fromMonth, toMonth) {
   ), 0);
 }
 
+function assertUniqueProductionScheduleMonths(schedules = []) {
+  const counts = new Map();
+  for (const schedule of schedules) {
+    counts.set(schedule.month, (counts.get(schedule.month) || 0) + 1);
+  }
+  const duplicateMonths = [...counts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([month]) => month)
+    .sort();
+  if (duplicateMonths.length > 0) {
+    throw reportError(
+      409,
+      'PRODUCTION_SCHEDULE_MONTH_CONFLICT',
+      `同一团队同一月份只能有一条生产排产记录：${duplicateMonths.join('、')}`
+    );
+  }
+}
+
 function finalAttendanceReportText({
   teamName,
   reportDate,
@@ -746,6 +820,7 @@ function finalAttendanceReportText({
   productionSchedules,
   reviewerName
 }) {
+  assertUniqueProductionScheduleMonths(productionSchedules);
   const parsed = parseNaturalDate(reportDate);
   const month = reportDate.slice(0, 7);
   const previousMonth = shiftNaturalMonth(month, -1);
@@ -793,31 +868,50 @@ function finalAttendanceReportText({
     ];
   if (todayProduction.northLine > 0) breakdown.push(`北线${todayProduction.northLine}台`);
 
-  const todayDayPlanned = Math.max(
-    0,
-    summary.registeredHeadcount - summary.dayShift.rest.count
-  );
-  const todayNightPlanned = Math.max(
-    0,
-    summary.registeredHeadcount - summary.nightShift.rest.count
-  );
+  const todayDayPlanned = plannedAttendanceCount(summary, 'dayShift');
+  const todayNightPlanned = plannedAttendanceCount(summary, 'nightShift');
   const yesterdayDayPlanned = yesterdaySummary
-    ? Math.max(0, yesterdaySummary.registeredHeadcount - yesterdaySummary.dayShift.rest.count)
+    ? plannedAttendanceCount(yesterdaySummary, 'dayShift')
     : '--';
   const yesterdayNightPlanned = yesterdaySummary
-    ? Math.max(0, yesterdaySummary.registeredHeadcount - yesterdaySummary.nightShift.rest.count)
+    ? plannedAttendanceCount(yesterdaySummary, 'nightShift')
     : '--';
   const yesterdayDayActual = yesterdaySummary?.dayShift.actualAttendanceCount ?? '--';
   const yesterdayNightActual = yesterdaySummary?.nightShift.actualAttendanceCount ?? '--';
   const todayActual = summary.dayShift.actualAttendanceCount + summary.nightShift.actualAttendanceCount;
   const todayLeave = summary.dayShift.leaveWithSickCount + summary.nightShift.leaveWithSickCount;
-  const supportLines = summary.support.length > 0
+  const otherSituationLines = summary.support.length > 0
     ? summary.support.map((item, index) => (
       `${String.fromCodePoint(0x2460 + index)}、到${item.destination}帮产${item.count}人` +
       `${item.names.length ? `（${item.names.join('、')}）` : ''}；`
     ))
     : ['①、无帮产情况；'];
-  supportLines.push(`${String.fromCodePoint(0x2460 + supportLines.length)}、今日实际出勤${todayActual}人，请假${todayLeave}人。`);
+  const temporaryWorkerCount = (
+    (summary.dayShift.temporaryWorker?.count || 0) +
+    (summary.nightShift.temporaryWorker?.count || 0)
+  );
+  const temporaryWorkerNames = uniqueNames([
+    ...(summary.dayShift.temporaryWorker?.names || []),
+    ...(summary.nightShift.temporaryWorker?.names || [])
+  ]);
+  if (temporaryWorkerCount > 0 || temporaryWorkerNames.length > 0) {
+    otherSituationLines.push(
+      `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、临时工${temporaryWorkerCount}人` +
+      `${temporaryWorkerNames.length ? `（${temporaryWorkerNames.join('、')}）` : ''}；`
+    );
+  }
+  for (const item of summary.otherRemarks || []) {
+    const remark = typeof item === 'string' ? item : item?.remark;
+    if (!remark) continue;
+    const orgUnitName = typeof item === 'string' ? '' : item.orgUnitName;
+    otherSituationLines.push(
+      `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、` +
+      `${orgUnitName ? `${orgUnitName}：` : ''}${remark}；`
+    );
+  }
+  otherSituationLines.push(
+    `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、今日实际出勤${todayActual}人，请假${todayLeave}人。`
+  );
 
   return [
     `${parsed.month}月${parsed.day}日${teamName}生产日报`,
@@ -830,7 +924,7 @@ function finalAttendanceReportText({
       `昨日夜班安排出勤${yesterdayNightPlanned}人，实际出勤${yesterdayNightActual}人；` +
       `今日白班安排出勤${todayDayPlanned}人，夜班安排出勤${todayNightPlanned}人。`,
     '6.其他情况：',
-    ...supportLines,
+    ...otherSituationLines,
     `提报人:${reviewerName}`
   ].join('\n');
 }
@@ -859,6 +953,7 @@ function createAttendanceSubmissionService({
     const query = OrgUnitModel.find({
       teamId,
       type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      level: ATTENDANCE_ORG_UNIT_LEVEL,
       status: ORG_UNIT_STATUSES.ACTIVE
     }).sort({ sortOrder: 1, name: 1, _id: 1 });
     const units = await execute(query, session);
@@ -870,6 +965,28 @@ function createAttendanceSubmissionService({
       );
     }
     return units;
+  }
+
+  async function resolveAttendanceOrgUnit(options) {
+    try {
+      const orgUnit = await resolveWritableOrgUnit({
+        ...options,
+        moduleKey: DATA_SCOPE_MODULES.REPORT_ATTENDANCE,
+        OrgUnitModel
+      });
+      if (
+        orgUnit.status !== ORG_UNIT_STATUSES.ACTIVE ||
+        !isAttendanceOrgUnitShape(orgUnit)
+      ) {
+        throw attendanceOrgUnitInvalid();
+      }
+      return orgUnit;
+    } catch (error) {
+      if (error?.code === 'REPORT_RELATED_RESOURCE_INVALID') {
+        throw attendanceOrgUnitInvalid();
+      }
+      throw error;
+    }
   }
 
   async function activeUsers(userIds, session = null) {
@@ -1015,6 +1132,9 @@ function createAttendanceSubmissionService({
       OrgUnitModel,
       ProjectTeamModel
     });
+    const orgUnits = result.orgUnits
+      .filter(isAttendanceOrgUnitShape)
+      .map((orgUnit) => ({ ...orgUnit, status: ORG_UNIT_STATUSES.ACTIVE }));
     const actor = attendanceActorPolicy(authContext);
     const now = clock();
     const currentBusinessDate = businessDateInShanghai(now);
@@ -1022,6 +1142,7 @@ function createAttendanceSubmissionService({
     const timeRestrictionsBypassed = Boolean(timeRestrictionBypass(authContext, now));
     return {
       ...result,
+      orgUnits,
       attendancePolicy: {
         isReporter: actor.isReporter,
         isOfficer: actor.isOfficer,
@@ -1148,7 +1269,7 @@ function createAttendanceSubmissionService({
     const review = await AttendanceDailyReviewModel.findOne({ teamId, reportDate: date }).lean();
     return {
       attendanceSummary: {
-        ...summarizeDocuments(documents, date),
+        ...summarizeDocuments(documents, date, expectedUnits),
         expectedOrgUnitCount: expectedUnits.length,
         isComplete: expectedUnits.length > 0 && missingOrgUnits.length === 0,
         missingOrgUnits,
@@ -1167,7 +1288,7 @@ function createAttendanceSubmissionService({
     const month = naturalMonth(query.month, 'month');
     const [year, monthNumber] = month.split('-').map(Number);
     const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-    const { documents } = await listSummaryDocuments({
+    const { teamId, documents } = await listSummaryDocuments({
       authContext,
       requestedTeamId,
       method,
@@ -1178,6 +1299,7 @@ function createAttendanceSubmissionService({
         reviewStatus: ATTENDANCE_REVIEW_STATUSES.REVIEWED
       }
     });
+    const orgUnits = await expectedOrgUnits(teamId);
     const byDate = new Map();
     for (const document of documents) {
       if (!byDate.has(document.reportDate)) byDate.set(document.reportDate, []);
@@ -1186,7 +1308,7 @@ function createAttendanceSubmissionService({
     return {
       month,
       attendanceSummaries: [...byDate.entries()].map(([date, rows]) => (
-        summarizeDocuments(rows, date)
+        summarizeDocuments(rows, date, orgUnits)
       )),
       submissionCount: documents.length
     };
@@ -1228,12 +1350,15 @@ function createAttendanceSubmissionService({
     if (!team) {
       throw reportError(404, 'REPORT_RELATED_RESOURCE_NOT_FOUND', 'Project team does not exist');
     }
+    const orgUnits = await expectedOrgUnits(teamId);
     const byDate = new Map();
     for (const document of documents) {
       if (!byDate.has(document.reportDate)) byDate.set(document.reportDate, []);
       byDate.get(document.reportDate).push(document);
     }
-    const summaries = [...byDate.entries()].map(([date, rows]) => summarizeDocuments(rows, date));
+    const summaries = [...byDate.entries()].map(([date, rows]) => (
+      summarizeDocuments(rows, date, orgUnits)
+    ));
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.aoa_to_sheet(attendanceMonthlyExportRows({
       teamName: team.name,
@@ -1333,11 +1458,9 @@ function createAttendanceSubmissionService({
       : naturalDate(input.reportDate);
     try {
       return await retryConcurrentWrite(() => runWithOptionalTransaction(async (session) => {
-        const orgUnit = await resolveWritableOrgUnit({
+        const orgUnit = await resolveAttendanceOrgUnit({
           context,
-          moduleKey: DATA_SCOPE_MODULES.REPORT_ATTENDANCE,
           requestedOrgUnitId: input.orgUnitId,
-          OrgUnitModel,
           session
         });
         assertSubmissionTiming({
@@ -1454,12 +1577,10 @@ function createAttendanceSubmissionService({
         const targetDate = input.reportDate === undefined
           ? document.reportDate
           : naturalDate(input.reportDate);
-        const orgUnit = await resolveWritableOrgUnit({
+        const orgUnit = await resolveAttendanceOrgUnit({
           context,
-          moduleKey: DATA_SCOPE_MODULES.REPORT_ATTENDANCE,
           requestedOrgUnitId: input.orgUnitId,
           fallbackOrgUnitId: document.orgUnitId,
-          OrgUnitModel,
           session
         });
         assertSubmissionTiming({
@@ -1603,7 +1724,7 @@ function createAttendanceSubmissionService({
         if (!team || !reviewer) {
           throw reportError(409, 'REPORT_RELATED_RESOURCE_INVALID', 'Team or reviewer no longer exists');
         }
-        const summary = summarizeDocuments(submissions, date);
+        const summary = summarizeDocuments(submissions, date, units);
         const yesterdaySummary = yesterdayRows.length > 0
           ? summarizeDocuments(yesterdayRows, shiftNaturalDate(date, -1))
           : null;
@@ -1725,8 +1846,11 @@ module.exports = {
   attendanceMonthlyExportRows,
   attendanceUserFilter,
   createAttendanceSubmissionService,
+  effectiveActualAttendanceCount,
   finalAttendanceReportText,
+  assertUniqueProductionScheduleMonths,
   isAttendanceDeadlineReached,
+  plannedAttendanceCount,
   serializeAttendanceSubmission,
   shanghaiDeadlineInstant,
   summarizeDocuments

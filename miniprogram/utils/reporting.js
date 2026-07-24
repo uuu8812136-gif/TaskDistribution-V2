@@ -12,7 +12,8 @@ export const ATTENDANCE_NAMED_FIELDS = Object.freeze([
   { key: 'sickLeave', label: '病假' },
   { key: 'absenteeism', label: '旷工' },
   { key: 'notYetEmployed', label: '未入职' },
-  { key: 'pendingDeparture', label: '待离职' }
+  { key: 'pendingDeparture', label: '待离职' },
+  { key: 'temporaryWorker', label: '临时工' }
 ])
 
 export const TRANSPORT_LOAD_FIELDS = Object.freeze([
@@ -91,6 +92,20 @@ export function createEmptyTransportLoad() {
   return Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, '']))
 }
 
+export function optionalVehicleTypeOptions(masterData = []) {
+  const source = Array.isArray(masterData) ? masterData : []
+  return [
+    { value: '', label: '无车型（清空）', item: null },
+    ...source
+      .filter((item) => item.kind === 'VEHICLE_TYPE' && item.status === 'ACTIVE')
+      .map((item) => ({
+        value: item._id,
+        label: item.name,
+        item
+      }))
+  ]
+}
+
 function attendanceNames(value) {
   const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/)
   return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
@@ -159,6 +174,36 @@ export function attendanceNamesText(value) {
   return attendanceNames(value).join('、') || '无'
 }
 
+export function attendanceEffectiveActualCount(shift = {}) {
+  if (shift.effectiveActualAttendanceCount !== undefined) {
+    return quantity(shift.effectiveActualAttendanceCount, '实际出勤')
+  }
+  return (
+    quantity(shift.actualAttendanceCount, '实际出勤') +
+    quantity(shift.notYetEmployed?.count, '未入职') +
+    quantity(shift.temporaryWorker?.count, '临时工')
+  )
+}
+
+export function attendanceOtherRemarkRows(otherRemarks = [], orgUnits = []) {
+  if (!Array.isArray(otherRemarks)) return []
+  return otherRemarks
+    .map((item) => {
+      if (typeof item === 'string') return { orgUnitName: '', remark: item.trim() }
+      const orgUnitId = String(item?.orgUnitId || '')
+      return {
+        orgUnitName: String(
+          item?.orgUnitName ||
+          item?.name ||
+          orgUnits.find((orgUnit) => String(orgUnit?._id || '') === orgUnitId)?.name ||
+          (orgUnitId ? `组织 ${orgUnitId.slice(-6)}` : '')
+        ).trim(),
+        remark: String(item?.remark || item?.otherRemark || item?.text || '').trim()
+      }
+    })
+    .filter(({ remark }) => remark)
+}
+
 export function attendanceSupportText(support = {}) {
   if (!support.count && !(support.names || []).length) return '无帮产'
   return `${support.destination || '未填写去向'} ${support.count || 0}人（${attendanceNamesText(support.names)}）`
@@ -208,6 +253,7 @@ export function buildTransportFields(form) {
     route: requiredText(form.route, '运输路线'),
     dispatchType: form.dispatchType,
     vehiclePlate: requiredText(form.vehiclePlate, '车牌号'),
+    vehicleTypeMasterId: form.vehicleTypeMasterId ? String(form.vehicleTypeMasterId) : null,
     vehicleType: typeof form.vehicleType === 'string' ? form.vehicleType.trim() : '',
     driverName: requiredText(form.driverName, '司机姓名'),
     loadDetails: Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key, label }) => [
@@ -215,6 +261,14 @@ export function buildTransportFields(form) {
       quantity(form.loadDetails?.[key], label)
     ])),
     remark: typeof form.remark === 'string' ? form.remark.trim() : ''
+  }
+  for (const field of [
+    'tripMasterId',
+    'routeMasterId',
+    'vehiclePlateMasterId',
+    'driverMasterId'
+  ]) {
+    if (form[field]) fields[field] = String(form[field])
   }
   if (form.orgUnitId) fields.orgUnitId = String(form.orgUnitId)
   return fields

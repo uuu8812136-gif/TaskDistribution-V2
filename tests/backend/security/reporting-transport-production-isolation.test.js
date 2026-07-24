@@ -18,6 +18,7 @@ const OrgUnit = require('../../../app/models/OrgUnit');
 const ProductionSchedule = require('../../../app/models/ProductionSchedule');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
 const ReportChangeRecord = require('../../../app/models/ReportChangeRecord');
+const TransportMasterData = require('../../../app/models/TransportMasterData');
 const TransportRecord = require('../../../app/models/TransportRecord');
 const User = require('../../../app/models/User');
 const permissions = require('../../../app/config/permissions');
@@ -44,6 +45,7 @@ const MODELS = [
   ProductionSchedule,
   ProjectTeam,
   ReportChangeRecord,
+  TransportMasterData,
   TransportRecord,
   User
 ];
@@ -85,6 +87,9 @@ function teamContext({
       userId: String(userId),
       orgUnitId: String(orgUnitId),
       role,
+      functionalRoleKeys: Object.freeze([
+        permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER
+      ]),
       status: permissions.MEMBERSHIP_STATUSES.ACTIVE
     }),
     orgUnit: Object.freeze({ _id: String(orgUnitId), teamId: String(teamId) }),
@@ -98,6 +103,39 @@ function teamContext({
     }),
     readOnly: false,
     canAccessBusiness: true
+  });
+}
+
+function fixedRoleMemberContext({
+  teamId,
+  orgUnitId,
+  userId,
+  functionalRoleKeys,
+  permissionKeys
+}) {
+  const base = teamContext({
+    teamId,
+    orgUnitId,
+    userId,
+    scope: permissions.DATA_SCOPES.ORG_UNIT,
+    role: permissions.MEMBERSHIP_ROLES.MEMBER
+  });
+  const moduleDataScopes = Object.freeze(Object.fromEntries(
+    permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVELS.SUB_DEPARTMENT_MANAGER_OR_DEPUTY,
+      functionalRoleKeys
+    }).map(({ moduleKey, scope }) => [moduleKey, scope])
+  ));
+  return Object.freeze({
+    ...base,
+    membership: Object.freeze({
+      ...base.membership,
+      positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+      positionLevel: permissions.POSITION_LEVELS.SUB_DEPARTMENT_MANAGER_OR_DEPUTY,
+      functionalRoleKeys: Object.freeze([...functionalRoleKeys])
+    }),
+    permissionKeys: Object.freeze([...permissionKeys]),
+    moduleDataScopes
   });
 }
 
@@ -156,7 +194,30 @@ async function seedFixture() {
     fileA3: objectId(),
     fileA4: objectId(),
     fileB1: objectId(),
-    fileB2: objectId()
+    fileB2: objectId(),
+    transportMastersA: {
+      trip: objectId(),
+      vehiclePlate: objectId(),
+      vehicleType: objectId(),
+      driver: objectId(),
+      routes: Object.fromEntries([
+        '=CMD()',
+        'A2_SECRET',
+        'FOREIGN_ORG',
+        'FOREIGN_FILES',
+        'TEAM_SMUGGLE',
+        'OLD_PATH',
+        'GLOBAL_WRITE',
+        'ROLLBACK'
+      ].map((name) => [name, objectId()]))
+    },
+    transportMastersB: {
+      trip: objectId(),
+      vehiclePlate: objectId(),
+      vehicleType: objectId(),
+      driver: objectId(),
+      routes: { B_SECRET: objectId() }
+    }
   };
   await User.collection.insertMany([
     {
@@ -238,14 +299,14 @@ async function seedFixture() {
     {
       _id: ids.orgA2,
       teamId: ids.teamA,
-      parentId: null,
-      type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+      parentId: ids.orgA1,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
       code: 'A2',
       name: 'Org A2',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
-      sortOrder: 0,
-      level: 1,
-      path: '/'
+      sortOrder: 1,
+      level: 2,
+      path: `/${ids.orgA1}/`
     },
     {
       _id: ids.orgB1,
@@ -268,20 +329,67 @@ async function seedFixture() {
     fileDocument({ id: ids.fileB1, teamId: ids.teamB, uploaderId: ids.userB1, suffix: 'c' }),
     fileDocument({ id: ids.fileB2, teamId: ids.teamB, uploaderId: ids.userB1, suffix: 'd' })
   ]);
+  const sharedMasterDefinitions = [
+    ['trip', TransportMasterData.TRANSPORT_MASTER_KINDS.TRIP, '第1车'],
+    ['vehiclePlate', TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_PLATE, 'TEST-PLATE-04'],
+    ['vehicleType', TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_TYPE, '大厢式翼开车（9.6米）'],
+    ['driver', TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER, '司机A']
+  ];
+  const masterDocuments = [];
+  for (const [teamId, createdBy, masters] of [
+    [ids.teamA, ids.userA1, ids.transportMastersA],
+    [ids.teamB, ids.userB1, ids.transportMastersB]
+  ]) {
+    for (const [key, kind, name] of sharedMasterDefinitions) {
+      masterDocuments.push({
+        _id: masters[key],
+        teamId,
+        kind,
+        name,
+        normalizedKey: TransportMasterData.transportMasterNormalizedKey(kind, name),
+        status: TransportMasterData.TRANSPORT_MASTER_STATUSES.ACTIVE,
+        sortOrder: 0,
+        createdBy,
+        updatedBy: createdBy
+      });
+    }
+    for (const [name, id] of Object.entries(masters.routes)) {
+      const kind = TransportMasterData.TRANSPORT_MASTER_KINDS.ROUTE;
+      masterDocuments.push({
+        _id: id,
+        teamId,
+        kind,
+        name,
+        normalizedKey: TransportMasterData.transportMasterNormalizedKey(kind, name),
+        status: TransportMasterData.TRANSPORT_MASTER_STATUSES.ACTIVE,
+        sortOrder: 0,
+        createdBy,
+        updatedBy: createdBy
+      });
+    }
+  }
+  await TransportMasterData.collection.insertMany(masterDocuments);
   return ids;
 }
 
-function transportInput({ orgUnitId, route, photoFileIds = [] }) {
+function transportInput({
+  orgUnitId,
+  route,
+  photoFileIds = [],
+  transportMasters = fixture.transportMastersA
+}) {
+  const routeMasterId = transportMasters.routes[route];
+  if (!routeMasterId) throw new Error(`Missing route fixture: ${route}`);
   return {
     orgUnitId: String(orgUnitId),
     reportDate: '2026-08-01',
     shift: '白班',
-    tripLabel: '第1车',
-    route,
+    tripMasterId: String(transportMasters.trip),
+    routeMasterId: String(routeMasterId),
     dispatchType: '配送',
-    vehiclePlate: 'TEST-PLATE-04',
-    vehicleType: '大厢式翼开车（9.6米）',
-    driverName: '司机A',
+    vehiclePlateMasterId: String(transportMasters.vehiclePlate),
+    vehicleTypeMasterId: String(transportMasters.vehicleType),
+    driverMasterId: String(transportMasters.driver),
     loadDetails: { standardPlasticPallet: 2, other: 1 },
     photoFileIds
   };
@@ -383,9 +491,80 @@ test('transport records enforce team, organization, related-file, read-only, and
     input: transportInput({
       orgUnitId: fixture.orgB1,
       route: 'B_SECRET',
+      transportMasters: fixture.transportMastersB,
       photoFileIds: [String(fixture.fileB1), String(fixture.fileB2)]
     })
   });
+
+  const transportAdmin = fixedRoleMemberContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA2,
+    userId: fixture.userA2,
+    functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_ADMIN],
+    permissionKeys: ['report.view']
+  });
+  assert.equal(
+    transportAdmin.moduleDataScopes[permissions.DATA_SCOPE_MODULES.REPORT_TRANSPORT],
+    permissions.DATA_SCOPES.TEAM
+  );
+  for (const moduleKey of [
+    permissions.DATA_SCOPE_MODULES.TASK,
+    permissions.DATA_SCOPE_MODULES.EQUIPMENT,
+    permissions.DATA_SCOPE_MODULES.REPORT_ATTENDANCE,
+    permissions.DATA_SCOPE_MODULES.REPORT_PRODUCTION
+  ]) {
+    assert.equal(transportAdmin.moduleDataScopes[moduleKey], permissions.DATA_SCOPES.ORG_UNIT);
+  }
+  assert.equal(transportAdmin.permissionKeys.includes('report.submit'), false);
+  assert.equal(transportAdmin.permissionKeys.includes('member.manage'), false);
+  const transportAdminList = await service.listRecords({ authContext: transportAdmin });
+  assert.equal(transportAdminList.total, 2);
+  assert.deepEqual(
+    new Set(transportAdminList.transportRecords.map(({ _id }) => _id)),
+    new Set([recordA1._id, recordA2._id])
+  );
+  assert.equal(
+    (await service.getRecord({
+      authContext: transportAdmin,
+      transportRecordId: recordA1._id
+    }))._id,
+    recordA1._id
+  );
+  await assert.rejects(
+    service.getRecord({ authContext: transportAdmin, transportRecordId: recordB._id }),
+    (error) => error.status === 404
+  );
+  await assert.rejects(
+    service.createRecord({
+      authContext: transportAdmin,
+      input: transportInput({ orgUnitId: fixture.orgA2, route: 'A2_SECRET' })
+    }),
+    (error) => error.status === 403 && error.code === 'PERMISSION_DENIED'
+  );
+
+  const transportReporter = fixedRoleMemberContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER],
+    permissionKeys: ['report.view', 'report.submit']
+  });
+  assert.equal(
+    transportReporter.moduleDataScopes[permissions.DATA_SCOPE_MODULES.REPORT_TRANSPORT],
+    permissions.DATA_SCOPES.ORG_UNIT
+  );
+  const transportReporterList = await service.listRecords({ authContext: transportReporter });
+  assert.deepEqual(
+    transportReporterList.transportRecords.map(({ _id }) => _id),
+    [recordA1._id]
+  );
+  await assert.rejects(
+    service.createRecord({
+      authContext: transportReporter,
+      input: transportInput({ orgUnitId: fixture.orgA2, route: 'A2_SECRET' })
+    }),
+    (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID'
+  );
 
   await assert.rejects(service.createRecord({
     authContext: teamA,
@@ -484,17 +663,17 @@ test('transport create rolls back its record and immutable change when audit app
   assert.equal((await FileAsset.findById(fixture.fileA1).lean()).status, 'TEMPORARY');
 });
 
-test('production maintenance and exports isolate two teams and two divisions', async () => {
+test('production maintenance keeps one monthly schedule per team and remains cross-team isolated', async () => {
   const service = createProductionScheduleService({ clock: () => FIXED_NOW });
   const teamA = teamContext({
     teamId: fixture.teamA,
     orgUnitId: fixture.orgA1,
     userId: fixture.userA1
   });
-  const orgA1 = teamContext({
+  const orgA2 = teamContext({
     teamId: fixture.teamA,
-    orgUnitId: fixture.orgA1,
-    userId: fixture.userA1,
+    orgUnitId: fixture.orgA2,
+    userId: fixture.userA2,
     scope: permissions.DATA_SCOPES.ORG_UNIT,
     role: permissions.MEMBERSHIP_ROLES.MEMBER
   });
@@ -507,11 +686,6 @@ test('production maintenance and exports isolate two teams and two divisions', a
     authContext: teamA,
     month: '2026-08',
     input: monthlyInput(fixture.orgA1, 111)
-  });
-  await service.maintainMonthlySchedule({
-    authContext: teamA,
-    month: '2026-08',
-    input: monthlyInput(fixture.orgA2, 222)
   });
   await service.maintainMonthlySchedule({
     authContext: teamB,
@@ -528,25 +702,16 @@ test('production maintenance and exports isolate two teams and two divisions', a
       productionPlanForecast: 1000
     }
   });
-  await service.maintainDailySlot({
-    authContext: teamA,
-    slot: 'current',
-    input: {
-      orgUnitId: String(fixture.orgA2),
-      dailyEntries: [{ date: '2026-08-01', aLineDay: 22 }]
-    }
-  });
-
   await assert.rejects(service.maintainMonthlySchedule({
-    authContext: orgA1,
+    authContext: teamA,
     month: '2026-09',
     input: monthlyInput(fixture.orgA2, 999)
-  }), (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID');
+  }), (error) => error.code === 'PRODUCTION_SCHEDULE_ORG_UNIT_INVALID');
   await assert.rejects(service.maintainMonthlySchedule({
     authContext: teamA,
     month: '2026-09',
     input: monthlyInput(fixture.orgB1, 999)
-  }), (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID');
+  }), (error) => error.code === 'PRODUCTION_SCHEDULE_ORG_UNIT_INVALID');
   await assert.rejects(service.maintainDailySlot({
     authContext: teamA,
     slot: 'current',
@@ -557,20 +722,20 @@ test('production maintenance and exports isolate two teams and two divisions', a
     }
   }), (error) => error.code === 'PRODUCTION_DAILY_MONTH_MISMATCH');
 
-  const orgDaily = await service.getDailySlot({ authContext: orgA1, slot: 'current' });
+  const orgDaily = await service.getDailySlot({ authContext: orgA2, slot: 'current' });
   assert.equal(orgDaily.month, '2026-08');
   assert.equal(orgDaily.schedules.length, 1);
   assert.equal(orgDaily.schedules[0].dailyEntries.length, 31);
   assert.equal(orgDaily.schedules[0].dailyEntries[0].aLineDay, 11);
-  const orgMonthly = await service.listMonthlySchedules({ authContext: orgA1 });
+  const orgMonthly = await service.listMonthlySchedules({ authContext: orgA2 });
   assert.deepEqual(
     orgMonthly.productionSchedules.map((item) => item.monthlyTotals.aLine),
     [111]
   );
   const teamMonthly = await service.listMonthlySchedules({ authContext: teamA });
   assert.deepEqual(
-    teamMonthly.productionSchedules.map((item) => item.monthlyTotals.aLine).sort(),
-    [111, 222]
+    teamMonthly.productionSchedules.map((item) => item.monthlyTotals.aLine),
+    [111]
   );
 
   const global = globalContext(fixture.superAdmin);
@@ -593,7 +758,7 @@ test('production maintenance and exports isolate two teams and two divisions', a
   }), (error) => error.status === 403);
 
   const monthlyExport = await service.exportMonthlySchedules({
-    authContext: orgA1,
+    authContext: orgA2,
     query: { fromMonth: '2026-08', toMonth: '2026-08' }
   });
   const monthlyBook = XLSX.read(monthlyExport.buffer, { type: 'buffer' });
@@ -605,11 +770,10 @@ test('production maintenance and exports isolate two teams and two divisions', a
   );
   assert.match(monthlyText, /111/);
   assert.match(monthlyText, /'=Team A/);
-  assert.doesNotMatch(monthlyText, /222/);
   assert.doesNotMatch(monthlyText, /333/);
 
   const dailyExport = await service.exportDailySlot({
-    authContext: orgA1,
+    authContext: orgA2,
     slot: 'current',
     query: {}
   });
@@ -626,7 +790,6 @@ test('production maintenance and exports isolate two teams and two divisions', a
     { header: 1, defval: null }
   ).find((row) => row[0] === '2026-08-01');
   assert.equal(augustFirst[1], 11);
-  assert.notEqual(augustFirst[1], 22);
 });
 
 test('concurrent idempotent monthly maintenance retains one scoped month key and audits every write', async () => {

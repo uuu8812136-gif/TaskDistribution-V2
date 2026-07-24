@@ -119,9 +119,18 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { reviewTask, uploadTaskAttachment } from '@/api/index.js'
+import {
+	getTaskDetail,
+	getTaskReviews,
+	reviewTask,
+	uploadTaskScopedAttachment
+} from '@/api/index.js'
 import { useUserStore } from '@/stores/user.js'
 import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
+import {
+	canReviewAssignedTask,
+	hasReviewedTaskRound
+} from '@/utils/taskPolicy.js'
 
 export default {
 	name: 'TaskReview',
@@ -139,17 +148,47 @@ export default {
 		const fileList = ref([])
 		
 		// 获取页面参数
-		onMounted(() => {
-			if (!userStore.can('task.review', { write: true, teamRequired: true })) {
-				uni.showToast({ title: '无权限执行该操作', icon: 'none' })
-				setTimeout(() => uni.navigateBack(), 300)
-				return
-			}
+		onMounted(async () => {
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
 			taskId.value = currentPage.options.id || ''
 			taskName.value = decodeURIComponent(currentPage.options.name || '')
+			await refreshAuthorizedTask()
 		})
+
+		const denyEntry = () => {
+			uni.showToast({ title: '当前任务不可审核，请刷新后重试', icon: 'none' })
+			setTimeout(() => uni.navigateBack(), 300)
+		}
+
+		const refreshAuthorizedTask = async () => {
+			if (!taskId.value) {
+				denyEntry()
+				return false
+			}
+			try {
+				const [detailResponse, reviewResponse] = await Promise.all([
+					getTaskDetail(taskId.value),
+					getTaskReviews(taskId.value)
+				])
+				const task = detailResponse.task || {}
+				const hasReviewed = hasReviewedTaskRound(
+					reviewResponse.reviews,
+					userStore.userInfo?._id,
+					task.reviewRound
+				)
+				if (!canReviewAssignedTask({ task, hasReviewed })) {
+					denyEntry()
+					return false
+				}
+				taskName.value = task.taskName || taskName.value
+				return true
+			} catch (error) {
+				console.error('校验任务审核权限失败:', error)
+				denyEntry()
+				return false
+			}
+		}
 		
 	// 格式化文件大小
 	const formatFileSize = (bytes) => {
@@ -312,13 +351,17 @@ export default {
 				})
 				return
 			}
+
+			if (!await refreshAuthorizedTask()) return
 			
 			// 上传附件
 			let attachments = []
 			if (fileList.value.length > 0) {
 				try {
 					for (const file of fileList.value) {
-						const uploadRes = await uploadTaskAttachment(file)
+						const uploadRes = await uploadTaskScopedAttachment(file, {
+							taskId: taskId.value
+						})
 						console.log('uploadRes:', uploadRes)
 						attachments.push(uploadRes)
 					}

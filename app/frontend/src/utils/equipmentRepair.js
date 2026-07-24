@@ -5,8 +5,8 @@ export const REPAIR_TYPE_OPTIONS = Object.freeze([
 ])
 
 export const REPAIR_STATUS_LABELS = Object.freeze({
-  SUB_DEPARTMENT_REVIEW_PENDING: '待分部经理审核',
-  SUB_DEPARTMENT_ACCEPTANCE_PENDING: '待分部经理验收',
+  SUB_DEPARTMENT_REVIEW_PENDING: '待分部负责人审核',
+  SUB_DEPARTMENT_ACCEPTANCE_PENDING: '待分部负责人验收',
   ASSET_ADMIN_RECEIPT_PENDING: '待设备管理员接单',
   ASSET_ADMIN_PRICING_PENDING: '待设备管理员确认配件价格',
   DEPUTY_APPROVAL_PENDING: '待副经理/经理助理审批',

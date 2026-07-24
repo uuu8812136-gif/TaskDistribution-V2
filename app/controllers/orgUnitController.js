@@ -49,3 +49,19 @@ exports.updateOrgUnit = async (req, res, next) => {
   }
 };
 
+exports.deleteOrgUnit = async (req, res, next) => {
+  try {
+    const orgUnit = await teamManagementService.deleteOrgUnit({
+      authContext: req.authContext,
+      req,
+      orgUnitId: req.params.orgUnitId,
+      input: req.body || {}
+    });
+    return res.json({
+      message: '组织已删除',
+      orgUnit
+    });
+  } catch (error) {
+    return next(error);
+  }
+};

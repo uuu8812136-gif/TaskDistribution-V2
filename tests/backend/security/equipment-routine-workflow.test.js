@@ -33,6 +33,10 @@ const {
   createEquipmentRoutineWorkerService,
   windowBounds
 } = require('../../../app/services/equipmentRoutineWorkerService');
+const {
+  holdLeaderRestoration,
+  promiseStateAfterDelay
+} = require('../helpers/leadershipConcurrency');
 
 const DATABASE_NAME = 'equipment_routine_workflow_v2_test';
 const MODELS = [
@@ -123,9 +127,12 @@ async function seed() {
     department: objectId(),
     subDepartment: objectId(),
     group: objectId(),
+    siblingGroup: objectId(),
     employee: objectId(),
     teamLeader: objectId(),
     subManager: objectId(),
+    subDeputy: objectId(),
+    supervisor: objectId(),
     assetAdmin: objectId(),
     departmentManager: objectId(),
     deputy: objectId(),
@@ -135,6 +142,8 @@ async function seed() {
     ['employee', ids.employee],
     ['team-leader', ids.teamLeader],
     ['sub-manager', ids.subManager],
+    ['sub-deputy', ids.subDeputy],
+    ['supervisor', ids.supervisor],
     ['asset-admin', ids.assetAdmin],
     ['department-manager', ids.departmentManager],
     ['deputy', ids.deputy],
@@ -205,12 +214,26 @@ async function seed() {
       sortOrder: 0,
       level: 3,
       path: `/${ids.department}/${ids.subDepartment}/`
+    },
+    {
+      _id: ids.siblingGroup,
+      teamId: ids.team,
+      parentId: ids.subDepartment,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'SIBLING_GROUP',
+      name: '二班组',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 1,
+      level: 3,
+      path: `/${ids.department}/${ids.subDepartment}/`
     }
   ]);
   await TeamMembership.collection.insertMany([
     membership(ids, ids.employee, ids.group, permissions.POSITION_KEYS.EMPLOYEE),
     membership(ids, ids.teamLeader, ids.group, permissions.POSITION_KEYS.TEAM_LEADER),
     membership(ids, ids.subManager, ids.subDepartment, permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER),
+    membership(ids, ids.subDeputy, ids.subDepartment, permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER),
+    membership(ids, ids.supervisor, ids.group, permissions.POSITION_KEYS.SUPERVISOR),
     membership(ids, ids.assetAdmin, ids.department, permissions.POSITION_KEYS.EMPLOYEE, [permissions.FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN]),
     membership(ids, ids.departmentManager, ids.department, permissions.POSITION_KEYS.DEPARTMENT_MANAGER),
     membership(ids, ids.deputy, ids.department, permissions.POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER)
@@ -257,6 +280,20 @@ async function seed() {
       userId: ids.subManager,
       orgUnitId: ids.subDepartment,
       positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+      scope: 'ORG_UNIT'
+    }),
+    subDeputy: authContext({
+      ids,
+      userId: ids.subDeputy,
+      orgUnitId: ids.subDepartment,
+      positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+      scope: 'ORG_UNIT'
+    }),
+    supervisor: authContext({
+      ids,
+      userId: ids.supervisor,
+      orgUnitId: ids.group,
+      positionKey: permissions.POSITION_KEYS.SUPERVISOR,
       scope: 'ORG_UNIT'
     }),
     assetAdmin: authContext({
@@ -986,6 +1023,205 @@ test('routine plan detail preserves team, organization, and global read-only iso
     query: { teamId: String(fixture.ids.team) },
     planId: otherTeamPlan._id
   }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_WORKFLOW_NOT_FOUND');
+});
+
+test('sub-department deputy is primary and supervisor acts only when that exact branch has no primary leader', async () => {
+  const otherSubDepartment = objectId();
+  const otherSubManager = objectId();
+  const rootMisassignedManager = objectId();
+  await OrgUnit.collection.insertOne({
+    _id: otherSubDepartment,
+    teamId: fixture.ids.team,
+    parentId: fixture.ids.department,
+    type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+    code: 'OTHER_SUB',
+    name: '二分部',
+    status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+    sortOrder: 1,
+    level: 2,
+    path: `/${fixture.ids.department}/`
+  });
+  await User.collection.insertMany([
+    {
+      _id: otherSubManager,
+      username: 'other-sub-manager',
+      usernameNormalized: 'other-sub-manager',
+      password: 'unused',
+      name: 'other-sub-manager',
+      roles: [],
+      isSuperAdmin: false,
+      tokenVersion: 0,
+      status: 'active'
+    },
+    {
+      _id: rootMisassignedManager,
+      username: 'root-misassigned-manager',
+      usernameNormalized: 'root-misassigned-manager',
+      password: 'unused',
+      name: 'root-misassigned-manager',
+      roles: [],
+      isSuperAdmin: false,
+      tokenVersion: 0,
+      status: 'active'
+    }
+  ]);
+  await TeamMembership.collection.insertMany([
+    membership(
+      fixture.ids,
+      otherSubManager,
+      otherSubDepartment,
+      permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+    ),
+    membership(
+      fixture.ids,
+      rootMisassignedManager,
+      fixture.ids.department,
+      permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+    )
+  ]);
+
+  const exception = await EquipmentRoutineException.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.siblingGroup,
+    equipmentId: fixture.asset._id,
+    recordId: objectId(),
+    routineType: 'INSPECTION',
+    status: 'OPEN',
+    currentStage: 'SUB_DEPARTMENT_MANAGER',
+    summary: '主管兜底测试',
+    history: [{
+      stage: 'TEAM_LEADER',
+      action: 'ESCALATE',
+      opinion: '升级处理',
+      actorId: fixture.ids.teamLeader,
+      actedAt: new Date('2030-01-15T01:00:00.000Z')
+    }],
+    revision: 0
+  });
+  const workflow = createEquipmentRoutineWorkflowService({ connection: mongoose.connection });
+
+  const deputyView = await workflow.getException({
+    authContext: fixture.contexts.subDeputy,
+    exceptionId: exception._id,
+    query: {}
+  });
+  assert.equal(deputyView.accessPolicy.canHandle, true);
+  await assert.rejects(workflow.getException({
+    authContext: fixture.contexts.supervisor,
+    exceptionId: exception._id,
+    query: {}
+  }), (error) => error.status === 404);
+  assert.equal((await workflow.listExceptions({
+    authContext: fixture.contexts.supervisor,
+    query: { status: 'OPEN' }
+  })).total, 0);
+  await workflow.notifyExceptionStage(exception);
+  assert.equal(await Message.countDocuments({ recipient: otherSubManager }), 0);
+  assert.equal(await Message.countDocuments({ recipient: rootMisassignedManager }), 0);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.supervisor }), 0);
+
+  await TeamMembership.updateMany({
+    userId: { $in: [fixture.ids.subManager, fixture.ids.subDeputy] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+  const supervisorFallback = await workflow.getException({
+    authContext: fixture.contexts.supervisor,
+    exceptionId: exception._id,
+    query: {}
+  });
+  assert.equal(supervisorFallback.accessPolicy.canHandle, true);
+  const supervisorTodo = await workflow.listExceptions({
+    authContext: fixture.contexts.supervisor,
+    query: { status: 'OPEN', stage: 'SUB_DEPARTMENT_MANAGER' }
+  });
+  assert.equal(supervisorTodo.total, 1);
+  assert.equal(supervisorTodo.exceptions[0]._id, String(exception._id));
+  assert.equal(supervisorTodo.exceptions[0].accessPolicy.canHandle, true);
+  await workflow.notifyExceptionStage(exception);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.supervisor }), 1);
+
+  const resolved = await workflow.transitionException({
+    authContext: fixture.contexts.supervisor,
+    exceptionId: exception._id,
+    input: {
+      action: 'RESOLVE',
+      opinion: '主管兜底处理完成',
+      expectedRevision: 0
+    }
+  });
+  assert.equal(resolved.status, 'RESOLVED');
+  assert.equal(resolved.accessPolicy.canHandle, false);
+  assert.equal(
+    resolved.history.at(-1).actorPositionKey,
+    permissions.POSITION_KEYS.SUPERVISOR
+  );
+  const supervisorAudit = await AuditLog.findOne({
+    actorUserId: fixture.ids.supervisor,
+    resourceId: String(exception._id)
+  }).lean();
+  assert.equal(
+    supervisorAudit.after.history.at(-1).actorPositionKey,
+    permissions.POSITION_KEYS.SUPERVISOR
+  );
+});
+
+test('concurrent leader restoration serializes before supervisor routine handling', async () => {
+  const managerMembership = await TeamMembership.findOne({ userId: fixture.ids.subManager });
+  await TeamMembership.updateMany({
+    userId: { $in: [fixture.ids.subManager, fixture.ids.subDeputy] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+  const exception = await EquipmentRoutineException.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    equipmentId: fixture.asset._id,
+    recordId: objectId(),
+    routineType: 'INSPECTION',
+    status: 'OPEN',
+    currentStage: 'SUB_DEPARTMENT_MANAGER',
+    summary: 'Concurrent leader restoration',
+    history: [{
+      stage: 'TEAM_LEADER',
+      action: 'ESCALATE',
+      opinion: 'Escalated for concurrency test',
+      actorId: fixture.ids.teamLeader,
+      actedAt: new Date('2030-01-15T01:00:00.000Z')
+    }],
+    revision: 0
+  });
+  const workflow = createEquipmentRoutineWorkflowService({ connection: mongoose.connection });
+  const supervisorView = await workflow.getException({
+    authContext: fixture.contexts.supervisor,
+    exceptionId: exception._id,
+    query: {}
+  });
+  assert.equal(supervisorView.accessPolicy.canHandle, true);
+
+  const held = await holdLeaderRestoration({
+    authContext: fixture.contexts.supervisor,
+    membershipId: managerMembership._id
+  });
+  const handling = workflow.transitionException({
+    authContext: fixture.contexts.supervisor,
+    exceptionId: exception._id,
+    input: {
+      action: 'RESOLVE',
+      opinion: 'Supervisor must not win after restoration',
+      expectedRevision: 0
+    }
+  });
+  assert.equal(await promiseStateAfterDelay(handling), 'pending');
+  held.release();
+  const [restorationResult, handlingResult] = await Promise.allSettled([
+    held.restoration,
+    handling
+  ]);
+  assert.equal(restorationResult.status, 'fulfilled');
+  assert.equal(handlingResult.status, 'rejected');
+
+  const persisted = await EquipmentRoutineException.findById(exception._id).lean();
+  assert.equal(persisted.status, 'OPEN');
+  assert.equal(persisted.currentStage, 'SUB_DEPARTMENT_MANAGER');
+  assert.equal(persisted.revision, 0);
+  assert.equal(persisted.history.length, 1);
 });
 
 test('abnormal evidence records a server watermark and follows the fixed three-stage order', async () => {

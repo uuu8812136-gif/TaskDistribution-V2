@@ -20,6 +20,17 @@ test('Web and mini-program expose the same centralized Chinese error-code map', 
   assert.equal(webMessages.EQUIPMENT_IMPORT_FILE_UNSUPPORTED, '仅支持符合模板的 .xlsx 文件')
   assert.equal(webMessages.TASK_CONFIRMATION_DENIED, '只有任务创建人或项目管理员可以确认任务完成')
   assert.equal(webMessages.EXTENSION_APPROVAL_DENIED, '只有任务创建人或项目管理员可以审批延期申请')
+  const leadershipMessages = {
+    TASK_LEADERSHIP_REQUIRED: '当前负责人已接管，主管不再具有主持权限，请刷新后重试',
+    TASK_LEADERSHIP_TRANSACTIONS_REQUIRED: '任务主持服务暂不可用，请稍后重试',
+    TASK_FILE_UPLOAD_DENIED: '当前任务或组织不允许上传附件，请刷新权限后重试',
+    TASK_FILE_SCOPE_REQUIRED: '上传任务附件时必须且只能指定任务或所属组织',
+    SUB_DEPARTMENT_LEADERSHIP_UNAVAILABLE: '分部负责人状态暂不可用，请稍后重试'
+  }
+  for (const [code, expected] of Object.entries(leadershipMessages)) {
+    assert.equal(webMessages[code], expected)
+    assert.deepEqual(Buffer.from(webMessages[code], 'utf8'), Buffer.from(miniProgramMessages[code], 'utf8'))
+  }
   assert.equal(Object.keys(webMessages).length >= 200, true)
   for (const [code, message] of Object.entries(webMessages)) {
     assert.match(code, /^[A-Z][A-Z0-9_]+$/)
@@ -36,6 +47,21 @@ test('stable codes replace English API messages on both clients', () => {
   const expected = '09:00 后补报或修改出勤时，请填写修正原因'
   assert.equal(resolveRequestErrorMessage(response, '保存失败'), expected)
   assert.equal(resolveMiniProgramErrorMessage(response, '保存失败'), expected)
+
+  assert.equal(
+    resolveRequestErrorMessage({
+      code: 'TASK_LEADERSHIP_REQUIRED',
+      message: 'A department leader has resumed control'
+    }, '操作失败'),
+    '当前负责人已接管，主管不再具有主持权限，请刷新后重试'
+  )
+  assert.equal(
+    resolveMiniProgramErrorMessage({
+      code: 'SUB_DEPARTMENT_LEADERSHIP_UNAVAILABLE',
+      message: 'Department leadership state is unavailable'
+    }, '操作失败'),
+    '分部负责人状态暂不可用，请稍后重试'
+  )
 
   assert.equal(
     resolveRequestErrorMessage({

@@ -26,6 +26,7 @@ const { createFileAssetService } = require('./fileAssetService');
 const {
   buildScopedDetailFilter,
   buildScopedFilter,
+  buildScopedOrgUnitIdConstraint,
   normalizeObjectId
 } = require('./scopedQueryService');
 const {
@@ -644,7 +645,7 @@ function createEquipmentRoutineService({
     }
     const categoryIds = await EquipmentAssetModel.distinct('categoryId', {
       teamId,
-      orgUnitId: dataScope.orgUnitId
+      orgUnitId: buildScopedOrgUnitIdConstraint(dataScope)
     });
     return { categoryId: { $in: categoryIds } };
   }
@@ -1755,6 +1756,7 @@ function createEquipmentRoutineService({
             record,
             asset,
             actorId: context.userId,
+            actorPositionKey: context.membership?.positionKey || '',
             summary: abnormalSummary || itemResult.results
               .filter(({ result }) => result === 'ABNORMAL')
               .map(({ note }) => note)

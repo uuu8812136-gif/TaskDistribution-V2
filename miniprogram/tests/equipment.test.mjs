@@ -41,6 +41,10 @@ const runtimeReadingSource = readFileSync(
   new URL('../pages/equipment/runtime-reading.vue', import.meta.url),
   'utf8'
 )
+const routineExceptionSource = readFileSync(
+  new URL('../pages/equipment/routine-exception.vue', import.meta.url),
+  'utf8'
+)
 const workbenchSource = readFileSync(
   new URL('../pages/workbench/index.vue', import.meta.url),
   'utf8'
@@ -481,6 +485,12 @@ test('routine camera photos are burned into a canvas file before upload without 
   assert.doesNotMatch(executePageSource, /path:\s*file\.tempFilePath/)
   assert.match(executePageSource, /title:\s*'水印照片生成失败'/)
   assert.match(executePageSource, /if \(!photo\.fileId\) photo\.fileId = await uploadEquipmentRoutinePhoto\(photo\)/)
+})
+
+test('routine exception actions trust the backend access policy', () => {
+  assert.match(routineExceptionSource, /exception\.value\?\.accessPolicy\?\.canHandle === true/)
+  assert.doesNotMatch(routineExceptionSource, /membership\.positionKey === 'SUB_DEPARTMENT_MANAGER'/)
+  assert.match(routineExceptionSource, /SUB_DEPARTMENT_MANAGER: '分部负责人处理'/)
 })
 
 test('routine payload carries camera capture and location evidence without client team identity', () => {

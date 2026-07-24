@@ -20,6 +20,7 @@ const {
   resolveModuleDataScope,
   sameId
 } = require('./teamContextService');
+const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
 const { AuthContextError } = require('./authContextError');
 
 function relatedResourceError() {
@@ -128,11 +129,11 @@ async function resolveTrustedTaskOrgUnit({
     throw relatedResourceError();
   }
 
-  const orgUnit = await withSession(OrgUnit.findOne({
-    _id: normalizedOrgUnitId,
+  const orgUnit = await lockActiveOrgUnitReference({
     teamId: context.activeTeamId,
-    status: ORG_UNIT_STATUSES.ACTIVE
-  }), session);
+    orgUnitId: normalizedOrgUnitId,
+    session
+  });
   if (!orgUnit) throw relatedResourceError();
   return orgUnit._id;
 }

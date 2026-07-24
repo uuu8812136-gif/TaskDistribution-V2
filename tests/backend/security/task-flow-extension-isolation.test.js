@@ -15,6 +15,7 @@ const {
   ORG_UNIT_STATUSES,
   ORG_UNIT_TYPES,
   POSITION_KEYS,
+  POSITION_LEVELS,
   SESSION_MODES
 } = require('../../../app/config/permissions');
 const extensionController = require('../../../app/controllers/extensionController');
@@ -76,7 +77,7 @@ function teamContext(userId, teamId, orgUnitId, overrides = {}) {
       orgUnitId: orgUnitId.toString(),
       role: MEMBERSHIP_ROLES.MEMBER,
       status: MEMBERSHIP_STATUSES.ACTIVE,
-      positionLevel: 5,
+      positionLevel: POSITION_LEVELS.EMPLOYEE,
       positionKey: POSITION_KEYS.EMPLOYEE
     },
     permissionKeys: [...ALL_TASK_PERMISSIONS],
@@ -182,7 +183,7 @@ function membershipDocument(teamId, orgUnitId, userId) {
     orgUnitId,
     userId,
     role: MEMBERSHIP_ROLES.MEMBER,
-    positionLevel: 5,
+    positionLevel: POSITION_LEVELS.EMPLOYEE,
     positionKey: POSITION_KEYS.EMPLOYEE,
     functionalRoleKeys: [],
     permissionKeys: [...ALL_TASK_PERMISSIONS],

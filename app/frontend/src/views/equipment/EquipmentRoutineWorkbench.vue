@@ -281,7 +281,7 @@ const exceptionStatusOptions = [
 ]
 const stages = {
   TEAM_LEADER: '班组长处理',
-  SUB_DEPARTMENT_MANAGER: '分部经理处理',
+  SUB_DEPARTMENT_MANAGER: '分部负责人处理',
   ASSET_ADMIN: '设备管理员处理',
   RESOLVED: '已解决'
 }
@@ -494,13 +494,7 @@ async function changeTeam() {
 }
 
 function canHandle(row) {
-  if (!session.isTeamMode || row.status !== 'OPEN') return false
-  const membership = session.context.membership || {}
-  if (row.currentStage === 'TEAM_LEADER') return membership.positionKey === 'TEAM_LEADER'
-  if (row.currentStage === 'SUB_DEPARTMENT_MANAGER') {
-    return membership.positionKey === 'SUB_DEPARTMENT_MANAGER'
-  }
-  return row.currentStage === 'ASSET_ADMIN' && membership.functionalRoleKeys?.includes('ASSET_ADMIN')
+  return session.isTeamMode && row.status === 'OPEN' && row.accessPolicy?.canHandle === true
 }
 
 function openHandle(row) {

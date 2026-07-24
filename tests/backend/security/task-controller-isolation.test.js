@@ -67,7 +67,9 @@ function authContext(
       role: teamWide
         ? permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN
         : permissions.MEMBERSHIP_ROLES.MEMBER,
-      positionLevel: teamWide ? 1 : 5,
+      positionLevel: teamWide
+        ? permissions.POSITION_LEVELS.DEPARTMENT_MANAGER
+        : permissions.POSITION_LEVELS.EMPLOYEE,
       status: permissions.MEMBERSHIP_STATUSES.ACTIVE
     }),
     orgUnit: Object.freeze({ _id: String(orgUnitId), teamId: String(teamId) }),
@@ -239,7 +241,7 @@ async function seedFixture() {
       userId: ids.userAOther,
       orgUnitId: ids.orgAOther,
       role: permissions.MEMBERSHIP_ROLES.MEMBER,
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       positionKey: permissions.POSITION_KEYS.EMPLOYEE,
       functionalRoleKeys: [],
       permissionKeys: ['task.view'],

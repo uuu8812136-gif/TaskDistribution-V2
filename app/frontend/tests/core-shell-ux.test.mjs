@@ -44,6 +44,30 @@ test('dashboard skips task endpoints and task-only panels without task.view', ()
   assert.match(dashboardSource, /canViewTasks\.value[\s\S]*?getMyTasks\([\s\S]*?: Promise\.resolve\(\{ tasks: \[\] \}\)/)
 })
 
+test('statistics dashboard is nested under task management without hiding the dashboard route', () => {
+  assert.match(layoutSource, /<el-sub-menu index="\/task-management">[\s\S]*?<el-menu-item index="\/dashboard">[\s\S]*?统计看板/)
+  assert.match(layoutSource, /<el-menu-item v-if="canAccessAllTasks" index="\/tasks">/)
+  assert.doesNotMatch(layoutSource, /<el-menu-item index="\/dashboard">[\s\S]*?<el-sub-menu[\s\S]*?index="\/team-management"/)
+})
+
+test('login remember option uses browser credentials and displays the customer motto exactly', () => {
+  assert.match(loginSource, /<el-checkbox[\s\S]*?v-model="rememberLogin"[\s\S]*?data-testid="remember-password-checkbox"[\s\S]*?>[\s\S]*?记住密码[\s\S]*?<\/el-checkbox>/)
+  assert.match(loginSource, /data-testid="remember-password-status"/)
+  assert.match(loginSource, /:data-remember-state="rememberState"/)
+  assert.match(loginSource, /const rememberResult = await rememberLoginPassword/)
+  assert.match(loginSource, /ElMessage\.warning\(`登录成功，但\$\{rememberWarning\}`\)/)
+  assert.match(loginSource, /浏览器阻止清除记住状态/)
+  assert.match(loginSource, /沟通、协作、持续进步/)
+  assert.match(loginSource, /欢迎你，我的朋友。/)
+  assert.match(loginSource, /<footer>-马延浩<\/footer>/)
+  assert.match(loginSource, /grid-template-columns: minmax\(0, 440px\) minmax\(260px, 420px\)/)
+  assert.match(loginSource, /@media \(max-width: 900px\)/)
+  assert.match(layoutSource, /const credentialSync = await synchronizeRememberedPassword/)
+  assert.match(layoutSource, /credentialSync\.attempted && !credentialSync\.updated/)
+  assert.match(layoutSource, /密码修改成功，但浏览器未能更新已记住密码/)
+  assert.match(layoutSource, /password: passwordForm\.newPassword/)
+})
+
 test('dashboard messages use the shared scoped resource navigation policy', () => {
   assert.match(dashboardSource, /hasMessageResource\(message\)/)
   assert.match(dashboardSource, /messageResourceLocation\(message, \{ includeTeamId: session\.isGlobalReadOnly \}\)/)

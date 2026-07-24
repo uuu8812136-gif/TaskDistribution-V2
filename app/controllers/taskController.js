@@ -13,6 +13,7 @@ const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
   DATA_SCOPES,
+  MEMBERSHIP_ROLES,
   MEMBERSHIP_STATUSES,
   ORG_UNIT_STATUSES
 } = require('../config/permissions');
@@ -23,7 +24,18 @@ const {
 } = require('../utils/notificationHelper');
 const { createAuditService } = require('../services/auditService');
 const { runWithOptionalTransaction } = require('../services/transactionService');
+const { lockActiveOrgUnitReference } = require('../services/orgUnitReferenceService');
 const { assertTaskParticipantOrgUnits } = require('../services/taskAccessService');
+const {
+  buildTaskAggregateCapabilities,
+  buildTaskCapabilities,
+  dynamicLeadershipTaskFilter,
+  dynamicLeadershipTaskListFilter,
+  resolveTaskManagementAuthorization,
+  resolveTaskReadAuthorization,
+  taskBelongsToLeadershipScope,
+  taskLeadershipResourceContext
+} = require('../services/taskLeadershipAccessService');
 const {
   createFileAssetService,
   normalizeAttachmentInput,
@@ -57,6 +69,58 @@ function asSnapshot(document) {
   return typeof document.toObject === 'function'
     ? document.toObject({ depopulate: true, virtuals: false })
     : document;
+}
+
+function taskResponseValue(task, capabilities) {
+  const value = task && typeof task.toJSON === 'function'
+    ? task.toJSON()
+    : { ...(task || {}) };
+  return { ...value, capabilities };
+}
+
+function assignableUserValue(membership) {
+  const user = membership?.userId;
+  const orgUnit = membership?.orgUnitId;
+  const taskRoles = Array.isArray(user.roles)
+    ? user.roles.filter((role) => role === 'executor' || role === 'cc')
+    : [];
+  return {
+    _id: user._id,
+    username: user.username,
+    name: user.name,
+    phone: user.phone || '',
+    email: user.email || '',
+    roles: membership.role === MEMBERSHIP_ROLES.PROJECT_ADMIN
+      ? ['admin']
+      : (taskRoles.length > 0 ? [...new Set(taskRoles)] : ['executor']),
+    department: orgUnit.name || '',
+    status: user.status,
+    avatar: user.avatar || '',
+    membership: {
+      _id: membership._id,
+      teamId: membership.teamId,
+      orgUnitId: orgUnit._id,
+      role: membership.role,
+      positionLevel: membership.positionLevel,
+      positionKey: membership.positionKey,
+      functionalRoleKeys: membership.functionalRoleKeys || [],
+      permissionKeys: membership.permissionKeys || [],
+      status: membership.status
+    }
+  };
+}
+
+function assignableUsersPagination(query = {}) {
+  const page = query.page === undefined ? 1 : Number(query.page);
+  const limit = query.limit === undefined ? 100 : Number(query.limit);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(limit) || limit < 1 || limit > 1000) {
+    throw new AuthContextError(
+      400,
+      'INVALID_REQUEST',
+      'page must be positive and limit must be an integer between 1 and 1000'
+    );
+  }
+  return { page, limit };
 }
 
 function normalizeInputId(value, fieldName) {
@@ -257,12 +321,12 @@ function createTaskController(overrides = {}) {
   }
 
   async function findActiveOrgUnit(teamId, orgUnitId, session) {
-    const query = OrgUnitModel.findOne({
-      _id: normalizeInputId(orgUnitId, 'orgUnitId'),
+    return lockActiveOrgUnitReference({
+      OrgUnitModel,
       teamId,
-      status: ORG_UNIT_STATUSES.ACTIVE
+      orgUnitId: normalizeInputId(orgUnitId, 'orgUnitId'),
+      session
     });
-    return withSession(query, session);
   }
 
   async function resolveTrustedOrgUnit(authContext, requestedOrgUnitId, session) {
@@ -288,7 +352,8 @@ function createTaskController(overrides = {}) {
     authContext,
     userIds,
     session,
-    taskOrgUnitId = null
+    taskOrgUnitId = null,
+    enforceActorOrgScope = true
   ) {
     const normalizedIds = [...new Set(userIds.map((id) => normalizeInputId(id, 'userId')))];
     if (normalizedIds.length === 0) return [];
@@ -308,7 +373,8 @@ function createTaskController(overrides = {}) {
     assertTaskParticipantOrgUnits({
       authContext,
       memberships,
-      taskOrgUnitId
+      taskOrgUnitId,
+      enforceActorOrgScope
     });
 
     const orgUnitIds = [...new Set(memberships.map((membership) => String(membership.orgUnitId)))];
@@ -327,6 +393,99 @@ function createTaskController(overrides = {}) {
       throw relatedResourceError();
     }
     return normalizedIds;
+  }
+
+  async function resolveManagementAuthorization(req, permissionKeys, session) {
+    return resolveTaskManagementAuthorization({
+      authContext: req.authContext,
+      permissionKeys,
+      TeamMembershipModel,
+      OrgUnitModel,
+      UserModel,
+      session
+    });
+  }
+
+  async function resolveReadAuthorization(req) {
+    return resolveTaskReadAuthorization({
+      authContext: req.authContext,
+      TeamMembershipModel,
+      OrgUnitModel,
+      UserModel
+    });
+  }
+
+  function readListFilter(req, authorization, userFilter = {}) {
+    return authorization.mode === 'DYNAMIC_LEADERSHIP'
+      ? dynamicLeadershipTaskListFilter(authorization, userFilter)
+      : scopedListFilter(req, userFilter);
+  }
+
+  function readDetailFilter(req, authorization, taskId) {
+    return authorization.mode === 'DYNAMIC_LEADERSHIP'
+      ? dynamicLeadershipTaskFilter(authorization, taskId)
+      : scopedDetailFilter(req, taskId);
+  }
+
+  async function pendingExtensionTaskIds(tasks) {
+    const taskIds = (Array.isArray(tasks) ? tasks : [tasks])
+      .filter(Boolean)
+      .map((task) => task._id);
+    if (taskIds.length === 0) return new Set();
+    const requests = await ExtensionRequestModel.find({
+      task: { $in: taskIds },
+      status: 'pending'
+    }).select('task').lean();
+    return new Set(requests.map((request) => String(request.task)));
+  }
+
+  function serializeTasksWithCapabilities(req, authorization, tasks, pendingTaskIds) {
+    return tasks.map((task) => taskResponseValue(task, buildTaskCapabilities({
+      authContext: req.authContext,
+      authorization,
+      task,
+      hasPendingExtension: pendingTaskIds.has(String(task._id))
+    })));
+  }
+
+  async function findTaskForManagement(req, permissionKeys, session) {
+    const authorization = await resolveManagementAuthorization(req, permissionKeys, session);
+    const filter = authorization.mode === 'DYNAMIC_LEADERSHIP'
+      ? dynamicLeadershipTaskFilter(authorization, req.params.id)
+      : scopedDetailFilter(req, req.params.id);
+    const task = await withSession(TaskModel.findOne(filter), session);
+    return { authorization, task };
+  }
+
+  async function resolveCreateAuthorization(req, requestedOrgUnitId, session) {
+    const authorization = await resolveManagementAuthorization(
+      req,
+      ['task.create', 'task.assign'],
+      session
+    );
+    if (authorization.mode !== 'DYNAMIC_LEADERSHIP') {
+      return {
+        authorization,
+        orgUnitId: await resolveTrustedOrgUnit(req.authContext, requestedOrgUnitId, session)
+      };
+    }
+
+    const candidateOrgUnitId = requestedOrgUnitId || authorization.membership.orgUnitId;
+    const orgUnit = await findActiveOrgUnit(
+      authorization.teamId,
+      candidateOrgUnitId,
+      session
+    );
+    if (!orgUnit || !taskBelongsToLeadershipScope(authorization, {
+      teamId: authorization.teamId,
+      orgUnitId: orgUnit._id
+    })) {
+      throw relatedResourceError();
+    }
+    return {
+      authorization,
+      orgUnitId: normalizeInputId(orgUnit._id, 'orgUnitId')
+    };
   }
 
   async function populateTask(task, { detail = false } = {}) {
@@ -362,8 +521,6 @@ function createTaskController(overrides = {}) {
 
   async function createTask(req, res, next) {
     try {
-      assertPermission(req.authContext, 'task.create');
-      assertPermission(req.authContext, 'task.assign');
       const body = req.body || {};
       if (!body.taskName || !body.plannedCompletionTime) {
         return res.status(400).json({ message: '任务名称和计划完成时间不能为空' });
@@ -394,16 +551,18 @@ function createTaskController(overrides = {}) {
 
       const result = await runAtomic(async (session) => {
         const teamId = normalizeInputId(req.authContext.activeTeamId, 'activeTeamId');
-        const orgUnitId = await resolveTrustedOrgUnit(
-          req.authContext,
+        const creation = await resolveCreateAuthorization(
+          req,
           body.orgUnitId,
           session
         );
+        const { orgUnitId } = creation;
         await validateActiveTeamUsers(
           req.authContext,
           participantIds,
           session,
-          orgUnitId
+          orgUnitId,
+          creation.authorization.mode !== 'DYNAMIC_LEADERSHIP'
         );
 
         const mainTask = new TaskModel({
@@ -435,8 +594,16 @@ function createTaskController(overrides = {}) {
         await mainTask.save({ session: session || undefined });
 
         if (attachmentIds.length > 0) {
+          const fileAuthContext = creation.authorization.mode === 'DYNAMIC_LEADERSHIP'
+            ? taskLeadershipResourceContext(
+                req.authContext,
+                creation.authorization,
+                mainTask,
+                ['task.create', 'task.assign', 'task.edit']
+              )
+            : req.authContext;
           mainTask.attachments = await fileAssetService.reconcileOwnerFiles({
-            authContext: req.authContext,
+            authContext: fileAuthContext,
             req,
             attachments: attachmentInput,
             previousAttachments: [],
@@ -530,7 +697,7 @@ function createTaskController(overrides = {}) {
 
   async function getTasks(req, res, next) {
     try {
-      assertPermission(req.authContext, 'task.view');
+      const authorization = await resolveReadAuthorization(req);
       const { status, priority, keyword, startDate, endDate } = req.query;
       const userFilter = combineUserConstraints([
         { isMainTask: true },
@@ -539,7 +706,7 @@ function createTaskController(overrides = {}) {
         keywordConstraint(keyword),
         dateConstraint(startDate, endDate)
       ]);
-      const query = scopedListFilter(req, userFilter);
+      const query = readListFilter(req, authorization, userFilter);
       const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
       const limit = Math.min(500, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
       const skip = (page - 1) * limit;
@@ -563,8 +730,13 @@ function createTaskController(overrides = {}) {
         TaskModel.countDocuments(query)
       ]);
 
+      const pendingTaskIds = await pendingExtensionTaskIds(tasks);
       return res.json({
-        tasks,
+        tasks: serializeTasksWithCapabilities(req, authorization, tasks, pendingTaskIds),
+        capabilities: buildTaskAggregateCapabilities({
+          authContext: req.authContext,
+          authorization
+        }),
         pagination: { total, page, limit, pages: Math.ceil(total / limit) }
       });
     } catch (error) {
@@ -574,17 +746,108 @@ function createTaskController(overrides = {}) {
 
   async function getTaskById(req, res, next) {
     try {
-      assertPermission(req.authContext, 'task.view');
-      const task = await TaskModel.findOne(scopedDetailFilter(req, req.params.id));
+      const authorization = await resolveReadAuthorization(req);
+      const task = await TaskModel.findOne(readDetailFilter(req, authorization, req.params.id));
       if (!task) return notFound(res);
       await populateTask(task, { detail: true });
-      return res.json({ task });
+      const pendingTaskIds = await pendingExtensionTaskIds(task);
+      return res.json({
+        task: taskResponseValue(task, buildTaskCapabilities({
+          authContext: req.authContext,
+          authorization,
+          task,
+          hasPendingExtension: pendingTaskIds.has(String(task._id))
+        })),
+        capabilities: buildTaskAggregateCapabilities({
+          authContext: req.authContext,
+          authorization
+        })
+      });
     } catch (error) {
       return sendControllerError(res, next, error, '获取任务详情错误:');
     }
   }
 
-  async function reconcileSubTasks({ req, task, parsedSubTasks, session }) {
+  async function getAssignableUsers(req, res, next) {
+    try {
+      const authorization = await resolveReadAuthorization(req);
+      if (authorization.mode !== 'DYNAMIC_LEADERSHIP') {
+        if (authorization.leadershipSuppressed === true) {
+          throw new AuthContextError(
+            403,
+            'TASK_LEADERSHIP_REQUIRED',
+            'Task assignment requires current sub-department leadership'
+          );
+        }
+        assertPermission(req.authContext, 'task.assign');
+        assertPermission(req.authContext, 'member.view');
+      }
+
+      const { page, limit } = assignableUsersPagination(req.query);
+      const keyword = typeof req.query?.keyword === 'string'
+        ? req.query.keyword.trim().slice(0, 100).toLocaleLowerCase()
+        : '';
+      const filter = {
+        teamId: normalizeInputId(req.authContext.activeTeamId, 'activeTeamId'),
+        status: MEMBERSHIP_STATUSES.ACTIVE
+      };
+      if (authorization.mode === 'DYNAMIC_LEADERSHIP') {
+        filter.orgUnitId = { $in: authorization.orgUnitIds };
+      } else {
+        const dataScope = resolveModuleDataScope(req.authContext, TASK_MODULE);
+        if (dataScope.scope === DATA_SCOPES.ORG_UNIT) {
+          filter.orgUnitId = normalizeInputId(dataScope.orgUnitId, 'orgUnitId');
+        }
+      }
+
+      const memberships = await TeamMembershipModel.find(filter)
+        .populate({
+          path: 'userId',
+          match: { status: 'active', isSystemAccount: { $ne: true } },
+          select: '_id username name phone email roles status avatar'
+        })
+        .populate({
+          path: 'orgUnitId',
+          match: {
+            teamId: normalizeInputId(req.authContext.activeTeamId, 'activeTeamId'),
+            status: ORG_UNIT_STATUSES.ACTIVE
+          },
+          select: '_id teamId name status'
+        })
+        .lean();
+      const matching = memberships
+        .filter((membership) => membership.userId && membership.orgUnitId)
+        .map(assignableUserValue)
+        .filter((user) => !keyword || [user.username, user.name, user.phone, user.email]
+          .filter(Boolean)
+          .some((value) => String(value).toLocaleLowerCase().includes(keyword)))
+        .sort((left, right) => (
+          left.department.localeCompare(right.department, 'zh-CN') ||
+          left.name.localeCompare(right.name, 'zh-CN') ||
+          String(left._id).localeCompare(String(right._id))
+        ));
+      const total = matching.length;
+      return res.json({
+        users: matching.slice((page - 1) * limit, page * limit),
+        pagination: {
+          total,
+          page,
+          limit,
+          pages: Math.ceil(total / limit)
+        }
+      });
+    } catch (error) {
+      return sendControllerError(res, next, error, 'Get assignable task users failed:');
+    }
+  }
+
+  async function reconcileSubTasks({
+    req,
+    task,
+    parsedSubTasks,
+    session,
+    enforceActorOrgScope = true
+  }) {
     const teamId = normalizeInputId(task.teamId, 'teamId');
     const orgUnitId = normalizeInputId(task.orgUnitId, 'orgUnitId');
     const fallbackExecutor = normalizeInputId(
@@ -603,7 +866,8 @@ function createTaskController(overrides = {}) {
       req.authContext,
       normalized.map((subTask) => subTask.executorId),
       session,
-      orgUnitId
+      orgUnitId,
+      enforceActorOrgScope
     );
 
     const existingQuery = TaskModel.find({
@@ -702,17 +966,17 @@ function createTaskController(overrides = {}) {
 
   async function updateTask(req, res, next) {
     try {
-      assertPermission(req.authContext, 'task.edit');
       const body = req.body || {};
       if (hasOwn(body, 'attachments')) normalizeAttachmentInput(body.attachments);
       const assignmentFields = ['executor', 'mainExecutor', 'ccUsers', 'subTasks'];
-      if (assignmentFields.some((field) => hasOwn(body, field))) {
-        assertPermission(req.authContext, 'task.assign');
-      }
+      const changesAssignment = assignmentFields.some((field) => hasOwn(body, field));
+      const permissionKeys = changesAssignment
+        ? ['task.edit', 'task.assign']
+        : ['task.edit'];
 
       const result = await runAtomic(async (session) => {
-        const findQuery = TaskModel.findOne(scopedDetailFilter(req, req.params.id));
-        const task = await withSession(findQuery, session);
+        const management = await findTaskForManagement(req, permissionKeys, session);
+        const { task } = management;
         if (!task) return null;
         const before = asSnapshot(task);
         if (hasOwn(body, 'orgUnitId') && !sameId(body.orgUnitId, task.orgUnitId)) {
@@ -737,7 +1001,8 @@ function createTaskController(overrides = {}) {
           req.authContext,
           [...newExecutorIds, newMainExecutorId, ...newCcUserIds],
           session,
-          task.orgUnitId
+          task.orgUnitId,
+          management.authorization.mode !== 'DYNAMIC_LEADERSHIP'
         );
 
         const directFields = [
@@ -770,8 +1035,16 @@ function createTaskController(overrides = {}) {
 
         if (hasOwn(body, 'attachments')) {
           const previousAttachments = [...(task.attachments || [])];
+          const fileAuthContext = management.authorization.mode === 'DYNAMIC_LEADERSHIP'
+            ? taskLeadershipResourceContext(
+                req.authContext,
+                management.authorization,
+                task,
+                ['task.edit']
+              )
+            : req.authContext;
           const managedAttachments = await fileAssetService.reconcileOwnerFiles({
-            authContext: req.authContext,
+            authContext: fileAuthContext,
             req,
             attachments: body.attachments,
             previousAttachments,
@@ -792,7 +1065,8 @@ function createTaskController(overrides = {}) {
             req,
             task,
             parsedSubTasks: parseSubTasks(body.subTasks),
-            session
+            session,
+            enforceActorOrgScope: management.authorization.mode !== 'DYNAMIC_LEADERSHIP'
           });
         }
 
@@ -833,10 +1107,8 @@ function createTaskController(overrides = {}) {
 
   async function deleteTask(req, res, next) {
     try {
-      assertPermission(req.authContext, 'task.edit');
       const deleted = await runAtomic(async (session) => {
-        const findQuery = TaskModel.findOne(scopedDetailFilter(req, req.params.id));
-        const task = await withSession(findQuery, session);
+        const { task } = await findTaskForManagement(req, ['task.edit'], session);
         if (!task) return null;
         const teamId = normalizeInputId(task.teamId, 'teamId');
         const orgUnitId = normalizeInputId(task.orgUnitId, 'orgUnitId');
@@ -1021,6 +1293,7 @@ function createTaskController(overrides = {}) {
     createTask,
     getTasks,
     getTaskById,
+    getAssignableUsers,
     updateTask,
     deleteTask,
     getMyTasks,

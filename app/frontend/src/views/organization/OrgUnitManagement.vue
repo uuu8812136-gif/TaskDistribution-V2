@@ -36,10 +36,11 @@
         v-loading="loading"
         :data="orgTree"
         row-key="_id"
-        default-expand-all
-        stripe
+        :expand-row-keys="expandedRowKeys"
+        :row-class-name="orgRowClassName"
         :tree-props="{ children: 'children' }"
         empty-text="暂无组织，请先新增根组织"
+        @expand-change="handleExpandChange"
       >
         <el-table-column label="组织名称" min-width="240">
           <template #default="{ row }">
@@ -65,7 +66,7 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="230" fixed="right" align="center">
+        <el-table-column label="操作" width="292" fixed="right" align="center">
           <template #default="{ row }">
             <div class="table-actions">
               <el-button text type="primary" @click="openEditDialog(row)">编辑</el-button>
@@ -94,6 +95,15 @@
               </el-button>
               <el-button v-else text type="success" @click="changeStatus(row, 'ACTIVE')">
                 启用
+              </el-button>
+              <el-button
+                text
+                type="danger"
+                :loading="deletingUnitId === row._id"
+                :disabled="Boolean(deletingUnitId) && deletingUnitId !== row._id"
+                @click="removeOrgUnit(row)"
+              >
+                删除
               </el-button>
             </div>
           </template>
@@ -204,13 +214,14 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import PermissionGuard from '@/components/PermissionGuard.vue'
-import { createOrgUnit, getOrgUnits, updateOrgUnit } from '@/api/teamManagement'
+import { createOrgUnit, deleteOrgUnit, getOrgUnits, updateOrgUnit } from '@/api/teamManagement'
 import {
   ORG_UNIT_STATUS,
   ORG_UNIT_TYPE_OPTIONS,
   buildOrgUnitPayload,
   buildOrgUnitTree,
-  managementErrorMessage
+  managementErrorMessage,
+  reconcileExpandedOrgUnitIds
 } from '@/utils/teamManagement'
 
 const loading = ref(false)
@@ -219,7 +230,10 @@ const dialogVisible = ref(false)
 const editingUnit = ref(null)
 const orgFormRef = ref(null)
 const codeServerError = ref('')
+const deletingUnitId = ref('')
 const units = ref([])
+const expandedRowKeys = ref([])
+const hasLoadedOrgUnits = ref(false)
 const keyword = ref('')
 const showDisabled = ref(true)
 const orgForm = reactive(createEmptyForm())
@@ -275,6 +289,19 @@ function typeLabel(type) {
   return ORG_UNIT_TYPE_OPTIONS.find((item) => item.value === type)?.label || type
 }
 
+function orgRowClassName({ row }) {
+  const level = Math.min(5, Math.max(1, Number(row.level) || 1))
+  return `org-row org-row--level-${level}`
+}
+
+function handleExpandChange(row, expanded) {
+  const current = new Set(expandedRowKeys.value.map(String))
+  const rowId = String(row._id)
+  if (expanded) current.add(rowId)
+  else current.delete(rowId)
+  expandedRowKeys.value = [...current]
+}
+
 function isUnavailableParent(unit) {
   if (unit.status !== ORG_UNIT_STATUS.ACTIVE || unit.level >= 5) return true
   const editingId = editingUnit.value?._id
@@ -296,6 +323,11 @@ async function loadOrgUnits() {
   try {
     const result = await getOrgUnits()
     units.value = result.orgUnits || []
+    expandedRowKeys.value = reconcileExpandedOrgUnitIds(
+      units.value,
+      hasLoadedOrgUnits.value ? expandedRowKeys.value : null
+    )
+    hasLoadedOrgUnits.value = true
   } catch (error) {
     ElMessage.error(managementErrorMessage(error, '加载组织架构失败'))
   } finally {
@@ -374,6 +406,35 @@ async function changeStatus(unit, status) {
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
     ElMessage.error(managementErrorMessage(error, enabling ? '启用组织失败' : '停用组织失败'))
+  }
+}
+
+async function removeOrgUnit(unit) {
+  if (deletingUnitId.value) return
+  deletingUnitId.value = unit._id
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `确认删除“${unit.name}”并将其移出当前组织树？历史记录和审计信息会继续保留。仅无下级、无成员且无业务数据的组织可以删除。`,
+      '删除组织',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        inputType: 'textarea',
+        inputPlaceholder: '填写删除原因（将写入审计日志）',
+        inputValidator: (reason) => Boolean(reason?.trim()) || '请填写删除原因',
+        type: 'warning',
+        distinguishCancelAndClose: true
+      }
+    )
+    await deleteOrgUnit(unit._id, value.trim())
+    expandedRowKeys.value = expandedRowKeys.value.filter((id) => id !== String(unit._id))
+    ElMessage.success('组织已移出当前组织树，历史记录与审计信息已保留')
+    await loadOrgUnits()
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(managementErrorMessage(error, '删除组织失败'))
+  } finally {
+    deletingUnitId.value = ''
   }
 }
 
@@ -467,6 +528,26 @@ onMounted(loadOrgUnits)
   small {
     color: #909399;
   }
+}
+
+:deep(.el-table__body tr.org-row--level-1 > td.el-table__cell) {
+  background: #e7f1ff !important;
+}
+
+:deep(.el-table__body tr.org-row--level-2 > td.el-table__cell) {
+  background: #eaf8ee !important;
+}
+
+:deep(.el-table__body tr.org-row--level-3 > td.el-table__cell) {
+  background: #fff0f5 !important;
+}
+
+:deep(.el-table__body tr.org-row--level-4 > td.el-table__cell) {
+  background: #fff7e5 !important;
+}
+
+:deep(.el-table__body tr.org-row--level-5 > td.el-table__cell) {
+  background: #f2efff !important;
 }
 
 .form-grid {

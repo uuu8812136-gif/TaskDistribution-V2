@@ -76,6 +76,28 @@ function combineWithAnd(...filters) {
   return { $and: normalizedFilters };
 }
 
+function resolveScopedOrgUnitIds(dataScope) {
+  if (!dataScope || dataScope.scope !== DATA_SCOPES.ORG_UNIT) return Object.freeze([]);
+  return Object.freeze([...new Set(
+    (
+      Array.isArray(dataScope.orgUnitIds) && dataScope.orgUnitIds.length > 0
+        ? dataScope.orgUnitIds
+        : [dataScope.orgUnitId]
+    ).map((orgUnitId) => normalizeObjectId(orgUnitId, 'orgUnitId'))
+  )]);
+}
+
+function buildScopedOrgUnitIdConstraint(dataScope) {
+  const orgUnitIds = resolveScopedOrgUnitIds(dataScope);
+  if (orgUnitIds.length === 0) return undefined;
+  return orgUnitIds.length === 1 ? orgUnitIds[0] : { $in: [...orgUnitIds] };
+}
+
+function isOrgUnitInDataScope(dataScope, orgUnitId) {
+  const normalizedOrgUnitId = normalizeObjectId(orgUnitId, 'orgUnitId');
+  return resolveScopedOrgUnitIds(dataScope).includes(normalizedOrgUnitId);
+}
+
 function buildScopeConstraint({
   authContext,
   moduleKey,
@@ -101,7 +123,7 @@ function buildScopeConstraint({
     teamId: normalizeObjectId(dataScope.teamId, 'activeTeamId')
   };
   if (dataScope.scope === DATA_SCOPES.ORG_UNIT) {
-    constraint.orgUnitId = normalizeObjectId(dataScope.orgUnitId, 'orgUnitId');
+    constraint.orgUnitId = buildScopedOrgUnitIdConstraint(dataScope);
   }
   return constraint;
 }
@@ -231,10 +253,13 @@ module.exports = {
   buildScopeConstraint,
   buildScopedDetailFilter,
   buildScopedFilter,
+  buildScopedOrgUnitIdConstraint,
   combineWithAnd,
+  isOrgUnitInDataScope,
   isReadMethod,
   loadRelatedResourcesInActiveTeam,
   normalizeFilter,
   normalizeObjectId,
-  readField
+  readField,
+  resolveScopedOrgUnitIds
 };

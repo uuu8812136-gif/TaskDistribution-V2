@@ -22,6 +22,7 @@ const {
   resolveModuleDataScope,
   sameId
 } = require('./teamContextService');
+const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
@@ -316,11 +317,12 @@ async function resolveWritableOrgUnit({
     );
   }
 
-  const orgUnit = await execute(OrgUnitModel.findOne({
-    _id: orgUnitId,
+  const orgUnit = await lockActiveOrgUnitReference({
+    OrgUnitModel,
     teamId: context.activeTeamId,
-    status: ORG_UNIT_STATUSES.ACTIVE
-  }), session);
+    orgUnitId,
+    session
+  });
   if (!orgUnit) throw relatedInvalid();
   return orgUnit;
 }

@@ -19,6 +19,7 @@ const {
   DATA_SCOPES,
   DATA_SCOPE_MODULES,
   MEMBERSHIP_STATUSES,
+  ORG_UNIT_TYPES,
   ORG_UNIT_STATUSES
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
@@ -41,7 +42,10 @@ const {
   validateFileContent,
   validatedExtension
 } = require('./fileStorageService');
-const { normalizeObjectId } = require('./scopedQueryService');
+const {
+  isOrgUnitInDataScope,
+  normalizeObjectId
+} = require('./scopedQueryService');
 const {
   assertPermission,
   assertTeamContext,
@@ -49,6 +53,7 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const { lockActiveOrgUnitReferences } = require('./orgUnitReferenceService');
 const {
   createEquipmentImportStagingCleanupService
 } = require('./equipmentImportStagingCleanupService');
@@ -440,6 +445,32 @@ function createEquipmentImportService({
     return { supplied: true, value: valuesById.get(String(value)) || null };
   }
 
+  function subDepartmentIdForOrgUnit(orgUnitId, orgUnitsById) {
+    const orgUnit = orgUnitsById.get(String(orgUnitId));
+    if (!orgUnit) return null;
+    if (orgUnit.level === 2 && orgUnit.type === ORG_UNIT_TYPES.SUB_DEPARTMENT) {
+      return String(orgUnit._id);
+    }
+    for (const ancestorId of String(orgUnit.path || '/').split('/').filter(Boolean)) {
+      const ancestor = orgUnitsById.get(ancestorId);
+      if (ancestor?.level === 2 && ancestor.type === ORG_UNIT_TYPES.SUB_DEPARTMENT) {
+        return String(ancestor._id);
+      }
+    }
+    return null;
+  }
+
+  function orgUnitsShareSubDepartment(leftOrgUnitId, rightOrgUnitId, orgUnitsById) {
+    if (sameId(leftOrgUnitId, rightOrgUnitId)) return true;
+    const leftSubDepartmentId = subDepartmentIdForOrgUnit(leftOrgUnitId, orgUnitsById);
+    const rightSubDepartmentId = subDepartmentIdForOrgUnit(rightOrgUnitId, orgUnitsById);
+    return Boolean(
+      leftSubDepartmentId &&
+      rightSubDepartmentId &&
+      leftSubDepartmentId === rightSubDepartmentId
+    );
+  }
+
   async function enrichRows({ parsed, context, scope, session }) {
     const refs = await referenceData(context, session);
     const orgsById = new Map(refs.orgUnits.map((item) => [String(item._id), item]));
@@ -506,7 +537,7 @@ function createEquipmentImportService({
       if (
         orgUnit &&
         scope.scope === DATA_SCOPES.ORG_UNIT &&
-        !sameId(orgUnit._id, scope.orgUnitId)
+        !isOrgUnitInDataScope(scope, orgUnit._id)
       ) {
         addException(row, {
           field: 'orgUnitId',
@@ -552,7 +583,11 @@ function createEquipmentImportService({
         const matches = (usersByText.get(normalizeLookupText(candidate.custodianName)) || [])
           .filter((user) => {
             const membership = membershipsByUserId.get(String(user._id));
-            return orgUnit && membership && sameId(membership.orgUnitId, orgUnit._id);
+            return orgUnit && membership && orgUnitsShareSubDepartment(
+              membership.orgUnitId,
+              orgUnit._id,
+              orgsById
+            );
           });
         if (matches.length === 1) custodian = matches[0];
         else {
@@ -940,6 +975,23 @@ function createEquipmentImportService({
     try {
       return await runWithOptionalTransaction(async (session) => {
         const rows = await enrichRows({ parsed, context, scope, session });
+        const referencedOrgUnitIds = [
+          scope.scope === DATA_SCOPES.ORG_UNIT ? scope.orgUnitId : null,
+          ...rows.map(({ candidate }) => candidate.orgUnitId)
+        ].filter(Boolean);
+        const lockedOrgUnits = await lockActiveOrgUnitReferences({
+          OrgUnitModel,
+          teamId: context.activeTeamId,
+          orgUnitIds: referencedOrgUnitIds,
+          session
+        });
+        if (!lockedOrgUnits) {
+          throw importError(
+            409,
+            'EQUIPMENT_IMPORT_REFERENCE_CHANGED',
+            'One or more organization units changed during preview creation'
+          );
+        }
         const counters = {
           totalRows: rows.length,
           validRows: rows.filter(({ validationStatus }) => validationStatus === IMPORT_ROW_STATUSES.VALID).length,
@@ -1237,7 +1289,7 @@ function createEquipmentImportService({
       const custodianUserId = candidate.custodianUserId
         ? normalizeRelatedId(candidate.custodianUserId, 'custodianUserId')
         : null;
-      if (scope.scope === DATA_SCOPES.ORG_UNIT && !sameId(orgUnitId, scope.orgUnitId)) {
+      if (scope.scope === DATA_SCOPES.ORG_UNIT && !isOrgUnitInDataScope(scope, orgUnitId)) {
         throw confirmationInvalid('A confirmed row is outside the importer organization scope');
       }
       orgIds.add(String(orgUnitId));
@@ -1361,12 +1413,20 @@ function createEquipmentImportService({
       };
     });
 
-    const [orgUnits, categories, memberships, activeCustodians, existingAssets] = await Promise.all([
-      execute(OrgUnitModel.find({
-        _id: { $in: [...orgIds] },
+    const [
+      orgUnits,
+      categories,
+      memberships,
+      activeCustodians,
+      existingAssets,
+      activeTeamOrgUnits
+    ] = await Promise.all([
+      lockActiveOrgUnitReferences({
+        OrgUnitModel,
         teamId: context.activeTeamId,
-        status: ORG_UNIT_STATUSES.ACTIVE
-      }).select('_id').lean(), session),
+        orgUnitIds: [...orgIds],
+        session
+      }),
       execute(EquipmentCategoryModel.find({
         _id: { $in: [...categoryIds] },
         teamId: context.activeTeamId,
@@ -1388,11 +1448,15 @@ function createEquipmentImportService({
       codes.size === 0
         ? []
         : execute(EquipmentAssetModel.find({
-          teamId: context.activeTeamId,
-          assetCode: { $in: [...codes] }
-        }).select('assetCode').lean(), session)
+            teamId: context.activeTeamId,
+            assetCode: { $in: [...codes] }
+          }).select('assetCode').lean(), session),
+      execute(OrgUnitModel.find({
+        teamId: context.activeTeamId,
+        status: ORG_UNIT_STATUSES.ACTIVE
+      }).select('_id type level path').lean(), session)
     ]);
-    if (orgUnits.length !== orgIds.size) {
+    if (!orgUnits || orgUnits.length !== orgIds.size) {
       throw confirmationInvalid('One or more organization units are no longer active in this team');
     }
     if (categories.length !== categoryIds.size) {
@@ -1405,10 +1469,14 @@ function createEquipmentImportService({
       throw confirmationInvalid('One or more custodians are no longer active');
     }
     const membershipByUser = new Map(memberships.map((item) => [String(item.userId), item]));
+    const orgUnitsById = new Map(activeTeamOrgUnits.map((item) => [String(item._id), item]));
     for (const { payload } of normalized) {
       if (!payload.custodianUserId) continue;
       const membership = membershipByUser.get(String(payload.custodianUserId));
-      if (!membership || !sameId(membership.orgUnitId, payload.orgUnitId)) {
+      if (
+        !membership ||
+        !orgUnitsShareSubDepartment(membership.orgUnitId, payload.orgUnitId, orgUnitsById)
+      ) {
         throw confirmationInvalid('A custodian is no longer active in the selected organization');
       }
     }

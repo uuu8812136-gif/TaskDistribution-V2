@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  FUNCTIONAL_ROLE_OPTIONS,
   MEMBERSHIP_ROLES,
   PERMISSION_GROUPS,
   buildMemberCreatePayload,
@@ -12,10 +13,21 @@ import {
   managementErrorMessage
 } from '../src/utils/teamManagement.js'
 
-test('fixed permission catalog exposes the 31 backend permission keys without duplicates', () => {
+test('fixed functional roles expose the transport administrator separately from the reporter', () => {
+  assert.deepEqual(
+    FUNCTIONAL_ROLE_OPTIONS.filter(({ value }) => value.startsWith('TRANSPORT_')),
+    [
+      { value: 'TRANSPORT_REPORTER', label: '运输提报员' },
+      { value: 'TRANSPORT_ADMIN', label: '运输管理员' }
+    ]
+  )
+})
+
+test('fixed permission catalog exposes the 32 backend permission keys without duplicates', () => {
   const keys = PERMISSION_GROUPS.flatMap((group) => group.options.map((option) => option.value))
-  assert.equal(keys.length, 31)
-  assert.equal(new Set(keys).size, 31)
+  assert.equal(keys.length, 32)
+  assert.equal(new Set(keys).size, 32)
+  assert.ok(keys.includes('report.transport.master.manage'))
   assert.deepEqual(PERMISSION_GROUPS.map((group) => group.key), [
     'task',
     'equipment',

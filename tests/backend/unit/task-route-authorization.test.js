@@ -37,6 +37,18 @@ function viewOnlyContext() {
   };
 }
 
+function supervisorCandidateContext() {
+  const context = viewOnlyContext();
+  context.permissionKeys = [];
+  context.membership = {
+    ...context.membership,
+    role: 'MEMBER',
+    positionKey: 'SUPERVISOR',
+    status: 'ACTIVE'
+  };
+  return context;
+}
+
 function invokeMiddleware(middleware, authContext) {
   const result = { nextCalled: false, statusCode: 200, body: null };
   const response = {
@@ -97,5 +109,55 @@ test('task editing and deletion still reject a view-only executor', () => {
     assert.equal(result.nextCalled, false);
     assert.equal(result.statusCode, 403);
     assert.equal(result.body.code, 'PERMISSION_DENIED');
+  }
+});
+
+test('task leadership candidates reach controller-level runtime authorization without stored permissions', () => {
+  const context = supervisorCandidateContext();
+  const guardedRoutes = [
+    ['post', '/', [1, 2]],
+    ['put', '/:id', [1]],
+    ['delete', '/:id', [1]],
+    ['post', '/:id/review', [1]],
+    ['post', '/:id/confirm', [1]]
+  ];
+  for (const [method, path, indexes] of guardedRoutes) {
+    const stack = routeLayer(path, method);
+    for (const index of indexes) {
+      const result = invokeMiddleware(stack[index].handle, context);
+      assert.equal(result.nextCalled, true, `${method.toUpperCase()} ${path} middleware ${index}`);
+      assert.equal(result.statusCode, 200);
+    }
+  }
+
+  const extensionStack = extensionRouteLayer('/approve/:id', 'post');
+  const extensionResult = invokeMiddleware(extensionStack[1].handle, context);
+  assert.equal(extensionResult.nextCalled, true);
+  assert.equal(extensionResult.statusCode, 200);
+});
+
+test('task leadership candidates reach all leadership read controllers without task.view', () => {
+  const context = supervisorCandidateContext();
+  for (const [method, path] of [
+    ['get', '/'],
+    ['get', '/assignable-users'],
+    ['get', '/:id'],
+    ['get', '/:id/reviews']
+  ]) {
+    const stack = routeLayer(path, method);
+    const result = invokeMiddleware(stack[0].handle, context);
+    assert.equal(result.nextCalled, true, `${method.toUpperCase()} ${path}`);
+    assert.equal(result.statusCode, 200);
+  }
+
+  for (const [method, path] of [
+    ['get', '/'],
+    ['get', '/history/:taskId'],
+    ['get', '/:id']
+  ]) {
+    const stack = extensionRouteLayer(path, method);
+    const result = invokeMiddleware(stack[0].handle, context);
+    assert.equal(result.nextCalled, true, `${method.toUpperCase()} /extensions${path}`);
+    assert.equal(result.statusCode, 200);
   }
 });

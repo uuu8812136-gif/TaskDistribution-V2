@@ -10,6 +10,10 @@
           <el-icon><DataAnalysis /></el-icon>
           司机月汇总
         </el-button>
+        <el-button v-if="canManageMasterData" @click="openMasterData">
+          <el-icon><Setting /></el-icon>
+          基础资料
+        </el-button>
         <el-button v-if="canSubmit" type="primary" @click="openCreate">
           <el-icon><Plus /></el-icon>
           新建提报
@@ -124,23 +128,82 @@
               <el-option v-for="item in TRANSPORT_SHIFT_OPTIONS" :key="item" :label="item" :value="item" />
             </el-select>
           </el-form-item>
-          <el-form-item label="趟次" prop="tripLabel">
-            <el-input v-model="form.tripLabel" maxlength="50" placeholder="例如：第1趟" />
+          <el-form-item label="趟次" prop="tripMasterId">
+            <el-select
+              v-model="form.tripMasterId"
+              filterable
+              class="full-width"
+              placeholder="请选择趟次"
+              @change="handleTripChange"
+            >
+              <el-option v-for="item in activeTrips" :key="item._id" :label="item.name" :value="item._id" :disabled="item.status !== 'ACTIVE'" />
+            </el-select>
           </el-form-item>
-          <el-form-item label="路线" prop="route">
-            <el-input v-model="form.route" maxlength="200" />
+          <el-form-item label="路线" prop="routeMasterId">
+            <el-select
+              v-model="form.routeMasterId"
+              filterable
+              class="full-width"
+              placeholder="请选择路线"
+              @change="handleRouteChange"
+            >
+              <el-option v-for="item in activeRoutes" :key="item._id" :label="item.name" :value="item._id" :disabled="item.status !== 'ACTIVE'" />
+            </el-select>
           </el-form-item>
           <el-form-item label="出车类型" prop="dispatchType">
             <el-segmented v-model="form.dispatchType" :options="TRANSPORT_DISPATCH_OPTIONS" block />
           </el-form-item>
-          <el-form-item label="车牌号" prop="vehiclePlate">
-            <el-input v-model="form.vehiclePlate" maxlength="50" />
+          <el-form-item label="车牌号" prop="vehiclePlateMasterId">
+            <el-select
+              v-model="form.vehiclePlateMasterId"
+              filterable
+              class="full-width"
+              placeholder="请选择车牌号"
+              @change="handleVehiclePlateChange"
+            >
+              <el-option
+                v-for="item in activeVehiclePlates"
+                :key="item._id"
+                :label="item.name"
+                :value="item._id"
+                :disabled="item.status !== 'ACTIVE'"
+              />
+            </el-select>
           </el-form-item>
-          <el-form-item label="车型">
-            <el-input v-model="form.vehicleType" maxlength="100" />
+          <el-form-item label="车型" prop="vehicleTypeMasterId">
+            <el-select
+              v-model="form.vehicleTypeMasterId"
+              clearable
+              filterable
+              class="full-width"
+              placeholder="请选择车型（选填）"
+              @change="handleVehicleTypeChange"
+            >
+              <el-option
+                v-for="item in activeVehicleTypes"
+                :key="item._id"
+                :label="item.name"
+                :value="item._id"
+                :disabled="item.status !== 'ACTIVE'"
+              />
+            </el-select>
           </el-form-item>
-          <el-form-item label="司机姓名" prop="driverName">
-            <el-input v-model="form.driverName" maxlength="100" />
+          <el-form-item label="司机姓名" prop="driverMasterId">
+            <el-select
+              v-model="form.driverMasterId"
+              filterable
+              class="full-width"
+              placeholder="请选择司机姓名"
+              @change="handleDriverChange"
+            >
+              <el-option
+                v-for="item in activeDrivers"
+                :key="item._id"
+                :label="item.name"
+                :value="item._id"
+                :disabled="item.status !== 'ACTIVE'"
+              />
+            </el-select>
           </el-form-item>
         </div>
 
@@ -191,6 +254,72 @@
       </template>
     </el-dialog>
 
+    <el-dialog
+      v-model="masterVisible"
+      title="运输基础资料"
+      width="min(920px, 96vw)"
+      append-to-body
+    >
+      <el-tabs v-model="masterKind">
+        <el-tab-pane v-for="item in masterKinds" :key="item.value" :label="item.label" :name="item.value" />
+      </el-tabs>
+      <div class="master-toolbar">
+        <span>共 {{ masterRows.length }} 条</span>
+        <el-button type="primary" @click="openMasterEditor()">
+          <el-icon><Plus /></el-icon>
+          新增{{ masterKindLabel }}
+        </el-button>
+      </div>
+      <div class="table-shell master-table">
+        <el-table v-loading="masterLoading" :data="masterRows" row-key="_id" empty-text="暂无基础资料">
+          <el-table-column prop="name" :label="masterKindLabel" min-width="180" />
+          <el-table-column prop="sortOrder" label="排序" width="86" align="right" />
+          <el-table-column label="状态" width="90" align="center">
+            <template #default="{ row }">
+              <el-tag :type="row.status === 'ACTIVE' ? 'success' : 'info'">
+                {{ row.status === 'ACTIVE' ? '启用' : '停用' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="160" fixed="right" align="center">
+            <template #default="{ row }">
+              <div class="table-actions">
+                <el-button text type="primary" @click="openMasterEditor(row)">编辑</el-button>
+                <el-button text :type="row.status === 'ACTIVE' ? 'danger' : 'success'" @click="toggleMasterStatus(row)">
+                  {{ row.status === 'ACTIVE' ? '停用' : '启用' }}
+                </el-button>
+              </div>
+            </template>
+          </el-table-column>
+        </el-table>
+      </div>
+    </el-dialog>
+
+    <el-dialog
+      v-model="masterEditorVisible"
+      :title="`${masterEditingId ? '编辑' : '新增'}${masterKindLabel}`"
+      width="min(520px, 94vw)"
+      append-to-body
+      @closed="resetMasterEditor"
+    >
+      <el-form ref="masterFormRef" :model="masterForm" :rules="masterRules" label-position="top">
+        <el-form-item :label="masterKindLabel" prop="name">
+          <el-input
+            v-model="masterForm.name"
+            :maxlength="masterNameMaxLength"
+            show-word-limit
+          />
+        </el-form-item>
+        <el-form-item label="排序" prop="sortOrder">
+          <el-input-number v-model="masterForm.sortOrder" :min="0" :max="2147483647" :precision="0" class="full-width" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="masterEditorVisible = false">取消</el-button>
+        <el-button type="primary" :loading="masterSaving" @click="saveMasterData">保存</el-button>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="summaryVisible" title="司机月汇总" width="min(1040px, 96vw)" append-to-body>
       <div class="summary-toolbar">
         <el-date-picker v-model="summaryMonth" type="month" value-format="YYYY-MM" placeholder="选择月份" />
@@ -228,13 +357,17 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
+  createTransportMasterData,
   createTransportRecord,
   exportTransportSummary,
+  getTransportMasterData,
   getTransportOptions,
   getTransportRecord,
   getTransportRecords,
+  setTransportMasterDataStatus,
+  updateTransportMasterData,
   updateTransportRecord
 } from '@/api/reporting'
 import {
@@ -283,6 +416,29 @@ const summaryLoading = ref(false)
 const previewVisible = ref(false)
 const previewUrl = ref('')
 const previewName = ref('')
+const masterData = ref([])
+const masterVisible = ref(false)
+const masterLoading = ref(false)
+const masterKind = ref('TRIP')
+const masterEditorVisible = ref(false)
+const masterEditingId = ref('')
+const masterSaving = ref(false)
+const masterFormRef = ref(null)
+const masterForm = reactive(emptyMasterForm())
+const masterKinds = Object.freeze([
+  { value: 'TRIP', label: '趟次' },
+  { value: 'ROUTE', label: '路线' },
+  { value: 'VEHICLE_PLATE', label: '车牌号' },
+  { value: 'VEHICLE_TYPE', label: '车型' },
+  { value: 'DRIVER', label: '司机姓名' }
+])
+const masterNameMaxLengths = Object.freeze({
+  TRIP: 50,
+  ROUTE: 200,
+  VEHICLE_PLATE: 50,
+  VEHICLE_TYPE: 100,
+  DRIVER: 100
+})
 
 const filters = reactive({
   dateRange: [],
@@ -295,8 +451,18 @@ const filters = reactive({
 })
 const form = reactive(emptyForm())
 
-const canSubmit = computed(() => session.can('report.submit', { write: true, teamRequired: true }))
+const isTransportReporter = computed(() => (
+  session.isSuperAdmin ||
+  session.context.membership?.functionalRoleKeys?.includes('TRANSPORT_REPORTER')
+))
+const canSubmit = computed(() => (
+  session.can('report.submit', { write: true, teamRequired: true }) &&
+  isTransportReporter.value
+))
 const canExport = computed(() => session.hasPermission('report.export'))
+const canManageMasterData = computed(() => (
+  session.can('report.transport.master.manage', { write: true, teamRequired: true })
+))
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
@@ -304,16 +470,33 @@ const formLoadTotal = computed(() => TRANSPORT_LOAD_FIELDS.reduce(
   (sum, { key }) => sum + (Number(form.loadDetails[key]) || 0),
   0
 ))
+const selectableMasterData = (kind, selectedId) => masterData.value.filter((item) => (
+  item.kind === kind && (item.status === 'ACTIVE' || item._id === selectedId)
+))
+const activeTrips = computed(() => selectableMasterData('TRIP', form.tripMasterId))
+const activeRoutes = computed(() => selectableMasterData('ROUTE', form.routeMasterId))
+const activeVehiclePlates = computed(() => selectableMasterData('VEHICLE_PLATE', form.vehiclePlateMasterId))
+const activeVehicleTypes = computed(() => selectableMasterData('VEHICLE_TYPE', form.vehicleTypeMasterId))
+const activeDrivers = computed(() => selectableMasterData('DRIVER', form.driverMasterId))
+const masterRows = computed(() => masterData.value.filter((item) => item.kind === masterKind.value))
+const masterKindLabel = computed(() => (
+  masterKinds.find((item) => item.value === masterKind.value)?.label || '基础资料'
+))
+const masterNameMaxLength = computed(() => masterNameMaxLengths[masterKind.value] || 100)
 
 const rules = {
   orgUnitId: [{ required: true, message: '请选择所属组织', trigger: 'change' }],
   reportDate: [{ required: true, message: '请选择提报日期', trigger: 'change' }],
   shift: [{ required: true, message: '请选择班次', trigger: 'change' }],
-  tripLabel: [{ required: true, message: '请输入趟次', trigger: 'blur' }],
-  route: [{ required: true, message: '请输入路线', trigger: 'blur' }],
+  tripMasterId: [{ required: true, message: '请选择趟次', trigger: 'change' }],
+  routeMasterId: [{ required: true, message: '请选择路线', trigger: 'change' }],
   dispatchType: [{ required: true, message: '请选择出车类型', trigger: 'change' }],
-  vehiclePlate: [{ required: true, message: '请输入车牌号', trigger: 'blur' }],
-  driverName: [{ required: true, message: '请输入司机姓名', trigger: 'blur' }]
+  vehiclePlateMasterId: [{ required: true, message: '请选择车牌号', trigger: 'change' }],
+  driverMasterId: [{ required: true, message: '请选择司机姓名', trigger: 'change' }]
+}
+
+const masterRules = {
+  name: [{ required: true, message: '请输入基础资料名称', trigger: 'blur' }]
 }
 
 function emptyForm() {
@@ -321,15 +504,27 @@ function emptyForm() {
     orgUnitId: '',
     reportDate: dayjs().format('YYYY-MM-DD'),
     shift: '白班',
+    tripMasterId: '',
     tripLabel: '',
+    routeMasterId: '',
     route: '',
     dispatchType: '配送',
+    vehiclePlateMasterId: '',
     vehiclePlate: '',
+    vehicleTypeMasterId: '',
     vehicleType: '',
+    driverMasterId: '',
     driverName: '',
     loadDetails: emptyTransportLoadDetails(),
     remark: '',
     reason: ''
+  }
+}
+
+function emptyMasterForm() {
+  return {
+    name: '',
+    sortOrder: 0
   }
 }
 
@@ -354,6 +549,15 @@ async function loadOptions() {
   orgUnits.value = result.orgUnits || []
 }
 
+async function loadMasterData({ includeDisabled = canManageMasterData.value } = {}) {
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const result = await getTransportMasterData({
+    ...requestTeamParams.value,
+    includeDisabled
+  })
+  masterData.value = result.masterData || []
+}
+
 async function loadRecords() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   loading.value = true
@@ -374,7 +578,7 @@ async function initialize() {
     selectedTeamId.value = session.teams[0]?._id || ''
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  await Promise.all([loadOptions(), loadRecords()])
+  await Promise.all([loadOptions(), loadMasterData(), loadRecords()])
   if (route.query.edit && canSubmit.value) await openEdit(String(route.query.edit))
 }
 
@@ -395,7 +599,7 @@ async function handleTeamChange(teamId) {
   Object.assign(filters, {
     dateRange: [], keyword: '', orgUnitId: '', shift: '', dispatchType: '', page: 1
   })
-  await Promise.all([loadOptions(), loadRecords()])
+  await Promise.all([loadOptions(), loadMasterData(), loadRecords()])
 }
 
 function resetForm() {
@@ -406,12 +610,18 @@ function resetForm() {
 }
 
 function openCreate() {
+  if (!activeTrips.value.length || !activeRoutes.value.length || !activeVehiclePlates.value.length || !activeDrivers.value.length) {
+    ElMessage.warning('请先补齐趟次、路线、车牌号和司机姓名基础资料')
+    if (canManageMasterData.value) openMasterData()
+    return
+  }
   resetForm()
   if (orgUnits.value.length === 1) form.orgUnitId = orgUnits.value[0]._id
   formVisible.value = true
 }
 
 async function openEdit(transportRecordId) {
+  await loadMasterData({ includeDisabled: true })
   const result = await getTransportRecord(transportRecordId, requestTeamParams.value)
   const record = result.transportRecord
   const metadata = await Promise.all(record.photoFileIds.map(async (fileId) => {
@@ -419,9 +629,17 @@ async function openEdit(transportRecordId) {
     return response.file
   }))
   editingId.value = record._id
+  const masterIdBySnapshot = (kind, field, value) => masterData.value.find((item) => (
+    item.kind === kind && item.status === 'ACTIVE' && item[field] === value
+  ))?._id || ''
   Object.assign(form, {
     ...emptyForm(),
     ...record,
+    tripMasterId: record.tripMasterId || masterIdBySnapshot('TRIP', 'name', record.tripLabel),
+    routeMasterId: record.routeMasterId || masterIdBySnapshot('ROUTE', 'name', record.route),
+    vehiclePlateMasterId: record.vehiclePlateMasterId || masterIdBySnapshot('VEHICLE_PLATE', 'name', record.vehiclePlate),
+    vehicleTypeMasterId: record.vehicleTypeMasterId || masterIdBySnapshot('VEHICLE_TYPE', 'name', record.vehicleType),
+    driverMasterId: record.driverMasterId || masterIdBySnapshot('DRIVER', 'name', record.driverName),
     loadDetails: { ...emptyTransportLoadDetails(), ...record.loadDetails },
     reason: ''
   })
@@ -434,6 +652,97 @@ async function openEdit(transportRecordId) {
     status: 'success'
   }))
   formVisible.value = true
+}
+
+function handleTripChange(masterDataId) {
+  const selected = masterData.value.find((item) => item._id === masterDataId)
+  form.tripLabel = selected?.name || ''
+}
+
+function handleRouteChange(masterDataId) {
+  const selected = masterData.value.find((item) => item._id === masterDataId)
+  form.route = selected?.name || ''
+}
+
+function handleVehiclePlateChange(masterDataId) {
+  const selected = masterData.value.find((item) => item._id === masterDataId)
+  form.vehiclePlate = selected?.name || ''
+}
+
+function handleVehicleTypeChange(masterDataId) {
+  const selected = masterData.value.find((item) => item._id === masterDataId)
+  form.vehicleType = selected?.name || ''
+}
+
+function handleDriverChange(masterDataId) {
+  const selected = masterData.value.find((item) => item._id === masterDataId)
+  form.driverName = selected?.name || ''
+}
+
+function masterDisplayName(item) {
+  return item.name
+}
+
+async function openMasterData() {
+  masterVisible.value = true
+  masterLoading.value = true
+  try {
+    await loadMasterData({ includeDisabled: true })
+  } finally {
+    masterLoading.value = false
+  }
+}
+
+function resetMasterEditor() {
+  masterEditingId.value = ''
+  Object.assign(masterForm, emptyMasterForm())
+  masterFormRef.value?.clearValidate()
+}
+
+function openMasterEditor(item = null) {
+  resetMasterEditor()
+  if (item) {
+    masterEditingId.value = item._id
+    Object.assign(masterForm, {
+      name: item.name || '',
+      sortOrder: item.sortOrder || 0
+    })
+  }
+  masterEditorVisible.value = true
+}
+
+async function saveMasterData() {
+  const valid = await masterFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  masterSaving.value = true
+  try {
+    const payload = {
+      kind: masterKind.value,
+      name: masterForm.name.trim(),
+      sortOrder: masterForm.sortOrder
+    }
+    if (masterEditingId.value) {
+      await updateTransportMasterData(masterEditingId.value, payload)
+    } else {
+      await createTransportMasterData(payload)
+    }
+    ElMessage.success(`${masterKindLabel.value}已保存`)
+    masterEditorVisible.value = false
+    await loadMasterData({ includeDisabled: true })
+  } finally {
+    masterSaving.value = false
+  }
+}
+
+async function toggleMasterStatus(item) {
+  const nextStatus = item.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'
+  const action = nextStatus === 'ACTIVE' ? '启用' : '停用'
+  await ElMessageBox.confirm(`确定${action}${masterKindLabel.value}“${masterDisplayName(item)}”吗？`, `${action}确认`, {
+    type: 'warning'
+  })
+  await setTransportMasterDataStatus(item._id, nextStatus)
+  ElMessage.success(`${masterKindLabel.value}已${action}`)
+  await loadMasterData({ includeDisabled: true })
 }
 
 function handlePhotoChange(file, fileList) {
@@ -550,7 +859,7 @@ onBeforeUnmount(clearPreview)
 
 <style scoped lang="scss">
 .report-page { min-width: 0; }
-.page-heading, .heading-actions, .toolbar, .pagination-row, .summary-toolbar, .form-section-heading { display: flex; align-items: center; }
+.page-heading, .heading-actions, .toolbar, .pagination-row, .summary-toolbar, .form-section-heading, .master-toolbar { display: flex; align-items: center; }
 .page-heading { justify-content: space-between; gap: 20px; margin-bottom: 18px; }
 .page-heading h1 { margin: 0 0 5px; font-size: 24px; letter-spacing: 0; }
 .page-heading p { margin: 0; color: #909399; }
@@ -572,6 +881,8 @@ onBeforeUnmount(clearPreview)
 .form-section-heading span { color: #606266; }
 .summary-toolbar { flex-wrap: wrap; margin-bottom: 14px; }
 .summary-table { margin-top: 0; }
+.master-toolbar { justify-content: space-between; gap: 12px; color: #606266; }
+.master-table { margin-top: 12px; }
 .preview-image { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; object-fit: contain; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }
@@ -582,5 +893,6 @@ onBeforeUnmount(clearPreview)
   .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
   .form-grid, .quantity-grid { grid-template-columns: 1fr; }
   .summary-toolbar > * { width: 100%; }
+  .master-toolbar { align-items: flex-start; flex-direction: column; }
 }
 </style>

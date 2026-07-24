@@ -9,7 +9,8 @@ const ReportChangeRecord = require('../models/ReportChangeRecord');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
-  DATA_SCOPE_MODULES
+  ORG_UNIT_STATUSES,
+  ORG_UNIT_TYPES
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const {
@@ -22,12 +23,10 @@ const {
 } = require('./reportCalendarService');
 const {
   assertNoClientTeamId,
-  buildReadFilter,
   createOne,
   execute,
   formulaSafe,
   integer,
-  listScopedOrgUnits,
   normalizeId,
   normalizePersistenceError,
   normalizeReason,
@@ -35,7 +34,7 @@ const {
   pagination,
   plain,
   reportError,
-  resolveWritableOrgUnit
+  resolveReadTeamId
 } = require('./reportingServiceSupport');
 const {
   assertPermission,
@@ -234,6 +233,14 @@ function scheduleUserFilter(query = {}) {
   return filters.length === 0 ? {} : { $and: filters };
 }
 
+function productionOrgUnitInvalid() {
+  return reportError(
+    400,
+    'PRODUCTION_SCHEDULE_ORG_UNIT_INVALID',
+    '生产排产只能由当前团队唯一的已启用一级部门维护'
+  );
+}
+
 function isRetryableMaintenanceError(error) {
   return Boolean(
     error?.name === 'VersionError' ||
@@ -265,6 +272,32 @@ function createProductionScheduleService({
   connection = mongoose.connection,
   clock = () => new Date()
 } = {}) {
+  async function resolveProductionRootOrgUnit({
+    teamId,
+    requestedOrgUnitId,
+    session = null
+  }) {
+    const query = OrgUnitModel.find({
+      teamId,
+      parentId: null,
+      type: ORG_UNIT_TYPES.DEPARTMENT,
+      level: 1,
+      status: ORG_UNIT_STATUSES.ACTIVE
+    }).sort({ sortOrder: 1, name: 1, _id: 1 }).limit(2);
+    const roots = await execute(query, session);
+    if (roots.length !== 1) throw productionOrgUnitInvalid();
+    const root = roots[0];
+    if (
+      requestedOrgUnitId !== undefined &&
+      requestedOrgUnitId !== null &&
+      requestedOrgUnitId !== '' &&
+      normalizeId(requestedOrgUnitId) !== normalizeId(root._id)
+    ) {
+      throw productionOrgUnitInvalid();
+    }
+    return root;
+  }
+
   async function scopedRead({
     authContext,
     requestedTeamId,
@@ -272,15 +305,24 @@ function createProductionScheduleService({
     query,
     permissionKey = 'report.view'
   }) {
-    return buildReadFilter({
+    assertPermission(authContext, permissionKey);
+    const teamId = await resolveReadTeamId({
       authContext,
       requestedTeamId,
-      method,
-      moduleKey: DATA_SCOPE_MODULES.REPORT_PRODUCTION,
-      permissionKey,
-      userFilter: scheduleUserFilter(query),
       ProjectTeamModel
     });
+    const root = await resolveProductionRootOrgUnit({
+      teamId,
+      requestedOrgUnitId: query.orgUnitId
+    });
+    return {
+      teamId,
+      filter: {
+        teamId,
+        orgUnitId: root._id,
+        ...scheduleUserFilter({ ...query, orgUnitId: undefined })
+      }
+    };
   }
 
   async function readDailySlot({
@@ -321,13 +363,24 @@ function createProductionScheduleService({
   }
 
   async function listOptions({ authContext, requestedTeamId }) {
-    return listScopedOrgUnits({
+    assertPermission(authContext, 'report.view');
+    const teamId = await resolveReadTeamId({
       authContext,
       requestedTeamId,
-      moduleKey: DATA_SCOPE_MODULES.REPORT_PRODUCTION,
-      OrgUnitModel,
       ProjectTeamModel
     });
+    const root = await resolveProductionRootOrgUnit({ teamId });
+    return {
+      orgUnits: [{
+        _id: normalizeId(root._id),
+        parentId: normalizeId(root.parentId),
+        code: root.code,
+        name: root.name,
+        type: root.type,
+        level: root.level,
+        path: root.path
+      }]
+    };
   }
 
   async function listMonthlySchedules({
@@ -372,15 +425,22 @@ function createProductionScheduleService({
   }) {
     const filter = {
       teamId: context.activeTeamId,
-      orgUnitId: orgUnit._id,
       month
     };
     let document = await execute(ProductionScheduleModel.findOne(filter), session);
+    if (document && normalizeId(document.orgUnitId) !== normalizeId(orgUnit._id)) {
+      throw reportError(
+        409,
+        'PRODUCTION_SCHEDULE_MONTH_CONFLICT',
+        '当前团队该月份存在非规范组织的生产排产记录，请先完成数据修复'
+      );
+    }
     const created = !document;
     const before = document ? serializeProductionSchedule(document) : null;
     if (!document) {
       document = new ProductionScheduleModel({
         ...filter,
+        orgUnitId: orgUnit._id,
         dailyEntries: [],
         monthlyTotals: {},
         productionPlanForecast: null,
@@ -451,11 +511,9 @@ function createProductionScheduleService({
       : undefined;
     try {
       return await retryConcurrentMaintenance(() => runWithOptionalTransaction(async (session) => {
-        const orgUnit = await resolveWritableOrgUnit({
-          context,
-          moduleKey: DATA_SCOPE_MODULES.REPORT_PRODUCTION,
+        const orgUnit = await resolveProductionRootOrgUnit({
+          teamId: context.activeTeamId,
           requestedOrgUnitId: input.orgUnitId,
-          OrgUnitModel,
           session
         });
         const schedule = await maintain({
@@ -499,11 +557,9 @@ function createProductionScheduleService({
     const now = clock();
     try {
       return await retryConcurrentMaintenance(() => runWithOptionalTransaction(async (session) => {
-        const orgUnit = await resolveWritableOrgUnit({
-          context,
-          moduleKey: DATA_SCOPE_MODULES.REPORT_PRODUCTION,
+        const orgUnit = await resolveProductionRootOrgUnit({
+          teamId: context.activeTeamId,
           requestedOrgUnitId: input.orgUnitId,
-          OrgUnitModel,
           session
         });
         return maintain({
@@ -720,6 +776,7 @@ module.exports = {
   naturalMonth,
   normalizeDailyEntries,
   normalizeMonthlyTotals,
+  productionOrgUnitInvalid,
   quantityTotal,
   retryConcurrentMaintenance,
   scheduleUserFilter,

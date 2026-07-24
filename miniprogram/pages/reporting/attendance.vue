@@ -29,9 +29,21 @@
           <view class="metric-grid">
             <view><text>编制</text><strong>{{ record.authorizedHeadcount }}</strong></view>
             <view><text>在册</text><strong>{{ record.registeredHeadcount }}</strong></view>
-            <view><text>白班实到</text><strong>{{ record.dayShift.actualAttendanceCount }}</strong></view>
-            <view><text>夜班实到</text><strong>{{ record.nightShift.actualAttendanceCount }}</strong></view>
+            <view><text>白班实到</text><strong>{{ attendanceEffectiveActualCount(record.dayShift) }}</strong></view>
+            <view><text>夜班实到</text><strong>{{ attendanceEffectiveActualCount(record.nightShift) }}</strong></view>
           </view>
+          <view class="record-shift-details">
+            <view v-for="shift in summaryShifts" :key="`record-${record._id}-${shift.key}`" class="record-shift-block">
+              <text class="record-shift-title">{{ shift.label }}明细</text>
+              <view class="record-named-grid">
+                <view v-for="item in namedFields" :key="item.key" class="record-named-item">
+                  <text>{{ item.label }}</text>
+                  <strong>{{ attendanceSummaryItemText(record[shift.key]?.[item.key]) }}</strong>
+                </view>
+              </view>
+            </view>
+          </view>
+          <text v-if="record.otherRemark" class="record-remark">其他情况：{{ record.otherRemark }}</text>
           <view class="record-foot">
             <text>{{ attendanceSupportText(record.support) }}</text>
             <button
@@ -72,11 +84,29 @@
         </view>
       </view>
 
+      <view v-for="shift in summaryShifts" :key="shift.key" class="summary-panel">
+        <text class="section-title">{{ shift.label }}汇总</text>
+        <view class="named-summary-list">
+          <view v-for="item in namedFields" :key="item.key" class="named-summary-row">
+            <text>{{ item.label }}</text>
+            <text>{{ attendanceSummaryItemText(summary[shift.key]?.[item.key]) }}</text>
+          </view>
+        </view>
+      </view>
+
       <view v-if="summary.support && summary.support.length" class="summary-panel">
         <text class="section-title">帮产情况</text>
         <text v-for="item in summary.support" :key="item.destination" class="support-line">
           {{ attendanceSupportText(item) }}
         </text>
+      </view>
+
+      <view v-if="otherRemarkRows.length" class="summary-panel">
+        <text class="section-title">各分部其他情况</text>
+        <view v-for="(item, index) in otherRemarkRows" :key="`${item.orgUnitName}-${index}`" class="remark-line">
+          <text class="remark-org">{{ item.orgUnitName || '分部备注' }}</text>
+          <text>{{ item.remark }}</text>
+        </view>
       </view>
 
       <view v-if="canReview && !summary.review" class="summary-panel review-panel">
@@ -119,6 +149,10 @@ import {
 } from '@/api/index.js'
 import { useUserStore } from '@/stores/user.js'
 import {
+  ATTENDANCE_NAMED_FIELDS,
+  attendanceEffectiveActualCount,
+  attendanceNamesText,
+  attendanceOtherRemarkRows,
   attendanceSupportText,
   businessNaturalDate,
   scopedReportingParams
@@ -151,6 +185,14 @@ export default {
       userStore.can('report.review', { write: true, teamRequired: true }) &&
       policy.value.isOfficer === true
     ))
+    const namedFields = ATTENDANCE_NAMED_FIELDS
+    const summaryShifts = Object.freeze([
+      { key: 'dayShift', label: '白班' },
+      { key: 'nightShift', label: '夜班' }
+    ])
+    const otherRemarkRows = computed(() => (
+      attendanceOtherRemarkRows(summary.value.otherRemarks, orgUnits.value)
+    ))
     const leaveTotal = computed(() => (
       Number(summary.value.dayShift?.leaveWithSickCount || 0) +
       Number(summary.value.nightShift?.leaveWithSickCount || 0)
@@ -161,6 +203,11 @@ export default {
       userStore.context?.orgUnit?.name ||
       `组织 ${String(orgUnitId || '').slice(-6)}`
     )
+    const attendanceSummaryItemText = (item = {}) => {
+      const count = Number(item?.count || 0)
+      const names = attendanceNamesText(item?.names)
+      return names === '无' ? `${count} 人` : `${count} 人（${names}）`
+    }
 
     const loadData = async () => {
       const request = requestGate.begin({
@@ -267,6 +314,12 @@ export default {
       canSubmit,
       canReview,
       leaveTotal,
+      namedFields,
+      summaryShifts,
+      otherRemarkRows,
+      attendanceSummaryItemText,
+      attendanceEffectiveActualCount,
+      attendanceNamesText,
       attendanceSupportText,
       orgName,
       onDateChange,
@@ -298,6 +351,15 @@ export default {
 .metric-grid view, .summary-metrics view { padding: 16rpx; background: #f5f8fc; border-radius: 10rpx; }
 .metric-grid text, .summary-metrics text { display: block; font-size: 22rpx; color: #909399; }
 .metric-grid strong, .summary-metrics strong { display: block; margin-top: 6rpx; font-size: 31rpx; color: #303133; }
+.record-shift-details { margin-top: 18rpx; border-top: 1px solid #ebeef5; }
+.record-shift-block { padding-top: 18rpx; }
+.record-shift-title { display: block; font-size: 25rpx; font-weight: 600; color: #303133; }
+.record-named-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 12rpx; }
+.record-named-item { min-width: 0; padding: 14rpx; background: #f5f8fc; border-radius: 10rpx; }
+.record-named-item text, .record-named-item strong { display: block; overflow-wrap: anywhere; }
+.record-named-item text { font-size: 21rpx; color: #909399; }
+.record-named-item strong { margin-top: 6rpx; font-size: 23rpx; line-height: 1.45; color: #303133; }
+.record-remark { display: block; margin-top: 16rpx; font-size: 23rpx; line-height: 1.6; color: #606266; }
 .record-foot { padding-top: 18rpx; margin-top: 20rpx; border-top: 1px solid #ebeef5; color: #64748b; font-size: 23rpx; }
 .text-button, .copy-button { width: auto; height: 60rpx; line-height: 60rpx; margin: 0; padding: 0 20rpx; background: transparent; color: #4096ff; font-size: 24rpx; }
 .warning-panel { padding: 20rpx 22rpx; margin-bottom: 18rpx; border-left: 6rpx solid #e6a23c; }
@@ -311,6 +373,12 @@ export default {
 .summary-heading text:first-child, .section-title { font-size: 29rpx; font-weight: 600; color: #303133; }
 .support-line { display: block; padding: 14rpx 0; border-bottom: 1px solid #ebeef5; font-size: 25rpx; color: #606266; }
 .support-line:last-child { border-bottom: none; }
+.named-summary-list { margin-top: 16rpx; }
+.named-summary-row, .remark-line { display: flex; align-items: flex-start; justify-content: space-between; gap: 20rpx; padding: 14rpx 0; border-bottom: 1px solid #ebeef5; font-size: 24rpx; line-height: 1.55; color: #606266; }
+.named-summary-row:last-child, .remark-line:last-child { border-bottom: none; }
+.named-summary-row text:last-child { text-align: right; }
+.remark-line { display: block; }
+.remark-org { display: block; margin-bottom: 4rpx; font-weight: 600; color: #303133; }
 .reason-field { width: 100%; min-height: 128rpx; box-sizing: border-box; margin-top: 18rpx; padding: 18rpx; background: #f5f8fc; border: 1px solid var(--zl-border, rgba(100,116,139,.18)); border-radius: 10rpx; font-size: 25rpx; }
 .primary-button { height: 80rpx; line-height: 80rpx; margin: 20rpx 0 0; border-radius: 12rpx; background: #4096ff; color: #fff; font-size: 27rpx; }
 .primary-button.danger { background: #e5484d; }

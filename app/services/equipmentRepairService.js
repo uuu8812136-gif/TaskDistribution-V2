@@ -34,6 +34,13 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction, supportsTransactions } = require('./transactionService');
+const {
+  actingSubDepartmentLeaderPositionKeys,
+  canMembershipActAsSubDepartmentLeader,
+  leadershipOrgUnitIds,
+  lockSubDepartmentLeadership,
+  subDepartmentOrgUnitIds
+} = require('./subDepartmentLeadershipService');
 
 const {
   EQUIPMENT_REPAIR_ACTIONS,
@@ -55,7 +62,9 @@ const PENDING_STATUSES = new Set(
   EQUIPMENT_REPAIR_STATUS_VALUES.filter((status) => !TERMINAL_STATUSES.has(status))
 );
 const SUB_DEPARTMENT_POSITION_KEYS = new Set([
-  POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+  POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+  POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+  POSITION_KEYS.SUPERVISOR
 ]);
 const DEPUTY_POSITION_KEYS = new Set([
   POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER,
@@ -349,13 +358,6 @@ function isAssetAdmin(context) {
     context.membership?.functionalRoleKeys?.includes(FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN);
 }
 
-function isSubDepartmentManager(context, orgUnitId) {
-  return context.isSuperAdmin === true || (
-    SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey) &&
-    sameId(context.membership?.orgUnitId, orgUnitId)
-  );
-}
-
 function isDeputyOrAssistant(context) {
   return context.isSuperAdmin === true || DEPUTY_POSITION_KEYS.has(context.membership?.positionKey);
 }
@@ -365,11 +367,13 @@ function isDepartmentManager(context) {
     context.membership?.positionKey === POSITION_KEYS.DEPARTMENT_MANAGER;
 }
 
-function stageActorAllowed(context, order) {
+function stageActorAllowed(context, order, { subDepartmentLeaderAllowed = null } = {}) {
   switch (order.status) {
     case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
     case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING:
-      return isSubDepartmentManager(context, order.orgUnitId);
+      return typeof subDepartmentLeaderAllowed === 'boolean'
+        ? subDepartmentLeaderAllowed
+        : context.isSuperAdmin === true;
     case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING:
     case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING:
       return isAssetAdmin(context);
@@ -384,9 +388,9 @@ function stageActorAllowed(context, order) {
   }
 }
 
-function allowedActions(context, order) {
+function allowedActions(context, order, options = {}) {
   if (context.mode !== SESSION_MODES.TEAM || context.readOnly === true) return [];
-  if (!stageActorAllowed(context, order)) return [];
+  if (!stageActorAllowed(context, order, options)) return [];
   if (order.status === EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR) {
     return [EQUIPMENT_REPAIR_ACTIONS.RESUBMIT, EQUIPMENT_REPAIR_ACTIONS.VOID];
   }
@@ -572,6 +576,66 @@ function createEquipmentRepairService({
     return runWithOptionalTransaction(work, connection);
   }
 
+  function isSubDepartmentStage(order) {
+    return [
+      EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
+      EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
+    ].includes(order.status);
+  }
+
+  async function canActAsSubDepartmentLeader(context, order, session = null) {
+    if (context.isSuperAdmin === true) return true;
+    if (!context.membership) return false;
+    const orgUnitIds = await subDepartmentOrgUnitIds({
+      OrgUnitModel,
+      teamId: order.teamId,
+      orgUnitId: order.orgUnitId,
+      session
+    });
+    return canMembershipActAsSubDepartmentLeader({
+      TeamMembershipModel,
+      OrgUnitModel,
+      membership: context.membership,
+      teamId: order.teamId,
+      orgUnitIds,
+      session
+    });
+  }
+
+  async function belongsToOrderSubDepartment(context, order, session = null) {
+    if (
+      context.mode !== SESSION_MODES.TEAM ||
+      !SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey) ||
+      !sameId(context.activeTeamId, order.teamId)
+    ) {
+      return false;
+    }
+    const [orderSubDepartmentIds, actorSubDepartmentIds] = await Promise.all([
+      subDepartmentOrgUnitIds({
+        OrgUnitModel,
+        teamId: order.teamId,
+        orgUnitId: order.orgUnitId,
+        session
+      }),
+      subDepartmentOrgUnitIds({
+        OrgUnitModel,
+        teamId: order.teamId,
+        orgUnitId: context.membership.orgUnitId,
+        session
+      })
+    ]);
+    return orderSubDepartmentIds.some((orderId) => actorSubDepartmentIds.some(
+      (actorId) => sameId(actorId, orderId)
+    ));
+  }
+
+  async function resolveAllowedActions(context, order, session = null) {
+    if (!isSubDepartmentStage(order)) return allowedActions(context, order);
+    return allowedActions(context, order, {
+      subDepartmentLeaderAllowed: await canActAsSubDepartmentLeader(context, order, session)
+    });
+  }
+
   async function notifyCurrentStage(order, session) {
     let recipients = [];
     const membershipFilter = {
@@ -580,10 +644,30 @@ function createEquipmentRepairService({
     };
     switch (order.status) {
       case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
-      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING:
-        membershipFilter.orgUnitId = order.orgUnitId;
-        membershipFilter.positionKey = { $in: [...SUB_DEPARTMENT_POSITION_KEYS] };
+      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING: {
+        const orgUnitIds = await subDepartmentOrgUnitIds({
+          OrgUnitModel,
+          teamId: order.teamId,
+          orgUnitId: order.orgUnitId,
+          session
+        });
+        membershipFilter.orgUnitId = { $in: await leadershipOrgUnitIds({
+          OrgUnitModel,
+          teamId: order.teamId,
+          orgUnitIds,
+          session
+        }) };
+        membershipFilter.positionKey = {
+          $in: await actingSubDepartmentLeaderPositionKeys({
+            TeamMembershipModel,
+            OrgUnitModel,
+            teamId: order.teamId,
+            orgUnitIds,
+            session
+          })
+        };
         break;
+      }
       case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING:
       case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING:
         membershipFilter.functionalRoleKeys = FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN;
@@ -696,28 +780,85 @@ function createEquipmentRepairService({
     const userFilter = query.todo === 'true' || query.todo === true
       ? { $and: [baseFilter, todoStatusFilter(context)] }
       : baseFilter;
-    const { filter } = await readFilter({
+    const { teamId, filter: scopedFilter } = await readFilter({
       authContext: context,
       requestedTeamId,
       method,
       userFilter
     });
+    let filter = scopedFilter;
+    const todoOnly = query.todo === 'true' || query.todo === true;
+    if (todoOnly && SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
+      const subDepartmentIds = await subDepartmentOrgUnitIds({
+        OrgUnitModel,
+        teamId,
+        orgUnitId: context.membership.orgUnitId
+      });
+      const canLead = await canMembershipActAsSubDepartmentLeader({
+        TeamMembershipModel,
+        OrgUnitModel,
+        membership: context.membership,
+        teamId,
+        orgUnitIds: subDepartmentIds
+      });
+      if (canLead) {
+        const leadershipScope = await leadershipOrgUnitIds({
+          OrgUnitModel,
+          teamId,
+          orgUnitIds: subDepartmentIds
+        });
+        filter = {
+          $or: [
+            scopedFilter,
+            {
+              $and: [
+                baseFilter,
+                {
+                  teamId,
+                  orgUnitId: { $in: leadershipScope },
+                  status: { $in: [
+                    EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
+                    EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
+                  ] }
+                }
+              ]
+            }
+          ]
+        };
+      }
+    }
     const [documents, total] = await Promise.all([
       EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
       EquipmentRepairOrderModel.countDocuments(filter)
     ]);
-    const repairs = documents
-      .map((document) => serializeRepair(document, allowedActions(context, document)))
-      .filter((repair) => query.todo !== 'true' && query.todo !== true || repair.availableActions.length > 0);
-    return { repairs, total, page, pageSize };
+    const repairs = (await Promise.all(
+      documents.map(async (document) => (
+        serializeRepair(document, await resolveAllowedActions(context, document))
+      ))
+    )).filter((repair) => query.todo !== 'true' && query.todo !== true || repair.availableActions.length > 0);
+    return { repairs, total: todoOnly ? repairs.length : total, page, pageSize };
   }
 
   async function getRepair({ authContext, requestedTeamId, method = 'GET', repairId }) {
     const context = assertBusinessContext(authContext);
     const { filter } = await readFilter({ authContext: context, requestedTeamId, method, repairId });
-    const document = await EquipmentRepairOrderModel.findOne(filter).lean();
+    let document = await EquipmentRepairOrderModel.findOne(filter).lean();
+    if (!document && context.mode === SESSION_MODES.TEAM) {
+      const candidate = await EquipmentRepairOrderModel.findOne({
+        _id: normalizeDetailId(repairId),
+        teamId: context.activeTeamId
+      }).lean();
+      if (
+        candidate &&
+        isSubDepartmentStage(candidate) &&
+        await belongsToOrderSubDepartment(context, candidate) &&
+        await canActAsSubDepartmentLeader(context, candidate)
+      ) {
+        document = candidate;
+      }
+    }
     if (!document) throw notFound();
-    return serializeRepair(document, allowedActions(context, document));
+    return serializeRepair(document, await resolveAllowedActions(context, document));
   }
 
   function createPayload(input, type) {
@@ -777,7 +918,7 @@ function createEquipmentRepairService({
             createdBy: context.userId,
             idempotencyKey
           }), session);
-          if (existing) return serializeRepair(existing, allowedActions(context, existing));
+          if (existing) return serializeRepair(existing, await resolveAllowedActions(context, existing, session));
         }
         const asset = await execute(EquipmentAssetModel.findOne(assetFilter), session);
         if (!asset) throw repairError(404, 'EQUIPMENT_NOT_FOUND', 'Equipment does not exist');
@@ -837,7 +978,7 @@ function createEquipmentRepairService({
           await document.save({ session: session || undefined });
         }
         await notifyCurrentStage(document, session);
-        const after = serializeRepair(document, allowedActions(context, document));
+        const after = serializeRepair(document, await resolveAllowedActions(context, document, session));
         await auditService.record({
           req,
           authContext: context,
@@ -857,7 +998,7 @@ function createEquipmentRepairService({
           createdBy: context.userId,
           idempotencyKey
         });
-        if (existing) return serializeRepair(existing, allowedActions(context, existing));
+        if (existing) return serializeRepair(existing, await resolveAllowedActions(context, existing));
       }
       throw error;
     }
@@ -953,15 +1094,7 @@ function createEquipmentRepairService({
       method: 'POST',
       repairId
     });
-    const current = await EquipmentRepairOrderModel.findOne(filter);
-    if (!current) throw notFound();
-    if (current.revision !== revision) {
-      throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order has changed; reload before retrying');
-    }
-    const available = allowedActions(context, current);
-    if (!available.includes(input.action)) {
-      throw repairError(403, 'EQUIPMENT_REPAIR_ACTION_FORBIDDEN', 'Current role cannot perform this repair action');
-    }
+    const normalizedRepairId = normalizeDetailId(repairId);
     const noteRequired = [
       EQUIPMENT_REPAIR_ACTIONS.DEPUTY_APPROVE,
       EQUIPMENT_REPAIR_ACTIONS.MANAGER_APPROVE,
@@ -975,6 +1108,36 @@ function createEquipmentRepairService({
 
     try {
       return await runRepairTransaction(async (session) => {
+      let current = await execute(EquipmentRepairOrderModel.findOne(filter), session);
+      const candidate = current || await execute(EquipmentRepairOrderModel.findOne({
+        _id: normalizedRepairId,
+        teamId: context.activeTeamId
+      }), session);
+      if (candidate && isSubDepartmentStage(candidate)) {
+        await lockSubDepartmentLeadership({
+          OrgUnitModel,
+          teamId: candidate.teamId,
+          orgUnitIds: [candidate.orgUnitId],
+          session
+        });
+      }
+      if (
+        !current &&
+        candidate &&
+        isSubDepartmentStage(candidate) &&
+        await belongsToOrderSubDepartment(context, candidate, session) &&
+        await canActAsSubDepartmentLeader(context, candidate, session)
+      ) {
+        current = candidate;
+      }
+      if (!current) throw notFound();
+      if (current.revision !== revision) {
+        throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order has changed; reload before retrying');
+      }
+      const available = await resolveAllowedActions(context, current, session);
+      if (!available.includes(input.action)) {
+        throw repairError(403, 'EQUIPMENT_REPAIR_ACTION_FORBIDDEN', 'Current role cannot perform this repair action');
+      }
       const before = serializeRepair(current, available);
       let toStatus;
       let setValues = {};
@@ -1072,7 +1235,7 @@ function createEquipmentRepairService({
         throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order changed concurrently');
       }
       await notifyCurrentStage(updated, session);
-      const after = serializeRepair(updated, allowedActions(context, updated));
+      const after = serializeRepair(updated, await resolveAllowedActions(context, updated, session));
       await auditService.record({
         req,
         authContext: context,

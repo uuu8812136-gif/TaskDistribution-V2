@@ -25,6 +25,8 @@ const { normalizeId } = require('./authSessionService');
 const {
   buildScopedDetailFilter,
   buildScopedFilter,
+  buildScopedOrgUnitIdConstraint,
+  isOrgUnitInDataScope,
   normalizeObjectId
 } = require('./scopedQueryService');
 const {
@@ -35,6 +37,8 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
+const { orgUnitsShareSubDepartment } = require('./subDepartmentLeadershipService');
 
 const { EQUIPMENT_STATUSES, EQUIPMENT_STATUS_VALUES } = EquipmentAsset;
 const {
@@ -416,25 +420,24 @@ function createEquipmentRegistryService({
     const scope = resolveModuleDataScope(context, DATA_SCOPE_MODULES.EQUIPMENT);
     let orgUnitId;
     if (scope.scope === DATA_SCOPES.ORG_UNIT) {
-      orgUnitId = normalizeRelatedId(scope.orgUnitId);
-      if (
-        requestedOrgUnitId !== undefined &&
-        requestedOrgUnitId !== null &&
-        requestedOrgUnitId !== '' &&
-        !sameId(requestedOrgUnitId, orgUnitId)
-      ) {
-        throw relatedInvalid();
-      }
+      const requested = requestedOrgUnitId === undefined ||
+        requestedOrgUnitId === null ||
+        requestedOrgUnitId === ''
+        ? fallbackOrgUnitId || scope.orgUnitId
+        : requestedOrgUnitId;
+      orgUnitId = normalizeRelatedId(requested);
+      if (!isOrgUnitInDataScope(scope, orgUnitId)) throw relatedInvalid();
     } else {
       orgUnitId = normalizeRelatedId(
         requestedOrgUnitId === undefined ? fallbackOrgUnitId : requestedOrgUnitId
       );
     }
-    const orgUnit = await execute(OrgUnitModel.findOne({
-      _id: orgUnitId,
+    const orgUnit = await lockActiveOrgUnitReference({
+      OrgUnitModel,
       teamId: context.activeTeamId,
-      status: ORG_UNIT_STATUSES.ACTIVE
-    }), session);
+      orgUnitId,
+      session
+    });
     if (!orgUnit) throw relatedInvalid();
     return orgUnit;
   }
@@ -457,11 +460,23 @@ function createEquipmentRegistryService({
       execute(TeamMembershipModel.findOne({
         teamId: context.activeTeamId,
         userId,
-        orgUnitId,
         status: MEMBERSHIP_STATUSES.ACTIVE
       }), session)
     ]);
-    if (!user || !membership) throw relatedInvalid();
+    if (
+      !user ||
+      !membership ||
+      !(await orgUnitsShareSubDepartment({
+        OrgUnitModel,
+        teamId: context.activeTeamId,
+        leftOrgUnitId: orgUnitId,
+        rightOrgUnitId: membership.orgUnitId,
+        requireActiveOrgUnits: true,
+        session
+      }))
+    ) {
+      throw relatedInvalid();
+    }
     return user;
   }
 
@@ -807,7 +822,7 @@ function createEquipmentRegistryService({
       status: ORG_UNIT_STATUSES.ACTIVE
     };
     if (dataScope.scope === DATA_SCOPES.ORG_UNIT) {
-      orgUnitFilter._id = normalizeRelatedId(dataScope.orgUnitId);
+      orgUnitFilter._id = buildScopedOrgUnitIdConstraint(dataScope);
     }
 
     const orgUnits = await OrgUnitModel.find(orgUnitFilter)

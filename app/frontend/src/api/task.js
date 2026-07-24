@@ -11,6 +11,14 @@ export function getTaskList(params) {
   })
 }
 
+export function getTaskAssignableUsers(params) {
+  return request({
+    url: '/tasks/assignable-users',
+    method: 'get',
+    params
+  })
+}
+
 /**
  * 获取我的任务
  */

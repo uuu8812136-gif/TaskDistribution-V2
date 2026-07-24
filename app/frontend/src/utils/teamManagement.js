@@ -26,11 +26,14 @@ export const POSITION_OPTIONS = Object.freeze([
   { value: 'DEPARTMENT_MANAGER_ASSISTANT', label: '经理助理', level: 2 },
   { value: 'SUB_DEPARTMENT_MANAGER', label: '分部经理', level: 3 },
   { value: 'SUB_DEPARTMENT_DEPUTY_MANAGER', label: '分部副经理', level: 3 },
-  { value: 'TEAM_LEADER', label: '班组长', level: 4 },
-  { value: 'EMPLOYEE', label: '员工', level: 5 }
+  { value: 'SUPERVISOR', label: '主管', level: 4 },
+  { value: 'TEAM_LEADER', label: '班组长', level: 5 },
+  { value: 'EMPLOYEE', label: '员工', level: 6 }
 ])
 
 export const FUNCTIONAL_ROLE_OPTIONS = Object.freeze([
+  { value: 'TRANSPORT_REPORTER', label: '运输提报员' },
+  { value: 'TRANSPORT_ADMIN', label: '运输管理员' },
   { value: 'ATTENDANCE_REPORTER', label: '考勤提报人' },
   { value: 'ATTENDANCE_OFFICER', label: '考勤员' },
   { value: 'ASSET_ADMIN', label: '设备管理员' }
@@ -79,6 +82,7 @@ export const PERMISSION_GROUPS = Object.freeze([
     options: [
       ['report.view', '查看'],
       ['report.submit', '提报'],
+      ['report.transport.master.manage', '运输基础资料维护'],
       ['report.review', '审核'],
       ['report.correct', '纠正'],
       ['report.export', '导出'],
@@ -182,6 +186,19 @@ export function buildOrgUnitTree(units = []) {
   }
   sortNodes(roots)
   return roots
+}
+
+export function reconcileExpandedOrgUnitIds(units = [], expandedIds = null) {
+  const validIds = new Set(units.map((unit) => String(unit._id)))
+  const rootIds = units
+    .filter((unit) => Number(unit.level) === 1 || !unit.parentId)
+    .map((unit) => String(unit._id))
+  const preservedIds = expandedIds === null
+    ? rootIds
+    : Array.isArray(expandedIds)
+    ? expandedIds.map(String).filter((id) => validIds.has(id))
+    : []
+  return [...new Set(preservedIds)]
 }
 
 export function canManageMembership({

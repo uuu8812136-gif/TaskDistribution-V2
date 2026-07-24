@@ -27,6 +27,10 @@ const {
   createStorageKey,
   resolveStoragePath
 } = require('../../../app/services/fileStorageService');
+const {
+  holdLeaderRestoration,
+  promiseStateAfterDelay
+} = require('../helpers/leadershipConcurrency');
 
 const TEST_DATABASE_NAME = 'equipment_inventory_workflow_v2_test';
 const MODELS = [
@@ -148,6 +152,8 @@ async function seedFixture() {
     teamB: objectId(),
     departmentA: objectId(),
     subA: objectId(),
+    groupA: objectId(),
+    groupA2: objectId(),
     subA2: objectId(),
     departmentB: objectId(),
     subB: objectId(),
@@ -155,7 +161,7 @@ async function seedFixture() {
     categoryB: objectId()
   };
   const userKeys = [
-    'inventory', 'subManager', 'otherSubManager', 'deputy', 'assistant', 'manager',
+    'inventory', 'subManager', 'subDeputy', 'supervisor', 'otherSubManager', 'deputy', 'assistant', 'manager',
     'teamBInventory'
   ];
   const users = Object.fromEntries(userKeys.map((key) => [key, {
@@ -226,6 +232,30 @@ async function seedFixture() {
       path: `/${ids.departmentA}/`
     },
     {
+      _id: ids.groupA,
+      teamId: ids.teamA,
+      parentId: ids.subA,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'GROUP_A',
+      name: 'Group A',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 3,
+      path: `/${ids.departmentA}/${ids.subA}/`
+    },
+    {
+      _id: ids.groupA2,
+      teamId: ids.teamA,
+      parentId: ids.subA,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'GROUP_A2',
+      name: 'Group A2',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 1,
+      level: 3,
+      path: `/${ids.departmentA}/${ids.subA}/`
+    },
+    {
       _id: ids.departmentB,
       teamId: ids.teamB,
       parentId: null,
@@ -263,6 +293,18 @@ async function seedFixture() {
       userId: users.subManager._id,
       orgUnitId: ids.subA,
       positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+    }),
+    subDeputy: await membership({
+      teamId: ids.teamA,
+      userId: users.subDeputy._id,
+      orgUnitId: ids.subA,
+      positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER
+    }),
+    supervisor: await membership({
+      teamId: ids.teamA,
+      userId: users.supervisor._id,
+      orgUnitId: ids.groupA,
+      positionKey: permissions.POSITION_KEYS.SUPERVISOR
     }),
     otherSubManager: await membership({
       teamId: ids.teamA,
@@ -591,6 +633,128 @@ test('department manager assistant can replace the deputy at the same fixed stag
     stage: InventoryApproval.INVENTORY_APPROVAL_STAGES.DEPARTMENT_DEPUTY_OR_ASSISTANT
   }).lean();
   assert.equal(approval.actorPositionKey, permissions.POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT);
+});
+
+test('sub-department deputy approves and supervisor fallback ignores other branches and root misassignments', async () => {
+  const rootMisassignedUser = await User.create({
+    username: 'root-misassigned-sub-manager',
+    usernameNormalized: 'root-misassigned-sub-manager',
+    password: 'unused',
+    name: 'root misassigned sub manager',
+    roles: [],
+    isSuperAdmin: false,
+    tokenVersion: 0,
+    status: 'active'
+  });
+  await membership({
+    teamId: fixture.ids.teamA,
+    userId: rootMisassignedUser._id,
+    orgUnitId: fixture.ids.departmentA,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+  });
+
+  const detail = await createDraft();
+  await recordMatchingItem(detail);
+  const submitted = await submitDraft(detail);
+  await InventorySession.updateOne(
+    { _id: submitted._id },
+    { $set: { orgUnitId: fixture.ids.groupA2 } }
+  );
+  const deputyView = await service.getSession({
+    authContext: authContext('subDeputy'),
+    inventorySessionId: submitted._id,
+    query: {}
+  });
+  assert.equal(deputyView.inventorySession.canApprove, true);
+  await assert.rejects(service.getSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id,
+    query: {}
+  }), (error) => error.status === 404);
+  await assert.rejects(service.exportSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id
+  }), (error) => error.status === 404);
+  assert.equal((await service.listSessions({
+    authContext: authContext('supervisor'),
+    query: { pendingOnly: true }
+  })).total, 0);
+
+  await TeamMembership.updateMany({
+    _id: { $in: [fixture.memberships.subManager._id, fixture.memberships.subDeputy._id] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+  const supervisorFallback = await service.getSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id,
+    query: {}
+  });
+  assert.equal(supervisorFallback.inventorySession.canApprove, true);
+  const pending = await service.listSessions({
+    authContext: authContext('supervisor'),
+    query: { pendingOnly: true }
+  });
+  assert.equal(pending.total, 1);
+  assert.equal(pending.inventorySessions[0].canApprove, true);
+  const exported = await service.exportSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id
+  });
+  assert.equal(exported.count, 1);
+
+  const reviewed = await service.reviewSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id,
+    input: {
+      decision: 'APPROVE',
+      comment: '主管兜底审批',
+      expectedVersion: supervisorFallback.inventorySession.version
+    }
+  });
+  assert.equal(reviewed.status, 'PENDING_DEPARTMENT_DEPUTY_OR_ASSISTANT');
+});
+
+test('concurrent leader restoration serializes before supervisor inventory approval', async () => {
+  await TeamMembership.updateMany({
+    _id: { $in: [fixture.memberships.subManager._id, fixture.memberships.subDeputy._id] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+  const detail = await createDraft();
+  await recordMatchingItem(detail);
+  const submitted = await submitDraft(detail);
+  const supervisorView = await service.getSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id,
+    query: {}
+  });
+  assert.equal(supervisorView.inventorySession.canApprove, true);
+
+  const held = await holdLeaderRestoration({
+    authContext: authContext('supervisor'),
+    membershipId: fixture.memberships.subManager._id
+  });
+  const approval = service.reviewSession({
+    authContext: authContext('supervisor'),
+    inventorySessionId: submitted._id,
+    input: {
+      decision: 'APPROVE',
+      expectedVersion: supervisorView.inventorySession.version
+    }
+  });
+  assert.equal(await promiseStateAfterDelay(approval), 'pending');
+  held.release();
+  const [restorationResult, approvalResult] = await Promise.allSettled([
+    held.restoration,
+    approval
+  ]);
+  assert.equal(restorationResult.status, 'fulfilled');
+  assert.equal(approvalResult.status, 'rejected');
+
+  const persisted = await InventorySession.findById(submitted._id).lean();
+  assert.equal(persisted.status, InventorySession.INVENTORY_SESSION_STATUSES.PENDING_SUB_DEPARTMENT_MANAGER);
+  assert.equal(persisted.__v, submitted.version);
+  assert.equal(await InventoryApproval.countDocuments({
+    inventorySessionId: submitted._id,
+    stage: InventoryApproval.INVENTORY_APPROVAL_STAGES.SUB_DEPARTMENT_MANAGER
+  }), 0);
 });
 
 test('team, organization, and attachment boundaries hide foreign resources', async () => {

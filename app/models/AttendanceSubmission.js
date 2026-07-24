@@ -66,7 +66,8 @@ const shiftSchema = new mongoose.Schema({
   sickLeave: { type: namedQuantitySchema, required: true, default: () => ({}) },
   absenteeism: { type: namedQuantitySchema, required: true, default: () => ({}) },
   notYetEmployed: { type: namedQuantitySchema, required: true, default: () => ({}) },
-  pendingDeparture: { type: namedQuantitySchema, required: true, default: () => ({}) }
+  pendingDeparture: { type: namedQuantitySchema, required: true, default: () => ({}) },
+  temporaryWorker: { type: namedQuantitySchema, required: true, default: () => ({}) }
 }, { _id: false, strict: 'throw' });
 
 const supportSchema = new mongoose.Schema({

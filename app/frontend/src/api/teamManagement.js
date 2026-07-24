@@ -56,6 +56,14 @@ export function updateOrgUnit(orgUnitId, data) {
   })
 }
 
+export function deleteOrgUnit(orgUnitId, reason) {
+  return request({
+    url: `/org-units/${orgUnitId}`,
+    method: 'delete',
+    data: { reason }
+  })
+}
+
 export function getTeams(params) {
   return request({
     url: '/teams',

@@ -15,7 +15,7 @@
         <view><text>差异项</text><strong :class="{ danger: inventorySession.differenceCount > 0 }">{{ inventorySession.differenceCount }}</strong></view>
         <view><text>审批轮次</text><strong>第{{ inventorySession.reviewRound }}轮</strong></view>
       </view>
-      <text v-if="inventorySession.status === 'RETURNED'" class="returned-hint">请修改盘点明细后重新提交，新轮次会从分部经理重新审核。</text>
+      <text v-if="inventorySession.status === 'RETURNED'" class="returned-hint">请修改盘点明细后重新提交，新轮次会从分部负责人重新审核。</text>
       <button v-if="inventorySession.canInventory" class="scan-button" :disabled="scanning" @click="startInventoryScan">
         {{ scanning ? '正在扫码' : '扫码盘点设备' }}
       </button>

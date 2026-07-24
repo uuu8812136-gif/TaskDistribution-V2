@@ -16,6 +16,6 @@ router.use(authenticateContext, requireTeamContext, requirePermission('org.manag
 router.get('/', orgUnitController.listOrgUnits);
 router.post('/', businessWriteGuard, orgUnitController.createOrgUnit);
 router.patch('/:orgUnitId', businessWriteGuard, orgUnitController.updateOrgUnit);
+router.delete('/:orgUnitId', businessWriteGuard, orgUnitController.deleteOrgUnit);
 
 module.exports = router;
-

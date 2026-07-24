@@ -13,6 +13,9 @@ const {
   extractEquipmentWorkbookMedia,
   rowKey
 } = require('../services/equipmentWorkbookMediaExtractor');
+const {
+  loadEquipmentOwnershipResolver
+} = require('../services/equipmentOwnershipResolver');
 
 const EQUIPMENT_IMPORT_TAG = 'customer-fixed-assets-2026-midyear-v1';
 const EQUIPMENT_WORKBOOK_FILE = '变速箱物流部2026年中固定资产盘点表(1).xlsx';
@@ -499,6 +502,37 @@ async function collisionSafeAssetCode({ fixture, document, scope }) {
   return { assetCode, collision };
 }
 
+function resolveFixtureOwnership({ candidate, resolver, fallbackOrgUnitId }) {
+  const resolution = resolver.resolve({
+    orgUnitNameSnapshot: candidate.orgUnitNameSnapshot || candidate.orgUnitName,
+    custodianDisplayName: candidate.custodianDisplayName || candidate.custodianName
+  });
+  const dataQuality = canonical(candidate.dataQuality || {});
+  dataQuality.issues = Array.isArray(dataQuality.issues) ? dataQuality.issues : [];
+  dataQuality.exceptionTypes = Array.isArray(dataQuality.exceptionTypes)
+    ? dataQuality.exceptionTypes
+    : [];
+  for (const ownershipException of resolution.exceptions) {
+    dataQuality.issues.push(issue(ownershipException.code, {
+      field: ownershipException.field,
+      originalValue: ownershipException.originalValue,
+      message: ownershipException.message
+    }));
+  }
+  if (resolution.exceptions.length > 0) {
+    dataQuality.status = 'PENDING_CONFIRMATION';
+    dataQuality.exceptionTypes = [...new Set(
+      dataQuality.issues.map(({ exceptionType }) => exceptionType)
+    )];
+  }
+  return {
+    orgUnitId: resolution.orgUnit?._id || fallbackOrgUnitId,
+    custodianUserId: resolution.custodian?._id || null,
+    dataQuality,
+    exceptions: resolution.exceptions
+  };
+}
+
 async function upsertEquipmentFixtures({ bundle, scope, options, changes }) {
   const categoryIds = await resolveCategories({
     scope,
@@ -508,6 +542,9 @@ async function upsertEquipmentFixtures({ bundle, scope, options, changes }) {
   const assetIds = [];
   const fileIds = [];
   const expectedAssets = [];
+  const ownershipResolver = await loadEquipmentOwnershipResolver({
+    teamId: scope.team._id
+  });
   for (const fixture of bundle.publishableFixtures) {
     const document = await resolveAssetDocument(fixture, scope);
     const existing = !document.isNew;
@@ -526,7 +563,12 @@ async function upsertEquipmentFixtures({ bundle, scope, options, changes }) {
       }
     }
     const codeResult = await collisionSafeAssetCode({ fixture, document, scope });
-    const dataQuality = canonical(fixture.candidate.dataQuality);
+    const ownership = resolveFixtureOwnership({
+      candidate,
+      resolver: ownershipResolver,
+      fallbackOrgUnitId: scope.orgUnit._id
+    });
+    const { dataQuality } = ownership;
     if (codeResult.collision) {
       dataQuality.status = 'PENDING_CONFIRMATION';
       dataQuality.issues.push(issue('ASSET_CODE_COLLISION_EXISTING', {
@@ -553,7 +595,7 @@ async function upsertEquipmentFixtures({ bundle, scope, options, changes }) {
       fileIds.push(fileId);
     }
     const desired = {
-      orgUnitId: scope.orgUnit._id,
+      orgUnitId: ownership.orgUnitId,
       assetCode: codeResult.assetCode,
       sourceAssetCode: candidate.sourceAssetCode || '',
       sourceSequence: candidate.sourceSequence || '',
@@ -590,7 +632,7 @@ async function upsertEquipmentFixtures({ bundle, scope, options, changes }) {
       bookQuantity: Number.isFinite(candidate.bookQuantity) ? candidate.bookQuantity : null,
       physicalQuantity: Number.isFinite(candidate.physicalQuantity) ? candidate.physicalQuantity : null,
       originalValue: Number.isFinite(candidate.originalValue) ? candidate.originalValue : null,
-      custodianUserId: null,
+      custodianUserId: ownership.custodianUserId,
       custodianDisplayName: candidate.custodianDisplayName || candidate.custodianName || '',
       orgUnitNameSnapshot: candidate.orgUnitNameSnapshot || candidate.orgUnitName || '',
       location: candidate.location || '',
@@ -664,6 +706,7 @@ module.exports = {
   EXPECTED_PUBLISHED_EQUIPMENT_ASSETS,
   EXPECTED_PHOTO_ASSOCIATIONS,
   buildEquipmentFixtures,
+  resolveFixtureOwnership,
   upsertEquipmentFixtures,
   verifyEquipmentApplied
 };

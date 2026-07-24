@@ -244,7 +244,14 @@
 
 <script>
 import { ref, computed, onMounted } from 'vue'
-import { createTask, updateTask, getTaskDetail, getUsers, uploadTaskAttachment } from '@/api/index.js'
+import {
+	createTask,
+	getAllTasks,
+	getTaskDetail,
+	getTaskAssignableUsers,
+	updateTask,
+	uploadTaskScopedAttachment
+} from '@/api/index.js'
 import { getPriorityText } from '@/utils/format.js'
 import { managedFileId } from '@/utils/attachments.js'
 import { useUserStore } from '@/stores/user.js'
@@ -252,6 +259,9 @@ import {
 	buildTaskOrgUnitOptions,
 	filterTaskParticipants
 } from '@/utils/taskAssignment.js'
+import {
+	hasServerCapability
+} from '@/utils/taskPolicy.js'
 
 export default {
 	name: 'TaskForm',
@@ -323,94 +333,97 @@ export default {
 		const fileList = ref([])
 		const existingAttachments = ref([])
 		const loading = ref(false)
+		const entryAuthorized = ref(false)
 		
-		onMounted(() => {
+		onMounted(async () => {
 			// 获取页面参数
 			const pages = getCurrentPages()
 			const currentPage = pages[pages.length - 1]
-			taskId.value = currentPage.options.id
-			const requiredPermissions = taskId.value
-				? ['task.edit', 'task.assign']
-				: ['task.create', 'task.assign']
-			if (!userStore.can(requiredPermissions, { write: true, teamRequired: true })) {
-				uni.showToast({ title: '无权限执行该操作', icon: 'none' })
-				setTimeout(() => uni.navigateBack(), 300)
-				return
-			}
-			
-			// 加载用户列表
-			loadUsers()
-			
+			taskId.value = currentPage.options.id || ''
 			if (taskId.value) {
 				isEdit.value = true
 				uni.setNavigationBarTitle({
 					title: '编辑任务'
 				})
-				loadTaskDetail()
 			}
+
+			await initializeForm()
 		})
-		
-		// 加载用户列表
-		const loadUsers = async () => {
+
+		const denyEntry = () => {
+			entryAuthorized.value = false
+			uni.showToast({ title: '当前不可执行该操作，请刷新后重试', icon: 'none' })
+			setTimeout(() => uni.navigateBack(), 300)
+		}
+
+		const fetchCurrentCapability = async ({ includeUsers = false } = {}) => {
+			let allowed = false
+			let task = null
+			if (isEdit.value) {
+				const response = await getTaskDetail(taskId.value)
+				task = response.task || null
+				allowed = hasServerCapability(task, 'canEdit')
+			} else {
+				const response = await getAllTasks({ page: 1, limit: 1 })
+				allowed = hasServerCapability(response, 'canCreate')
+			}
+
+			if (!allowed) return { allowed: false, task, users: [] }
+			const usersResponse = await getTaskAssignableUsers({
+				page: 1,
+				limit: includeUsers ? 1000 : 1
+			})
+			return {
+				allowed: true,
+				task,
+				users: includeUsers ? (usersResponse.users || []) : []
+			}
+		}
+
+		const applyTaskDetail = (task) => {
+			if (!task) return
+			orgUnitId.value = typeof task.orgUnitId === 'string'
+				? task.orgUnitId
+				: task.orgUnitId?._id || ''
+
+			form.value.taskName = task.taskName
+			form.value.taskType = task.taskType
+			form.value.taskSource = task.taskSource
+			form.value.description = task.description || ''
+			form.value.priority = task.priority
+			form.value.remarks = task.remarks || ''
+			existingAttachments.value = (task.attachments || [])
+				.map((attachment) => managedFileId(attachment))
+				.filter(Boolean)
+				.map((fileId) => ({ fileId }))
+
+			if (task.plannedCompletionTime) {
+				const date = new Date(task.plannedCompletionTime)
+				form.value.plannedDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+				form.value.plannedTime = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
+			}
+
+			selectedExecutors.value = Array.isArray(task.executor) ? task.executor : []
+			mainExecutor.value = task.mainExecutor || null
+			selectedCcUsers.value = Array.isArray(task.ccUsers) ? task.ccUsers : []
+		}
+
+		const initializeForm = async () => {
 			try {
-				// 传入 limit: 1000 以获取所有用户（避免分页限制）
-				const res = await getUsers({ limit: 1000 })
-				allUsers.value = res.users || []
+				const access = await fetchCurrentCapability({ includeUsers: true })
+				if (!access.allowed) {
+					denyEntry()
+					return
+				}
+				entryAuthorized.value = true
+				if (access.task) applyTaskDetail(access.task)
+				allUsers.value = access.users
 				if (!isEdit.value && isTeamTaskScope.value && orgUnitOptions.value.length === 1) {
 					orgUnitId.value = orgUnitOptions.value[0].value
 				}
 			} catch (error) {
-				console.error('加载用户列表失败:', error)
-				uni.showToast({
-					title: '加载用户列表失败',
-					icon: 'none'
-				})
-			}
-		}
-		
-		// 加载任务详情（编辑时）
-		const loadTaskDetail = async () => {
-			try {
-				const res = await getTaskDetail(taskId.value)
-				const task = res.task
-				orgUnitId.value = typeof task.orgUnitId === 'string'
-					? task.orgUnitId
-					: task.orgUnitId?._id || ''
-				
-				// 填充表单
-				form.value.taskName = task.taskName
-				form.value.taskType = task.taskType
-				form.value.taskSource = task.taskSource
-				form.value.description = task.description || ''
-				form.value.priority = task.priority
-				form.value.remarks = task.remarks || ''
-				existingAttachments.value = (task.attachments || [])
-					.map((attachment) => managedFileId(attachment))
-					.filter(Boolean)
-					.map((fileId) => ({ fileId }))
-				
-				// 处理时间
-				if (task.plannedCompletionTime) {
-					const date = new Date(task.plannedCompletionTime)
-					form.value.plannedDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-					form.value.plannedTime = `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-				}
-				
-				// 处理人员 - 等待用户列表加载完成后设置
-				setTimeout(() => {
-					if (task.executor && task.executor.length > 0) {
-						selectedExecutors.value = task.executor
-					}
-					if (task.mainExecutor) {
-						mainExecutor.value = task.mainExecutor
-					}
-					if (task.ccUsers && task.ccUsers.length > 0) {
-						selectedCcUsers.value = task.ccUsers
-					}
-				}, 500)
-				
-			} catch (error) {
-				console.error('加载任务详情失败:', error)
+				console.error('校验任务操作权限失败:', error)
+				denyEntry()
 			}
 		}
 		
@@ -667,6 +680,13 @@ export default {
 			loading.value = true
 			
 			try {
+				const access = await fetchCurrentCapability()
+				entryAuthorized.value = access.allowed === true
+				if (!entryAuthorized.value) {
+					uni.showToast({ title: '当前任务权限已变更，请刷新后重试', icon: 'none' })
+					return
+				}
+
 				// 构建请求数据
 				const data = {
 					orgUnitId: orgUnitId.value,
@@ -686,7 +706,9 @@ export default {
 				{
 					const attachments = [...existingAttachments.value]
 					for (const file of fileList.value) {
-						const uploadRes = await uploadTaskAttachment(file)
+						const uploadRes = await uploadTaskScopedAttachment(file, isEdit.value
+							? { taskId: taskId.value }
+							: { orgUnitId: orgUnitId.value })
 						attachments.push(uploadRes)
 					}
 					data.attachments = attachments

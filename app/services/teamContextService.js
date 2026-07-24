@@ -3,6 +3,7 @@
 const {
   AUDIT_ACTOR_ROLES,
   DATA_SCOPES,
+  DATA_SCOPE_MODULES,
   DATA_SCOPE_VALUES,
   DATA_SCOPE_MODULE_VALUES,
   MEMBERSHIP_ROLES,
@@ -19,6 +20,7 @@ const {
   AUTH_ERROR_CODES,
   AuthContextError
 } = require('./authContextError');
+const { subDepartmentOrgUnitIds } = require('./subDepartmentLeadershipService');
 
 const GLOBAL_READ_ONLY_SCOPE = 'GLOBAL_READ_ONLY';
 const permissionKeySet = new Set(PERMISSION_KEYS);
@@ -51,6 +53,17 @@ function sameId(left, right) {
 
 function freezeArray(values) {
   return Object.freeze([...values]);
+}
+
+function normalizeOrgUnitScopeIds(values, fallbackOrgUnitId = null) {
+  const normalized = [...new Set(
+    (Array.isArray(values) ? values : [])
+      .map((value) => normalizeId(value))
+      .filter(Boolean)
+  )];
+  const fallback = normalizeId(fallbackOrgUnitId);
+  if (normalized.length === 0 && fallback) normalized.push(fallback);
+  return freezeArray(normalized);
 }
 
 function safeUser(user) {
@@ -207,6 +220,7 @@ function buildContext({
   team = null,
   membership = null,
   orgUnit = null,
+  equipmentOrgUnitScopeIds = [],
   globalReadPermissionKeys = defaultGlobalReadPermissionKeys
 }) {
   const userId = normalizeId(user._id);
@@ -227,6 +241,7 @@ function buildContext({
       : AUDIT_ACTOR_ROLES.MEMBER,
     permissionKeys: Object.freeze([]),
     moduleDataScopes: Object.freeze({}),
+    equipmentOrgUnitScopeIds: Object.freeze([]),
     readOnly: claims.mode !== SESSION_MODES.TEAM,
     canAccessBusiness: claims.mode !== SESSION_MODES.TEAM_SELECTION
   };
@@ -267,6 +282,10 @@ function buildContext({
         : AUDIT_ACTOR_ROLES.MEMBER;
     base.permissionKeys = authorization.permissionKeys;
     base.moduleDataScopes = authorization.moduleDataScopes;
+    base.equipmentOrgUnitScopeIds = normalizeOrgUnitScopeIds(
+      equipmentOrgUnitScopeIds,
+      membership.orgUnitId
+    );
     base.readOnly = false;
   }
 
@@ -342,7 +361,8 @@ function resolveModuleDataScope(context, moduleKey) {
       moduleKey,
       scope: GLOBAL_READ_ONLY_SCOPE,
       teamId: null,
-      orgUnitId: null
+      orgUnitId: null,
+      orgUnitIds: Object.freeze([])
     });
   }
 
@@ -356,13 +376,21 @@ function resolveModuleDataScope(context, moduleKey) {
     );
   }
 
+  const orgUnitId = scope === DATA_SCOPES.ORG_UNIT
+    ? context.membership.orgUnitId
+    : null;
+  const orgUnitIds = scope === DATA_SCOPES.ORG_UNIT
+    ? moduleKey === DATA_SCOPE_MODULES.EQUIPMENT
+      ? normalizeOrgUnitScopeIds(context.equipmentOrgUnitScopeIds, orgUnitId)
+      : freezeArray([orgUnitId])
+    : Object.freeze([]);
+
   return Object.freeze({
     moduleKey,
     scope,
     teamId: context.activeTeamId,
-    orgUnitId: scope === DATA_SCOPES.ORG_UNIT
-      ? context.membership.orgUnitId
-      : null
+    orgUnitId,
+    orgUnitIds
   });
 }
 
@@ -375,6 +403,7 @@ function createTeamContextService({
   findTeamById,
   findMembership,
   findOrgUnitById,
+  findEquipmentOrgUnitScopeIds,
   isSuperAdmin,
   allowLegacyAdminAsSuperAdmin = false,
   globalReadPermissionKeys = defaultGlobalReadPermissionKeys
@@ -395,6 +424,29 @@ function createTeamContextService({
     : null);
   const orgUnitFinder = findOrgUnitById || (OrgUnit
     ? (orgUnitId) => executeQuery(OrgUnit.findById(orgUnitId))
+    : null);
+  const equipmentOrgUnitScopeFinder = findEquipmentOrgUnitScopeIds || (OrgUnit
+    ? async ({ teamId, orgUnitId }) => {
+        const subDepartmentIds = await subDepartmentOrgUnitIds({
+          OrgUnitModel: OrgUnit,
+          teamId,
+          orgUnitId
+        });
+        if (subDepartmentIds.length === 0) return [orgUnitId];
+        const subDepartmentId = subDepartmentIds[0];
+        const branchOrgUnits = await OrgUnit.find({
+          teamId,
+          status: ORG_UNIT_STATUSES.ACTIVE,
+          $or: [
+            { _id: subDepartmentId },
+            { path: { $regex: `/${String(subDepartmentId)}/` } }
+          ]
+        }).select('_id').lean();
+        const branchIds = branchOrgUnits.map(({ _id }) => _id);
+        return branchIds.some((branchId) => sameId(branchId, subDepartmentId))
+          ? branchIds
+          : [orgUnitId];
+      }
     : null);
 
   if (
@@ -514,6 +566,21 @@ function createTeamContextService({
         );
       }
 
+      let equipmentOrgUnitScopeIds = [membership.orgUnitId];
+      if (
+        authorization.moduleDataScopes[DATA_SCOPE_MODULES.EQUIPMENT] === DATA_SCOPES.ORG_UNIT &&
+        typeof equipmentOrgUnitScopeFinder === 'function'
+      ) {
+        equipmentOrgUnitScopeIds = normalizeOrgUnitScopeIds(
+          await equipmentOrgUnitScopeFinder({
+            teamId: claims.activeTeamId,
+            orgUnitId: membership.orgUnitId,
+            orgUnit
+          }),
+          membership.orgUnitId
+        );
+      }
+
       return buildContext({
         claims,
         session,
@@ -529,6 +596,7 @@ function createTeamContextService({
           }))
         },
         orgUnit,
+        equipmentOrgUnitScopeIds,
         globalReadPermissionKeys: normalizedGlobalReadPermissions
       });
     }

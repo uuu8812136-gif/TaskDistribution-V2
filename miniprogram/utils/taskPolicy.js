@@ -3,6 +3,37 @@ export function taskEntityId(value) {
   return candidate === undefined || candidate === null ? '' : String(candidate)
 }
 
+const TASK_LEADERSHIP_POSITION_KEYS = new Set([
+  'SUB_DEPARTMENT_MANAGER',
+  'SUB_DEPARTMENT_DEPUTY_MANAGER',
+  'SUPERVISOR'
+])
+
+export function hasServerCapability(resource, capability) {
+  if (!resource || typeof resource !== 'object' || typeof capability !== 'string') return false
+  const capabilities = resource.capabilities
+  return Boolean(
+    capabilities &&
+    typeof capabilities === 'object' &&
+    Object.prototype.hasOwnProperty.call(capabilities, capability) &&
+    capabilities[capability] === true
+  )
+}
+
+export function isTaskLeadershipCandidate(context) {
+  return Boolean(
+    context?.mode === 'TEAM' &&
+    context?.readOnly !== true &&
+    context?.activeTeamId &&
+    context?.membership?.status === 'ACTIVE' &&
+    TASK_LEADERSHIP_POSITION_KEYS.has(context.membership.positionKey)
+  )
+}
+
+export function canEnterTaskManagement({ context, hasTaskViewPermission = false } = {}) {
+  return hasTaskViewPermission === true || isTaskLeadershipCandidate(context)
+}
+
 export function taskTeamId(task) {
   return taskEntityId(task?.teamId)
 }
@@ -54,107 +85,23 @@ export function isTaskCreator(task, userId) {
   return Boolean(actorId && taskEntityId(task?.creator) === actorId)
 }
 
-export function canAdministrateTask({ isSuperAdmin, membershipRole } = {}) {
-  return isSuperAdmin === true || membershipRole === 'PROJECT_ADMIN'
-}
-
-function canManageTaskWorkflow({
-  task,
-  userId,
-  isTeamMode,
-  isReadOnly,
-  hasReviewPermission,
-  isSuperAdmin,
-  membershipRole,
-  status
-} = {}) {
-  return Boolean(
-    task &&
-    task.status === status &&
-    isTeamMode &&
-    !isReadOnly &&
-    hasReviewPermission &&
-    (
-      isTaskCreator(task, userId) ||
-      canAdministrateTask({ isSuperAdmin, membershipRole })
-    )
-  )
-}
-
-export function canConfirmTask({
-  task,
-  userId,
-  isTeamMode,
-  isReadOnly,
-  isSuperAdmin,
-  membershipRole
-} = {}) {
-  const allSubTasksFinished = task?.isMainTask !== true || (
-    Array.isArray(task?.subTasks) &&
-    task.subTasks.every((subTask) => subTask?.status === 'finished')
-  )
-  return Boolean(
-    task &&
-    task.status === 'pending_confirm' &&
-    allSubTasksFinished &&
-    isTeamMode &&
-    !isReadOnly &&
-    (
-      isTaskCreator(task, userId) ||
-      canAdministrateTask({ isSuperAdmin, membershipRole })
-    )
-  )
+export function canConfirmTask({ task } = {}) {
+  return hasServerCapability(task, 'canConfirm')
 }
 
 export function canApproveTaskExtension(options = {}) {
-  return canManageTaskWorkflow({ ...options, status: 'extension_pending' })
+  return hasServerCapability(options.task, 'canApproveExtension')
 }
 
-export function canApproveExtensionRequest({
-  request,
-  userId,
-  isTeamMode,
-  isReadOnly,
-  hasReviewPermission,
-  isSuperAdmin,
-  membershipRole
-} = {}) {
-  return Boolean(
-    request?.status === 'pending' &&
-    request?.task?.status === 'extension_pending' &&
-    isTeamMode &&
-    !isReadOnly &&
-    hasReviewPermission &&
-    (
-      taskEntityId(request.approver) === taskEntityId(userId) ||
-      canAdministrateTask({ isSuperAdmin, membershipRole })
-    )
-  )
+export function canApproveExtensionRequest({ request } = {}) {
+  return hasServerCapability(request, 'canApprove')
 }
 
 export function canReviewAssignedTask({
   task,
-  userId,
-  isTeamMode,
-  isReadOnly,
-  hasReviewPermission,
   hasReviewed = false
 } = {}) {
-  const actorId = taskEntityId(userId)
-  const isCcUser = Boolean(
-    actorId &&
-    Array.isArray(task?.ccUsers) &&
-    task.ccUsers.some((user) => taskEntityId(user) === actorId)
-  )
-  return Boolean(
-    task &&
-    task.status === 'pending_review' &&
-    isTeamMode &&
-    !isReadOnly &&
-    hasReviewPermission &&
-    !hasReviewed &&
-    isCcUser
-  )
+  return hasServerCapability(task, 'canReview') && hasReviewed !== true
 }
 
 export function hasSubmittedTaskCompletion(task, userId) {

@@ -23,8 +23,10 @@ const TeamMembership = require('../../../app/models/TeamMembership');
 const User = require('../../../app/models/User');
 const {
   AUDIT_ACTIONS,
+  MEMBERSHIP_STATUSES,
   ORG_UNIT_TYPES,
   POSITION_KEYS,
+  POSITION_LEVEL_BY_KEY,
   SESSION_MODES
 } = require('../../../app/config/permissions');
 const {
@@ -123,6 +125,9 @@ async function seed() {
   const peerA = await createUser('file-peer-a');
   const otherOrgA = await createUser('file-other-org-a');
   const noPermissionA = await createUser('file-no-permission-a');
+  const actingSupervisor = await createUser('file-acting-supervisor');
+  const primaryManager = await createUser('file-primary-manager');
+  const siblingMemberA = await createUser('file-sibling-member-a');
   const memberB = await createUser('file-member-b');
 
   const [teamA, teamB] = await ProjectTeam.create([
@@ -156,13 +161,42 @@ async function seed() {
     level: 2,
     path: `/${rootA._id}/`
   });
+  const subDepartmentA = await OrgUnit.create({
+    teamId: teamA._id,
+    parentId: rootA._id,
+    type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+    code: 'LEADERSHIP_SUB',
+    name: 'Leadership Sub-department',
+    level: 2,
+    path: `/${rootA._id}/`
+  });
+  const [supervisorGroupA, siblingGroupA] = await OrgUnit.create([
+    {
+      teamId: teamA._id,
+      parentId: subDepartmentA._id,
+      type: ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'LEADERSHIP_GROUP_A',
+      name: 'Leadership Group A',
+      level: 3,
+      path: `/${rootA._id}/${subDepartmentA._id}/`
+    },
+    {
+      teamId: teamA._id,
+      parentId: subDepartmentA._id,
+      type: ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'LEADERSHIP_GROUP_B',
+      name: 'Leadership Group B',
+      level: 3,
+      path: `/${rootA._id}/${subDepartmentA._id}/`
+    }
+  ]);
 
-  await TeamMembership.create([
+  const memberships = await TeamMembership.create([
     {
       teamId: teamA._id,
       userId: uploaderA._id,
       orgUnitId: rootA._id,
-      permissionKeys: ['task.view', 'task.create', 'task.edit']
+      permissionKeys: ['task.view', 'task.create', 'task.edit', 'task.assign']
     },
     {
       teamId: teamA._id,
@@ -183,6 +217,20 @@ async function seed() {
       permissionKeys: []
     },
     {
+      teamId: teamA._id,
+      userId: actingSupervisor._id,
+      orgUnitId: supervisorGroupA._id,
+      positionKey: POSITION_KEYS.SUPERVISOR,
+      positionLevel: POSITION_LEVEL_BY_KEY[POSITION_KEYS.SUPERVISOR],
+      permissionKeys: []
+    },
+    {
+      teamId: teamA._id,
+      userId: siblingMemberA._id,
+      orgUnitId: siblingGroupA._id,
+      permissionKeys: ['task.view']
+    },
+    {
       teamId: teamB._id,
       userId: memberB._id,
       orgUnitId: rootB._id,
@@ -191,7 +239,7 @@ async function seed() {
   ]);
 
   const plannedCompletionTime = new Date(Date.now() + 86_400_000);
-  const [taskA, taskOtherA, taskB] = await Task.create([
+  const [taskA, taskOtherA, taskB, siblingLeadershipTask] = await Task.create([
     {
       teamId: teamA._id,
       orgUnitId: rootA._id,
@@ -215,6 +263,15 @@ async function seed() {
       creator: memberB._id,
       executor: [memberB._id],
       plannedCompletionTime
+    },
+    {
+      teamId: teamA._id,
+      orgUnitId: siblingGroupA._id,
+      taskName: 'Leadership sibling task',
+      creator: siblingMemberA._id,
+      executor: [siblingMemberA._id],
+      mainExecutor: siblingMemberA._id,
+      plannedCompletionTime
     }
   ]);
 
@@ -222,14 +279,27 @@ async function seed() {
     teamA,
     teamB,
     rootA,
+    otherUnitA,
+    subDepartmentA,
+    supervisorGroupA,
+    siblingGroupA,
     taskA,
     taskOtherA,
     taskB,
+    siblingLeadershipTask,
     uploaderA,
+    actingSupervisor,
+    actingSupervisorMembership: memberships[4],
+    primaryManager,
     uploaderAToken: await issueToken(uploaderA, SESSION_MODES.TEAM, teamA._id),
     peerAToken: await issueToken(peerA, SESSION_MODES.TEAM, teamA._id),
     otherOrgAToken: await issueToken(otherOrgA, SESSION_MODES.TEAM, teamA._id),
     noPermissionAToken: await issueToken(noPermissionA, SESSION_MODES.TEAM, teamA._id),
+    actingSupervisorToken: await issueToken(
+      actingSupervisor,
+      SESSION_MODES.TEAM,
+      teamA._id
+    ),
     memberBToken: await issueToken(memberB, SESSION_MODES.TEAM, teamB._id),
     globalToken: await issueToken(superAdmin, SESSION_MODES.GLOBAL_READ_ONLY),
     selectionToken: await issueToken(superAdmin, SESSION_MODES.TEAM_SELECTION)
@@ -574,4 +644,181 @@ test('private file API enforces tenant, scope, content, and mutation boundaries'
     assert.equal(audits[2].reason, 'Business attachment replaced');
     assert.equal(audits.every((audit) => String(audit.targetTeamId) === String(seeded.teamA._id)), true);
   });
+});
+
+test('stored task permissions keep their original organization scope for task uploads', async () => {
+  await FileAsset.deleteMany({});
+  const upload = ({ taskId, orgUnitId }) => {
+    const query = new URLSearchParams();
+    if (taskId) query.set('taskId', String(taskId));
+    if (orgUnitId) query.set('orgUnitId', String(orgUnitId));
+    return request(app)
+      .post(`/api/files/task-temporary?${query}`)
+      .set('Authorization', `Bearer ${seeded.uploaderAToken}`)
+      .attach('file', PNG_CONTENT, {
+        filename: 'stored-task-scope.png',
+        contentType: 'image/png'
+      });
+  };
+
+  await upload({ taskId: seeded.taskA._id }).expect(201);
+  await upload({ orgUnitId: seeded.rootA._id }).expect(201);
+  assert.equal(await FileAsset.countDocuments(), 2);
+
+  for (const scope of [
+    { taskId: seeded.taskOtherA._id },
+    { orgUnitId: seeded.otherUnitA._id },
+    { taskId: seeded.taskB._id }
+  ]) {
+    const beforeCount = await FileAsset.countDocuments();
+    const denied = await upload(scope).expect(403);
+    assert.equal(denied.body.code, 'TASK_FILE_UPLOAD_DENIED');
+    assert.equal(await FileAsset.countDocuments(), beforeCount);
+  }
+});
+
+test('task-scoped temporary uploads enforce live supervisor scope before persistence and binding', async () => {
+  await FileAsset.deleteMany({});
+  let supervisorToken = seeded.actingSupervisorToken;
+
+  const upload = ({ taskId, orgUnitId, token = supervisorToken }) => {
+    const query = new URLSearchParams();
+    if (taskId) query.set('taskId', String(taskId));
+    if (orgUnitId) query.set('orgUnitId', String(orgUnitId));
+    const suffix = query.toString() ? `?${query}` : '';
+    return request(app)
+      .post(`/api/files/task-temporary${suffix}`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('file', PNG_CONTENT, {
+        filename: 'leadership-task.png',
+        contentType: 'image/png'
+      });
+  };
+
+  const taskUpload = await upload({ taskId: seeded.siblingLeadershipTask._id }).expect(201);
+  const createUpload = await upload({ orgUnitId: seeded.siblingGroupA._id }).expect(201);
+  assert.equal(taskUpload.body.file.status, FileAsset.FILE_STATUSES.TEMPORARY);
+  assert.equal(createUpload.body.file.status, FileAsset.FILE_STATUSES.TEMPORARY);
+  assert.equal(await FileAsset.countDocuments(), 2);
+
+  for (const scope of [
+    { taskId: seeded.taskOtherA._id },
+    { orgUnitId: seeded.otherUnitA._id },
+    { taskId: seeded.taskB._id }
+  ]) {
+    const beforeCount = await FileAsset.countDocuments();
+    const denied = await upload(scope).expect(403);
+    assert.equal(denied.body.code, 'TASK_FILE_UPLOAD_DENIED');
+    assert.equal(await FileAsset.countDocuments(), beforeCount);
+  }
+
+  const missingScopeCount = await FileAsset.countDocuments();
+  const missingScope = await upload({}).expect(400);
+  assert.equal(missingScope.body.code, 'TASK_FILE_SCOPE_REQUIRED');
+  assert.equal(await FileAsset.countDocuments(), missingScopeCount);
+
+  const createdWithAttachment = await request(app)
+    .post('/api/tasks')
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({
+      taskName: 'Leadership task with scoped attachment',
+      orgUnitId: String(seeded.siblingGroupA._id),
+      executor: [String(seeded.siblingLeadershipTask.mainExecutor)],
+      mainExecutor: String(seeded.siblingLeadershipTask.mainExecutor),
+      plannedCompletionTime: new Date(Date.now() + 86_400_000).toISOString(),
+      attachments: [{ fileId: createUpload.body.file._id }]
+    });
+  assert.equal(
+    createdWithAttachment.status,
+    201,
+    JSON.stringify(createdWithAttachment.body)
+  );
+  const boundCreateFile = await FileAsset.findById(createUpload.body.file._id).lean();
+  assert.equal(boundCreateFile.status, FileAsset.FILE_STATUSES.ACTIVE);
+  assert.equal(String(boundCreateFile.ownerId), String(createdWithAttachment.body.task._id));
+
+  const revokedCreateUpload = await upload({
+    orgUnitId: seeded.siblingGroupA._id
+  }).expect(201);
+
+  await TeamMembership.updateOne(
+    { _id: seeded.actingSupervisorMembership._id },
+    { $set: { status: MEMBERSHIP_STATUSES.DISABLED } }
+  );
+  const disabledCount = await FileAsset.countDocuments();
+  const disabledResponse = await upload({ taskId: seeded.siblingLeadershipTask._id });
+  assert.equal([401, 403].includes(disabledResponse.status), true);
+  assert.equal(await FileAsset.countDocuments(), disabledCount);
+  await TeamMembership.updateOne(
+    { _id: seeded.actingSupervisorMembership._id },
+    { $set: { status: MEMBERSHIP_STATUSES.ACTIVE } }
+  );
+  supervisorToken = await issueToken(
+    seeded.actingSupervisor,
+    SESSION_MODES.TEAM,
+    seeded.teamA._id
+  );
+
+  await User.updateOne(
+    { _id: seeded.actingSupervisor._id },
+    { $set: { status: 'inactive' } }
+  );
+  const inactiveCount = await FileAsset.countDocuments();
+  const inactiveResponse = await upload({ taskId: seeded.siblingLeadershipTask._id });
+  assert.equal([401, 403].includes(inactiveResponse.status), true);
+  assert.equal(await FileAsset.countDocuments(), inactiveCount);
+  await User.updateOne(
+    { _id: seeded.actingSupervisor._id },
+    { $set: { status: 'active' } }
+  );
+  supervisorToken = await issueToken(
+    seeded.actingSupervisor,
+    SESSION_MODES.TEAM,
+    seeded.teamA._id
+  );
+
+  await TeamMembership.create({
+    teamId: seeded.teamA._id,
+    userId: seeded.primaryManager._id,
+    orgUnitId: seeded.subDepartmentA._id,
+    positionKey: POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+    positionLevel: POSITION_LEVEL_BY_KEY[POSITION_KEYS.SUB_DEPARTMENT_MANAGER],
+    permissionKeys: []
+  });
+
+  const restoredLeaderCount = await FileAsset.countDocuments();
+  await upload({ taskId: seeded.siblingLeadershipTask._id }).expect(403);
+  await upload({ orgUnitId: seeded.siblingGroupA._id }).expect(403);
+  assert.equal(await FileAsset.countDocuments(), restoredLeaderCount);
+
+  const deniedBinding = await request(app)
+    .put(`/api/tasks/${seeded.siblingLeadershipTask._id}`)
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({ attachments: [{ fileId: taskUpload.body.file._id }] })
+    .expect(403);
+  assert.equal(deniedBinding.body.code, 'TASK_LEADERSHIP_REQUIRED');
+  const unboundFile = await FileAsset.findById(taskUpload.body.file._id).lean();
+  assert.equal(unboundFile.status, FileAsset.FILE_STATUSES.TEMPORARY);
+  assert.equal(unboundFile.ownerId, null);
+  const unchangedTask = await Task.findById(seeded.siblingLeadershipTask._id).lean();
+  assert.deepEqual(unchangedTask.attachments, []);
+
+  const beforeDeniedCreate = await Task.countDocuments();
+  const deniedCreateBinding = await request(app)
+    .post('/api/tasks')
+    .set('Authorization', `Bearer ${supervisorToken}`)
+    .send({
+      taskName: 'Revoked leadership must not bind create upload',
+      orgUnitId: String(seeded.siblingGroupA._id),
+      executor: [String(seeded.siblingLeadershipTask.mainExecutor)],
+      mainExecutor: String(seeded.siblingLeadershipTask.mainExecutor),
+      plannedCompletionTime: new Date(Date.now() + 86_400_000).toISOString(),
+      attachments: [{ fileId: revokedCreateUpload.body.file._id }]
+    })
+    .expect(403);
+  assert.equal(deniedCreateBinding.body.code, 'TASK_LEADERSHIP_REQUIRED');
+  assert.equal(await Task.countDocuments(), beforeDeniedCreate);
+  const unboundCreateFile = await FileAsset.findById(revokedCreateUpload.body.file._id).lean();
+  assert.equal(unboundCreateFile.status, FileAsset.FILE_STATUSES.TEMPORARY);
+  assert.equal(unboundCreateFile.ownerId, null);
 });

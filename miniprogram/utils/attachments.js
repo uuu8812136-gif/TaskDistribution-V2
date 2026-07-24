@@ -7,6 +7,19 @@ export function managedFileId(attachment) {
     : null
 }
 
+export function taskTemporaryUploadUrl({ taskId = '', orgUnitId = '' } = {}) {
+  const normalizedTaskId = taskId === null || taskId === undefined ? '' : String(taskId).trim()
+  const normalizedOrgUnitId = orgUnitId === null || orgUnitId === undefined
+    ? ''
+    : String(orgUnitId).trim()
+  if (Boolean(normalizedTaskId) === Boolean(normalizedOrgUnitId)) {
+    throw new TypeError('任务附件必须且只能指定 taskId 或 orgUnitId')
+  }
+  return normalizedTaskId
+    ? `/files/task-temporary?taskId=${encodeURIComponent(normalizedTaskId)}`
+    : `/files/task-temporary?orgUnitId=${encodeURIComponent(normalizedOrgUnitId)}`
+}
+
 export function attachmentName(attachment) {
   return attachment?.originalName || attachment?.filename || '附件'
 }

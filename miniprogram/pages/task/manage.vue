@@ -145,11 +145,15 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import { getAllTasks } from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
-import { taskDetailUrl } from "@/utils/taskPolicy.js";
+import {
+  canEnterTaskManagement,
+  hasServerCapability,
+  taskDetailUrl
+} from "@/utils/taskPolicy.js";
 import { createLatestRequestGate } from "@/utils/latestRequest.js";
 import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
 import {
@@ -168,10 +172,7 @@ export default {
   },
   setup() {
     const userStore = useUserStore();
-    const canCreate = computed(() => userStore.can('task.create', {
-      write: true,
-      teamRequired: true
-    }));
+    const canCreate = ref(false);
 
     const statusOptions = [
       { label: "全部状态", value: "" },
@@ -208,7 +209,10 @@ export default {
     });
 
     onMounted(() => {
-      if (!userStore.can('task.view')) {
+      if (!canEnterTaskManagement({
+        context: userStore.context,
+        hasTaskViewPermission: userStore.can('task.view')
+      })) {
         uni.showToast({
           title: "无权限访问",
           icon: "none",
@@ -255,6 +259,7 @@ export default {
         priority: currentPriority.value.value,
         keyword: keyword.value.trim(),
       });
+      canCreate.value = false;
       loading.value = true;
 
       try {
@@ -277,6 +282,7 @@ export default {
 
         const res = await getAllTasks(params);
         if (!requestGate.isCurrent(request)) return;
+        canCreate.value = hasServerCapability(res, 'canCreate');
 
         if (request.append) {
           taskList.value = [...taskList.value, ...(res.tasks || [])];
@@ -291,6 +297,11 @@ export default {
         if (requestGate.isCurrent(request)) {
           if (request.append && page.value === request.page) {
             page.value = Math.max(1, request.page - 1);
+          }
+          canCreate.value = false;
+          if (!request.append) {
+            taskList.value = [];
+            hasMore.value = false;
           }
           console.error("加载任务失败:", error);
         }
@@ -344,6 +355,10 @@ export default {
 
     // 跳转到新建任务页
     const goToCreate = () => {
+      if (!canCreate.value) {
+        uni.showToast({ title: "当前不可新建任务，请刷新后重试", icon: "none" });
+        return;
+      }
       uni.navigateTo({
         url: "/pages/task/form",
       });

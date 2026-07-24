@@ -91,6 +91,7 @@ test('fixed permissions and module-specific data scopes match the design', () =>
     'equipment.status.approve',
     'report.view',
     'report.submit',
+    'report.transport.master.manage',
     'report.review',
     'report.correct',
     'report.export',
@@ -106,9 +107,18 @@ test('fixed permissions and module-specific data scopes match the design', () =>
 
   assert.deepEqual(permissions.PERMISSION_KEYS, expectedPermissionKeys);
   assert.equal(new Set(permissions.PERMISSION_KEYS).size, expectedPermissionKeys.length);
+  assert.deepEqual(permissions.FUNCTIONAL_ROLE_KEY_VALUES, [
+    'TRANSPORT_REPORTER',
+    'TRANSPORT_ADMIN',
+    'ATTENDANCE_REPORTER',
+    'ATTENDANCE_OFFICER',
+    'ASSET_ADMIN'
+  ]);
 
   const employeeScopes = scopeMap(
-    permissions.deriveModuleDataScopes({ positionLevel: 5 })
+    permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE
+    })
   );
   assert.deepEqual(
     [...employeeScopes.values()],
@@ -122,7 +132,7 @@ test('fixed permissions and module-specific data scopes match the design', () =>
 
   const attendanceOfficerScopes = scopeMap(
     permissions.deriveModuleDataScopes({
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.ATTENDANCE_OFFICER]
     })
   );
@@ -132,9 +142,29 @@ test('fixed permissions and module-specific data scopes match the design', () =>
   assert.equal(attendanceOfficerScopes.get('task'), 'ORG_UNIT');
   assert.equal(attendanceOfficerScopes.get('equipment'), 'ORG_UNIT');
 
+  const transportAdminScopes = scopeMap(
+    permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVELS.SUB_DEPARTMENT_MANAGER_OR_DEPUTY,
+      functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_ADMIN]
+    })
+  );
+  assert.equal(transportAdminScopes.get('report.transport'), 'TEAM');
+  assert.equal(transportAdminScopes.get('report.attendance'), 'ORG_UNIT');
+  assert.equal(transportAdminScopes.get('report.production'), 'ORG_UNIT');
+  assert.equal(transportAdminScopes.get('task'), 'ORG_UNIT');
+  assert.equal(transportAdminScopes.get('equipment'), 'ORG_UNIT');
+
+  const transportReporterScopes = scopeMap(
+    permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVELS.SUB_DEPARTMENT_MANAGER_OR_DEPUTY,
+      functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER]
+    })
+  );
+  assert.ok([...transportReporterScopes.values()].every((scope) => scope === 'ORG_UNIT'));
+
   const assetAdminScopes = scopeMap(
     permissions.deriveModuleDataScopes({
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN]
     })
   );
@@ -175,13 +205,28 @@ test('foundation model validation rejects invalid hierarchy, scope, and session 
   await membership.validate();
   assert.equal(membership.moduleDataScopes.length, 5);
 
+  const transportAdminMembership = new TeamMembership({
+    teamId,
+    userId: objectId(),
+    orgUnitId,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+    positionLevel: permissions.POSITION_LEVELS.SUB_DEPARTMENT_MANAGER_OR_DEPUTY,
+    functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_ADMIN],
+    permissionKeys: ['report.view']
+  });
+  await transportAdminMembership.validate();
+  const transportAdminScopeMap = scopeMap(transportAdminMembership.moduleDataScopes);
+  assert.equal(transportAdminScopeMap.get('report.transport'), 'TEAM');
+  assert.equal(transportAdminScopeMap.get('report.production'), 'ORG_UNIT');
+  assert.deepEqual(transportAdminMembership.permissionKeys, ['report.view']);
+
   await assert.rejects(
     new TeamMembership({
       teamId,
       userId: objectId(),
       orgUnitId,
       positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER,
-      positionLevel: 5
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE
     }).validate(),
     /positionLevel must be 1/
   );
@@ -266,6 +311,86 @@ test('OrgUnit code is unique within a team and reusable in another team', async 
   await assert.rejects(
     OrgUnit.create({ ...unit, teamId: firstTeamId, name: 'Duplicate Sub Department' }),
     isDuplicateKeyError
+  );
+});
+
+test('OrgUnit tombstones are hidden, immutable, and cannot be hard-deleted', async () => {
+  const teamId = objectId();
+  const actorId = objectId();
+  const deletedAt = new Date('2026-07-24T01:02:03.000Z');
+  const unit = await OrgUnit.create({
+    teamId,
+    type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+    code: 'TOMBSTONE_01',
+    name: 'Tombstone 01',
+    level: 2,
+    path: '/'
+  });
+
+  unit.status = permissions.ORG_UNIT_STATUSES.DELETED;
+  unit.deletedAt = deletedAt;
+  unit.deletedBy = actorId;
+  unit.deletionReason = 'Model lifecycle verification';
+  unit.$locals.allowOrgUnitSoftDelete = true;
+  await unit.save();
+
+  assert.equal(await OrgUnit.findById(unit._id), null);
+  assert.equal(await OrgUnit.exists({ _id: unit._id }), null);
+  assert.equal(await OrgUnit.countDocuments({ teamId }), 0);
+  assert.deepEqual(await OrgUnit.distinct('code', { teamId }), []);
+  assert.deepEqual(await OrgUnit.aggregate([
+    { $match: { teamId } },
+    { $project: { _id: 1 } }
+  ]), []);
+
+  const tombstone = await OrgUnit.findById(unit._id).withDeleted();
+  assert.equal(tombstone.status, permissions.ORG_UNIT_STATUSES.DELETED);
+  assert.equal(tombstone.deletedAt.toISOString(), deletedAt.toISOString());
+  assert.equal(tombstone.deletedBy.toString(), actorId.toString());
+  assert.equal(tombstone.deletionReason, 'Model lifecycle verification');
+  assert.equal(await OrgUnit.countDocuments({ teamId }).withDeleted(), 1);
+
+  tombstone.name = 'Attempted mutation';
+  await assert.rejects(
+    tombstone.save(),
+    (error) => error.code === 'ORG_UNIT_TOMBSTONE_IMMUTABLE'
+  );
+  const queryUpdate = await OrgUnit.updateOne(
+    { _id: unit._id },
+    { $set: { name: 'Attempted query mutation' } }
+  );
+  assert.equal(queryUpdate.matchedCount, 0);
+  await assert.rejects(
+    OrgUnit.updateOne(
+      { _id: unit._id },
+      { $set: { status: permissions.ORG_UNIT_STATUSES.DELETED } }
+    ),
+    (error) => error.code === 'ORG_UNIT_LIFECYCLE_UPDATE_FORBIDDEN'
+  );
+  await assert.rejects(
+    OrgUnit.deleteOne({ _id: unit._id }),
+    (error) => error.code === 'ORG_UNIT_HARD_DELETE_FORBIDDEN'
+  );
+  await assert.rejects(
+    OrgUnit.bulkWrite([{ deleteOne: { filter: { _id: unit._id } } }]),
+    (error) => error.code === 'ORG_UNIT_HARD_DELETE_FORBIDDEN'
+  );
+  assert.ok(await OrgUnit.collection.findOne({ _id: unit._id }));
+
+  await assert.rejects(
+    OrgUnit.create({
+      teamId,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'FORGED_TOMBSTONE',
+      name: 'Forged Tombstone',
+      level: 2,
+      path: '/',
+      status: permissions.ORG_UNIT_STATUSES.DELETED,
+      deletedAt,
+      deletedBy: actorId,
+      deletionReason: 'Bypass attempt'
+    }),
+    (error) => error.code === 'ORG_UNIT_DELETE_TRANSITION_REQUIRED'
   );
 });
 

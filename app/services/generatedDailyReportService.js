@@ -36,7 +36,7 @@ const { runWithOptionalTransaction } = require('./transactionService');
 const { ATTENDANCE_REVIEW_STATUSES } = AttendanceSubmission;
 const { MAX_REPORT_VERSIONS, MAX_SOURCE_SNAPSHOT_BYTES } = GeneratedDailyReport;
 
-const REPORT_RULE_VERSION = 'production-daily-text-v1-2026-07-17';
+const REPORT_RULE_VERSION = 'production-daily-text-v2-2026-07-24';
 const REPORT_TIME_ZONE = 'Asia/Shanghai';
 const EXPECTED_ATTENDANCE_UNIT_COUNT = 7;
 const PERSIST_RETRY_ATTEMPTS = 5;
@@ -61,7 +61,8 @@ const NAMED_ATTENDANCE_FIELDS = Object.freeze([
   'sickLeave',
   'absenteeism',
   'notYetEmployed',
-  'pendingDeparture'
+  'pendingDeparture',
+  'temporaryWorker'
 ]);
 
 function naturalDate(value, field = 'reportDate') {
@@ -140,6 +141,19 @@ function summaryCount(summary, path, fallback = undefined) {
   return count(current, path);
 }
 
+function plannedAttendanceCount(summary = {}, shiftName) {
+  const shift = summary[shiftName] || {};
+  const hasShiftData = (
+    Number(shift.actualAttendanceCount || 0) > 0 ||
+    NAMED_ATTENDANCE_FIELDS.some((field) => Number(shift[field]?.count || 0) > 0)
+  );
+  if (!hasShiftData) return 0;
+  return Math.max(
+    0,
+    summaryCount(summary, 'registeredHeadcount') - summaryCount(summary, `${shiftName}.rest.count`)
+  );
+}
+
 function shiftSnapshot(shift = {}) {
   return {
     actualAttendanceCount: count(
@@ -195,12 +209,20 @@ function assertReviewedSummary(summary, reportDate) {
     for (const field of ['rest', 'leave', 'sickLeave', 'pendingDeparture']) {
       summaryCount(summary, `${shift}.${field}.count`);
     }
+    summaryCount(summary, `${shift}.temporaryWorker.count`, 0);
   }
   if (!Array.isArray(summary.support)) {
     throw reportError(
       409,
       'DAILY_REPORT_ATTENDANCE_SOURCE_INVALID',
       `${reportDate} reviewed attendance support summary is invalid`
+    );
+  }
+  if (summary.otherRemarks !== undefined && !Array.isArray(summary.otherRemarks)) {
+    throw reportError(
+      409,
+      'DAILY_REPORT_ATTENDANCE_SOURCE_INVALID',
+      `${reportDate} reviewed attendance remarks summary is invalid`
     );
   }
 }
@@ -311,6 +333,16 @@ function productionSourceError(message, details = {}) {
   return error;
 }
 
+function productionSourceConflictError(month, scheduleIds) {
+  const error = reportError(
+    409,
+    'DAILY_REPORT_PRODUCTION_SCHEDULE_CONFLICT',
+    `${month} 同一团队存在多条生产排产记录，请先完成数据修复`
+  );
+  error.details = { month, scheduleIds };
+  return error;
+}
+
 async function productionSource({ teamId, reportDate, ProductionScheduleModel, session }) {
   const parsed = parseNaturalDate(reportDate);
   const currentMonth = naturalMonthFromDate(reportDate);
@@ -352,6 +384,14 @@ async function productionSource({ teamId, reportDate, ProductionScheduleModel, s
   for (const schedule of schedules) {
     if (!byMonth.has(schedule.month)) byMonth.set(schedule.month, []);
     byMonth.get(schedule.month).push(schedule);
+  }
+  for (const [month, monthSchedules] of byMonth) {
+    if (monthSchedules.length > 1) {
+      throw productionSourceConflictError(
+        month,
+        monthSchedules.map(({ _id }) => normalizeId(_id))
+      );
+    }
   }
   for (const month of requiredMonths) {
     if (!(byMonth.get(month) || []).length) {
@@ -477,23 +517,10 @@ function buildFinalText({ teamName, reportDate, todayAttendance, yesterdayAttend
 
   const registered = summaryCount(todayAttendance, 'registeredHeadcount');
   const pendingDeparture = summaryCount(todayAttendance, 'pendingDepartureCount');
-  const todayDayPlanned = Math.max(
-    0,
-    registered - summaryCount(todayAttendance, 'dayShift.rest.count')
-  );
-  const todayNightPlanned = Math.max(
-    0,
-    registered - summaryCount(todayAttendance, 'nightShift.rest.count')
-  );
-  const yesterdayRegistered = summaryCount(yesterdayAttendance, 'registeredHeadcount');
-  const yesterdayDayPlanned = Math.max(
-    0,
-    yesterdayRegistered - summaryCount(yesterdayAttendance, 'dayShift.rest.count')
-  );
-  const yesterdayNightPlanned = Math.max(
-    0,
-    yesterdayRegistered - summaryCount(yesterdayAttendance, 'nightShift.rest.count')
-  );
+  const todayDayPlanned = plannedAttendanceCount(todayAttendance, 'dayShift');
+  const todayNightPlanned = plannedAttendanceCount(todayAttendance, 'nightShift');
+  const yesterdayDayPlanned = plannedAttendanceCount(yesterdayAttendance, 'dayShift');
+  const yesterdayNightPlanned = plannedAttendanceCount(yesterdayAttendance, 'nightShift');
   const todayActual = (
     summaryCount(todayAttendance, 'dayShift.actualAttendanceCount') +
     summaryCount(todayAttendance, 'nightShift.actualAttendanceCount')
@@ -502,7 +529,7 @@ function buildFinalText({ teamName, reportDate, todayAttendance, yesterdayAttend
     summaryCount(todayAttendance, 'dayShift.leave.count') +
     summaryCount(todayAttendance, 'nightShift.leave.count')
   );
-  const supportLines = todayAttendance.support.length > 0
+  const otherSituationLines = todayAttendance.support.length > 0
     ? todayAttendance.support.map((item, index) => {
         const destination = safeInlineText(item.destination, '未填写去向', 200);
         const supportCount = count(item.count ?? 0, 'support.count');
@@ -513,8 +540,31 @@ function buildFinalText({ teamName, reportDate, todayAttendance, yesterdayAttend
           `${names.length ? `（${names.join('、')}）` : ''}；`;
       })
     : ['①、无帮产情况；'];
-  supportLines.push(
-    `${String.fromCodePoint(0x2460 + supportLines.length)}、今日实际出勤${todayActual}人，请假${todayLeave}人。`
+  const temporaryWorkerCount = (
+    summaryCount(todayAttendance, 'dayShift.temporaryWorker.count', 0) +
+    summaryCount(todayAttendance, 'nightShift.temporaryWorker.count', 0)
+  );
+  const temporaryWorkerNames = [...new Set([
+    ...(todayAttendance.dayShift?.temporaryWorker?.names || []),
+    ...(todayAttendance.nightShift?.temporaryWorker?.names || [])
+  ].map((name) => safeInlineText(name, '', 100)).filter(Boolean))];
+  if (temporaryWorkerCount > 0 || temporaryWorkerNames.length > 0) {
+    otherSituationLines.push(
+      `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、临时工${temporaryWorkerCount}人` +
+      `${temporaryWorkerNames.length ? `（${temporaryWorkerNames.join('、')}）` : ''}；`
+    );
+  }
+  for (const item of todayAttendance.otherRemarks || []) {
+    const remark = safeInlineText(typeof item === 'string' ? item : item?.remark, '', 2000);
+    if (!remark) continue;
+    const orgUnitName = safeInlineText(typeof item === 'string' ? '' : item?.orgUnitName, '', 200);
+    otherSituationLines.push(
+      `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、` +
+      `${orgUnitName ? `${orgUnitName}：` : ''}${remark}；`
+    );
+  }
+  otherSituationLines.push(
+    `${String.fromCodePoint(0x2460 + otherSituationLines.length)}、今日实际出勤${todayActual}人，请假${todayLeave}人。`
   );
 
   return [
@@ -528,7 +578,7 @@ function buildFinalText({ teamName, reportDate, todayAttendance, yesterdayAttend
       `昨日夜班安排出勤${yesterdayNightPlanned}人，实际出勤${summaryCount(yesterdayAttendance, 'nightShift.actualAttendanceCount')}人；` +
       `今日白班安排出勤${todayDayPlanned}人，夜班安排出勤${todayNightPlanned}人。`,
     '6.其他情况：',
-    ...supportLines
+    ...otherSituationLines
   ].join('\n');
 }
 
@@ -886,6 +936,7 @@ module.exports = {
   REPORT_TIME_ZONE,
   buildFinalText,
   createGeneratedDailyReportService,
+  plannedAttendanceCount,
   productionSource,
   serializeGeneratedDailyReport,
   shiftNaturalDate

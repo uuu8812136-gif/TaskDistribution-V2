@@ -6,10 +6,13 @@ import {
   canApproveExtensionRequest,
   canCompleteAssignedTask,
   canConfirmTask,
+  canEnterTaskManagement,
   canRequestTaskExtension,
   canReviewAssignedTask,
+  hasServerCapability,
   hasReviewedTaskRound,
   hasSubmittedTaskCompletion,
+  isTaskLeadershipCandidate,
   isTaskExecutor,
   taskDetailUrl,
   taskReadParams
@@ -87,61 +90,32 @@ test('mini-program extension entry uses responsible-owner resource authorization
   }), false)
 })
 
-test('mini-program review and approval actions match backend resource authorization', () => {
-  const reviewTask = {
+test('mini-program management actions trust only explicit backend capabilities', () => {
+  const capableTask = {
     ...task,
-    creator: 'creator-1',
-    ccUsers: [{ _id: 'reviewer-1' }],
-    status: 'pending_review'
+    capabilities: {
+      canReview: true,
+      canConfirm: true,
+      canApproveExtension: true
+    }
   }
-  const reviewBase = {
-    task: reviewTask,
-    userId: 'reviewer-1',
-    isTeamMode: true,
-    isReadOnly: false,
-    hasReviewPermission: true
-  }
-  assert.equal(canReviewAssignedTask(reviewBase), true)
-  assert.equal(canReviewAssignedTask({
-    ...reviewBase,
-    task: { ...reviewTask, status: 'completed' }
-  }), false)
+  assert.equal(canReviewAssignedTask({ task: capableTask }), true)
+  assert.equal(canReviewAssignedTask({ task: capableTask, hasReviewed: true }), false)
+  assert.equal(canConfirmTask({ task: capableTask }), true)
+  assert.equal(canApproveTaskExtension({ task: capableTask }), true)
 
-  const confirmationBase = {
-    ...reviewBase,
-    task: { ...reviewTask, status: 'pending_confirm' },
-    hasReviewPermission: false
+  const staleTask = {
+    ...capableTask,
+    capabilities: {
+      canReview: false,
+      canConfirm: false,
+      canApproveExtension: false
+    }
   }
-  assert.equal(canConfirmTask({ ...confirmationBase, userId: 'creator-1' }), true)
-  assert.equal(canConfirmTask(confirmationBase), false)
-  assert.equal(canConfirmTask({ ...confirmationBase, membershipRole: 'PROJECT_ADMIN' }), true)
-  assert.equal(canConfirmTask({ ...confirmationBase, isSuperAdmin: true }), true)
-  assert.equal(canConfirmTask({
-    ...confirmationBase,
-    task: {
-      ...confirmationBase.task,
-      isMainTask: true,
-      subTasks: [{ status: 'finished' }, { status: 'pending_review' }]
-    },
-    userId: 'creator-1'
-  }), false)
-  assert.equal(canConfirmTask({
-    ...confirmationBase,
-    task: {
-      ...confirmationBase.task,
-      isMainTask: true,
-      subTasks: [{ status: 'finished' }, { status: 'finished' }]
-    },
-    userId: 'creator-1'
-  }), true)
-
-  const extensionBase = {
-    ...confirmationBase,
-    task: { ...reviewTask, status: 'extension_pending' }
-  }
-  assert.equal(canApproveTaskExtension({ ...extensionBase, userId: 'creator-1' }), false)
-  assert.equal(canApproveTaskExtension({ ...extensionBase, userId: 'creator-1', hasReviewPermission: true }), true)
-  assert.equal(canApproveTaskExtension(extensionBase), false)
+  assert.equal(canReviewAssignedTask({ task: staleTask }), false)
+  assert.equal(canConfirmTask({ task: staleTask }), false)
+  assert.equal(canApproveTaskExtension({ task: staleTask }), false)
+  assert.equal(canConfirmTask({ task: { ...task, creator: 'actor-1' } }), false)
 })
 
 test('mini-program review history is scoped to the current CC review round', () => {
@@ -156,29 +130,73 @@ test('mini-program review history is scoped to the current CC review round', () 
   assert.equal(hasReviewedTaskRound(reviews, 'reviewer-2', 2), true)
 })
 
-test('mini-program extension list only exposes approval to the task creator or project admin', () => {
-  const request = {
-    status: 'pending',
-    task: { status: 'extension_pending' },
-    applicant: 'executor-1',
-    approver: { _id: 'creator-1' }
-  }
-  const base = {
-    request,
-    isTeamMode: true,
-    isReadOnly: false,
-    hasReviewPermission: true
-  }
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'creator-1' }), true)
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'executor-1' }), false)
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'executor-1', membershipRole: 'PROJECT_ADMIN' }), true)
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'creator-1', isReadOnly: true }), false)
-  assert.equal(canApproveExtensionRequest({ ...base, request: { ...request, status: 'approved' }, userId: 'creator-1' }), false)
+test('mini-program extension approval fails closed without an explicit server capability', () => {
   assert.equal(canApproveExtensionRequest({
-    ...base,
-    request: { ...request, task: { status: 'in_progress' } },
-    userId: 'creator-1'
+    request: { capabilities: { canApprove: true } }
+  }), true)
+  assert.equal(canApproveExtensionRequest({
+    request: { capabilities: { canApprove: false } }
   }), false)
+  assert.equal(canApproveExtensionRequest({ request: {} }), false)
+  assert.equal(canApproveExtensionRequest({
+    request: { status: 'pending', approver: 'actor-1' },
+    userId: 'actor-1',
+    membershipRole: 'PROJECT_ADMIN'
+  }), false)
+})
+
+test('server capability parsing accepts only an own literal true value', () => {
+  assert.equal(hasServerCapability({ capabilities: { canCreate: true } }, 'canCreate'), true)
+  assert.equal(hasServerCapability({ capabilities: { canCreate: false } }, 'canCreate'), false)
+  assert.equal(hasServerCapability({ capabilities: { canCreate: 1 } }, 'canCreate'), false)
+  assert.equal(hasServerCapability({ capabilities: { canCreate: 'true' } }, 'canCreate'), false)
+  assert.equal(hasServerCapability({}, 'canCreate'), false)
+
+  const inherited = Object.create({ canCreate: true })
+  assert.equal(hasServerCapability({ capabilities: inherited }, 'canCreate'), false)
+})
+
+test('fixed sub-department leaders may enter task management without stored permissions', () => {
+  const context = {
+    mode: 'TEAM',
+    readOnly: false,
+    activeTeamId: 'team-1',
+    membership: { status: 'ACTIVE', positionKey: 'SUPERVISOR' }
+  }
+  for (const positionKey of [
+    'SUB_DEPARTMENT_MANAGER',
+    'SUB_DEPARTMENT_DEPUTY_MANAGER',
+    'SUPERVISOR'
+  ]) {
+    const candidate = {
+      ...context,
+      membership: { ...context.membership, positionKey }
+    }
+    assert.equal(isTaskLeadershipCandidate(candidate), true)
+    assert.equal(canEnterTaskManagement({ context: candidate }), true)
+  }
+
+  assert.equal(canEnterTaskManagement({
+    context: {
+      ...context,
+      membership: { ...context.membership, positionKey: 'EMPLOYEE' }
+    }
+  }), false)
+  assert.equal(canEnterTaskManagement({ context: {}, hasTaskViewPermission: true }), true)
+  assert.equal(isTaskLeadershipCandidate({ ...context, mode: 'GLOBAL_READ_ONLY' }), false)
+  assert.equal(isTaskLeadershipCandidate({ ...context, readOnly: true }), false)
+  assert.equal(isTaskLeadershipCandidate({
+    ...context,
+    membership: { ...context.membership, status: 'DISABLED' }
+  }), false)
+})
+
+test('a refreshed false capability immediately revokes a previously visible action', () => {
+  const beforeRestore = { capabilities: { canEdit: true, canDelete: true } }
+  const afterRestore = { capabilities: { canEdit: false, canDelete: false } }
+  assert.equal(hasServerCapability(beforeRestore, 'canEdit'), true)
+  assert.equal(hasServerCapability(afterRestore, 'canEdit'), false)
+  assert.equal(hasServerCapability(afterRestore, 'canDelete'), false)
 })
 
 test('mini-program global task navigation and reads preserve an explicit team context', () => {
@@ -226,6 +244,62 @@ test('mini-program task actions are authorized by resource identity rather than 
   assert.match(source, /canCompleteAssignedTask\(/)
   assert.match(source, /canReviewAssignedTask\(/)
   assert.match(source, /canRequestTaskExtension\(/)
+})
+
+test('mini-program task management routes use live capabilities without static-permission fallback', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const manageSource = fs.readFileSync(`${root}/pages/task/manage.vue`, 'utf8')
+  const detailSource = fs.readFileSync(`${root}/pages/task/detail.vue`, 'utf8')
+  const formSource = fs.readFileSync(`${root}/pages/task/form.vue`, 'utf8')
+  const reviewSource = fs.readFileSync(`${root}/pages/task/review.vue`, 'utf8')
+  const extensionListSource = fs.readFileSync(`${root}/pages/extension/list.vue`, 'utf8')
+  const approvalSource = fs.readFileSync(`${root}/pages/task/approve-extension.vue`, 'utf8')
+  const apiSource = fs.readFileSync(`${root}/api/index.js`, 'utf8')
+
+  assert.match(manageSource, /canEnterTaskManagement\(/)
+  assert.match(manageSource, /hasServerCapability\(res, 'canCreate'\)/)
+  assert.doesNotMatch(manageSource, /userStore\.can\('task\.create'/)
+  assert.doesNotMatch(manageSource, /if \(!userStore\.can\('task\.view'\)\)/)
+
+  assert.match(detailSource, /hasServerCapability\(taskDetail\.value, 'canEdit'\)/)
+  assert.match(detailSource, /hasServerCapability\(taskDetail\.value, 'canDelete'\)/)
+  assert.match(detailSource, /capabilities: \{\}/)
+  assert.match(detailSource, /detailRequestGate\.begin\(/)
+  assert.match(detailSource, /detailRequestGate\.isCurrent\(request\)/)
+  assert.match(detailSource, /onUnmounted\(\(\) => detailRequestGate\.invalidate\(\)\)/)
+  assert.doesNotMatch(detailSource, /userStore\.can\('task\.(?:edit|review)'/)
+
+  assert.match(formSource, /getAllTasks\(\{ page: 1, limit: 1 \}\)/)
+  assert.match(formSource, /getTaskAssignableUsers\(\{/)
+  assert.match(formSource, /limit: includeUsers \? 1000 : 1/)
+  assert.doesNotMatch(formSource, /userStore\.can\('task\.assign'/)
+  assert.match(formSource, /uploadTaskScopedAttachment\(file, isEdit\.value/)
+  assert.match(formSource, /\? \{ taskId: taskId\.value \}/)
+  assert.match(formSource, /: \{ orgUnitId: orgUnitId\.value \}/)
+  assert.match(formSource, /fetchCurrentCapability\(\)/)
+  assert.match(formSource, /hasServerCapability\(task, 'canEdit'\)/)
+  assert.doesNotMatch(formSource, /requiredPermissions/)
+
+  assert.match(reviewSource, /getTaskDetail\(taskId\.value\)/)
+  assert.match(reviewSource, /getTaskReviews\(taskId\.value\)/)
+  assert.match(reviewSource, /refreshAuthorizedTask\(\)/)
+  assert.match(reviewSource, /uploadTaskScopedAttachment\(file, \{/)
+  assert.match(reviewSource, /taskId: taskId\.value/)
+  assert.doesNotMatch(reviewSource, /userStore\.can\('task\.review'/)
+
+  assert.match(extensionListSource, /canApproveExtensionRequest\(\{ request \}\)/)
+  assert.match(extensionListSource, /getExtensionRequest\(ext\._id\)/)
+  assert.doesNotMatch(extensionListSource, /userStore\.can\('task\.review'/)
+
+  assert.match(approvalSource, /getExtensionRequest\(requestId\)/)
+  assert.match(approvalSource, /refreshAuthorizedRequest\(\{ preserveApprovedDays: true \}\)/)
+  assert.doesNotMatch(approvalSource, /userStore\.can\('task\.review'/)
+  assert.match(apiSource, /getExtensionRequest = \(id\)/)
+  assert.match(apiSource, /get\(`\/extensions\/\$\{id\}`\)/)
+  assert.match(apiSource, /getTaskAssignableUsers = \(params = \{\}\)/)
+  assert.match(apiSource, /get\('\/tasks\/assignable-users', params\)/)
+  assert.match(apiSource, /uploadTaskScopedAttachment = async/)
+  assert.match(apiSource, /upload\(taskTemporaryUploadUrl\(\{ taskId, orgUnitId \}\)/)
 })
 
 test('mini-program task detail hides stale completion timestamps for pending executor rounds', () => {

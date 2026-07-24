@@ -464,7 +464,7 @@
 			
 			<!-- 管理员：删除任务 -->
 			<button 
-				v-if="canEdit"
+				v-if="canDelete"
 				class="action-btn danger"
 				@click="handleDelete"
 			>
@@ -483,7 +483,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { onShow } from '@dcloudio/uni-app'
 import { 
 	getTaskDetail, 
@@ -522,10 +522,12 @@ import {
 	canConfirmTask,
 	canRequestTaskExtension,
 	canReviewAssignedTask,
+	hasServerCapability,
 	hasReviewedTaskRound,
 	taskEntityId,
 	taskReadParams
 } from '@/utils/taskPolicy.js'
+import { createLatestRequestGate } from '@/utils/latestRequest.js'
 import ExtensionDialog from './components/ExtensionDialog.vue'
 
 export default {
@@ -541,6 +543,7 @@ export default {
 		const taskDetail = ref({})
 		const reviewRecords = ref([])
 		const extensionHistory = ref([])
+		const detailRequestGate = createLatestRequestGate()
 		
 		const showExtensionDialog = ref(false)
 		
@@ -573,13 +576,26 @@ export default {
 			: {}
 
 		const loadTaskDetail = async () => {
+			const request = detailRequestGate.begin({
+				taskId: taskId.value,
+				params: readParams()
+			})
+			taskDetail.value = {
+				...taskDetail.value,
+				capabilities: {}
+			}
 			try {
-				const res = await getTaskDetail(taskId.value, readParams())
+				const res = await getTaskDetail(request.taskId, request.params)
+				if (!detailRequestGate.isCurrent(request)) return
 				taskDetail.value = res.task || {}
 			} catch (error) {
-				console.error('加载任务详情失败:', error)
+				if (detailRequestGate.isCurrent(request)) {
+					console.error('加载任务详情失败:', error)
+				}
 			}
 		}
+
+		onUnmounted(() => detailRequestGate.invalidate())
 		
 		// 加载审核记录
 		const loadReviewRecords = async () => {
@@ -660,10 +676,6 @@ export default {
 			)
 			return canReviewAssignedTask({
 				task: taskDetail.value,
-				userId: userStore.userInfo?._id,
-				isTeamMode: userStore.isTeamMode,
-				isReadOnly: userStore.isReadOnly,
-				hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
 				hasReviewed
 			})
 		})
@@ -671,12 +683,7 @@ export default {
 		// 最终确认由任务创建人、项目管理员或超级管理员执行。
 		const canConfirm = computed(() => {
 			return canConfirmTask({
-				task: taskDetail.value,
-				userId: userStore.userInfo?._id,
-				isTeamMode: userStore.isTeamMode,
-				isReadOnly: userStore.isReadOnly,
-				isSuperAdmin: userStore.isSuperAdmin,
-				membershipRole: userStore.context?.membership?.role
+				task: taskDetail.value
 			})
 		})
 		
@@ -694,23 +701,19 @@ export default {
 		// 判断是否可以审批延期（管理员 && 延期待审批状态）
 		const canApproveExtension = computed(() => {
 			return canApproveTaskExtension({
-				task: taskDetail.value,
-				userId: userStore.userInfo?._id,
-				isTeamMode: userStore.isTeamMode,
-				isReadOnly: userStore.isReadOnly,
-				hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
-				isSuperAdmin: userStore.isSuperAdmin,
-				membershipRole: userStore.context?.membership?.role
+				task: taskDetail.value
 			})
 		})
 
-		const canEdit = computed(() => userStore.can('task.edit', {
-			write: true,
-			teamRequired: true
-		}))
+		const canEdit = computed(() => hasServerCapability(taskDetail.value, 'canEdit'))
+		const canDelete = computed(() => hasServerCapability(taskDetail.value, 'canDelete'))
 		
 		// 提交完成
 		const handleComplete = () => {
+			if (!canComplete.value) {
+				uni.showToast({ title: '当前任务不可提交完成', icon: 'none' })
+				return
+			}
 			uni.navigateTo({
 				url: `/pages/task/complete?id=${taskId.value}&name=${encodeURIComponent(taskDetail.value.taskName)}`
 			})
@@ -718,6 +721,10 @@ export default {
 		
 		// 审核任务
 		const handleReview = () => {
+			if (!canReview.value) {
+				uni.showToast({ title: '当前任务不可审核，请刷新后重试', icon: 'none' })
+				return
+			}
 			uni.navigateTo({
 				url: `/pages/task/review?id=${taskId.value}&name=${encodeURIComponent(taskDetail.value.taskName)}`
 			})
@@ -725,6 +732,10 @@ export default {
 		
 		// 确认任务
 		const handleConfirm = () => {
+			if (!canConfirm.value) {
+				uni.showToast({ title: '当前任务不可确认，请刷新后重试', icon: 'none' })
+				return
+			}
 			uni.showModal({
 				title: '最终确认任务',
 				content: '确认该任务已完成？',
@@ -747,6 +758,10 @@ export default {
 		
 		// 编辑任务
 		const handleEdit = () => {
+			if (!canEdit.value) {
+				uni.showToast({ title: '当前任务不可编辑，请刷新后重试', icon: 'none' })
+				return
+			}
 			uni.navigateTo({
 				url: `/pages/task/form?id=${taskId.value}`
 			})
@@ -754,6 +769,10 @@ export default {
 		
 		// 删除任务
 		const handleDelete = () => {
+			if (!canDelete.value) {
+				uni.showToast({ title: '当前任务不可删除，请刷新后重试', icon: 'none' })
+				return
+			}
 			uni.showModal({
 				title: '删除任务',
 				content: '确认删除该任务？删除后无法恢复',
@@ -779,6 +798,10 @@ export default {
 		
 		// 申请延期
 		const handleExtension = () => {
+			if (!canApplyExtension.value) {
+				uni.showToast({ title: '当前任务不可申请延期', icon: 'none' })
+				return
+			}
 			showExtensionDialog.value = true
 		}
 		
@@ -799,6 +822,10 @@ export default {
 		
 		// 显示审批弹窗 -> 跳转到审批页面
 		const handleShowApproveDialog = () => {
+			if (!canApproveExtension.value) {
+				uni.showToast({ title: '当前延期申请不可审批，请刷新后重试', icon: 'none' })
+				return
+			}
 			// 获取最新的延期申请
 			if (!extensionHistory.value || extensionHistory.value.length === 0) {
 				uni.showToast({
@@ -900,6 +927,7 @@ export default {
 		canApplyExtension,
 		canApproveExtension,
 		canEdit,
+		canDelete,
 		handleComplete,
 		handleReview,
 		handleConfirm,

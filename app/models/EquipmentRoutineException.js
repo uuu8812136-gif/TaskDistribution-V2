@@ -56,6 +56,13 @@ const historySchema = new mongoose.Schema({
     required: true,
     immutable: true
   },
+  actorPositionKey: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: '',
+    immutable: true
+  },
   actedAt: {
     type: Date,
     required: true,

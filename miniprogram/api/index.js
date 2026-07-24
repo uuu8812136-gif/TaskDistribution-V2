@@ -2,7 +2,7 @@
  * API 接口统一管理
  */
 import { get, post, put, patch, del, upload, download } from '@/utils/request.js'
-import { managedFileId } from '@/utils/attachments.js'
+import { managedFileId, taskTemporaryUploadUrl } from '@/utils/attachments.js'
 
 // ==================== 认证模块 ====================
 
@@ -54,6 +54,15 @@ export const uploadTaskAttachment = async (file) => {
   return { fileId }
 }
 
+export const uploadTaskScopedAttachment = async (file, { taskId = '', orgUnitId = '' } = {}) => {
+  const response = await upload(taskTemporaryUploadUrl({ taskId, orgUnitId }), file.path, {
+    originalName: file.name
+  })
+  const fileId = managedFileId({ fileId: response.file?._id })
+  if (!fileId) throw new Error('上传响应缺少有效文件ID')
+  return { fileId }
+}
+
 export const downloadTaskAttachment = (file, params = {}) => {
   const fileId = managedFileId(file)
   if (!fileId) throw new TypeError('附件文件编号无效')
@@ -78,6 +87,10 @@ export const getMyTasks = (params) => {
  */
 export const getAllTasks = (params) => {
   return get('/tasks', params)
+}
+
+export const getTaskAssignableUsers = (params = {}) => {
+  return get('/tasks/assignable-users', params)
 }
 
 /**
@@ -181,6 +194,10 @@ export const approveExtension = (id, data) => {
  */
 export const getExtensions = (params) => {
   return get('/extensions', params)
+}
+
+export const getExtensionRequest = (id) => {
+  return get(`/extensions/${id}`)
 }
 
 /**
@@ -397,6 +414,10 @@ export const uploadEquipmentStatusAttachment = async (file) => {
 
 export const getTransportRecords = (params = {}) => {
   return get('/transport-records', params)
+}
+
+export const getTransportMasterData = (params = {}) => {
+  return get('/transport-records/master-data', params)
 }
 
 export const getTransportRecord = (transportRecordId, params = {}) => {

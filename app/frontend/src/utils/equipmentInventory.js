@@ -1,6 +1,6 @@
 export const INVENTORY_STATUS_OPTIONS = Object.freeze([
   { value: 'DRAFT', label: '盘点中', type: 'info' },
-  { value: 'PENDING_SUB_DEPARTMENT_MANAGER', label: '待分部经理审核', type: 'warning' },
+  { value: 'PENDING_SUB_DEPARTMENT_MANAGER', label: '待分部负责人审核', type: 'warning' },
   { value: 'PENDING_DEPARTMENT_DEPUTY_OR_ASSISTANT', label: '待副经理/经理助理审核', type: 'warning' },
   { value: 'PENDING_DEPARTMENT_MANAGER', label: '待部门经理终审', type: 'warning' },
   { value: 'RETURNED', label: '已退回修改', type: 'danger' },
@@ -23,7 +23,7 @@ export const INVENTORY_DIFFERENCE_LABELS = Object.freeze({
 
 export const INVENTORY_STAGE_LABELS = Object.freeze({
   INVENTORY_PERSON: '盘点人提交',
-  SUB_DEPARTMENT_MANAGER: '分部经理审核',
+  SUB_DEPARTMENT_MANAGER: '分部负责人审核',
   DEPARTMENT_DEPUTY_OR_ASSISTANT: '部门副经理/经理助理审核',
   DEPARTMENT_MANAGER: '部门经理终审'
 })

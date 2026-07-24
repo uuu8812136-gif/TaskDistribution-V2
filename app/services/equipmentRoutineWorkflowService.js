@@ -24,7 +24,10 @@ const {
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const { normalizeId } = require('./authSessionService');
-const { normalizeObjectId } = require('./scopedQueryService');
+const {
+  normalizeObjectId,
+  resolveScopedOrgUnitIds
+} = require('./scopedQueryService');
 const {
   assertBusinessContext,
   assertPermission,
@@ -36,6 +39,13 @@ const {
   supportsTransactions
 } = require('./transactionService');
 const { EquipmentRegistryError } = require('./equipmentRegistryService');
+const {
+  actingSubDepartmentLeaderPositionKeys,
+  canMembershipActAsSubDepartmentLeader,
+  leadershipOrgUnitIds,
+  lockSubDepartmentLeadership,
+  subDepartmentOrgUnitIds
+} = require('./subDepartmentLeadershipService');
 
 const {
   EQUIPMENT_ROUTINE_EXCEPTION_ACTIONS,
@@ -180,6 +190,7 @@ function serializeException(document) {
       action: item.action,
       opinion: item.opinion || '',
       actorId: normalizeId(item.actorId),
+      actorPositionKey: item.actorPositionKey || '',
       actedAt: item.actedAt
     })),
     resolvedAt: value.resolvedAt || null,
@@ -239,6 +250,35 @@ async function recipientUserIds({
     orgUnitId,
     session
   });
+  const needsSubDepartmentLeader = [
+    RECIPIENT_GROUPS.EXECUTORS_AND_SUB_DEPARTMENT_MANAGER,
+    RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER
+  ].includes(group);
+  const subDepartmentIds = needsSubDepartmentLeader
+    ? await subDepartmentOrgUnitIds({
+        OrgUnitModel,
+        teamId,
+        orgUnitId,
+        session
+      })
+    : [];
+  const subDepartmentLeaderPositionKeys = needsSubDepartmentLeader
+    ? await actingSubDepartmentLeaderPositionKeys({
+        TeamMembershipModel,
+        OrgUnitModel,
+        teamId,
+        orgUnitIds: subDepartmentIds,
+        session
+      })
+    : [];
+  const leadershipOrgUnitScope = needsSubDepartmentLeader
+    ? await leadershipOrgUnitIds({
+        OrgUnitModel,
+        teamId,
+        orgUnitIds: subDepartmentIds,
+        session
+      })
+    : [];
   const clauses = [];
   if (group === RECIPIENT_GROUPS.EXECUTORS_AND_SUB_DEPARTMENT_MANAGER) {
     clauses.push({
@@ -246,8 +286,8 @@ async function recipientUserIds({
       orgUnitId: { $in: descendantsAndSelf }
     });
     clauses.push({
-      positionKey: POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
-      orgUnitId: { $in: ancestorsAndSelf }
+      positionKey: { $in: subDepartmentLeaderPositionKeys },
+      orgUnitId: { $in: leadershipOrgUnitScope }
     });
   } else if (group === RECIPIENT_GROUPS.ASSET_ADMIN_AND_DEPARTMENT_MANAGER) {
     clauses.push({ functionalRoleKeys: FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN });
@@ -259,8 +299,8 @@ async function recipientUserIds({
     });
   } else if (group === RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER) {
     clauses.push({
-      positionKey: POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
-      orgUnitId: { $in: ancestorsAndSelf }
+      positionKey: { $in: subDepartmentLeaderPositionKeys },
+      orgUnitId: { $in: leadershipOrgUnitScope }
     });
   } else if (group === RECIPIENT_GROUPS.ASSET_ADMIN) {
     clauses.push({ functionalRoleKeys: FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN });
@@ -379,6 +419,63 @@ function createEquipmentRoutineWorkflowService({
     return teamId;
   }
 
+  async function exceptionAccessPolicy({
+    authContext,
+    exception,
+    session = null,
+    recipientCache = null
+  }) {
+    const context = assertBusinessContext(authContext);
+    const value = plain(exception);
+    if (
+      context.mode !== SESSION_MODES.TEAM ||
+      context.readOnly === true ||
+      value.status !== EQUIPMENT_ROUTINE_EXCEPTION_STATUSES.OPEN
+    ) {
+      return Object.freeze({ canHandle: false });
+    }
+    const group = exceptionRecipientGroup(value.currentStage);
+    if (!group) return Object.freeze({ canHandle: false });
+    const cacheKey = [
+      normalizeId(value.teamId),
+      normalizeId(value.orgUnitId),
+      group
+    ].join(':');
+    let recipientsPromise = recipientCache?.get(cacheKey);
+    if (!recipientsPromise) {
+      recipientsPromise = recipientUserIds({
+        TeamMembershipModel,
+        OrgUnitModel,
+        UserModel,
+        teamId: value.teamId,
+        orgUnitId: value.orgUnitId,
+        group,
+        session
+      });
+      recipientCache?.set(cacheKey, recipientsPromise);
+    }
+    const recipients = await recipientsPromise;
+    return Object.freeze({
+      canHandle: recipients.includes(normalizeId(context.userId))
+    });
+  }
+
+  async function serializeExceptionForContext(
+    document,
+    authContext,
+    { session = null, recipientCache = null } = {}
+  ) {
+    return {
+      ...serializeException(document),
+      accessPolicy: await exceptionAccessPolicy({
+        authContext,
+        exception: document,
+        session,
+        recipientCache
+      })
+    };
+  }
+
   async function notifyExceptionStage(exceptionDocument, session = null) {
     const exception = plain(exceptionDocument);
     const group = exceptionRecipientGroup(exception.currentStage);
@@ -418,6 +515,7 @@ function createEquipmentRoutineWorkflowService({
     record,
     asset,
     actorId,
+    actorPositionKey = '',
     summary,
     session
   }) {
@@ -436,6 +534,7 @@ function createEquipmentRoutineWorkflowService({
         action: EQUIPMENT_ROUTINE_EXCEPTION_ACTIONS.SUBMITTED,
         opinion: summary || '',
         actorId,
+        actorPositionKey,
         actedAt: now
       }],
       revision: 0
@@ -464,16 +563,58 @@ function createEquipmentRoutineWorkflowService({
     if (context.mode === SESSION_MODES.TEAM) {
       const dataScope = resolveModuleDataScope(context, DATA_SCOPE_MODULES.EQUIPMENT);
       if (dataScope.scope === DATA_SCOPES.ORG_UNIT) {
-        const scope = await organizationScopeIds({
-          OrgUnitModel,
-          teamId,
-          orgUnitId: dataScope.orgUnitId
-        });
-        scopeFilter.orgUnitId = { $in: scope.descendantsAndSelf };
+        if (
+          Array.isArray(context.equipmentOrgUnitScopeIds) &&
+          context.equipmentOrgUnitScopeIds.length > 0
+        ) {
+          scopeFilter.orgUnitId = { $in: [...resolveScopedOrgUnitIds(dataScope)] };
+        } else {
+          const scope = await organizationScopeIds({
+            OrgUnitModel,
+            teamId,
+            orgUnitId: dataScope.orgUnitId
+          });
+          scopeFilter.orgUnitId = { $in: scope.descendantsAndSelf };
+        }
       }
     }
     if (id) scopeFilter._id = id;
     return { $and: [scopeFilter, userFilter] };
+  }
+
+  async function actingLeadershipScope(context, teamId, session = null) {
+    if (
+      context.mode !== SESSION_MODES.TEAM ||
+      ![
+        POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+        POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+        POSITION_KEYS.SUPERVISOR
+      ].includes(context.membership?.positionKey)
+    ) {
+      return [];
+    }
+    const subDepartmentIds = await subDepartmentOrgUnitIds({
+      OrgUnitModel,
+      teamId,
+      orgUnitId: context.membership.orgUnitId,
+      session
+    });
+    if (!(await canMembershipActAsSubDepartmentLeader({
+      TeamMembershipModel,
+      OrgUnitModel,
+      membership: context.membership,
+      teamId,
+      orgUnitIds: subDepartmentIds,
+      session
+    }))) {
+      return [];
+    }
+    return leadershipOrgUnitIds({
+      OrgUnitModel,
+      teamId,
+      orgUnitIds: subDepartmentIds,
+      session
+    });
   }
 
   function rangeFilter(query, field) {
@@ -574,18 +715,39 @@ function createEquipmentRoutineWorkflowService({
     }
     if (query.equipmentId) userFilter.equipmentId = normalizeRelatedId(query.equipmentId);
     if (query.orgUnitId) userFilter.orgUnitId = normalizeRelatedId(query.orgUnitId);
-    const filter = await readFilter({ authContext, teamId, method, userFilter });
+    const scopedFilter = await readFilter({ authContext, teamId, method, userFilter });
+    const leadershipScope = await actingLeadershipScope(authContext, teamId);
+    const filter = leadershipScope.length
+      ? {
+          $or: [
+            scopedFilter,
+            {
+              $and: [
+                userFilter,
+                {
+                  teamId,
+                  orgUnitId: { $in: leadershipScope },
+                  status: EQUIPMENT_ROUTINE_EXCEPTION_STATUSES.OPEN,
+                  currentStage: EQUIPMENT_ROUTINE_EXCEPTION_STAGES.SUB_DEPARTMENT_MANAGER
+                }
+              ]
+            }
+          ]
+        }
+      : scopedFilter;
     const { page, pageSize, skip } = pagination(query);
     const [documents, total] = await Promise.all([
       EquipmentRoutineExceptionModel.find(filter).sort({ updatedAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
       EquipmentRoutineExceptionModel.countDocuments(filter)
     ]);
     const enriched = await enrichRows(documents);
-    return { exceptions: enriched.map((value) => ({
-      ...serializeException(value),
+    const recipientCache = new Map();
+    const exceptions = await Promise.all(enriched.map(async (value) => ({
+      ...await serializeExceptionForContext(value, authContext, { recipientCache }),
       equipment: value.equipment,
       orgUnit: value.orgUnit
-    })), total, page, pageSize };
+    })));
+    return { exceptions, total, page, pageSize };
   }
 
   async function getException({ authContext, requestedTeamId, method = 'GET', exceptionId, query = {} }) {
@@ -598,11 +760,23 @@ function createEquipmentRoutineWorkflowService({
       method,
       id: normalizeRelatedId(exceptionId)
     });
-    const document = await EquipmentRoutineExceptionModel.findOne(filter).lean();
+    let document = await EquipmentRoutineExceptionModel.findOne(filter).lean();
+    if (!document && authContext.mode === SESSION_MODES.TEAM) {
+      const candidate = await EquipmentRoutineExceptionModel.findOne({
+        _id: normalizeRelatedId(exceptionId),
+        teamId
+      }).lean();
+      if (candidate && (await exceptionAccessPolicy({
+        authContext,
+        exception: candidate
+      })).canHandle) {
+        document = candidate;
+      }
+    }
     if (!document) throw notFound();
     const [enriched] = await enrichRows([document]);
     return {
-      ...serializeException(enriched),
+      ...await serializeExceptionForContext(enriched, authContext),
       equipment: enriched.equipment,
       orgUnit: enriched.orgUnit
     };
@@ -627,7 +801,31 @@ function createEquipmentRoutineWorkflowService({
         id: normalizeRelatedId(exceptionId),
         userFilter: { status: EQUIPMENT_ROUTINE_EXCEPTION_STATUSES.OPEN }
       });
-      const exception = await modelQuery(EquipmentRoutineExceptionModel.findOne(filter), session);
+      let exception = await modelQuery(EquipmentRoutineExceptionModel.findOne(filter), session);
+      const candidate = exception || await modelQuery(EquipmentRoutineExceptionModel.findOne({
+          _id: normalizeRelatedId(exceptionId),
+          teamId: context.activeTeamId,
+          status: EQUIPMENT_ROUTINE_EXCEPTION_STATUSES.OPEN
+        }), session);
+      if (
+        candidate?.currentStage === EQUIPMENT_ROUTINE_EXCEPTION_STAGES.SUB_DEPARTMENT_MANAGER
+      ) {
+        await lockSubDepartmentLeadership({
+          OrgUnitModel,
+          teamId: candidate.teamId,
+          orgUnitIds: [candidate.orgUnitId],
+          session
+        });
+      }
+      if (!exception) {
+        if (candidate && (await exceptionAccessPolicy({
+          authContext: context,
+          exception: candidate,
+          session
+        })).canHandle) {
+          exception = candidate;
+        }
+      }
       if (!exception) throw notFound();
       assertPermission(context, exception.routineType === 'INSPECTION' ? 'equipment.inspect' : 'equipment.maintain');
       if (exception.revision !== expectedRevision) {
@@ -660,6 +858,7 @@ function createEquipmentRoutineWorkflowService({
         action: input.action,
         opinion,
         actorId: context.userId,
+        actorPositionKey: context.membership?.positionKey || '',
         actedAt
       });
       if (input.action === EQUIPMENT_ROUTINE_EXCEPTION_ACTIONS.RESOLVE) {
@@ -675,7 +874,8 @@ function createEquipmentRoutineWorkflowService({
       if (exception.status === EQUIPMENT_ROUTINE_EXCEPTION_STATUSES.OPEN) {
         await notifyExceptionStage(exception, session);
       }
-      const after = serializeException(exception);
+       const after = serializeException(exception);
+       const response = await serializeExceptionForContext(exception, context, { session });
       await auditService.record({
         req,
         authContext: context,
@@ -690,7 +890,7 @@ function createEquipmentRoutineWorkflowService({
         targetTeamId: context.activeTeamId,
         session
       });
-        return after;
+         return response;
       });
     } catch (error) {
       if (error?.name === 'VersionError') {

@@ -9,8 +9,11 @@ import {
   MONTHLY_SCHEDULE_FIELDS,
   TRANSPORT_LOAD_FIELDS,
   aggregateDriverMonthly,
+  attendanceEffectiveActualCount,
   attendanceNamesText,
+  attendanceOtherRemarkRows,
   attendanceQualityIssueMessage,
+  attendanceReportingOrgUnits,
   buildAttendancePayload,
   buildDailySchedulePayload,
   buildMonthlySchedulePayload,
@@ -24,6 +27,19 @@ import {
   transportChangedFields
 } from '../src/utils/reporting.js'
 
+test('attendance division options keep only active level-2 sub-departments', () => {
+  assert.deepEqual(attendanceReportingOrgUnits([
+    { _id: 'valid', status: 'ACTIVE', type: 'SUB_DEPARTMENT', level: 2 },
+    { _id: 'disabled', status: 'DISABLED', type: 'SUB_DEPARTMENT', level: 2 },
+    { _id: 'department', status: 'ACTIVE', type: 'DEPARTMENT', level: 2 },
+    { _id: 'nested', status: 'ACTIVE', type: 'SUB_DEPARTMENT', level: 3 },
+    { _id: 'missing-status', type: 'SUB_DEPARTMENT', level: 2 },
+    null
+  ]).map(({ _id }) => _id), ['valid'])
+
+  assert.deepEqual(attendanceReportingOrgUnits(null), [])
+})
+
 test('attendance payload keeps the fixed two-shift template and normalized names', () => {
   const payload = buildAttendancePayload({
     orgUnitId: 'org-1',
@@ -32,7 +48,8 @@ test('attendance payload keeps the fixed two-shift template and normalized names
     registeredHeadcount: 13,
     dayShift: {
       actualAttendanceCount: '11',
-      leave: { count: '2', names: '张三、 李四，张三' }
+      leave: { count: '2', names: '张三、 李四，张三' },
+      temporaryWorker: { count: '3', names: '临时甲、临时乙' }
     },
     nightShift: {},
     support: { destination: ' 物流技术部 ', count: '1', names: '测试人员乙' },
@@ -43,12 +60,43 @@ test('attendance payload keeps the fixed two-shift template and normalized names
   assert.equal(payload.authorizedHeadcount, 12)
   assert.equal(payload.dayShift.actualAttendanceCount, 11)
   assert.deepEqual(payload.dayShift.leave, { count: 2, names: ['张三', '李四'] })
+  assert.deepEqual(payload.dayShift.temporaryWorker, { count: 3, names: ['临时甲', '临时乙'] })
   assert.equal(Object.keys(payload.dayShift).length, ATTENDANCE_NAMED_FIELDS.length + 1)
   assert.equal(payload.nightShift.pendingDeparture.count, 0)
+  assert.deepEqual(payload.nightShift.temporaryWorker, { count: 0, names: [] })
   assert.deepEqual(payload.support.names, ['测试人员乙'])
   assert.equal(payload.otherRemark, '测试')
   assert.equal('teamId' in payload, false)
   assert.equal(attendanceNamesText(payload.dayShift.leave.names), '张三、李四')
+})
+
+test('attendance summary remarks keep their sub-department labels and old strings remain readable', () => {
+  const orgUnits = [{ _id: 'org-1', name: '一分部' }]
+  assert.deepEqual(attendanceOtherRemarkRows([
+    { orgUnitId: 'org-1', remark: '设备点检' },
+    { orgUnitId: 'org-2', remark: '临时调岗' },
+    { orgUnitId: 'org-1', remark: '  ' }
+  ], orgUnits), [
+    { orgUnitName: '一分部', remark: '设备点检' },
+    { orgUnitName: '组织 org-2', remark: '临时调岗' }
+  ])
+  assert.deepEqual(attendanceOtherRemarkRows([' 旧备注 '], orgUnits), [
+    { orgUnitName: '', remark: '旧备注' }
+  ])
+})
+
+test('attendance record display uses the effective actual while edit payload keeps the reported input', () => {
+  assert.equal(attendanceEffectiveActualCount({
+    actualAttendanceCount: 122,
+    notYetEmployed: { count: 1 },
+    temporaryWorker: { count: 2 }
+  }), 125)
+  assert.equal(attendanceEffectiveActualCount({
+    actualAttendanceCount: 122,
+    effectiveActualAttendanceCount: 125,
+    notYetEmployed: { count: 99 },
+    temporaryWorker: { count: 99 }
+  }), 125)
 })
 
 test('attendance monthly view downloads the reviewed-only fixed A:R workbook', () => {
@@ -61,6 +109,8 @@ test('attendance monthly view downloads the reviewed-only fixed A:R workbook', (
   assert.match(viewSource, /导出 A:R 月报/)
   assert.match(viewSource, /exportAttendanceMonthlySummary/)
   assert.match(viewSource, /仅包含已审核日报/)
+  assert.match(viewSource, /白班临时工/)
+  assert.match(viewSource, /dailyOtherRemarks/)
 })
 
 test('attendance quality issues never expose untrusted English messages', () => {
@@ -96,6 +146,7 @@ test('attendance views clear incompatible data and only accept their latest requ
   const root = fileURLToPath(new URL('..', import.meta.url))
   const viewSource = fs.readFileSync(`${root}/src/views/reporting/AttendanceReports.vue`, 'utf8')
 
+  assert.match(viewSource, /orgUnits\.value = attendanceReportingOrgUnits\(result\.orgUnits\)/)
   for (const requestName of ['options', 'records', 'daily', 'monthly', 'detail']) {
     const requestId = `${requestName}RequestId`
     assert.match(viewSource, new RegExp(`let ${requestId} = 0`))

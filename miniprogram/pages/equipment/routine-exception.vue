@@ -56,14 +56,9 @@ export default {
     const opinion = ref('')
     const submitting = ref(false)
     const canHandle = computed(() => {
-      if (!userStore.isTeamMode || exception.value?.status !== 'OPEN') return false
-      const membership = userStore.context.membership || {}
-      if (exception.value.currentStage === 'TEAM_LEADER') return membership.positionKey === 'TEAM_LEADER'
-      if (exception.value.currentStage === 'SUB_DEPARTMENT_MANAGER') {
-        return membership.positionKey === 'SUB_DEPARTMENT_MANAGER'
-      }
-      return exception.value.currentStage === 'ASSET_ADMIN' &&
-        membership.functionalRoleKeys?.includes('ASSET_ADMIN')
+      return userStore.isTeamMode &&
+        exception.value?.status === 'OPEN' &&
+        exception.value?.accessPolicy?.canHandle === true
     })
     const load = async () => {
       if (!exceptionId.value) return
@@ -95,7 +90,7 @@ export default {
     }
     const stageLabel = (value) => ({
       TEAM_LEADER: '班组长处理',
-      SUB_DEPARTMENT_MANAGER: '分部经理处理',
+      SUB_DEPARTMENT_MANAGER: '分部负责人处理',
       ASSET_ADMIN: '设备管理员处理',
       RESOLVED: '已解决'
     }[value] || value || '-')

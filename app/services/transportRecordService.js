@@ -6,11 +6,13 @@ const FileAsset = require('../models/FileAsset');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
 const ReportChangeRecord = require('../models/ReportChangeRecord');
+const TransportMasterData = require('../models/TransportMasterData');
 const TransportRecord = require('../models/TransportRecord');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
-  DATA_SCOPE_MODULES
+  DATA_SCOPE_MODULES,
+  FUNCTIONAL_ROLE_KEYS
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const { createFileAssetService } = require('./fileAssetService');
@@ -41,6 +43,7 @@ const {
   optionalString,
   pagination,
   plain,
+  relatedInvalid,
   reportError,
   requiredString,
   resolveWritableOrgUnit,
@@ -58,6 +61,27 @@ const {
   TRANSPORT_LOAD_FIELDS,
   TRANSPORT_SHIFT_VALUES
 } = TransportRecord;
+const {
+  TRANSPORT_MASTER_KINDS,
+  TRANSPORT_MASTER_STATUSES
+} = TransportMasterData;
+
+function assertTransportReporter(context) {
+  assertPermission(context, 'report.submit');
+  if (context.isSuperAdmin === true) return context;
+  if (
+    context.membership?.functionalRoleKeys?.includes(
+      FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER
+    )
+  ) {
+    return context;
+  }
+  throw reportError(
+    403,
+    'TRANSPORT_REPORTER_REQUIRED',
+    '只有运输提报员可以新增或修改运输记录'
+  );
+}
 
 function naturalDate(value, field, fallback) {
   const selected = value === undefined || value === null || value === '' ? fallback : value;
@@ -137,11 +161,16 @@ function serializeTransportRecord(document) {
     orgUnitId: normalizeId(value.orgUnitId),
     reportDate: value.reportDate,
     shift: value.shift,
+    tripMasterId: normalizeId(value.tripMasterId),
     tripLabel: value.tripLabel,
+    routeMasterId: normalizeId(value.routeMasterId),
     route: value.route,
     dispatchType: value.dispatchType,
+    vehiclePlateMasterId: normalizeId(value.vehiclePlateMasterId),
     vehiclePlate: value.vehiclePlate,
+    vehicleTypeMasterId: normalizeId(value.vehicleTypeMasterId),
     vehicleType: value.vehicleType || '',
+    driverMasterId: normalizeId(value.driverMasterId),
     driverName: value.driverName,
     loadDetails: details,
     loadTotal: loadTotal(details),
@@ -189,12 +218,10 @@ function transportPayload(input, existing, defaultReportDate) {
       TRANSPORT_SHIFT_VALUES,
       'shift'
     ),
-    tripLabel: created || Object.prototype.hasOwnProperty.call(input, 'tripLabel')
-      ? requiredString(input.tripLabel, 'tripLabel', 50)
-      : existing.tripLabel,
-    route: created || Object.prototype.hasOwnProperty.call(input, 'route')
-      ? requiredString(input.route, 'route', 200)
-      : existing.route,
+    // These are immutable historical snapshots unless the corresponding
+    // master-data selection changes. Client-supplied snapshot text is ignored.
+    tripLabel: created ? '' : existing.tripLabel,
+    route: created ? '' : existing.route,
     dispatchType: enumValue(
       created || Object.prototype.hasOwnProperty.call(input, 'dispatchType')
         ? input.dispatchType
@@ -202,15 +229,9 @@ function transportPayload(input, existing, defaultReportDate) {
       TRANSPORT_DISPATCH_TYPE_VALUES,
       'dispatchType'
     ),
-    vehiclePlate: created || Object.prototype.hasOwnProperty.call(input, 'vehiclePlate')
-      ? requiredString(input.vehiclePlate, 'vehiclePlate', 50)
-      : existing.vehiclePlate,
-    vehicleType: Object.prototype.hasOwnProperty.call(input, 'vehicleType')
-      ? optionalString(input.vehicleType, 'vehicleType', 100)
-      : existing?.vehicleType || '',
-    driverName: created || Object.prototype.hasOwnProperty.call(input, 'driverName')
-      ? requiredString(input.driverName, 'driverName', 100)
-      : existing.driverName,
+    vehiclePlate: created ? '' : existing.vehiclePlate,
+    vehicleType: created ? '' : existing.vehicleType || '',
+    driverName: created ? '' : existing.driverName,
     loadDetails: normalizeLoadDetails(
       Object.prototype.hasOwnProperty.call(input, 'loadDetails') ? input.loadDetails : undefined,
       existing?.loadDetails
@@ -290,6 +311,7 @@ function transportUserFilter(query = {}) {
 
 function createTransportRecordService({
   TransportRecordModel = TransportRecord,
+  TransportMasterDataModel = TransportMasterData,
   ReportChangeRecordModel = ReportChangeRecord,
   FileAssetModel = FileAsset,
   OrgUnitModel = OrgUnit,
@@ -305,6 +327,80 @@ function createTransportRecordService({
     auditService,
     connection
   });
+
+  async function resolveMasterDataPayload({ context, input, existing, payload, session }) {
+    const mappings = [
+      {
+        idField: 'tripMasterId',
+        kind: TRANSPORT_MASTER_KINDS.TRIP,
+        required: true,
+        apply(master) {
+          payload.tripLabel = master.name;
+        }
+      },
+      {
+        idField: 'routeMasterId',
+        kind: TRANSPORT_MASTER_KINDS.ROUTE,
+        required: true,
+        apply(master) {
+          payload.route = master.name;
+        }
+      },
+      {
+        idField: 'vehiclePlateMasterId',
+        kind: TRANSPORT_MASTER_KINDS.VEHICLE_PLATE,
+        required: true,
+        apply(master) {
+          payload.vehiclePlate = master.name;
+        }
+      },
+      {
+        idField: 'vehicleTypeMasterId',
+        kind: TRANSPORT_MASTER_KINDS.VEHICLE_TYPE,
+        required: false,
+        apply(master) {
+          payload.vehicleType = master?.name || '';
+        }
+      },
+      {
+        idField: 'driverMasterId',
+        kind: TRANSPORT_MASTER_KINDS.DRIVER,
+        required: true,
+        apply(master) {
+          payload.driverName = master.name;
+        }
+      }
+    ];
+
+    for (const mapping of mappings) {
+      const suppliesMasterId = Object.prototype.hasOwnProperty.call(input, mapping.idField);
+      const currentMasterId = existing?.[mapping.idField] || null;
+      let masterId = currentMasterId;
+      if (suppliesMasterId) {
+        masterId = normalizeRelatedId(input[mapping.idField], { optional: !mapping.required });
+      } else if (!existing && mapping.required) {
+        throw relatedInvalid();
+      }
+      payload[mapping.idField] = masterId;
+      if (!masterId) {
+        if (mapping.required) throw relatedInvalid();
+        if (suppliesMasterId || !existing) mapping.apply(null);
+        continue;
+      }
+      if (existing && (!suppliesMasterId || normalizeId(masterId) === normalizeId(currentMasterId))) {
+        continue;
+      }
+      const master = await execute(TransportMasterDataModel.findOne({
+        _id: masterId,
+        teamId: context.activeTeamId,
+        kind: mapping.kind,
+        status: TRANSPORT_MASTER_STATUSES.ACTIVE
+      }), session);
+      if (!master) throw relatedInvalid();
+      mapping.apply(master);
+    }
+    return payload;
+  }
   async function scopedRead({
     authContext,
     requestedTeamId,
@@ -425,7 +521,7 @@ function createTransportRecordService({
 
   async function createRecord({ authContext, req, input = {} }) {
     const context = assertTeamContext(authContext);
-    assertPermission(context, 'report.submit');
+    assertTransportReporter(context);
     assertNoClientTeamId(input);
     assertNoLegacyPhotoFields(input);
     const recordId = objectId();
@@ -446,11 +542,18 @@ function createTransportRecordService({
           FileAssetModel,
           session
         });
+        const payload = await resolveMasterDataPayload({
+          context,
+          input,
+          existing: null,
+          payload: transportPayload(input, null, businessDateInShanghai(now)),
+          session
+        });
         const document = await createOne(TransportRecordModel, {
           _id: recordId,
           teamId: context.activeTeamId,
           orgUnitId: orgUnit._id,
-          ...transportPayload(input, null, businessDateInShanghai(now)),
+          ...payload,
           photoFileIds: [],
           submittedAt: now,
           createdBy: context.userId,
@@ -507,7 +610,7 @@ function createTransportRecordService({
     input = {}
   }) {
     const context = assertTeamContext(authContext);
-    assertPermission(context, 'report.submit');
+    assertTransportReporter(context);
     assertNoClientTeamId(input);
     assertNoLegacyPhotoFields(input);
     try {
@@ -553,11 +656,18 @@ function createTransportRecordService({
           });
           document.photoFileIds = managedPhotos.map(({ fileId }) => fileId);
         }
-        Object.assign(document, transportPayload(
+        const payload = await resolveMasterDataPayload({
+          context,
           input,
-          plain(document),
-          businessDateInShanghai(clock())
-        ), {
+          existing: plain(document),
+          payload: transportPayload(
+            input,
+            plain(document),
+            businessDateInShanghai(clock())
+          ),
+          session
+        });
+        Object.assign(document, payload, {
           orgUnitId: orgUnit._id,
           updatedBy: context.userId
         });

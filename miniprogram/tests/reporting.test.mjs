@@ -8,6 +8,8 @@ import {
   DAILY_SCHEDULE_FIELDS,
   MONTHLY_SCHEDULE_FIELDS,
   TRANSPORT_LOAD_FIELDS,
+  attendanceEffectiveActualCount,
+  attendanceOtherRemarkRows,
   buildOrgUnitOptions,
   buildAttendancePayload,
   buildTransportFields,
@@ -25,7 +27,8 @@ test('attendance form emits the fixed two-shift payload and keeps named exceptio
     registeredHeadcount: '13',
     dayShift: {
       actualAttendanceCount: '11',
-      pendingDeparture: { count: '1', names: '测试人员甲、测试人员甲' }
+      pendingDeparture: { count: '1', names: '测试人员甲、测试人员甲' },
+      temporaryWorker: { count: '2', names: '临时甲、临时乙' }
     },
     nightShift: {},
     support: { destination: '物流技术部', count: '1', names: '测试人员乙' },
@@ -35,11 +38,40 @@ test('attendance form emits the fixed two-shift payload and keeps named exceptio
 
   assert.equal(Object.keys(payload.dayShift).length, ATTENDANCE_NAMED_FIELDS.length + 1)
   assert.deepEqual(payload.dayShift.pendingDeparture, { count: 1, names: ['测试人员甲'] })
+  assert.deepEqual(payload.dayShift.temporaryWorker, { count: 2, names: ['临时甲', '临时乙'] })
   assert.equal(payload.nightShift.sickLeave.count, 0)
+  assert.deepEqual(payload.nightShift.temporaryWorker, { count: 0, names: [] })
   assert.deepEqual(payload.support.names, ['测试人员乙'])
   assert.equal(payload.otherRemark, '测试')
   assert.equal(payload.reason, '补报')
   assert.equal(payload.teamId, undefined)
+})
+
+test('attendance summary remarks keep their sub-department labels and old strings remain readable', () => {
+  const orgUnits = [{ _id: 'org-1', name: '一分部' }]
+  assert.deepEqual(attendanceOtherRemarkRows([
+    { orgUnitId: 'org-1', remark: '设备点检' },
+    { orgUnitId: 'org-2', remark: '临时调岗' },
+    { orgUnitId: 'org-1', remark: '' }
+  ], orgUnits), [
+    { orgUnitName: '一分部', remark: '设备点检' },
+    { orgUnitName: '组织 org-2', remark: '临时调岗' }
+  ])
+  assert.deepEqual(attendanceOtherRemarkRows([' 旧备注 '], orgUnits), [
+    { orgUnitName: '', remark: '旧备注' }
+  ])
+})
+
+test('attendance cards show effective actuals and retain old-response compatibility', () => {
+  assert.equal(attendanceEffectiveActualCount({
+    actualAttendanceCount: 122,
+    notYetEmployed: { count: 1 },
+    temporaryWorker: { count: 2 }
+  }), 125)
+  assert.equal(attendanceEffectiveActualCount({
+    actualAttendanceCount: 122,
+    effectiveActualAttendanceCount: 125
+  }), 125)
 })
 
 const FILE_IDS = [
@@ -199,6 +231,14 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   assert.match(attendanceSource, /requestGate\.isCurrent\(request\)/)
   assert.match(attendanceSource, /reviewAttendanceDailySummary/)
   assert.match(attendanceSource, /setClipboardData/)
+  assert.deepEqual(
+    ATTENDANCE_NAMED_FIELDS.map(({ label }) => label),
+    ['请假', '休班', '病假', '旷工', '未入职', '待离职', '临时工']
+  )
+  assert.match(attendanceSource, /record-shift-details/)
+  assert.match(attendanceSource, /v-for="item in namedFields"/)
+  assert.match(attendanceSource, /otherRemarkRows/)
+  assert.match(attendanceSource, /attendanceSummaryItemText/)
   assert.match(attendanceFormSource, /buildAttendancePayload/)
   assert.match(attendanceFormSource, /createAttendanceSubmission/)
   assert.match(attendanceFormSource, /updateAttendanceSubmission/)

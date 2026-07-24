@@ -114,9 +114,16 @@
 
 <script>
 import { ref, onMounted, onUnmounted } from "vue";
-import { getExtensions, approveExtension } from "@/api/index.js";
+import {
+  approveExtension,
+  getExtensionRequest,
+  getExtensions
+} from "@/api/index.js";
 import { useUserStore } from "@/stores/user.js";
-import { canApproveExtensionRequest } from "@/utils/taskPolicy.js";
+import {
+  canApproveExtensionRequest,
+  canEnterTaskManagement
+} from "@/utils/taskPolicy.js";
 import { createLatestRequestGate } from "@/utils/latestRequest.js";
 import {
   formatDate,
@@ -128,15 +135,7 @@ export default {
   name: "ExtensionList",
   setup() {
     const userStore = useUserStore();
-    const canApproveRequest = (request) => canApproveExtensionRequest({
-      request,
-      userId: userStore.userInfo?._id,
-      isTeamMode: userStore.isTeamMode,
-      isReadOnly: userStore.isReadOnly,
-      hasReviewPermission: userStore.can('task.review', { write: true, teamRequired: true }),
-      isSuperAdmin: userStore.isSuperAdmin,
-      membershipRole: userStore.context?.membership?.role
-    });
+    const canApproveRequest = (request) => canApproveExtensionRequest({ request });
 
     const statusOptions = [
       { label: "全部状态", value: "" },
@@ -156,7 +155,10 @@ export default {
     const requestGate = createLatestRequestGate();
 
     onMounted(() => {
-      if (!userStore.can('task.view')) {
+      if (!canEnterTaskManagement({
+        context: userStore.context,
+        hasTaskViewPermission: userStore.can('task.view')
+      })) {
         uni.showToast({
           title: "无权限访问",
           icon: "none",
@@ -249,6 +251,19 @@ export default {
     const handleApprove = async (ext, approved) => {
       if (!canApproveRequest(ext) || approvingId.value) {
         uni.showToast({ title: '当前申请不可审批', icon: 'none' });
+        return;
+      }
+      try {
+        const response = await getExtensionRequest(ext._id);
+        if (!canApproveRequest(response.request)) {
+          uni.showToast({ title: '审批权限已变更，请刷新后重试', icon: 'none' });
+          onRefresh();
+          return;
+        }
+        ext = response.request;
+      } catch (error) {
+        console.error('校验延期审批权限失败:', error);
+        onRefresh();
         return;
       }
       const title = approved ? "通过延期申请" : "拒绝延期申请";

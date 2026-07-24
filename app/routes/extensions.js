@@ -9,6 +9,9 @@ const {
   requireTeamContext
 } = require('../middlewares/authContext');
 const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
+const {
+  requireTaskPermissionOrLeadershipCandidate
+} = require('../middlewares/taskLeadershipAuthorization');
 
 const router = express.Router();
 
@@ -23,18 +26,20 @@ router.post(
 router.post(
   '/approve/:id',
   requireTeamContext,
-  requirePermission('task.review'),
+  requireTaskPermissionOrLeadershipCandidate('task.review'),
   extensionController.approveExtension
 );
-router.get('/', requirePermission('task.view'), extensionController.getExtensionRequests);
+const taskViewOrLeader = requireTaskPermissionOrLeadershipCandidate('task.view');
+
+router.get('/', taskViewOrLeader, extensionController.getExtensionRequests);
 router.get(
   '/history/:taskId',
-  requirePermission('task.view'),
+  taskViewOrLeader,
   extensionController.getTaskExtensionHistory
 );
 router.get(
   '/:id',
-  requirePermission('task.view'),
+  taskViewOrLeader,
   extensionController.getExtensionRequestById
 );
 

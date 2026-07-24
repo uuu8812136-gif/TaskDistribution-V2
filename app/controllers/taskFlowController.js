@@ -23,6 +23,16 @@ const {
   validateActiveTeamUsers,
   withSession
 } = require('../services/taskAccessService');
+const {
+  assertTaskPermissionOrLeadershipCandidate,
+  dynamicLeadershipTaskFilter,
+  hasTaskPermission,
+  isTaskLeadershipCandidate,
+  resolveTaskManagementAuthorization,
+  resolveTaskReadAuthorization,
+  taskBelongsToLeadershipScope,
+  taskLeadershipResourceContext
+} = require('../services/taskLeadershipAccessService');
 const { runWithRequiredTransaction } = require('../services/transactionService');
 const {
   createFileAssetService,
@@ -103,6 +113,30 @@ async function findScopedTask(req, taskId, session) {
   return withSession(Task.findOne(buildTaskDetailFilter(req, taskId)), session);
 }
 
+async function findReadableTask(req, taskId) {
+  const authorization = await resolveTaskReadAuthorization({ authContext: req.authContext });
+  const filter = authorization.mode === 'DYNAMIC_LEADERSHIP'
+    ? dynamicLeadershipTaskFilter(authorization, taskId)
+    : buildTaskDetailFilter(req, taskId);
+  return Task.findOne(filter);
+}
+
+async function resolveLeadershipTask(req, taskId, session) {
+  const authorization = await resolveTaskManagementAuthorization({
+    authContext: req.authContext,
+    permissionKeys: ['task.review'],
+    session
+  });
+  if (authorization.mode !== 'DYNAMIC_LEADERSHIP') {
+    return { authorization, task: null };
+  }
+  const task = await withSession(
+    Task.findOne(dynamicLeadershipTaskFilter(authorization, taskId)),
+    session
+  );
+  return { authorization, task };
+}
+
 async function validateTaskUsers(req, task, fields, session) {
   const ids = uniqueIds(...fields.map((field) => {
     const value = task[field];
@@ -130,13 +164,22 @@ async function recordTaskMutation({ req, task, before, action, session }) {
   });
 }
 
-async function updateMainTaskProgress(req, mainTaskId, session) {
-  const mainTask = await findScopedTask(req, mainTaskId, session);
+async function updateMainTaskProgress(req, mainTaskId, session, leadershipAuthorization = null) {
+  const mainTask = leadershipAuthorization?.mode === 'DYNAMIC_LEADERSHIP'
+    ? await withSession(Task.findOne(
+        dynamicLeadershipTaskFilter(leadershipAuthorization, mainTaskId)
+      ), session)
+    : await findScopedTask(req, mainTaskId, session);
   if (!mainTask) throw notFound();
 
-  const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
-    parentTask: mainTask._id
-  })), session);
+  const subTaskFilter = leadershipAuthorization?.mode === 'DYNAMIC_LEADERSHIP'
+    ? {
+        teamId: mainTask.teamId,
+        orgUnitId: mainTask.orgUnitId,
+        parentTask: mainTask._id
+      }
+    : buildTaskScopedFilter(req, { parentTask: mainTask._id });
+  const subTasks = await withSession(Task.find(subTaskFilter), session);
   if (subTasks.length === 0) return null;
 
   const before = snapshot(mainTask);
@@ -371,7 +414,7 @@ exports.completeTask = async (req, res) => {
 
 exports.reviewTask = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.review');
+    assertTaskPermissionOrLeadershipCandidate(req.authContext, 'task.review');
     const actorId = req.authContext.userId;
     const { content, result = 'approved', rating, attachments } = req.body || {};
     normalizeAttachmentInput(attachments);
@@ -381,9 +424,29 @@ exports.reviewTask = async (req, res) => {
     }
 
     const mutation = await runWithRequiredTransaction(async (session) => {
-      const task = await findScopedTask(req, req.params.id, session);
+      let task = hasTaskPermission(req.authContext, 'task.review')
+        ? await findScopedTask(req, req.params.id, session)
+        : null;
+      let reviewerIsAssignedCc = task && idsOf(task.ccUsers).some(
+        (ccUserId) => sameId(ccUserId, actorId)
+      );
+      let actingAsLeader = false;
+      let leadershipAuthorization = null;
+      if (!reviewerIsAssignedCc) {
+        const leadership = await resolveLeadershipTask(req, req.params.id, session);
+        actingAsLeader = leadership.authorization.mode === 'DYNAMIC_LEADERSHIP';
+        if (actingAsLeader) {
+          leadershipAuthorization = leadership.authorization;
+          if (!task || !taskBelongsToLeadershipScope(leadership.authorization, task)) {
+            task = leadership.task;
+          }
+        }
+      }
       if (!task) throw notFound();
-      if (!idsOf(task.ccUsers).some((ccUserId) => sameId(ccUserId, actorId))) {
+      reviewerIsAssignedCc = idsOf(task.ccUsers).some(
+        (ccUserId) => sameId(ccUserId, actorId)
+      );
+      if (!reviewerIsAssignedCc && !actingAsLeader) {
         throw httpError(403, 'Only a task CC user may review it', 'TASK_REVIEWER_REQUIRED');
       }
       await validateTaskUsers(req, task, ['ccUsers'], session);
@@ -401,8 +464,16 @@ exports.reviewTask = async (req, res) => {
       if (existingReview) throw badRequest('This review has already been submitted');
 
       const beforeTask = snapshot(task);
+      const fileAuthContext = leadershipAuthorization
+        ? taskLeadershipResourceContext(
+            req.authContext,
+            leadershipAuthorization,
+            task,
+            ['task.review']
+          )
+        : req.authContext;
       const reviewAttachments = await fileAssetService.reconcileOwnerFiles({
-        authContext: req.authContext,
+        authContext: fileAuthContext,
         req,
         attachments,
         previousAttachments: [],
@@ -458,7 +529,12 @@ exports.reviewTask = async (req, res) => {
       });
 
       if (result === 'rejected' && !task.isMainTask && task.parentTask) {
-        const parentMutation = await updateMainTaskProgress(req, task.parentTask, session);
+        const parentMutation = await updateMainTaskProgress(
+          req,
+          task.parentTask,
+          session,
+          leadershipAuthorization
+        );
         if (!parentMutation) throw notFound();
         await recordTaskMutation({
           req,
@@ -500,7 +576,7 @@ exports.reviewTask = async (req, res) => {
 
 exports.confirmTask = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.view');
+    assertTaskPermissionOrLeadershipCandidate(req.authContext, 'task.view');
     const actorId = req.authContext.userId;
     const { content, rating, attachments } = req.body || {};
     normalizeAttachmentInput(attachments);
@@ -509,9 +585,25 @@ exports.confirmTask = async (req, res) => {
       : DEFAULT_TASK_CONFIRMATION_CONTENT;
 
     const mutation = await runWithRequiredTransaction(async (session) => {
-      const task = await findScopedTask(req, req.params.id, session);
+      let task = hasTaskPermission(req.authContext, 'task.view')
+        ? await findScopedTask(req, req.params.id, session)
+        : null;
+      let authorized = Boolean(task) && (
+        sameId(task.creator, actorId) || canAdministrateTask(req.authContext)
+      );
+      let leadershipAuthorization = null;
+      if (!authorized && isTaskLeadershipCandidate(req.authContext)) {
+        const leadership = await resolveLeadershipTask(req, req.params.id, session);
+        if (leadership.authorization.mode === 'DYNAMIC_LEADERSHIP') {
+          leadershipAuthorization = leadership.authorization;
+          if (!task || !taskBelongsToLeadershipScope(leadership.authorization, task)) {
+            task = leadership.task;
+          }
+          authorized = Boolean(task);
+        }
+      }
       if (!task) throw notFound();
-      if (!sameId(task.creator, actorId) && !canAdministrateTask(req.authContext)) {
+      if (!authorized) {
         throw httpError(
           403,
           'Only the task creator or a project administrator may confirm it',
@@ -523,9 +615,14 @@ exports.confirmTask = async (req, res) => {
         throw badRequest('Task is not awaiting confirmation');
       }
       if (task.isMainTask) {
-        const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
-          parentTask: task._id
-        })), session);
+        const subTaskFilter = leadershipAuthorization?.mode === 'DYNAMIC_LEADERSHIP'
+          ? {
+              teamId: task.teamId,
+              orgUnitId: task.orgUnitId,
+              parentTask: task._id
+            }
+          : buildTaskScopedFilter(req, { parentTask: task._id });
+        const subTasks = await withSession(Task.find(subTaskFilter), session);
         if (subTasks.some((subTask) => subTask.status !== 'finished')) {
           throw badRequest(
             'Confirm every subtask before confirming the main task',
@@ -535,8 +632,16 @@ exports.confirmTask = async (req, res) => {
       }
 
       const beforeTask = snapshot(task);
+      const fileAuthContext = leadershipAuthorization
+        ? taskLeadershipResourceContext(
+            req.authContext,
+            leadershipAuthorization,
+            task,
+            ['task.view']
+          )
+        : req.authContext;
       const reviewAttachments = await fileAssetService.reconcileOwnerFiles({
-        authContext: req.authContext,
+        authContext: fileAuthContext,
         req,
         attachments,
         previousAttachments: [],
@@ -580,7 +685,12 @@ exports.confirmTask = async (req, res) => {
       });
 
       if (!task.isMainTask && task.parentTask) {
-        const parentMutation = await updateMainTaskProgress(req, task.parentTask, session);
+        const parentMutation = await updateMainTaskProgress(
+          req,
+          task.parentTask,
+          session,
+          leadershipAuthorization
+        );
         if (!parentMutation) throw notFound();
         const parentTask = parentMutation.task;
         await recordTaskMutation({
@@ -608,8 +718,7 @@ exports.confirmTask = async (req, res) => {
 
 exports.getTaskReviews = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.view');
-    const task = await findScopedTask(req, req.params.id, null);
+    const task = await findReadableTask(req, req.params.id);
     if (!task) throw notFound();
     const reviews = await TaskReview.find({
       teamId: task.teamId,

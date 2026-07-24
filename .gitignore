@@ -2,32 +2,61 @@
 .env
 .env.*
 !.env.example
+*.env
 *.key
 *.pem
 *.pfx
+*.p12
+*.ppk
+id_rsa*
+id_ed25519*
+known_hosts
+authorized_keys
 ops/operations.env
 
 # Dependencies and builds
 node_modules/
 dist/
+build/
+out/
 coverage/
 unpackage/
 .vite/
+test-results/
+playwright-report/
 
 # Runtime data
 uploads/
 logs/
 backups/
+backup/
+dump/
+dumps/
 app/script/backup_task_distribution_*/
+*.bson
+*.wt
+WiredTiger*
 *.log
 *.pid
 *.sqlite
 *.sqlite3
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.xls
+*.xlsx
+*.xlsm
+*.xlsb
+screenshots/
+attachments/
 
 # Test data and local state
 .test-data/
 customer-data/
 references/
+/work/
 .cache/
 tools/runtime/
 .DS_Store

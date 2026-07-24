@@ -126,7 +126,7 @@ export default {
     })
     const stageLabel = (value) => ({
       TEAM_LEADER: '班组长处理',
-      SUB_DEPARTMENT_MANAGER: '分部经理处理',
+      SUB_DEPARTMENT_MANAGER: '分部负责人处理',
       ASSET_ADMIN: '设备管理员处理',
       RESOLVED: '已解决'
     }[value] || value || '-')

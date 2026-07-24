@@ -66,7 +66,7 @@ const teamMembershipSchema = new mongoose.Schema({
     type: Number,
     enum: POSITION_LEVEL_VALUES,
     required: true,
-    default: 5
+    default: POSITION_LEVEL_BY_KEY[POSITION_KEYS.EMPLOYEE]
   },
   positionKey: {
     type: String,

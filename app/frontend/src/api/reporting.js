@@ -6,6 +6,30 @@ export const getTransportOptions = (params) => request({
   params
 })
 
+export const getTransportMasterData = (params) => request({
+  url: '/transport-records/master-data',
+  method: 'get',
+  params
+})
+
+export const createTransportMasterData = (data) => request({
+  url: '/transport-records/master-data',
+  method: 'post',
+  data
+})
+
+export const updateTransportMasterData = (masterDataId, data) => request({
+  url: `/transport-records/master-data/${masterDataId}`,
+  method: 'patch',
+  data
+})
+
+export const setTransportMasterDataStatus = (masterDataId, status) => request({
+  url: `/transport-records/master-data/${masterDataId}/status`,
+  method: 'patch',
+  data: { status }
+})
+
 export const getTransportRecords = (params) => request({
   url: '/transport-records',
   method: 'get',

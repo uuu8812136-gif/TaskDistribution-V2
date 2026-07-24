@@ -145,7 +145,13 @@ const previewVisible = ref(false)
 const activePhoto = ref(null)
 
 const requestParams = computed(() => route.query.teamId ? { teamId: String(route.query.teamId) } : {})
-const canSubmit = computed(() => session.can('report.submit', { write: true, teamRequired: true }))
+const canSubmit = computed(() => (
+  session.can('report.submit', { write: true, teamRequired: true }) &&
+  (
+    session.isSuperAdmin ||
+    session.context.membership?.functionalRoleKeys?.includes('TRANSPORT_REPORTER')
+  )
+))
 const orgName = computed(() => entityName(
   orgUnits.value,
   record.value?.orgUnitId,

@@ -2,11 +2,20 @@
 
 本文描述 TaskDistribution V2 的最终发布包检查、环境变量、Windows/Linux 部署、回滚演练和微信小程序版本回退。它是可执行操作手册，不代表任何环境已经部署或验收。
 
+> **V2 客户测试环境专用流程**：`v2-test.horselink.cn`、`18120/18130/27150`、
+> `customer_acceptance_v2_test` 的发布和恢复必须使用
+> [`V2_TEST_RELEASE_AND_ROLLBACK_RUNBOOK.md`](./V2_TEST_RELEASE_AND_ROLLBACK_RUNBOOK.md)。
+> 该流程要求停 V2 写入后创建全新备份、复制到物理机 D 盘逐文件验签，再执行岗位层级和运输
+> 主数据迁移。第一次 migration execute 后禁止只切回旧代码；必须 forward-fix，或恢复到全新的
+> `*_v2_test` 数据库后再让旧代码连接恢复库。本文后续通用示例不能替代该专用门禁。
+
 ## 1. 发布边界
 
 - 只从已提交、已标记的 Git commit 构建 release；工作区必须干净。
 - API、Web、小程序源代码、运行环境文件、数据库、上传目录和备份目录相互分离。
-- `.env`、凭据、`customer-data/`、`.test-data/`、上传文件、数据库 dump 和客户原始资料不得进入 release 或 Git。
+- `.env`、凭据、`customer-data/`、`.test-data/`、`work/`、上传文件、数据库 dump、客户表格、
+  客户图片、日志、截图和本机构建/依赖产物不得进入 release 或 Git。客户原始资料只能放在已忽略的
+  `customer-data/`、`references/`、`attachments/` 或 `screenshots/` 中；不能混入源码资源目录。
 - 不使用 `app/install.bat`、`app/install.sh`、`app/init-db.js`、`npm run init:clear` 或任何 `import:*` 命令部署 V2。它们属于旧版初始化或测试数据工具。
 - 当前 API 依赖 MongoDB 事务；正式环境必须使用 replica set，单节点 replica set 也可以。独立 `mongod` 会使点检/保养写入失败。
 - API 生产进程由操作系统服务管理；Web 使用静态站点；MongoDB 和反向代理不由本仓库脚本自动安装。
@@ -34,7 +43,23 @@ node --version   # 必须为 v22.23.1
 npm --version    # 必须为 10.9.8
 git status --porcelain
 git diff --check
-git ls-files customer-data .test-data "*.env" "*.pem" "*.key"
+$ApprovedRasterAssets = @(
+  'app/frontend/src/assets/1.jpg',
+  'app/frontend/src/assets/2.png',
+  'app/frontend/src/assets/login-logistics.jpg',
+  'miniprogram/static/logo.png'
+)
+$ForbiddenTracked = @(git ls-files | Where-Object {
+  $_ -match '(^|/)(\.test-data|work|customer-data|references|attachments|screenshots|uploads|logs|backups?|dumps?|node_modules|dist|build)(/|$)' -or
+  $_ -match '\.(xls|xlsx|xlsm|xlsb|log|bson|wt|sqlite|sqlite3|pem|key|pfx|p12|ppk|zip|tar|tgz|gz|7z)$' -or
+  $_ -match '(^|/)(id_rsa[^/]*|id_ed25519[^/]*|known_hosts|authorized_keys)$' -or
+  (($_ -match '(^|/)(\.env($|\.)|[^/]+\.env($|\.))') -and $_ -notmatch '\.(example|template)$') -or
+  (($_ -match '\.(png|jpg|jpeg|gif|webp|bmp|tif|tiff)$') -and $_ -notin $ApprovedRasterAssets)
+})
+if ($ForbiddenTracked.Count) {
+  $ForbiddenTracked
+  throw 'Forbidden tracked release material found'
+}
 
 Push-Location app
 npm ci

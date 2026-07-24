@@ -10,7 +10,7 @@
         </div>
 
         <header class="login-header">
-          <h1>Horselink 公司管理系统</h1>
+          <h1>Horselink（马链）管理系统</h1>
           <p>登录账号，进入所属项目团队</p>
         </header>
 
@@ -85,6 +85,24 @@
               />
             </div>
           </el-form-item>
+          <div class="login-options" :data-remember-state="rememberState">
+            <el-checkbox
+              v-model="rememberLogin"
+              data-testid="remember-password-checkbox"
+              @change="handleRememberLoginChange"
+            >
+              记住密码
+            </el-checkbox>
+            <span
+              v-if="rememberStatusMessage"
+              class="remember-status"
+              role="status"
+              aria-live="polite"
+              data-testid="remember-password-status"
+            >
+              {{ rememberStatusMessage }}
+            </span>
+          </div>
           <el-form-item class="login-submit">
             <el-button
               type="primary"
@@ -100,6 +118,12 @@
         </el-form>
       </section>
     </main>
+
+    <blockquote class="login-motto">
+      <p>沟通、协作、持续进步</p>
+      <p>欢迎你，我的朋友。</p>
+      <footer>-马延浩</footer>
+    </blockquote>
   </div>
 </template>
 
@@ -111,6 +135,12 @@ import { getLoginTeams } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
 import { defaultLoginTeamId, normalizeLoginTeams } from '@/utils/loginTeams'
 import { requestErrorMessage } from '@/utils/request'
+import {
+  forgetRememberedLogin,
+  readPasswordCredential,
+  readRememberedLogin,
+  rememberLoginPassword
+} from '@/utils/rememberedLogin'
 
 const route = useRoute()
 const router = useRouter()
@@ -120,6 +150,9 @@ const loading = ref(false)
 const teamsLoading = ref(true)
 const teamsError = ref('')
 const loginTeams = ref([])
+const rememberLogin = ref(false)
+const rememberState = ref('idle')
+const rememberStatusMessage = ref('')
 
 const loginForm = reactive({ teamId: '', username: '', password: '' })
 const loginRules = {
@@ -136,6 +169,23 @@ const canSubmit = computed(() => (
   !teamsError.value &&
   loginTeams.value.length > 0
 ))
+
+const handleRememberLoginChange = async (enabled) => {
+  rememberStatusMessage.value = ''
+  if (enabled) {
+    rememberState.value = 'selected'
+    return
+  }
+  rememberState.value = 'clearing'
+  const forgetResult = await forgetRememberedLogin()
+  if (forgetResult.metadataCleared) {
+    rememberState.value = 'cleared'
+    rememberStatusMessage.value = '已取消本系统自动读取密码；浏览器密码管理器中的副本需在浏览器设置中删除。'
+  } else {
+    rememberState.value = 'unavailable'
+    rememberStatusMessage.value = '浏览器阻止清除记住状态，请在浏览器设置中清除本站数据和已保存密码。'
+  }
+}
 
 const loadLoginTeams = async () => {
   teamsLoading.value = true
@@ -168,7 +218,34 @@ const handleLogin = async () => {
       password: loginForm.password,
       teamId: loginForm.teamId
     })
-    ElMessage.success('登录成功')
+    let rememberWarning = ''
+    if (rememberLogin.value) {
+      const rememberResult = await rememberLoginPassword({
+        username: loginForm.username.trim(),
+        teamId: loginForm.teamId,
+        password: loginForm.password
+      })
+      if (rememberResult.remembered) {
+        rememberState.value = 'stored'
+        rememberStatusMessage.value = ''
+      } else {
+        rememberLogin.value = false
+        rememberState.value = 'unavailable'
+        rememberWarning = '当前浏览器未能安全记住密码，请下次手动输入'
+        rememberStatusMessage.value = rememberWarning
+      }
+    } else {
+      const forgetResult = await forgetRememberedLogin()
+      if (forgetResult.metadataCleared) {
+        rememberState.value = 'cleared'
+      } else {
+        rememberState.value = 'unavailable'
+        rememberWarning = '浏览器未能清除此前记住的登录状态，请在浏览器设置中清除本站数据'
+        rememberStatusMessage.value = rememberWarning
+      }
+    }
+    if (rememberWarning) ElMessage.warning(`登录成功，但${rememberWarning}`)
+    else ElMessage.success('登录成功')
     if (session.isTeamSelection) {
       await router.replace({ name: 'TeamSelect' })
     } else {
@@ -192,7 +269,30 @@ const handleLogin = async () => {
   }
 }
 
-onMounted(loadLoginTeams)
+onMounted(async () => {
+  const remembered = readRememberedLogin()
+  if (remembered) {
+    rememberLogin.value = true
+    rememberState.value = 'restoring'
+    loginForm.username = remembered.username
+    loginForm.teamId = remembered.teamId
+  }
+  await loadLoginTeams()
+  if (!rememberLogin.value) return
+  const credential = await readPasswordCredential(loginForm.username)
+  if (!credential) {
+    const forgetResult = await forgetRememberedLogin()
+    rememberLogin.value = false
+    rememberState.value = 'unavailable'
+    rememberStatusMessage.value = forgetResult.metadataCleared
+      ? '未能读取已记住的密码，请重新输入后再次勾选。'
+      : '未能读取或清除已记住的密码，请在浏览器设置中清除本站数据和已保存密码。'
+    return
+  }
+  loginForm.username = credential.username
+  loginForm.password = credential.password
+  rememberState.value = 'restored'
+})
 </script>
 
 <style scoped lang="scss">
@@ -201,8 +301,12 @@ onMounted(loadLoginTeams)
   min-height: 100vh;
   min-height: 100dvh;
   padding: 32px clamp(24px, 10vw, 160px);
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 440px) minmax(260px, 420px);
   align-items: center;
+  justify-content: start;
+  gap: clamp(32px, 6vw, 96px);
+  overflow-y: auto;
   background:
     linear-gradient(90deg, rgb(2 12 35 / 78%) 0%, rgb(2 18 52 / 56%) 48%, rgb(2 18 52 / 16%) 100%),
     url('@/assets/login-logistics.jpg');
@@ -217,11 +321,11 @@ onMounted(loadLoginTeams)
 .login-panel {
   width: 100%;
   padding: 36px;
-  color: var(--zl-text);
-  background: rgb(255 255 255 / 88%);
-  border: 1px solid rgb(255 255 255 / 76%);
+  color: #eff6ff;
+  background: rgb(7 37 84 / 82%);
+  border: 1px solid rgb(96 165 250 / 42%);
   border-radius: var(--zl-radius);
-  box-shadow: 0 24px 64px rgb(2 12 35 / 28%);
+  box-shadow: 0 24px 64px rgb(2 12 35 / 46%);
   backdrop-filter: blur(22px) saturate(1.35);
   animation: login-rise 0.5s var(--zl-easing) both;
 }
@@ -248,7 +352,7 @@ onMounted(loadLoginTeams)
 }
 
 .brand-name {
-  color: #0f376d;
+  color: #d9eaff;
   font-size: 14px;
   font-weight: 700;
   letter-spacing: 0;
@@ -259,7 +363,7 @@ onMounted(loadLoginTeams)
 
   h1 {
     margin: 0 0 10px;
-    color: #172033;
+    color: #fff;
     font-size: 28px;
     font-weight: 700;
     line-height: 1.3;
@@ -268,7 +372,7 @@ onMounted(loadLoginTeams)
 
   p {
     margin: 0;
-    color: var(--zl-muted);
+    color: #bdd3ef;
     font-size: 14px;
     line-height: 1.6;
   }
@@ -331,7 +435,7 @@ onMounted(loadLoginTeams)
 
   .team-state {
     margin: 8px 0 0;
-    color: var(--zl-muted);
+    color: #c4d8f0;
     font-size: 13px;
     line-height: 20px;
   }
@@ -355,7 +459,7 @@ onMounted(loadLoginTeams)
   label {
     display: block;
     margin-bottom: 8px;
-    color: #334155;
+    color: #eaf3ff;
     font-size: 14px;
     font-weight: 600;
     line-height: 20px;
@@ -366,6 +470,26 @@ onMounted(loadLoginTeams)
     padding-top: 2px;
   }
 
+  .login-options {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 10px;
+    min-height: 24px;
+    margin: -8px 0 18px;
+
+    :deep(.el-checkbox__label) {
+      color: #eaf3ff;
+    }
+
+    .remember-status {
+      flex-basis: 100%;
+      color: #ffd591;
+      font-size: 12px;
+      line-height: 18px;
+    }
+  }
+
   .login-button {
     width: 100%;
     min-height: 46px;
@@ -373,6 +497,38 @@ onMounted(loadLoginTeams)
     border-radius: 12px;
     box-shadow: 0 8px 20px rgb(22 119 255 / 22%);
     font-weight: 600;
+  }
+}
+
+.login-motto {
+  width: 100%;
+  margin: 0;
+  color: #dbeafe;
+  text-align: left;
+  text-shadow: 0 2px 12px rgb(2 12 35 / 72%);
+
+  p,
+  footer {
+    margin: 0;
+    font-size: 15px;
+    line-height: 1.7;
+    letter-spacing: 0;
+  }
+
+  footer {
+    margin-top: 2px;
+  }
+}
+
+@media (max-width: 900px) {
+  .login-container {
+    grid-template-columns: minmax(0, 440px);
+    align-content: center;
+    gap: 18px;
+  }
+
+  .login-motto {
+    text-align: center;
   }
 }
 
@@ -391,7 +547,8 @@ onMounted(loadLoginTeams)
 @media (max-width: 600px) {
   .login-container {
     padding: 16px;
-    align-items: flex-end;
+    align-content: start;
+    gap: 16px;
     background-position: 66% center;
   }
 
@@ -409,6 +566,10 @@ onMounted(loadLoginTeams)
     h1 {
       font-size: 25px;
     }
+  }
+
+  .login-motto {
+    padding-bottom: 8px;
   }
 }
 

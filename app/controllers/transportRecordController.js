@@ -1,9 +1,78 @@
 'use strict';
 
 const { createTransportRecordService } = require('../services/transportRecordService');
+const {
+  createTransportMasterDataService
+} = require('../services/transportMasterDataService');
 
-function createTransportRecordController({ service = createTransportRecordService() } = {}) {
+function createTransportRecordController({
+  service = createTransportRecordService(),
+  masterDataService = createTransportMasterDataService()
+} = {}) {
   return Object.freeze({
+    async listMasterData(req, res, next) {
+      try {
+        const result = await masterDataService.listMasterData({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          query: req.query
+        });
+        return res.json(result);
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async createMasterData(req, res, next) {
+      try {
+        const masterData = await masterDataService.createMasterData({
+          authContext: req.authContext,
+          req,
+          input: req.body || {}
+        });
+        return res.status(201).json({
+          message: 'Transport master data created',
+          masterData
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async updateMasterData(req, res, next) {
+      try {
+        const masterData = await masterDataService.updateMasterData({
+          authContext: req.authContext,
+          req,
+          masterDataId: req.params.masterDataId,
+          input: req.body || {}
+        });
+        return res.json({
+          message: 'Transport master data updated',
+          masterData
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async setMasterDataStatus(req, res, next) {
+      try {
+        const masterData = await masterDataService.setMasterDataStatus({
+          authContext: req.authContext,
+          req,
+          masterDataId: req.params.masterDataId,
+          input: req.body || {}
+        });
+        return res.json({
+          message: 'Transport master data status updated',
+          masterData
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async listOptions(req, res, next) {
       try {
         const result = await service.listOptions({

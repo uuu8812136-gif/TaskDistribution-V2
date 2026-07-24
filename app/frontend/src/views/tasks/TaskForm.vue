@@ -1,12 +1,24 @@
 <template>
-  <div class="task-form">
+  <div class="task-form" v-loading="initializing">
     <el-page-header @back="goBack" title="返回">
       <template #content>
         <span>{{ isEdit ? '编辑任务' : '创建任务' }}</span>
       </template>
     </el-page-header>
 
-    <el-card style="margin-top: 20px">
+    <el-result
+      v-if="initializationError"
+      icon="warning"
+      title="无法进入任务表单"
+      :sub-title="initializationError"
+      class="form-error"
+    >
+      <template #extra>
+        <el-button type="primary" @click="goBack">返回</el-button>
+      </template>
+    </el-result>
+
+    <el-card v-else-if="formReady" style="margin-top: 20px">
       <el-steps :active="currentStep" finish-status="success" style="margin-bottom: 30px">
         <el-step title="基本信息" />
         <el-step title="人员分配" />
@@ -176,9 +188,14 @@
 <script setup>
 import { computed, ref, reactive, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { getUserList } from '@/api/user'
-import { createTask, updateTask, getTaskDetail } from '@/api/task'
-import { deleteFile, uploadTemporaryFile } from '@/api/file'
+import {
+  createTask,
+  updateTask,
+  getTaskAssignableUsers,
+  getTaskDetail,
+  getTaskList
+} from '@/api/task'
+import { deleteFile, uploadTaskTemporaryFile } from '@/api/file'
 import {
   cleanupTemporaryFiles,
   existingAttachmentFileList,
@@ -194,6 +211,7 @@ import {
   firstInvalidTaskFormStep,
   taskFormFieldsThroughStep
 } from '@/utils/taskFormValidation'
+import { canCreateTask, canEditTask } from '@/utils/taskPolicy'
 
 const route = useRoute()
 const router = useRouter()
@@ -203,6 +221,10 @@ const isEdit = ref(!!route.params.id)
 const currentStep = ref(0)
 const formRef = ref(null)
 const submitting = ref(false)
+const initializing = ref(true)
+const formReady = ref(false)
+const formAuthorized = ref(false)
+const initializationError = ref('')
 const users = ref([])
 const fileList = ref([])
 
@@ -264,6 +286,13 @@ const handleFileChange = (file, files) => {
   fileList.value = files
 }
 
+const uploadTaskAttachment = (file) => uploadTaskTemporaryFile(
+  file,
+  isEdit.value
+    ? { taskId: route.params.id }
+    : { orgUnitId: form.orgUnitId }
+)
+
 const validateTaskForm = async (fields) => {
   try {
     const valid = fields
@@ -297,12 +326,13 @@ const prevStep = () => {
 }
 
 const handleSubmit = async () => {
+  if (submitting.value || !formAuthorized.value) return
   const valid = await validateTaskForm()
   if (!valid) return
   submitting.value = true
   let uploadedFileIds = []
   try {
-    const prepared = await prepareAttachmentReferences(fileList.value, uploadTemporaryFile)
+    const prepared = await prepareAttachmentReferences(fileList.value, uploadTaskAttachment)
     uploadedFileIds = prepared.uploadedFileIds
     const payload = {
       ...form,
@@ -323,6 +353,7 @@ const handleSubmit = async () => {
   } catch (error) {
     await cleanupTemporaryFiles(error.uploadedFileIds || uploadedFileIds, deleteFile)
     console.error('提交失败:', error)
+    await refreshFormAuthorization()
   } finally {
     submitting.value = false
   }
@@ -332,10 +363,38 @@ const goBack = () => {
   router.back()
 }
 
+const denyFormAccess = (message) => {
+  formAuthorized.value = false
+  formReady.value = false
+  initializationError.value = message
+}
+
+const refreshFormAuthorization = async () => {
+  try {
+    const response = isEdit.value
+      ? await getTaskDetail(route.params.id)
+      : await getTaskList({ page: 1, limit: 1 })
+    const authorized = isEdit.value
+      ? canEditTask(response.task)
+      : canCreateTask(response)
+    formAuthorized.value = authorized
+    if (!authorized) {
+      denyFormAccess('当前负责人已接管，您现在没有维护该任务的权限。')
+    }
+    return response
+  } catch (error) {
+    denyFormAccess('暂时无法验证当前任务权限，请返回任务列表后重试。')
+    return null
+  }
+}
+
 onMounted(async () => {
   try {
+    const authorizationResponse = await refreshFormAuthorization()
+    if (!authorizationResponse || !formAuthorized.value) return
+
     // 获取所有用户，设置足够大的 limit
-    const result = await getUserList({ limit: 1000 })
+    const result = await getTaskAssignableUsers({ limit: 1000 })
     users.value = result.users
 
     if (!isEdit.value && isTeamTaskScope.value && orgUnitOptions.value.length === 1) {
@@ -343,7 +402,7 @@ onMounted(async () => {
     }
 
     if (isEdit.value) {
-      const taskData = await getTaskDetail(route.params.id)
+      const taskData = authorizationResponse
       // 回填表单数据
       Object.assign(form, {
         orgUnitId: taskData.task.orgUnitId,
@@ -360,9 +419,12 @@ onMounted(async () => {
       })
       fileList.value = existingAttachmentFileList(taskData.task.attachments)
     }
+    formReady.value = true
   } catch (error) {
     console.error('初始化失败:', error)
-    ElMessage.error('加载任务数据失败')
+    denyFormAccess('加载任务数据失败，请返回任务列表后重试。')
+  } finally {
+    initializing.value = false
   }
 })
 </script>
@@ -380,6 +442,10 @@ onMounted(async () => {
     color: #909399;
     font-size: 12px;
     line-height: 1.5;
+  }
+
+  .form-error {
+    margin-top: 20px;
   }
 
   .subtask-add {

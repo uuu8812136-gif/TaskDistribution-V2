@@ -17,11 +17,17 @@ const FileAsset = require('../../../app/models/FileAsset');
 const Message = require('../../../app/models/Message');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
+const TeamMembership = require('../../../app/models/TeamMembership');
+const User = require('../../../app/models/User');
 const permissions = require('../../../app/config/permissions');
 const {
   createEquipmentRepairService
 } = require('../../../app/services/equipmentRepairService');
 const { createFileAssetService } = require('../../../app/services/fileAssetService');
+const {
+  holdLeaderRestoration,
+  promiseStateAfterDelay
+} = require('../helpers/leadershipConcurrency');
 
 const TEST_DATABASE_NAME = `equipment_repair_${randomUUID().replaceAll('-', '')}_v2_test`;
 const MODELS = [
@@ -32,7 +38,9 @@ const MODELS = [
   FileAsset,
   Message,
   OrgUnit,
-  ProjectTeam
+  ProjectTeam,
+  TeamMembership,
+  User
 ];
 
 let replSet;
@@ -139,6 +147,15 @@ async function seedFixtures() {
     level: 2,
     path: '/'
   });
+  const orgA1Group = await OrgUnit.create({
+    teamId: teamA._id,
+    parentId: orgA1._id,
+    code: 'A1_GROUP',
+    name: '仓储一分部管理组',
+    type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+    level: 3,
+    path: `/${orgA1._id}/`
+  });
   const orgB = await OrgUnit.create({
     teamId: teamB._id,
     code: 'B1',
@@ -188,7 +205,7 @@ async function seedFixtures() {
     createdBy: creatorId,
     updatedBy: creatorId
   });
-  return { teamA, teamB, orgA1, orgA2, orgB, assetA1, assetA2, assetB };
+  return { teamA, teamB, orgA1, orgA1Group, orgA2, orgB, assetA1, assetA2, assetB };
 }
 
 function actors() {
@@ -202,6 +219,11 @@ function actors() {
     subDeputy: authContext({
       ...baseA1,
       positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER
+    }),
+    supervisor: authContext({
+      teamId: fixtures.teamA._id,
+      orgUnitId: fixtures.orgA1Group._id,
+      positionKey: permissions.POSITION_KEYS.SUPERVISOR
     }),
     wrongSubManager: authContext({
       teamId: fixtures.teamA._id,
@@ -265,6 +287,41 @@ async function action(service, authContextValue, repair, actionName, extra = {})
   });
 }
 
+async function persistActorMembership(context, { orgUnitId, positionKey } = {}) {
+  const effectivePositionKey = positionKey || context.membership.positionKey;
+  const positionLevel = permissions.POSITION_LEVEL_BY_KEY[effectivePositionKey];
+  const normalizedUserId = new mongoose.Types.ObjectId(context.userId);
+  await User.collection.updateOne(
+    { _id: normalizedUserId },
+    {
+      $setOnInsert: {
+        username: `repair-${context.userId}`,
+        usernameNormalized: `repair-${context.userId}`,
+        password: 'unused',
+        name: `repair-${context.userId}`,
+        roles: [],
+        isSuperAdmin: false,
+        isSystemAccount: false,
+        tokenVersion: 0
+      },
+      $set: { status: 'active' }
+    },
+    { upsert: true }
+  );
+  return TeamMembership.create({
+    teamId: context.activeTeamId,
+    userId: context.userId,
+    orgUnitId: orgUnitId || context.membership.orgUnitId,
+    role: permissions.MEMBERSHIP_ROLES.MEMBER,
+    positionLevel,
+    positionKey: effectivePositionKey,
+    functionalRoleKeys: [],
+    permissionKeys: ['equipment.view', 'equipment.repair'],
+    moduleDataScopes: permissions.deriveModuleDataScopes({ positionLevel }),
+    status: permissions.MEMBERSHIP_STATUSES.ACTIVE
+  });
+}
+
 before(async () => {
   assert.match(TEST_DATABASE_NAME, /_v2_test$/);
   replSet = await MongoMemoryReplSet.create({
@@ -318,6 +375,124 @@ test('fault report follows sub-department review and asset-admin receipt', async
   assert.equal(await Message.countDocuments({ 'extraData.repairId': created._id }), 1);
 });
 
+test('repair deputy is primary and supervisor fallback is scoped to the exact sub-department', async () => {
+  const service = createService();
+  const role = actors();
+  const rootOrg = await OrgUnit.create({
+    teamId: fixtures.teamA._id,
+    code: 'ROOT_DEPARTMENT',
+    name: '物流部根部门',
+    type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+    level: 1,
+    path: '/'
+  });
+  const rootMisassignedManager = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: rootOrg._id,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+  });
+  await persistActorMembership(role.subManager);
+  await persistActorMembership(role.subDeputy);
+  await persistActorMembership(role.supervisor);
+  await persistActorMembership(role.wrongSubManager);
+  await persistActorMembership(rootMisassignedManager);
+
+  const created = await createFault(service, role.creator, { idempotencyKey: 'repair-supervisor-fallback' });
+  assert.equal(created.availableActions.length, 0);
+  const deputyView = await service.getRepair({
+    authContext: role.subDeputy,
+    repairId: created._id
+  });
+  assert.ok(deputyView.availableActions.includes('SUB_DEPARTMENT_APPROVE'));
+  await assert.rejects(service.getRepair({
+    authContext: role.supervisor,
+    repairId: created._id
+  }), (error) => error.status === 404);
+  await assert.rejects(action(
+    service,
+    role.supervisor,
+    created,
+    'SUB_DEPARTMENT_APPROVE'
+  ), (error) => error.status === 404);
+  assert.equal((await service.listRepairs({
+    authContext: role.supervisor,
+    query: { todo: true }
+  })).total, 0);
+  assert.equal(await Message.countDocuments({ recipient: role.supervisor.userId }), 0);
+  assert.equal(await Message.countDocuments({ recipient: role.wrongSubManager.userId }), 0);
+  assert.equal(await Message.countDocuments({ recipient: rootMisassignedManager.userId }), 0);
+
+  await TeamMembership.updateMany({
+    userId: { $in: [role.subManager.userId, role.subDeputy.userId] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+  await createFault(service, role.creator, {
+    idempotencyKey: 'repair-supervisor-fallback-notification'
+  });
+  assert.equal(await Message.countDocuments({ recipient: role.supervisor.userId }), 1);
+  const supervisorFallback = await service.getRepair({
+    authContext: role.supervisor,
+    repairId: created._id
+  });
+  assert.ok(supervisorFallback.availableActions.includes('SUB_DEPARTMENT_APPROVE'));
+  const supervisorTodo = await service.listRepairs({
+    authContext: role.supervisor,
+    query: { todo: true }
+  });
+  assert.equal(supervisorTodo.total, 2);
+  assert.ok(supervisorTodo.repairs.some(({ _id }) => _id === created._id));
+  const approved = await action(
+    service,
+    role.supervisor,
+    supervisorFallback,
+    'SUB_DEPARTMENT_APPROVE'
+  );
+  assert.equal(approved.status, 'ASSET_ADMIN_RECEIPT_PENDING');
+});
+
+test('concurrent leader restoration serializes before supervisor repair approval', async () => {
+  const service = createService();
+  const role = actors();
+  const managerMembership = await persistActorMembership(role.subManager);
+  await persistActorMembership(role.subDeputy);
+  await persistActorMembership(role.supervisor);
+  await TeamMembership.updateMany({
+    userId: { $in: [role.subManager.userId, role.subDeputy.userId] }
+  }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
+
+  const repair = await createFault(service, role.creator, {
+    idempotencyKey: 'repair-concurrent-leader-restoration'
+  });
+  const supervisorView = await service.getRepair({
+    authContext: role.supervisor,
+    repairId: repair._id
+  });
+  assert.ok(supervisorView.availableActions.includes('SUB_DEPARTMENT_APPROVE'));
+
+  const held = await holdLeaderRestoration({
+    authContext: role.supervisor,
+    membershipId: managerMembership._id
+  });
+  const approval = action(
+    service,
+    role.supervisor,
+    supervisorView,
+    'SUB_DEPARTMENT_APPROVE'
+  );
+  assert.equal(await promiseStateAfterDelay(approval), 'pending');
+  held.release();
+  const [restorationResult, approvalResult] = await Promise.allSettled([
+    held.restoration,
+    approval
+  ]);
+  assert.equal(restorationResult.status, 'fulfilled');
+  assert.equal(approvalResult.status, 'rejected');
+
+  const persisted = await EquipmentRepairOrder.findById(repair._id).lean();
+  assert.equal(persisted.status, 'SUB_DEPARTMENT_REVIEW_PENDING');
+  assert.equal(persisted.revision, repair.revision);
+  assert.equal(persisted.actionLogs.length, repair.actionLogs.length);
+});
+
 test('parts repair allows dynamic rows, server-side amount calculation, and assistant substitute', async () => {
   const service = createService();
   const role = actors();
@@ -332,11 +507,7 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
       partItems: [{ itemKey: 'pump', name: '液压泵' }]
     }
   });
-  await assert.rejects(
-    action(service, role.subDeputy, repair, 'SUB_DEPARTMENT_APPROVE'),
-    (error) => error.status === 403 && error.code === 'EQUIPMENT_REPAIR_ACTION_FORBIDDEN'
-  );
-  repair = await action(service, role.subManager, repair, 'SUB_DEPARTMENT_APPROVE', {
+  repair = await action(service, role.subDeputy, repair, 'SUB_DEPARTMENT_APPROVE', {
     note: '验收并补充配件',
     corrections: {
       repairerName: '李师傅、王师傅',

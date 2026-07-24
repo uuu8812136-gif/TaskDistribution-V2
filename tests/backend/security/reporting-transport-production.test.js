@@ -14,6 +14,7 @@ const OrgUnit = require('../../../app/models/OrgUnit');
 const ProductionSchedule = require('../../../app/models/ProductionSchedule');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
 const ReportChangeRecord = require('../../../app/models/ReportChangeRecord');
+const TransportMasterData = require('../../../app/models/TransportMasterData');
 const TransportRecord = require('../../../app/models/TransportRecord');
 const permissions = require('../../../app/config/permissions');
 const {
@@ -42,6 +43,7 @@ const MODELS = [
   ProductionSchedule,
   ProjectTeam,
   ReportChangeRecord,
+  TransportMasterData,
   TransportRecord
 ];
 const auditService = Object.freeze({ record: async () => null });
@@ -72,6 +74,9 @@ function teamContext({ teamId, orgUnitId, userId, scope }) {
       role: scope === permissions.DATA_SCOPES.TEAM
         ? permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN
         : permissions.MEMBERSHIP_ROLES.MEMBER,
+      functionalRoleKeys: Object.freeze([
+        permissions.FUNCTIONAL_ROLE_KEYS.TRANSPORT_REPORTER
+      ]),
       status: permissions.MEMBERSHIP_STATUSES.ACTIVE
     }),
     orgUnit: Object.freeze({ _id: String(orgUnitId), teamId: String(teamId) }),
@@ -98,7 +103,21 @@ async function seedFixture() {
     adminA: objectId(),
     memberA1: objectId(),
     memberA2: objectId(),
-    adminB: objectId()
+    adminB: objectId(),
+    transportMastersA: {
+      trip: objectId(),
+      route: objectId(),
+      vehiclePlate: objectId(),
+      vehicleType: objectId(),
+      driver: objectId()
+    },
+    transportMastersB: {
+      trip: objectId(),
+      route: objectId(),
+      vehiclePlate: objectId(),
+      vehicleType: objectId(),
+      driver: objectId()
+    }
   };
   await ProjectTeam.collection.insertMany([
     {
@@ -122,36 +141,70 @@ async function seedFixture() {
     {
       _id: values.orgA1,
       teamId: values.teamA,
-      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      parentId: null,
+      type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
       code: 'A1',
       name: 'A1',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
-      level: 2,
+      level: 1,
       path: '/',
-      sortOrder: 1
+      sortOrder: 0
     },
     {
       _id: values.orgA2,
       teamId: values.teamA,
+      parentId: values.orgA1,
       type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
       code: 'A2',
       name: 'A2',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
       level: 2,
-      path: '/',
-      sortOrder: 2
+      path: `/${values.orgA1}/`,
+      sortOrder: 1
     },
     {
       _id: values.orgB1,
       teamId: values.teamB,
-      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      parentId: null,
+      type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
       code: 'B1',
       name: 'B1',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
-      level: 2,
+      level: 1,
       path: '/',
-      sortOrder: 1
+      sortOrder: 0
     }
+  ]);
+  const masterDefinitions = [
+    ['trip', TransportMasterData.TRANSPORT_MASTER_KINDS.TRIP, '第1车'],
+    ['route', TransportMasterData.TRANSPORT_MASTER_KINDS.ROUTE, '仓库-总部'],
+    ['vehiclePlate', TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_PLATE, 'TEST-PLATE-03'],
+    ['vehicleType', TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_TYPE, '厢式货车'],
+    ['driver', TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER, '=DRIVER']
+  ];
+  await TransportMasterData.collection.insertMany([
+    ...masterDefinitions.map(([key, kind, name], sortOrder) => ({
+      _id: values.transportMastersA[key],
+      teamId: values.teamA,
+      kind,
+      name,
+      normalizedKey: TransportMasterData.transportMasterNormalizedKey(kind, name),
+      status: TransportMasterData.TRANSPORT_MASTER_STATUSES.ACTIVE,
+      sortOrder,
+      createdBy: values.adminA,
+      updatedBy: values.adminA
+    })),
+    ...masterDefinitions.map(([key, kind, name], sortOrder) => ({
+      _id: values.transportMastersB[key],
+      teamId: values.teamB,
+      kind,
+      name,
+      normalizedKey: TransportMasterData.transportMasterNormalizedKey(kind, name),
+      status: TransportMasterData.TRANSPORT_MASTER_STATUSES.ACTIVE,
+      sortOrder,
+      createdBy: values.adminB,
+      updatedBy: values.adminB
+    }))
   ]);
   values.adminAContext = teamContext({
     teamId: values.teamA,
@@ -204,12 +257,12 @@ function transportInput(orgUnitId, photoFiles, overrides = {}) {
     orgUnitId: String(orgUnitId),
     reportDate: '2026-07-16',
     shift: '白班',
-    tripLabel: '第1车',
-    route: '仓库-总部',
+    tripMasterId: String(fixture.transportMastersA.trip),
+    routeMasterId: String(fixture.transportMastersA.route),
     dispatchType: '配送',
-    vehiclePlate: 'TEST-PLATE-03',
-    vehicleType: '厢式货车',
-    driverName: '=DRIVER',
+    vehiclePlateMasterId: String(fixture.transportMastersA.vehiclePlate),
+    vehicleTypeMasterId: String(fixture.transportMastersA.vehicleType),
+    driverMasterId: String(fixture.transportMastersA.driver),
     loadDetails: { standardPlasticPallet: 2 },
     photoFileIds: photoFiles.map(({ _id }) => String(_id)),
     remark: '+FORMULA',
@@ -387,7 +440,7 @@ test('report options and transport history preserve module data scope', async ()
   const [teamTransportOptions, scopedTransportOptions, scopedProductionOptions] = await Promise.all([
     transportService.listOptions({ authContext: fixture.adminAContext }),
     transportService.listOptions({ authContext: fixture.memberA2Context }),
-    productionService.listOptions({ authContext: fixture.memberA1Context })
+    productionService.listOptions({ authContext: fixture.memberA2Context })
   ]);
   assert.deepEqual(
     teamTransportOptions.orgUnits.map(({ _id }) => _id).sort(),
@@ -419,7 +472,7 @@ test('report options and transport history preserve module data scope', async ()
   );
 });
 
-test('production schedules are isolated and concurrent monthly maintenance keeps one key', async () => {
+test('production schedules use one team-month key shared by the root department and its divisions', async () => {
   const service = createProductionScheduleService({
     auditService,
     connection: mongoose.connection,
@@ -432,22 +485,22 @@ test('production schedules are isolated and concurrent monthly maintenance keeps
   await Promise.all([
     service.maintainMonthlySchedule({
       ...base,
-      input: { orgUnitId: String(fixture.orgA2), monthlyTotals: { aLine: 10 } }
+      input: { orgUnitId: String(fixture.orgA1), monthlyTotals: { aLine: 10 } }
     }),
     service.maintainMonthlySchedule({
       ...base,
-      input: { orgUnitId: String(fixture.orgA2), monthlyTotals: { aLine: 20 } }
+      input: { orgUnitId: String(fixture.orgA1), monthlyTotals: { aLine: 20 } }
     })
   ]);
 
   assert.equal(await ProductionSchedule.countDocuments({
     teamId: fixture.teamA,
-    orgUnitId: fixture.orgA2,
+    orgUnitId: fixture.orgA1,
     month: '2026-03'
   }), 1);
   const stored = await ProductionSchedule.findOne({
     teamId: fixture.teamA,
-    orgUnitId: fixture.orgA2,
+    orgUnitId: fixture.orgA1,
     month: '2026-03'
   }).lean();
   assert.ok([10, 20].includes(stored.monthlyTotals.aLine));
@@ -455,15 +508,16 @@ test('production schedules are isolated and concurrent monthly maintenance keeps
   const orgA1 = await service.listMonthlySchedules({ authContext: fixture.memberA1Context });
   const orgA2 = await service.listMonthlySchedules({ authContext: fixture.memberA2Context });
   const teamB = await service.listMonthlySchedules({ authContext: fixture.adminBContext });
-  assert.equal(orgA1.total, 0);
+  assert.equal(orgA1.total, 1);
   assert.equal(orgA2.total, 1);
+  assert.equal(orgA1.productionSchedules[0]._id, orgA2.productionSchedules[0]._id);
   assert.equal(teamB.total, 0);
 
   const maintained = await service.maintainDailySlot({
     authContext: fixture.adminAContext,
     slot: 'current',
     input: {
-      orgUnitId: String(fixture.orgA2),
+      orgUnitId: String(fixture.orgA1),
       dailyEntries: [{ date: '2026-03-01', aLineDay: 3 }],
       productionPlanForecast: 120
     }
@@ -478,7 +532,7 @@ test('production schedules are isolated and concurrent monthly maintenance keeps
       authContext: fixture.adminAContext,
       slot: 'current',
       input: {
-        orgUnitId: String(fixture.orgA2),
+        orgUnitId: String(fixture.orgA1),
         dailyEntries: [{ date: '2026-02-28', aLineDay: 1 }]
       }
     }),
@@ -486,11 +540,11 @@ test('production schedules are isolated and concurrent monthly maintenance keeps
   );
   await assert.rejects(
     service.maintainMonthlySchedule({
-      authContext: fixture.memberA1Context,
+      authContext: fixture.adminAContext,
       month: '2026-04',
       input: { orgUnitId: String(fixture.orgA2), monthlyTotals: { aLine: 1 } }
     }),
-    (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID'
+    (error) => error.code === 'PRODUCTION_SCHEDULE_ORG_UNIT_INVALID'
   );
 });
 

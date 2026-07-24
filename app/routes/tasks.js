@@ -11,6 +11,9 @@ const {
   requireTeamContext
 } = require('../middlewares/authContext');
 const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
+const {
+  requireTaskPermissionOrLeadershipCandidate
+} = require('../middlewares/taskLeadershipAuthorization');
 
 const router = express.Router();
 
@@ -22,16 +25,17 @@ router.use(
 );
 
 const taskView = requirePermission('task.view');
-const taskCreate = requirePermission('task.create');
-const taskEdit = requirePermission('task.edit');
-const taskAssign = requirePermission('task.assign');
-const taskReview = requirePermission('task.review');
 const taskExport = requirePermission('task.export');
+const taskViewOrLeader = requireTaskPermissionOrLeadershipCandidate('task.view');
+const taskCreateOrLeader = requireTaskPermissionOrLeadershipCandidate('task.create');
+const taskEditOrLeader = requireTaskPermissionOrLeadershipCandidate('task.edit');
+const taskAssignOrLeader = requireTaskPermissionOrLeadershipCandidate('task.assign');
+const taskReviewOrLeader = requireTaskPermissionOrLeadershipCandidate('task.review');
 
 function requireAssignmentPermissionWhenPresent(req, res, next) {
   const assignmentFields = ['executor', 'mainExecutor', 'ccUsers', 'subTasks'];
   if (assignmentFields.some((field) => Object.prototype.hasOwnProperty.call(req.body || {}, field))) {
-    return taskAssign(req, res, next);
+    return taskAssignOrLeader(req, res, next);
   }
   return next();
 }
@@ -48,35 +52,36 @@ function rejectLegacyMultipart(req, res, next) {
 
 // Static routes must remain before /:id.
 router.get('/export', taskExport, taskController.batchExportTasks);
+router.get('/assignable-users', taskAssignOrLeader, taskController.getAssignableUsers);
 router.get('/my-tasks', taskView, taskController.getMyTasks);
 
 router.post(
   '/',
   requireTeamContext,
-  taskCreate,
-  taskAssign,
+  taskCreateOrLeader,
+  taskAssignOrLeader,
   rejectLegacyMultipart,
   taskController.createTask
 );
-router.get('/', taskView, taskController.getTasks);
+router.get('/', taskViewOrLeader, taskController.getTasks);
 
-router.get('/:id', taskView, taskController.getTaskById);
+router.get('/:id', taskViewOrLeader, taskController.getTaskById);
 router.put(
   '/:id',
   requireTeamContext,
-  taskEdit,
+  taskEditOrLeader,
   rejectLegacyMultipart,
   requireAssignmentPermissionWhenPresent,
   taskController.updateTask
 );
-router.delete('/:id', requireTeamContext, taskEdit, taskController.deleteTask);
+router.delete('/:id', requireTeamContext, taskEditOrLeader, taskController.deleteTask);
 
 // These route-level guards establish the authorization boundary. The flow
 // controllers also enforce resource-level task/team filters.
 router.post('/:id/complete', requireTeamContext, taskView, taskFlowController.completeTask);
 router.put('/:id/complete', requireTeamContext, taskView, taskFlowController.updateCompletion);
-router.post('/:id/review', requireTeamContext, taskReview, taskFlowController.reviewTask);
-router.post('/:id/confirm', requireTeamContext, taskView, taskFlowController.confirmTask);
-router.get('/:id/reviews', taskView, taskFlowController.getTaskReviews);
+router.post('/:id/review', requireTeamContext, taskReviewOrLeader, taskFlowController.reviewTask);
+router.post('/:id/confirm', requireTeamContext, taskViewOrLeader, taskFlowController.confirmTask);
+router.get('/:id/reviews', taskViewOrLeader, taskFlowController.getTaskReviews);
 
 module.exports = router;

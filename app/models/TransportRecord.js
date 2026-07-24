@@ -77,12 +77,22 @@ const transportRecordSchema = new mongoose.Schema({
     enum: TRANSPORT_SHIFT_VALUES,
     required: true
   },
+  tripMasterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
+  },
   tripLabel: {
     type: String,
     trim: true,
     minlength: 1,
     maxlength: 50,
     required: true
+  },
+  routeMasterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
   },
   route: {
     type: String,
@@ -96,6 +106,11 @@ const transportRecordSchema = new mongoose.Schema({
     enum: TRANSPORT_DISPATCH_TYPE_VALUES,
     required: true
   },
+  vehiclePlateMasterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
+  },
   vehiclePlate: {
     type: String,
     trim: true,
@@ -108,6 +123,16 @@ const transportRecordSchema = new mongoose.Schema({
     trim: true,
     maxlength: 100,
     default: ''
+  },
+  vehicleTypeMasterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
+  },
+  driverMasterId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
   },
   driverName: {
     type: String,

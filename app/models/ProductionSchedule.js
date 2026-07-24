@@ -110,12 +110,8 @@ productionScheduleSchema.pre('validate', function validateDailyEntryMonth(next) 
 });
 
 productionScheduleSchema.index(
-  { teamId: 1, orgUnitId: 1, month: 1 },
-  { unique: true, name: 'uq_production_schedule_scope_month' }
-);
-productionScheduleSchema.index(
-  { teamId: 1, month: -1, orgUnitId: 1 },
-  { name: 'ix_production_schedule_team_month_org' }
+  { teamId: 1, month: 1 },
+  { unique: true, name: 'uq_production_schedule_team_month' }
 );
 
 module.exports = mongoose.model('ProductionSchedule', productionScheduleSchema);

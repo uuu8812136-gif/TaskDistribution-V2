@@ -25,7 +25,7 @@ const IDS = Object.freeze({
   related: '555555555555555555555555'
 });
 
-function teamContext(scope = DATA_SCOPES.TEAM) {
+function teamContext(scope = DATA_SCOPES.TEAM, equipmentOrgUnitScopeIds = undefined) {
   return Object.freeze({
     authenticated: true,
     mode: SESSION_MODES.TEAM,
@@ -33,7 +33,10 @@ function teamContext(scope = DATA_SCOPES.TEAM) {
     membership: Object.freeze({ orgUnitId: IDS.orgUnit }),
     moduleDataScopes: Object.freeze(Object.fromEntries(
       DATA_SCOPE_MODULE_VALUES.map((moduleKey) => [moduleKey, scope])
-    ))
+    )),
+    ...(equipmentOrgUnitScopeIds
+      ? { equipmentOrgUnitScopeIds: Object.freeze([...equipmentOrgUnitScopeIds]) }
+      : {})
   });
 }
 
@@ -68,6 +71,32 @@ test('ORG_UNIT scope stays outside a keyword $or and cannot be bypassed', () => 
   });
   assert.equal(filter.$and[0].teamId, IDS.team);
   assert.equal(filter.$and[0].orgUnitId, IDS.orgUnit);
+});
+
+test('equipment ORG_UNIT branch scope uses a trusted id set and retains the team boundary', () => {
+  const childOrgUnitId = '666666666666666666666666';
+  const siblingGroupId = '777777777777777777777777';
+  const filter = buildScopedFilter({
+    authContext: teamContext(DATA_SCOPES.ORG_UNIT, [
+      IDS.orgUnit,
+      childOrgUnitId,
+      siblingGroupId
+    ]),
+    moduleKey: 'equipment',
+    userFilter: {
+      $or: [
+        { status: 'IN_USE' },
+        { teamId: IDS.otherTeam }
+      ]
+    }
+  });
+
+  assert.deepEqual(filter.$and[0], {
+    teamId: IDS.team,
+    orgUnitId: { $in: [IDS.orgUnit, childOrgUnitId, siblingGroupId] }
+  });
+  assert.equal(filter.$and[0].teamId, IDS.team);
+  assert.equal(JSON.stringify(filter.$and[0]).includes(IDS.otherTeam), false);
 });
 
 test('TEAM scope forces teamId without adding an organization restriction', () => {

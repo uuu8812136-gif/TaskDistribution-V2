@@ -15,7 +15,9 @@ const ProjectTeam = require('../../../app/models/ProjectTeam');
 const User = require('../../../app/models/User');
 const permissions = require('../../../app/config/permissions');
 const {
+  REPORT_RULE_VERSION,
   createGeneratedDailyReportService,
+  plannedAttendanceCount,
   shiftNaturalDate
 } = require('../../../app/services/generatedDailyReportService');
 const {
@@ -113,6 +115,10 @@ function summary(reportDate, overrides = {}) {
       absenteeism: named(),
       notYetEmployed: named(),
       pendingDeparture: named(overrides.dayPending ?? 2),
+      temporaryWorker: named(
+        overrides.dayTemporary ?? 2,
+        overrides.dayTemporaryNames || ['临时甲', '临时乙']
+      ),
       leaveWithSickCount: (overrides.dayLeave ?? 1) + (overrides.daySick ?? 0)
     },
     nightShift: {
@@ -123,13 +129,16 @@ function summary(reportDate, overrides = {}) {
       absenteeism: named(),
       notYetEmployed: named(),
       pendingDeparture: named(overrides.nightPending ?? 0),
+      temporaryWorker: named(overrides.nightTemporary ?? 0),
       leaveWithSickCount: (overrides.nightLeave ?? 0) + (overrides.nightSick ?? 0)
     },
     pendingDepartureCount: (overrides.dayPending ?? 2) + (overrides.nightPending ?? 0),
     support: overrides.support || [
       { destination: '物流技术部', count: 1, names: ['张三'] }
     ],
-    otherRemarks: [],
+    otherRemarks: overrides.otherRemarks || [
+      { orgUnitId: 'division-1', orgUnitName: '仓配一分部', remark: '客户备注' }
+    ],
     dataQuality: { status: 'CONFIRMED', issues: [] }
   };
 }
@@ -362,6 +371,8 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(result.versionCreated, true);
   assert.equal(result.dailyReport.version, 1);
   assert.equal(result.dailyReport.sourceSnapshot.rule.sourceRange, 'D4:D13');
+  assert.equal(result.dailyReport.ruleVersion, REPORT_RULE_VERSION);
+  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v2-2026-07-24');
   assert.equal(result.dailyReport.sourceSnapshot.attendance.currentDate.submissions.length, 7);
   assert.ok(result.dailyReport.sourceSnapshot.production.schedules.length >= 12);
   assert.match(result.dailyReport.finalText, /^7月15日变速箱物流部 =HYPERLINK\("x"\)生产日报/m);
@@ -383,11 +394,23 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
     /5\.人员情况:在册人数70人，待离职2人。昨日白班安排出勤65人，实际出勤59人，昨日夜班安排出勤1人，实际出勤1人；今日白班安排出勤65人，夜班安排出勤2人。/
   );
   assert.match(result.dailyReport.finalText, /①、到物流技术部帮产1人（张三）；/);
-  assert.match(result.dailyReport.finalText, /②、今日实际出勤62人，请假1人。/);
+  assert.match(result.dailyReport.finalText, /②、临时工2人（临时甲、临时乙）；/);
+  assert.match(result.dailyReport.finalText, /③、仓配一分部：客户备注；/);
+  assert.match(result.dailyReport.finalText, /④、今日实际出勤62人，请假1人。/);
   assert.match(result.dailyReport.finalText, /提报人:审核员A$/);
   assert.ok(result.dailyReport.finalText.split('\n').every((line) => !/^[=+@-]/.test(line)));
   assert.equal(events.length, 1);
   assert.equal(events[0].resourceType, permissions.AUDIT_RESOURCE_TYPES.GENERATED_DAILY_REPORT);
+});
+
+test('unused all-zero shift has zero planned attendance instead of the registered headcount', () => {
+  const source = summary('2026-07-15', {
+    nightActual: 0,
+    nightRest: 0,
+    nightTemporary: 0
+  });
+  assert.equal(plannedAttendanceCount(source, 'nightShift'), 0);
+  assert.equal(plannedAttendanceCount(source, 'dayShift'), 65);
 });
 
 test('same sources are idempotent under concurrent generation', async () => {

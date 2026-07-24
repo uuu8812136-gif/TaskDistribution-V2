@@ -7,9 +7,14 @@ import {
   canApproveTaskExtension,
   canCompleteAssignedTask,
   canConfirmTask,
+  canCreateTask,
+  canDeleteTask,
+  canEditTask,
   canRequestTaskExtension,
   canReviewAssignedTask,
   hasReviewedTaskRound,
+  hasServerCapability,
+  isTaskLeadershipCandidateContext,
   taskDetailLocation,
   taskReadParams
 } from '../src/utils/taskPolicy.js'
@@ -61,17 +66,18 @@ test('a main executor can complete a partial main task only after every subtask 
   }), false)
 })
 
-test('a task review action requires both task.review and CC assignment', () => {
-  const reviewTask = { ...task, status: 'pending_review' }
-  const base = { task: reviewTask, isTeamMode: true, isReadOnly: false, hasReviewed: false }
-  assert.equal(canReviewAssignedTask({ ...base, userId: 'reviewer-1', hasReviewPermission: true }), true)
-  assert.equal(canReviewAssignedTask({ ...base, userId: 'reviewer-1', hasReviewPermission: false }), false)
-  assert.equal(canReviewAssignedTask({ ...base, userId: 'outsider', hasReviewPermission: true }), false)
+test('task review UI trusts only the fresh server capability and the active review round', () => {
+  const reviewTask = {
+    ...task,
+    status: 'pending_review',
+    capabilities: { canReview: true }
+  }
+  assert.equal(canReviewAssignedTask({ task: reviewTask, hasReviewed: false }), true)
+  assert.equal(canReviewAssignedTask({ task: reviewTask, hasReviewed: true }), false)
+  assert.equal(canReviewAssignedTask({ task: { ...reviewTask, capabilities: {} } }), false)
+  assert.equal(canReviewAssignedTask({ task: { ...reviewTask, capabilities: { canReview: false } } }), false)
   assert.equal(canReviewAssignedTask({
-    ...base,
-    task: { ...reviewTask, status: 'completed' },
-    userId: 'reviewer-1',
-    hasReviewPermission: true
+    task: { ...reviewTask, capabilities: { canReview: 'true' } }
   }), false)
 })
 
@@ -89,77 +95,88 @@ test('review history only blocks the same reviewer in the active CC review round
   assert.equal(hasReviewedTaskRound(reviews, 'reviewer-2', 2), true)
 })
 
-test('final confirmation allows the creator or an administrator without task.review', () => {
-  const base = {
-    task: { ...task, creator: { _id: 'creator-1' }, status: 'pending_confirm' },
-    isTeamMode: true,
-    isReadOnly: false,
-    hasReviewPermission: false
+test('confirmation and extension approval use server task capabilities without client role inference', () => {
+  const privilegedTask = {
+    ...task,
+    creator: { _id: 'creator-1' },
+    capabilities: {
+      canConfirm: true,
+      canApproveExtension: true
+    }
   }
-  assert.equal(canConfirmTask({ ...base, userId: 'creator-1' }), true)
-  assert.equal(canConfirmTask({ ...base, userId: 'reviewer-1' }), false)
-  assert.equal(canConfirmTask({ ...base, userId: 'reviewer-1', membershipRole: 'PROJECT_ADMIN' }), true)
-  assert.equal(canConfirmTask({ ...base, userId: 'reviewer-1', isSuperAdmin: true }), true)
-  assert.equal(canConfirmTask({ ...base, userId: 'creator-1', isReadOnly: true }), false)
+  assert.equal(canConfirmTask({ task: privilegedTask }), true)
+  assert.equal(canApproveTaskExtension({ task: privilegedTask }), true)
+  assert.equal(canConfirmTask({ task: { ...privilegedTask, capabilities: {} } }), false)
+  assert.equal(canApproveTaskExtension({ task: { ...privilegedTask, capabilities: {} } }), false)
   assert.equal(canConfirmTask({
-    ...base,
-    task: {
-      ...base.task,
-      isMainTask: true,
-      subTasks: [{ status: 'finished' }, { status: 'pending_confirm' }]
-    },
-    userId: 'creator-1'
+    task: { ...privilegedTask, capabilities: { canConfirm: false } },
+    userId: 'creator-1',
+    membershipRole: 'PROJECT_ADMIN',
+    isSuperAdmin: true
   }), false)
-  assert.equal(canConfirmTask({
-    ...base,
-    task: {
-      ...base.task,
-      isMainTask: true,
-      subTasks: [{ status: 'finished' }, { status: 'finished' }]
-    },
-    userId: 'creator-1'
-  }), true)
-
-  const extensionBase = {
-    ...base,
-    task: { ...base.task, status: 'extension_pending' }
-  }
-  assert.equal(canApproveTaskExtension({ ...extensionBase, userId: 'creator-1' }), false)
-  assert.equal(canApproveTaskExtension({ ...extensionBase, userId: 'creator-1', hasReviewPermission: true }), true)
-  assert.equal(canApproveTaskExtension({ ...extensionBase, userId: 'reviewer-1' }), false)
 })
 
-test('the extension list exposes approval only to the recorded approver or an administrator', () => {
+test('the extension list exposes approval only through its server capability', () => {
   const request = {
     status: 'pending',
     approver: { _id: 'creator-1' },
-    task: { status: 'extension_pending' }
+    task: { status: 'extension_pending' },
+    capabilities: { canApprove: true }
   }
-  const base = {
-    request,
-    isTeamMode: true,
-    isReadOnly: false,
-    hasReviewPermission: true
-  }
+  assert.equal(canApproveExtensionRequest({ request }), true)
+  assert.equal(canApproveExtensionRequest({ request: { ...request, capabilities: {} } }), false)
+  assert.equal(canApproveExtensionRequest({
+    request: { ...request, capabilities: { canApprove: false } },
+    userId: 'creator-1',
+    membershipRole: 'PROJECT_ADMIN',
+    isSuperAdmin: true
+  }), false)
+})
 
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'creator-1' }), true)
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'applicant-1' }), false)
-  assert.equal(canApproveExtensionRequest({
-    ...base,
-    userId: 'project-admin',
-    membershipRole: 'PROJECT_ADMIN'
-  }), true)
-  assert.equal(canApproveExtensionRequest({
-    ...base,
-    userId: 'creator-1',
-    request: { ...request, status: 'approved' }
+test('task list mutations and creation fail closed for legacy or malformed capability payloads', () => {
+  const response = { capabilities: { canCreate: true } }
+  const row = { capabilities: { canEdit: true, canDelete: true } }
+
+  assert.equal(canCreateTask(response), true)
+  assert.equal(canEditTask(row), true)
+  assert.equal(canDeleteTask(row), true)
+  assert.equal(hasServerCapability(row, 'canEdit'), true)
+
+  for (const legacy of [null, {}, { capabilities: {} }]) {
+    assert.equal(canCreateTask(legacy), false)
+    assert.equal(canEditTask(legacy), false)
+    assert.equal(canDeleteTask(legacy), false)
+  }
+  assert.equal(canEditTask({ capabilities: { canEdit: 1 } }), false)
+  assert.equal(canDeleteTask({ capabilities: { canDelete: 'true' } }), false)
+})
+
+test('only active team leadership positions receive the candidate navigation entry', () => {
+  const activeSupervisor = {
+    mode: 'TEAM',
+    readOnly: false,
+    membership: { status: 'ACTIVE', positionKey: 'SUPERVISOR' }
+  }
+  for (const positionKey of [
+    'SUB_DEPARTMENT_MANAGER',
+    'SUB_DEPARTMENT_DEPUTY_MANAGER',
+    'SUPERVISOR'
+  ]) {
+    assert.equal(isTaskLeadershipCandidateContext({
+      ...activeSupervisor,
+      membership: { ...activeSupervisor.membership, positionKey }
+    }), true)
+  }
+  assert.equal(isTaskLeadershipCandidateContext({
+    ...activeSupervisor,
+    membership: { status: 'DISABLED', positionKey: 'SUPERVISOR' }
   }), false)
-  assert.equal(canApproveExtensionRequest({
-    ...base,
-    userId: 'creator-1',
-    request: { ...request, task: { status: 'in_progress' } }
+  assert.equal(isTaskLeadershipCandidateContext({
+    ...activeSupervisor,
+    membership: { status: 'ACTIVE', positionKey: 'EMPLOYEE' }
   }), false)
-  assert.equal(canApproveExtensionRequest({ ...base, userId: 'creator-1', isReadOnly: true }), false)
+  assert.equal(isTaskLeadershipCandidateContext({ ...activeSupervisor, mode: 'GLOBAL_READ_ONLY' }), false)
+  assert.equal(isTaskLeadershipCandidateContext({ ...activeSupervisor, readOnly: true }), false)
 })
 
 test('an extension request is scoped to the responsible owner without task.edit', () => {

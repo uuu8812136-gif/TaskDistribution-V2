@@ -5,7 +5,7 @@
         <el-button text class="menu-button" :aria-label="isCollapse ? '展开菜单' : '收起菜单'" @click="toggleCollapse">
           <el-icon><Expand v-if="isCollapse" /><Fold v-else /></el-icon>
         </el-button>
-        <span class="logo-title">Horselink 公司管理系统</span>
+        <span class="logo-title">Horselink（马链）管理系统</span>
       </div>
 
       <div class="header-right">
@@ -74,11 +74,6 @@
           :collapse-transition="false"
           :router="true"
         >
-          <el-menu-item index="/dashboard">
-            <el-icon><DataAnalysis /></el-icon>
-            <template #title>统计看板</template>
-          </el-menu-item>
-
           <el-sub-menu
             v-if="session.isTeamMode && (session.hasPermission('member.view') || canManageOrganization)"
             index="/team-management"
@@ -138,18 +133,22 @@
             <el-menu-item index="/reporting/daily-report">生产日报</el-menu-item>
           </el-sub-menu>
 
-          <el-sub-menu v-if="session.hasPermission('task.view')" index="/tasks">
+          <el-sub-menu index="/task-management">
             <template #title>
               <el-icon><Document /></el-icon>
               <span>任务管理</span>
             </template>
-            <el-menu-item index="/tasks">全部任务</el-menu-item>
-            <el-menu-item index="/tasks/my">我的任务</el-menu-item>
-            <el-menu-item index="/tasks/board">任务看板</el-menu-item>
+            <el-menu-item index="/dashboard">
+              <el-icon><DataAnalysis /></el-icon>
+              <span>统计看板</span>
+            </el-menu-item>
+            <el-menu-item v-if="canAccessAllTasks" index="/tasks">全部任务</el-menu-item>
+            <el-menu-item v-if="session.hasPermission('task.view')" index="/tasks/my">我的任务</el-menu-item>
+            <el-menu-item v-if="session.hasPermission('task.view')" index="/tasks/board">任务看板</el-menu-item>
           </el-sub-menu>
 
           <el-menu-item
-            v-if="session.can('task.review', { write: true, teamRequired: true })"
+            v-if="session.can('task.review', { write: true, teamRequired: true }) || canAccessTaskLeadership"
             index="/extensions"
           >
             <el-icon><Clock /></el-icon>
@@ -234,11 +233,17 @@ import { changePassword } from '@/api/auth'
 import { useMessageStore } from '@/stores/message'
 import { useSessionStore } from '@/stores/session'
 import { canViewAudit } from '@/utils/auditLog'
+import { synchronizeRememberedPassword } from '@/utils/rememberedLogin'
+import { isTaskLeadershipCandidateContext } from '@/utils/taskPolicy'
 
 const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const messageStore = useMessageStore()
+const canAccessTaskLeadership = computed(() => isTaskLeadershipCandidateContext(session.context))
+const canAccessAllTasks = computed(() => (
+  session.hasPermission('task.view') || canAccessTaskLeadership.value
+))
 const canManageOrganization = computed(() => (
   session.isTeamMode &&
   session.hasPermission('org.manage') &&
@@ -330,7 +335,18 @@ const handleChangePassword = async () => {
       oldPassword: passwordForm.oldPassword,
       newPassword: passwordForm.newPassword
     })
-    ElMessage.success('密码修改成功，请重新登录')
+    const credentialSync = await synchronizeRememberedPassword({
+      username: session.user?.username,
+      password: passwordForm.newPassword
+    })
+    if (credentialSync.attempted && !credentialSync.updated) {
+      const followUp = credentialSync.forgotten
+        ? '已取消本系统自动读取，请下次手动输入。'
+        : '也未能清除旧密码，请在浏览器设置中删除该密码。'
+      ElMessage.warning(`密码修改成功，但浏览器未能更新已记住密码，${followUp}`)
+    } else {
+      ElMessage.success('密码修改成功，请重新登录')
+    }
     passwordDialogVisible.value = false
     session.clearLocalSession('password-changed')
     await router.replace({ name: 'Login' })

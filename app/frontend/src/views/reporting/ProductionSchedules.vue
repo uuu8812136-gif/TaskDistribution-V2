@@ -83,15 +83,16 @@
 
           <section class="table-shell daily-table">
             <el-table v-loading="dailyLoading" :data="dailySchedule.dailyEntries" row-key="date" stripe empty-text="暂无日排产">
-              <el-table-column label="日期" width="118" fixed="left">
+              <el-table-column label="日期" width="110" fixed="left">
                 <template #default="{ row }">{{ dayLabel(row.date) }}</template>
               </el-table-column>
               <el-table-column
                 v-for="item in DAILY_SCHEDULE_FIELDS"
                 :key="item.key"
                 :label="item.label"
-                :min-width="item.key === 'transferCaseLine' ? 150 : 125"
-                align="right"
+                :min-width="item.key === 'transferCaseLine' ? 128 : 116"
+                align="center"
+                header-align="center"
               >
                 <template #default="{ row }">
                   <el-input-number
@@ -106,7 +107,7 @@
                   <span v-else>{{ displayQuantity(row[item.key]) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="合计" width="100" align="right" fixed="right">
+              <el-table-column label="合计" width="88" align="right" fixed="right">
                 <template #default="{ row }">
                   <strong>{{ rowQuantityTotal(row, DAILY_SCHEDULE_FIELDS) }}</strong>
                 </template>
@@ -569,7 +570,8 @@ onMounted(initialize)
 .daily-summary strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
 .daily-table { margin-top: 16px; }
-.table-number { width: 100%; min-width: 90px; }
+.table-number { display: block; width: 92px; max-width: 100%; min-width: 0; margin-inline: auto; }
+.table-number :deep(.el-input__inner) { text-align: center; }
 .edit-actions { justify-content: flex-end; gap: 8px; padding-top: 14px; }
 .reason-input { width: min(420px, 100%); margin-right: auto; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }

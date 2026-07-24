@@ -1,0 +1,14 @@
+{
+  "format": "task-distribution-v2-release/v1",
+  "releaseId": "__RELEASE_ID__",
+  "commit": "__COMMIT__",
+  "commitTime": "__COMMIT_TIME__",
+  "builtAt": "__BUILT_AT__",
+  "environment": "customer-test",
+  "apiPort": 18120,
+  "innerWebPort": 18130,
+  "mongoPort": 27150,
+  "replicaSet": "customer_acceptance_v2_rs",
+  "database": "customer_acceptance_v2_test",
+  "webApiBaseUrl": "/api"
+}

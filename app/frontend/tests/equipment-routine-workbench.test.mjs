@@ -81,6 +81,12 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
 })
 
+test('routine exception actions trust the server access policy instead of guessing fixed positions', () => {
+  assert.match(workbenchSource, /row\.accessPolicy\?\.canHandle === true/)
+  assert.doesNotMatch(workbenchSource, /membership\.positionKey === 'SUB_DEPARTMENT_MANAGER'/)
+  assert.match(workbenchSource, /SUB_DEPARTMENT_MANAGER: '分部负责人处理'/)
+})
+
 test('routine record export is permission gated and protected from repeated clicks', () => {
   assert.match(workbenchSource, /v-if="activeTab === 'records' && canExport"/)
   assert.match(workbenchSource, /:loading="exporting"/)

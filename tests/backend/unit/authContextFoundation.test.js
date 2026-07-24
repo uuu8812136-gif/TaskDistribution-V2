@@ -90,7 +90,8 @@ function serviceFor({
   membershipOverrides,
   findTeamById,
   findMembership,
-  findOrgUnitById
+  findOrgUnitById,
+  findEquipmentOrgUnitScopeIds
 } = {}) {
   return createTeamContextService({
     findUserById: async () => ({
@@ -117,7 +118,8 @@ function serviceFor({
       status: ORG_UNIT_STATUSES.ACTIVE,
       level: 3,
       path: '/'
-    }))
+    })),
+    findEquipmentOrgUnitScopeIds
   });
 }
 
@@ -258,6 +260,36 @@ test('builds TEAM context from server-side membership and ignores request team f
     }),
     IDS.team
   );
+});
+
+test('equipment ORG_UNIT scope carries the resolved second-level branch without widening other modules', async () => {
+  const childOrgUnitId = '666666666666666666666666';
+  const siblingGroupId = '777777777777777777777777';
+  const received = [];
+  const context = await serviceFor({
+    findEquipmentOrgUnitScopeIds: async (input) => {
+      received.push(input);
+      return [IDS.orgUnit, childOrgUnitId, siblingGroupId, childOrgUnitId];
+    }
+  }).resolveContext({
+    claims: validateTokenClaims(claims()),
+    session: session()
+  });
+
+  assert.equal(received.length, 1);
+  assert.equal(received[0].teamId, IDS.team);
+  assert.equal(received[0].orgUnitId, IDS.orgUnit);
+  assert.deepEqual(context.equipmentOrgUnitScopeIds, [
+    IDS.orgUnit,
+    childOrgUnitId,
+    siblingGroupId
+  ]);
+  assert.deepEqual(resolveModuleDataScope(context, 'equipment').orgUnitIds, [
+    IDS.orgUnit,
+    childOrgUnitId,
+    siblingGroupId
+  ]);
+  assert.deepEqual(resolveModuleDataScope(context, 'task').orgUnitIds, [IDS.orgUnit]);
 });
 
 test('rejects a token whose version no longer matches the user', async () => {

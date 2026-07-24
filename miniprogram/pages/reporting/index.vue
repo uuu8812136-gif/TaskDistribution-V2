@@ -84,10 +84,13 @@ export default {
       teamOptions.value.find((team) => team._id === selectedTeamId.value)?.name || ''
     ))
     const canViewTransport = computed(() => userStore.can('report.view'))
-    const canSubmitTransport = computed(() => userStore.can('report.submit', {
-      write: true,
-      teamRequired: true
-    }))
+    const canSubmitTransport = computed(() => (
+      userStore.can('report.submit', { write: true, teamRequired: true }) &&
+      (
+        userStore.isSuperAdmin ||
+        userStore.context.membership?.functionalRoleKeys?.includes('TRANSPORT_REPORTER')
+      )
+    ))
     const canViewSchedule = computed(() => userStore.can('report.view'))
     const canViewAttendance = computed(() => userStore.can('report.view'))
     const canViewDailyReport = computed(() => userStore.can('report.view'))

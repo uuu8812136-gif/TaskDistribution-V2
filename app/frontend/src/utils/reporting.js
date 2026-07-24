@@ -41,13 +41,23 @@ export const ATTENDANCE_NAMED_FIELDS = Object.freeze([
   { key: 'sickLeave', label: '病假' },
   { key: 'absenteeism', label: '旷工' },
   { key: 'notYetEmployed', label: '未入职' },
-  { key: 'pendingDeparture', label: '待离职' }
+  { key: 'pendingDeparture', label: '待离职' },
+  { key: 'temporaryWorker', label: '临时工' }
 ])
 
 export const ATTENDANCE_QUALITY_STATUSES = Object.freeze({
   CONFIRMED: 'CONFIRMED',
   PENDING_CONFIRMATION: 'PENDING_CONFIRMATION'
 })
+
+export function attendanceReportingOrgUnits(orgUnits) {
+  if (!Array.isArray(orgUnits)) return []
+  return orgUnits.filter((orgUnit) => (
+    orgUnit?.status === 'ACTIVE' &&
+    orgUnit?.type === 'SUB_DEPARTMENT' &&
+    orgUnit?.level === 2
+  ))
+}
 
 const ATTENDANCE_QUALITY_ISSUE_MESSAGES = Object.freeze({
   SOURCE_REGISTERED_TOTAL_MISMATCH: '在册人数汇总与分部明细不一致，等待客户确认',
@@ -149,6 +159,36 @@ export function attendanceNamesText(value) {
   return splitNames(value).join('、') || '-'
 }
 
+export function attendanceEffectiveActualCount(shift = {}) {
+  if (shift.effectiveActualAttendanceCount !== undefined) {
+    return integerOrZero(shift.effectiveActualAttendanceCount)
+  }
+  return (
+    integerOrZero(shift.actualAttendanceCount) +
+    integerOrZero(shift.notYetEmployed?.count) +
+    integerOrZero(shift.temporaryWorker?.count)
+  )
+}
+
+export function attendanceOtherRemarkRows(otherRemarks = [], orgUnits = []) {
+  if (!Array.isArray(otherRemarks)) return []
+  return otherRemarks
+    .map((item) => {
+      if (typeof item === 'string') return { orgUnitName: '', remark: item.trim() }
+      const orgUnitId = String(item?.orgUnitId || '')
+      return {
+        orgUnitName: String(
+          item?.orgUnitName ||
+          item?.name ||
+          orgUnits.find((orgUnit) => String(orgUnit?._id || '') === orgUnitId)?.name ||
+          (orgUnitId ? `组织 ${orgUnitId.slice(-6)}` : '')
+        ).trim(),
+        remark: String(item?.remark || item?.otherRemark || item?.text || '').trim()
+      }
+    })
+    .filter(({ remark }) => remark)
+}
+
 export function attendanceQualityIssueMessage(issue = {}) {
   const code = String(issue?.code || '').trim()
   const suppliedMessage = String(issue?.message || '').trim()
@@ -173,11 +213,16 @@ export function buildTransportPayload(form, photoFileIds) {
     orgUnitId: form.orgUnitId,
     reportDate: form.reportDate,
     shift: form.shift,
+    tripMasterId: form.tripMasterId || null,
     tripLabel: form.tripLabel.trim(),
+    routeMasterId: form.routeMasterId || null,
     route: form.route.trim(),
     dispatchType: form.dispatchType,
+    vehiclePlateMasterId: form.vehiclePlateMasterId || null,
     vehiclePlate: form.vehiclePlate.trim(),
+    vehicleTypeMasterId: form.vehicleTypeMasterId || null,
     vehicleType: form.vehicleType.trim(),
+    driverMasterId: form.driverMasterId || null,
     driverName: form.driverName.trim(),
     loadDetails: Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [
       key,

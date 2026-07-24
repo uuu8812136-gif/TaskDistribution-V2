@@ -16,6 +16,7 @@ const AuthSession = require('../../../app/models/AuthSession');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
 const TeamMembership = require('../../../app/models/TeamMembership');
+const Task = require('../../../app/models/Task');
 const User = require('../../../app/models/User');
 const {
   AUDIT_ACTIONS,
@@ -23,6 +24,7 @@ const {
   AUDIT_RESOURCE_TYPES,
   MEMBERSHIP_ROLES,
   MEMBERSHIP_STATUSES,
+  ORG_UNIT_STATUSES,
   ORG_UNIT_TYPES,
   PERMISSION_KEYS,
   POSITION_KEYS,
@@ -31,10 +33,11 @@ const {
 } = require('../../../app/config/permissions');
 const { createSessionLifecycleService } = require('../../../app/services/sessionLifecycleService');
 const { createTeamManagementService } = require('../../../app/services/teamManagementService');
+const { findOrgUnitDependency } = require('../../../app/services/orgUnitDependencyService');
 
 const TEST_DATABASE_NAME = `team_management_${randomUUID().replaceAll('-', '')}_v2_test`;
 const JWT_SECRET = 'team-management-test-secret-0123456789abcdef';
-const MODELS = [AuditLog, AuthSession, OrgUnit, ProjectTeam, TeamMembership, User];
+const MODELS = [AuditLog, AuthSession, OrgUnit, ProjectTeam, TeamMembership, Task, User];
 
 let replSet;
 let app;
@@ -387,9 +390,35 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       .expect(403);
     assert.equal(denied.body.code, 'PERMISSION_DENIED');
     assert.equal(await User.countDocuments({ usernameNormalized: 'attendance-reporter-denied' }), 0);
+    const transportDenied = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'transport-reporter-denied',
+        password: 'test-password-123',
+        name: 'Transport Reporter Denied',
+        orgUnitId: seeded.rootA._id.toString(),
+        functionalRoleKeys: ['TRANSPORT_REPORTER']
+      })
+      .expect(403);
+    assert.equal(transportDenied.body.code, 'PERMISSION_DENIED');
+    assert.equal(await User.countDocuments({ usernameNormalized: 'transport-reporter-denied' }), 0);
 
     seeded.adminMembershipA.permissionKeys.push('reporter.assign');
     await seeded.adminMembershipA.save();
+
+    const transportReporter = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'transport-reporter-authorized',
+        password: 'test-password-123',
+        name: 'Transport Reporter Authorized',
+        orgUnitId: seeded.rootA._id.toString(),
+        functionalRoleKeys: ['TRANSPORT_REPORTER']
+      })
+      .expect(201);
+    assert.deepEqual(transportReporter.body.member.functionalRoleKeys, ['TRANSPORT_REPORTER']);
 
     const rootAssignment = await request(app)
       .post('/api/team-members')
@@ -403,6 +432,28 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       })
       .expect(400);
     assert.equal(rootAssignment.body.code, 'ATTENDANCE_REPORTER_ORG_REQUIRED');
+
+    const nestedSubDepartment = await OrgUnit.create({
+      teamId: seeded.teamA._id,
+      parentId: division._id,
+      type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'ATTENDANCE_NESTED_SUB_DEPARTMENT',
+      name: 'Attendance Nested Sub Department',
+      level: 3,
+      path: `/${seeded.rootA._id}/${division._id}/`
+    });
+    const nestedAssignment = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'attendance-reporter-nested',
+        password: 'test-password-123',
+        name: 'Attendance Reporter Nested',
+        orgUnitId: nestedSubDepartment._id.toString(),
+        functionalRoleKeys: [reporterRole]
+      })
+      .expect(400);
+    assert.equal(nestedAssignment.body.code, 'ATTENDANCE_REPORTER_ORG_REQUIRED');
 
     const first = await request(app)
       .post('/api/team-members')
@@ -467,6 +518,55 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       .send({ status: MEMBERSHIP_STATUSES.ACTIVE, reason: '验证唯一有效约束' })
       .expect(409);
     assert.equal(reenable.body.code, 'ATTENDANCE_REPORTER_EXISTS');
+  });
+
+  await t.test('transport administrator assignment grants only team-wide transport data scope', async () => {
+    const division = await OrgUnit.create({
+      teamId: seeded.teamA._id,
+      parentId: seeded.rootA._id,
+      type: ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'TRANSPORT_ADMIN_DIVISION',
+      name: 'Transport Admin Division',
+      level: 2,
+      path: `/${seeded.rootA._id}/`
+    });
+    const response = await request(app)
+      .post('/api/team-members')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        username: 'transport-admin-member',
+        password: 'test-password-123',
+        name: 'Transport Admin Member',
+        orgUnitId: division._id.toString(),
+        role: MEMBERSHIP_ROLES.MEMBER,
+        positionKey: POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+        functionalRoleKeys: ['TRANSPORT_ADMIN'],
+        permissionKeys: ['report.view']
+      })
+      .expect(201);
+
+    const member = response.body.member;
+    const scopeMap = Object.fromEntries(
+      member.moduleDataScopes.map(({ moduleKey, scope }) => [moduleKey, scope])
+    );
+    assert.equal(member.role, MEMBERSHIP_ROLES.MEMBER);
+    assert.equal(member.positionKey, POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER);
+    assert.equal(member.positionLevel, 3);
+    assert.deepEqual(member.functionalRoleKeys, ['TRANSPORT_ADMIN']);
+    assert.deepEqual(member.permissionKeys, ['report.view']);
+    assert.equal(member.permissionKeys.includes('report.submit'), false);
+    assert.equal(member.permissionKeys.includes('member.manage'), false);
+    assert.deepEqual(scopeMap, {
+      task: 'ORG_UNIT',
+      equipment: 'ORG_UNIT',
+      'report.transport': 'TEAM',
+      'report.attendance': 'ORG_UNIT',
+      'report.production': 'ORG_UNIT'
+    });
+
+    const persisted = await TeamMembership.findById(member._id).lean();
+    assert.deepEqual(persisted.functionalRoleKeys, ['TRANSPORT_ADMIN']);
+    assert.deepEqual(persisted.permissionKeys, ['report.view']);
   });
 
   let createdTeam;
@@ -556,6 +656,266 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       })
       .expect(400);
     assert.equal(await OrgUnit.countDocuments({ code: 'CLIENT_PATH' }), 0);
+  });
+
+  await t.test('organization deletion is isolated, dependency-safe, and audited', async () => {
+    const emptyLeafResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: seeded.rootA._id.toString(),
+        type: ORG_UNIT_TYPES.TEAM_GROUP,
+        code: 'DELETE_EMPTY_LEAF',
+        name: 'Delete Empty Leaf'
+      })
+      .expect(201);
+    const emptyLeafId = emptyLeafResponse.body.orgUnit._id;
+
+    await request(app)
+      .delete(`/api/org-units/${seeded.rootB._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: 'Cross-team delete must not resolve' })
+      .expect(404);
+
+    await request(app)
+      .delete(`/api/org-units/${emptyLeafId}`)
+      .set('Authorization', `Bearer ${seeded.memberAToken}`)
+      .send({ reason: 'A normal member cannot delete organizations' })
+      .expect(403);
+
+    await request(app)
+      .delete(`/api/org-units/${emptyLeafId}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({})
+      .expect(400);
+
+    const deletionReason = 'Remove an accidentally created empty organization';
+    const deleteResponse = await request(app)
+      .delete(`/api/org-units/${emptyLeafId}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: deletionReason })
+      .expect(200);
+    assert.equal(deleteResponse.body.orgUnit._id, emptyLeafId);
+    assert.equal(deleteResponse.body.orgUnit.status, ORG_UNIT_STATUSES.ACTIVE);
+    assert.equal(deleteResponse.body.orgUnit.deletedAt, undefined);
+    assert.equal(await OrgUnit.exists({ _id: emptyLeafId }), null);
+    const tombstone = await OrgUnit.findById(emptyLeafId).withDeleted().lean();
+    assert.equal(tombstone.status, ORG_UNIT_STATUSES.DELETED);
+    assert.equal(tombstone.deletedBy.toString(), seeded.adminA._id.toString());
+    assert.equal(tombstone.deletionReason, deletionReason);
+    assert.ok(tombstone.deletedAt instanceof Date);
+    assert.ok(await OrgUnit.collection.findOne({ _id: tombstone._id }));
+
+    const defaultList = await request(app)
+      .get('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .expect(200);
+    assert.equal(defaultList.body.orgUnits.some(({ _id }) => _id === emptyLeafId), false);
+    const disabledList = await request(app)
+      .get('/api/org-units?status=DISABLED')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .expect(200);
+    assert.equal(disabledList.body.orgUnits.some(({ _id }) => _id === emptyLeafId), false);
+    const deletedList = await request(app)
+      .get('/api/org-units?status=DELETED')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .expect(400);
+    assert.equal(deletedList.body.code, 'MANAGEMENT_INPUT_INVALID');
+
+    await request(app)
+      .patch(`/api/org-units/${emptyLeafId}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ name: 'Attempted tombstone update' })
+      .expect(404);
+    await request(app)
+      .delete(`/api/org-units/${emptyLeafId}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: 'Attempted duplicate deletion' })
+      .expect(404);
+    await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: emptyLeafId,
+        code: 'DELETED_PARENT_CHILD',
+        name: 'Deleted Parent Child'
+      })
+      .expect(404);
+    await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        code: 'FORGED_DELETED_STATUS',
+        name: 'Forged Deleted Status',
+        status: ORG_UNIT_STATUSES.DELETED
+      })
+      .expect(400);
+
+    const deletionAudit = await AuditLog.findOne({
+      action: AUDIT_ACTIONS.DELETE,
+      resourceType: AUDIT_RESOURCE_TYPES.ORG_UNIT,
+      resourceId: emptyLeafId,
+      targetTeamId: seeded.teamA._id
+    }).lean();
+    assert.ok(deletionAudit);
+    assert.equal(deletionAudit.reason, deletionReason);
+    assert.equal(deletionAudit.before.status, ORG_UNIT_STATUSES.ACTIVE);
+    assert.equal(deletionAudit.after.status, ORG_UNIT_STATUSES.DELETED);
+    assert.equal(deletionAudit.after.deletedBy, seeded.adminA._id.toString());
+    assert.equal(deletionAudit.after.deletionReason, deletionReason);
+
+    const parentResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: seeded.rootA._id.toString(),
+        code: 'DELETE_PARENT',
+        name: 'Delete Parent'
+      })
+      .expect(201);
+    const childResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: parentResponse.body.orgUnit._id,
+        code: 'DELETE_CHILD',
+        name: 'Delete Child'
+      })
+      .expect(201);
+    const childBlockedResponse = await request(app)
+      .delete(`/api/org-units/${parentResponse.body.orgUnit._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: 'Must not orphan the child organization' })
+      .expect(409);
+    assert.equal(childBlockedResponse.body.code, 'ORG_UNIT_DELETE_HAS_CHILDREN');
+    assert.equal(childBlockedResponse.body.message, '该组织仍有下级组织，请先删除下级组织');
+    assert.ok(await OrgUnit.exists({ _id: childResponse.body.orgUnit._id }));
+
+    const referencedLeafResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: seeded.rootA._id.toString(),
+        code: 'DELETE_TASK_REF',
+        name: 'Delete Task Reference'
+      })
+      .expect(201);
+    await Task.create({
+      teamId: seeded.teamA._id,
+      orgUnitId: referencedLeafResponse.body.orgUnit._id,
+      taskName: 'Deletion dependency proof',
+      creator: seeded.adminA._id,
+      plannedCompletionTime: new Date(Date.now() + 60 * 60 * 1000)
+    });
+    const referenceBlockedResponse = await request(app)
+      .delete(`/api/org-units/${referencedLeafResponse.body.orgUnit._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: 'Must preserve referenced business history' })
+      .expect(409);
+    assert.equal(referenceBlockedResponse.body.code, 'ORG_UNIT_DELETE_HAS_REFERENCES');
+    assert.equal(referenceBlockedResponse.body.message, '该组织仍有关联成员或业务数据，不能删除');
+    assert.ok(await OrgUnit.exists({ _id: referencedLeafResponse.body.orgUnit._id }));
+
+    const membershipLeafResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: seeded.rootA._id.toString(),
+        code: 'DELETE_MEMBER_REF',
+        name: 'Delete Member Reference'
+      })
+      .expect(201);
+    const historicalUser = await createUser('org-delete-history-member');
+    await TeamMembership.create({
+      teamId: seeded.teamA._id,
+      userId: historicalUser._id,
+      orgUnitId: membershipLeafResponse.body.orgUnit._id,
+      status: MEMBERSHIP_STATUSES.DISABLED,
+      permissionKeys: []
+    });
+    const membershipBlockedResponse = await request(app)
+      .delete(`/api/org-units/${membershipLeafResponse.body.orgUnit._id}`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ reason: 'Disabled membership history must remain linked' })
+      .expect(409);
+    assert.equal(membershipBlockedResponse.body.code, 'ORG_UNIT_DELETE_HAS_REFERENCES');
+  });
+
+  await t.test('a concurrent reference cannot become dangling while an organization is deleted', async () => {
+    const leafResponse = await request(app)
+      .post('/api/org-units')
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({
+        parentId: seeded.rootA._id.toString(),
+        code: 'DELETE_CONCURRENT_REF',
+        name: 'Delete Concurrent Reference'
+      })
+      .expect(201);
+    const leafId = leafResponse.body.orgUnit._id;
+    let signalDependencyChecked;
+    let releaseDependencyCheck;
+    const dependencyChecked = new Promise((resolve) => { signalDependencyChecked = resolve; });
+    const dependencyRelease = new Promise((resolve) => { releaseDependencyCheck = resolve; });
+    const service = createTeamManagementService({
+      connection: mongoose.connection,
+      orgUnitDependencyFinder: async (options) => {
+        const dependency = await findOrgUnitDependency(options);
+        signalDependencyChecked();
+        await dependencyRelease;
+        return dependency;
+      }
+    });
+    const authContext = {
+      authenticated: true,
+      mode: SESSION_MODES.TEAM,
+      activeTeamId: seeded.teamA._id.toString(),
+      userId: seeded.adminA._id.toString(),
+      isSuperAdmin: false,
+      membership: { role: MEMBERSHIP_ROLES.PROJECT_ADMIN },
+      permissionKeys: ['org.manage']
+    };
+
+    const deletion = service.deleteOrgUnit({
+      authContext,
+      orgUnitId: leafId,
+      input: { reason: 'Concurrent reference tombstone verification' }
+    });
+    const deletionBlocked = assert.rejects(
+      deletion,
+      (error) => error.status === 409 && error.code === 'ORG_UNIT_DELETE_HAS_REFERENCES'
+    );
+    await dependencyChecked;
+    seeded.adminMembershipA.permissionKeys = [...new Set([
+      ...seeded.adminMembershipA.permissionKeys,
+      'task.view',
+      'task.create',
+      'task.assign'
+    ])];
+    await seeded.adminMembershipA.save();
+    let concurrentTaskResponse;
+    try {
+      concurrentTaskResponse = await request(app)
+        .post('/api/tasks')
+        .set('Authorization', `Bearer ${seeded.adminAToken}`)
+        .send({
+          orgUnitId: leafId,
+          taskName: 'Concurrent organization reference',
+          plannedCompletionTime: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+          executor: [seeded.adminA._id.toString()]
+        })
+        .expect(201);
+    } finally {
+      releaseDependencyCheck();
+    }
+    await deletionBlocked;
+
+    assert.ok(await Task.exists({
+      _id: concurrentTaskResponse.body.task._id,
+      orgUnitId: leafId
+    }));
+    const activeOrgUnit = await OrgUnit.findById(leafId).lean();
+    assert.equal(activeOrgUnit.status, ORG_UNIT_STATUSES.ACTIVE);
+    assert.ok(activeOrgUnit.referenceRevision > 0);
   });
 
   await t.test('permission updates take effect on the next request without replacing the JWT', async () => {
@@ -682,6 +1042,7 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
 
   await t.test('an audit persistence failure rolls back the sensitive business write', async () => {
     const failingService = createTeamManagementService({
+      orgUnitDependencyFinder: async () => null,
       auditService: {
         async record() {
           throw new Error('simulated audit persistence failure');
@@ -702,5 +1063,34 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
       /simulated audit persistence failure/
     );
     assert.equal(await ProjectTeam.countDocuments({ code: 'ROLLBACK_TEAM' }), 0);
+
+    const rollbackOrgUnit = await OrgUnit.create({
+      teamId: seeded.teamA._id,
+      parentId: seeded.rootA._id,
+      type: ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'ROLLBACK_ORG_DELETE',
+      name: 'Rollback Organization Delete',
+      level: 2,
+      path: `/${seeded.rootA._id}/`
+    });
+    await assert.rejects(
+      failingService.deleteOrgUnit({
+        authContext: {
+          authenticated: true,
+          userId: seeded.superAdmin._id.toString(),
+          isSuperAdmin: true,
+          mode: SESSION_MODES.TEAM,
+          activeTeamId: seeded.teamA._id.toString()
+        },
+        orgUnitId: rollbackOrgUnit._id.toString(),
+        input: { reason: 'Audit rollback verification' }
+      }),
+      /simulated audit persistence failure/
+    );
+    const persistedOrgUnit = await OrgUnit.findById(rollbackOrgUnit._id).lean();
+    assert.equal(persistedOrgUnit.status, ORG_UNIT_STATUSES.ACTIVE);
+    assert.equal(persistedOrgUnit.deletedAt, null);
+    assert.equal(persistedOrgUnit.deletedBy, null);
+    assert.equal(persistedOrgUnit.deletionReason, null);
   });
 });

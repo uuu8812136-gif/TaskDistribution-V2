@@ -1,6 +1,6 @@
 export const INVENTORY_STATUS_LABELS = Object.freeze({
   DRAFT: '盘点中',
-  PENDING_SUB_DEPARTMENT_MANAGER: '待分部经理审核',
+  PENDING_SUB_DEPARTMENT_MANAGER: '待分部负责人审核',
   PENDING_DEPARTMENT_DEPUTY_OR_ASSISTANT: '待副经理/经理助理审核',
   PENDING_DEPARTMENT_MANAGER: '待部门经理终审',
   RETURNED: '已退回修改',
@@ -51,7 +51,7 @@ export function inventoryItemPayload(form, photoFileIds) {
 export function approvalStageLabel(value) {
   return {
     INVENTORY_PERSON: '盘点人提交',
-    SUB_DEPARTMENT_MANAGER: '分部经理审核',
+    SUB_DEPARTMENT_MANAGER: '分部负责人审核',
     DEPARTMENT_DEPUTY_OR_ASSISTANT: '部门副经理/经理助理审核',
     DEPARTMENT_MANAGER: '部门经理终审'
   }[value] || value || '-'

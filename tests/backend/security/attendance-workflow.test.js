@@ -22,7 +22,9 @@ const {
   ACCEPTANCE_TIME_BYPASS_AUDIT_REASON,
   createAttendanceSubmissionService,
   attendanceMonthlyExportRows,
-  isAttendanceDeadlineReached
+  isAttendanceDeadlineReached,
+  plannedAttendanceCount,
+  serializeAttendanceSubmission
 } = require('../../../app/services/attendanceSubmissionService');
 
 const TEST_DATABASE_NAME = `attendance_workflow_${randomUUID().replaceAll('-', '')}_v2_test`;
@@ -50,6 +52,38 @@ const DIVISION_NAMES = Object.freeze([
 let replicaSet;
 let fixture;
 let now;
+
+test('unused all-zero shift has zero planned attendance and serialized records expose effective actuals', () => {
+  const emptyNightSummary = {
+    registeredHeadcount: 123,
+    nightShift: {
+      actualAttendanceCount: 0,
+      rest: { count: 0 },
+      leave: { count: 0 },
+      sickLeave: { count: 0 },
+      absenteeism: { count: 0 },
+      notYetEmployed: { count: 0 },
+      pendingDeparture: { count: 0 },
+      temporaryWorker: { count: 0 }
+    }
+  };
+  assert.equal(plannedAttendanceCount(emptyNightSummary, 'nightShift'), 0);
+
+  const serialized = serializeAttendanceSubmission({
+    _id: objectId(),
+    teamId: objectId(),
+    orgUnitId: objectId(),
+    reportDate: '2026-07-24',
+    dayShift: {
+      actualAttendanceCount: 122,
+      notYetEmployed: { count: 1, names: [] },
+      temporaryWorker: { count: 2, names: [] }
+    },
+    nightShift: {}
+  });
+  assert.equal(serialized.dayShift.actualAttendanceCount, 122);
+  assert.equal(serialized.dayShift.effectiveActualAttendanceCount, 125);
+});
 
 function objectId() {
   return new mongoose.Types.ObjectId();
@@ -176,6 +210,11 @@ async function seedFixture() {
     team: objectId(),
     root: objectId(),
     divisions: DIVISION_NAMES.map(() => objectId()),
+    invalidOrgUnits: {
+      wrongType: objectId(),
+      wrongLevel: objectId(),
+      disabled: objectId()
+    },
     reporters: DIVISION_NAMES.map(() => objectId()),
     officer: objectId(),
     manager: objectId(),
@@ -230,6 +269,44 @@ async function seedFixture() {
     level: 2,
     path: `/${ids.root}/`
   })));
+  await OrgUnit.collection.insertMany([
+    {
+      _id: ids.invalidOrgUnits.wrongType,
+      teamId: ids.team,
+      parentId: ids.root,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'WRONG_TYPE',
+      name: '二级班组',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 20,
+      level: 2,
+      path: `/${ids.root}/`
+    },
+    {
+      _id: ids.invalidOrgUnits.wrongLevel,
+      teamId: ids.team,
+      parentId: ids.divisions[0],
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'WRONG_LEVEL',
+      name: '三级分部',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 21,
+      level: 3,
+      path: `/${ids.root}/${ids.divisions[0]}/`
+    },
+    {
+      _id: ids.invalidOrgUnits.disabled,
+      teamId: ids.team,
+      parentId: ids.root,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'DISABLED_DIVISION',
+      name: '停用分部',
+      status: permissions.ORG_UNIT_STATUSES.DISABLED,
+      sortOrder: 22,
+      level: 2,
+      path: `/${ids.root}/`
+    }
+  ]);
   const membershipBase = {
     teamId: ids.team,
     role: permissions.MEMBERSHIP_ROLES.MEMBER,
@@ -241,7 +318,7 @@ async function seedFixture() {
       ...membershipBase,
       userId,
       orgUnitId: ids.divisions[index],
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       positionKey: permissions.POSITION_KEYS.EMPLOYEE,
       functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.ATTENDANCE_REPORTER],
       permissionKeys: ['report.view', 'report.submit'],
@@ -251,7 +328,7 @@ async function seedFixture() {
       ...membershipBase,
       userId: ids.officer,
       orgUnitId: ids.root,
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       positionKey: permissions.POSITION_KEYS.EMPLOYEE,
       functionalRoleKeys: [permissions.FUNCTIONAL_ROLE_KEYS.ATTENDANCE_OFFICER],
       permissionKeys: ['report.view', 'report.submit', 'report.review'],
@@ -261,7 +338,7 @@ async function seedFixture() {
       ...membershipBase,
       userId: ids.manager,
       orgUnitId: ids.root,
-      positionLevel: 1,
+      positionLevel: permissions.POSITION_LEVELS.DEPARTMENT_MANAGER,
       positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER,
       functionalRoleKeys: [],
       permissionKeys: ['report.view'],
@@ -271,7 +348,7 @@ async function seedFixture() {
       ...membershipBase,
       userId: ids.ordinary,
       orgUnitId: ids.divisions[0],
-      positionLevel: 5,
+      positionLevel: permissions.POSITION_LEVELS.EMPLOYEE,
       positionKey: permissions.POSITION_KEYS.EMPLOYEE,
       functionalRoleKeys: [],
       permissionKeys: ['report.view', 'report.submit'],
@@ -322,7 +399,10 @@ test('reporters overwrite only their division before 09:00 and officers need a l
   await assert.rejects(service.createSubmission({
     authContext: reporter,
     input: submissionInput(fixture.divisions[1], 10)
-  }), (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID');
+  }), (error) => (
+    error.code === 'ATTENDANCE_ORG_UNIT_INVALID' &&
+    error.message === '所属分部只能选择当前团队已启用的二级分部'
+  ));
 
   now = new Date('2026-07-14T01:00:00.000Z');
   assert.equal(isAttendanceDeadlineReached('2026-07-14', now), true);
@@ -353,6 +433,55 @@ test('reporters overwrite only their division before 09:00 and officers need a l
     authContext: ordinaryContext(),
     input: submissionInput(fixture.divisions[0], 10)
   }), (error) => error.code === 'ATTENDANCE_SUBMITTER_ROLE_REQUIRED');
+});
+
+test('attendance options and writes accept only active level-2 sub-departments', async () => {
+  const service = createAttendanceSubmissionService({ clock: () => now });
+  const officer = officerContext();
+  const options = await service.listOptions({ authContext: officer });
+
+  assert.deepEqual(options.orgUnits.map(({ _id }) => _id), fixture.divisions.map(String));
+  assert.ok(options.orgUnits.every((orgUnit) => (
+    orgUnit.status === permissions.ORG_UNIT_STATUSES.ACTIVE &&
+    orgUnit.type === permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT &&
+    orgUnit.level === 2
+  )));
+
+  const invalidOrgUnitIds = [
+    fixture.root,
+    fixture.invalidOrgUnits.wrongType,
+    fixture.invalidOrgUnits.wrongLevel,
+    fixture.invalidOrgUnits.disabled
+  ];
+  const assertInvalidAttendanceOrgUnit = (error) => {
+    assert.equal(error.status, 400);
+    assert.equal(error.code, 'ATTENDANCE_ORG_UNIT_INVALID');
+    assert.equal(error.message, '所属分部只能选择当前团队已启用的二级分部');
+    return true;
+  };
+
+  for (const orgUnitId of invalidOrgUnitIds) {
+    await assert.rejects(service.createSubmission({
+      authContext: officer,
+      input: submissionInput(orgUnitId)
+    }), assertInvalidAttendanceOrgUnit);
+  }
+  assert.equal(await AttendanceSubmission.countDocuments({}), 0);
+
+  const created = await service.createSubmission({
+    authContext: officer,
+    input: submissionInput(fixture.divisions[0])
+  });
+  for (const orgUnitId of invalidOrgUnitIds) {
+    await assert.rejects(service.updateSubmission({
+      authContext: officer,
+      attendanceSubmissionId: created._id,
+      input: { orgUnitId: String(orgUnitId) }
+    }), assertInvalidAttendanceOrgUnit);
+  }
+  const unchanged = await AttendanceSubmission.findById(created._id).lean();
+  assert.equal(String(unchanged.orgUnitId), String(fixture.divisions[0]));
+  assert.equal(await ReportChangeRecord.countDocuments({ resourceId: created._id }), 1);
 });
 
 test('acceptance test account bypasses date and 09:00 restrictions but keeps permanent locks', async () => {
@@ -469,16 +598,39 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
       authContext: reporterContext(index),
       input: submissionInput(fixture.divisions[index], 10, index === 0 ? {
         dayShift: {
-          actualAttendanceCount: 8,
+          actualAttendanceCount: 122,
           sickLeave: { count: 1, names: ['张三'] },
-          leave: { count: 1, names: ['李四'] }
+          leave: { count: 1, names: ['李四'] },
+          notYetEmployed: { count: 1, names: ['未入职甲'] },
+          temporaryWorker: { count: 2, names: ['临时甲', '临时乙'] }
         },
         support: { destination: '物流技术部', count: 1, names: ['王五'] },
         otherRemark: '客户月报验证'
-      } : {})
+      } : {
+        dayShift: { actualAttendanceCount: 0 }
+      })
     });
   }
   const officer = officerContext();
+  const legacySubmission = await AttendanceSubmission.findOne({
+    orgUnitId: fixture.divisions[1]
+  }).lean();
+  await AttendanceSubmission.collection.updateOne(
+    { _id: legacySubmission._id },
+    {
+      $unset: {
+        'dayShift.temporaryWorker': '',
+        'nightShift.temporaryWorker': ''
+      }
+    }
+  );
+  const serializedLegacy = await service.getSubmission({
+    authContext: officer,
+    attendanceSubmissionId: legacySubmission._id
+  });
+  assert.deepEqual(serializedLegacy.dayShift.temporaryWorker, { count: 0, names: [] });
+  assert.deepEqual(serializedLegacy.nightShift.temporaryWorker, { count: 0, names: [] });
+
   const attempts = await Promise.all(Array.from({ length: 5 }, () => (
     service.reviewDailySummary({
       authContext: officer,
@@ -502,6 +654,22 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
   const review = await AttendanceDailyReview.findOne({}).lean();
   assert.match(review.finalText, /7月14日变速箱物流部生产日报/);
   assert.match(review.finalText, /在册人数70人/);
+  assert.equal(review.summarySnapshot.dayShift.reportedActualAttendanceCount, 122);
+  assert.equal(review.summarySnapshot.dayShift.notYetEmployed.count, 1);
+  assert.deepEqual(review.summarySnapshot.dayShift.temporaryWorker, {
+    count: 2,
+    names: ['临时甲', '临时乙']
+  });
+  assert.equal(review.summarySnapshot.dayShift.actualAttendanceCount, 125);
+  assert.deepEqual(review.summarySnapshot.otherRemarks, [{
+    orgUnitId: String(fixture.divisions[0]),
+    orgUnitName: DIVISION_NAMES[0],
+    remark: '客户月报验证'
+  }]);
+  assert.match(review.finalText, /到物流技术部帮产1人（王五）/);
+  assert.match(review.finalText, /临时工2人（临时甲、临时乙）/);
+  assert.match(review.finalText, /仓配一分部：客户月报验证/);
+  assert.match(review.finalText, /今日实际出勤125人，请假2人/);
   assert.match(review.finalText, /提报人:部门考勤员/);
   const daily = await service.getDailySummary({
     authContext: officer,
@@ -509,6 +677,11 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
   });
   assert.equal(daily.attendanceSummary.review._id, String(review._id));
   assert.equal(daily.attendanceSummary.canReview, false);
+  assert.deepEqual(daily.attendanceSummary.otherRemarks, [{
+    orgUnitId: String(fixture.divisions[0]),
+    orgUnitName: DIVISION_NAMES[0],
+    remark: '客户月报验证'
+  }]);
 
   now = new Date('2026-07-14T01:30:00.000Z');
   const first = await AttendanceSubmission.findOne({ orgUnitId: fixture.divisions[0] }).lean();
@@ -531,6 +704,17 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
   assert.equal(monthly.attendanceSummaries[0].dayShift.leave.count, 1);
   assert.equal(monthly.attendanceSummaries[0].dayShift.sickLeave.count, 1);
   assert.equal(monthly.attendanceSummaries[0].dayShift.leaveWithSickCount, 2);
+  assert.equal(monthly.attendanceSummaries[0].dayShift.reportedActualAttendanceCount, 122);
+  assert.equal(monthly.attendanceSummaries[0].dayShift.actualAttendanceCount, 125);
+  assert.deepEqual(monthly.attendanceSummaries[0].dayShift.temporaryWorker, {
+    count: 2,
+    names: ['临时甲', '临时乙']
+  });
+  assert.deepEqual(monthly.attendanceSummaries[0].otherRemarks, [{
+    orgUnitId: String(fixture.divisions[0]),
+    orgUnitName: DIVISION_NAMES[0],
+    remark: '客户月报验证'
+  }]);
 
   const exported = await service.exportMonthlySummary({
     authContext: officer,
@@ -551,9 +735,10 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
       '帮产人员', '其他情况备注'
     ]
   );
+  assert.equal(worksheet.E17.v, 125);
   assert.equal(worksheet.G17.v, 2);
   assert.match(worksheet.Q17.v, /物流技术部帮产1人（王五）/);
-  assert.equal(worksheet.R17.v, '客户月报验证');
+  assert.equal(worksheet.R17.v, `${DIVISION_NAMES[0]}：客户月报验证`);
   assert.equal(worksheet.C16.v, '');
   assert.equal(await AuditLog.countDocuments({
     resourceType: permissions.AUDIT_RESOURCE_TYPES.ATTENDANCE_MONTHLY_SUMMARY,

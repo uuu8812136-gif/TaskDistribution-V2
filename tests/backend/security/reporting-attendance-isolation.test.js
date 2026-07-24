@@ -105,6 +105,8 @@ async function seedFixture() {
   const ids = {
     teamA: objectId(),
     teamB: objectId(),
+    rootA: objectId(),
+    rootB: objectId(),
     orgA1: objectId(),
     orgA2: objectId(),
     orgB1: objectId(),
@@ -167,40 +169,64 @@ async function seedFixture() {
   ]);
   await OrgUnit.collection.insertMany([
     {
-      _id: ids.orgA1,
+      _id: ids.rootA,
       teamId: ids.teamA,
       parentId: null,
+      type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+      code: 'A_ROOT',
+      name: 'Attendance A',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 1,
+      path: '/'
+    },
+    {
+      _id: ids.rootB,
+      teamId: ids.teamB,
+      parentId: null,
+      type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+      code: 'B_ROOT',
+      name: 'Attendance B',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 1,
+      path: '/'
+    },
+    {
+      _id: ids.orgA1,
+      teamId: ids.teamA,
+      parentId: ids.rootA,
       type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
       code: 'A1',
       name: 'A1',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
       sortOrder: 0,
-      level: 1,
-      path: '/'
+      level: 2,
+      path: `/${ids.rootA}/`
     },
     {
       _id: ids.orgA2,
       teamId: ids.teamA,
-      parentId: null,
+      parentId: ids.rootA,
       type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
       code: 'A2',
       name: 'A2',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
       sortOrder: 0,
-      level: 1,
-      path: '/'
+      level: 2,
+      path: `/${ids.rootA}/`
     },
     {
       _id: ids.orgB1,
       teamId: ids.teamB,
-      parentId: null,
+      parentId: ids.rootB,
       type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
       code: 'B1',
       name: 'B1',
       status: permissions.ORG_UNIT_STATUSES.ACTIVE,
       sortOrder: 0,
-      level: 1,
-      path: '/'
+      level: 2,
+      path: `/${ids.rootB}/`
     }
   ]);
   return ids;

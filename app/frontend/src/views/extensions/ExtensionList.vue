@@ -120,11 +120,9 @@
 import { computed, ref, reactive, onMounted } from 'vue'
 import { getExtensionList, approveExtension } from '@/api/extension'
 import { formatDate } from '@/utils/format'
-import { useSessionStore } from '@/stores/session'
 import { canApproveExtensionRequest } from '@/utils/taskPolicy'
 import { ElMessage } from 'element-plus'
 
-const session = useSessionStore()
 const loading = ref(false)
 const submitting = ref(false)
 const approveDialogVisible = ref(false)
@@ -141,18 +139,13 @@ const approveForm = reactive({
 })
 
 const extensionList = ref([])
+let fetchRequestId = 0
 
 const canApproveRow = (request) => canApproveExtensionRequest({
-  request,
-  userId: session.user?._id,
-  isTeamMode: session.isTeamMode,
-  isReadOnly: session.isReadOnly,
-  hasReviewPermission: session.can('task.review', { write: true, teamRequired: true }),
-  isSuperAdmin: session.isSuperAdmin,
-  membershipRole: session.context.membership?.role
+  request
 })
 
-const canApproveCurrent = computed(() => canApproveRow(currentExtension.value))
+const canApproveCurrent = computed(() => !loading.value && canApproveRow(currentExtension.value))
 const extensionStatusLabel = (status) => ({
   pending: '待审批',
   approved: '已批准',
@@ -160,18 +153,35 @@ const extensionStatusLabel = (status) => ({
 }[status] || '-')
 
 const fetchData = async () => {
+  const requestId = ++fetchRequestId
   loading.value = true
+  extensionList.value = []
+  if (currentExtension.value) {
+    currentExtension.value = { ...currentExtension.value, capabilities: {} }
+  }
   try {
     const result = await getExtensionList(searchForm)
-    extensionList.value = result.requests
+    if (requestId !== fetchRequestId) return
+    const requests = Array.isArray(result.requests) ? result.requests : []
+    extensionList.value = requests
+    if (approveDialogVisible.value && currentExtension.value?._id) {
+      const refreshed = requests.find((request) => request._id === currentExtension.value._id)
+      currentExtension.value = refreshed || null
+      if (!refreshed) approveDialogVisible.value = false
+    }
   } catch (error) {
+    if (requestId !== fetchRequestId) return
     console.error('获取延期申请列表失败:', error)
+    extensionList.value = []
+    currentExtension.value = null
+    approveDialogVisible.value = false
   } finally {
-    loading.value = false
+    if (requestId === fetchRequestId) loading.value = false
   }
 }
 
 const handleApprove = (row) => {
+  if (!canApproveRow(row)) return
   currentExtension.value = row
   approveForm.status = 'approved'
   approveForm.approvedDays = row.requestedDays
@@ -197,6 +207,7 @@ const submitApprove = async () => {
     await fetchData()
   } catch (error) {
     console.error('审批失败:', error)
+    await fetchData()
   } finally {
     submitting.value = false
   }

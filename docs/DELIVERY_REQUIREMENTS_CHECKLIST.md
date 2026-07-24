@@ -43,6 +43,8 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Team data is isolated.
 - [x] Super administrators can read across teams and must enter a team before editing.
 - [x] Project administrators can manage fixed permissions only inside their team.
+- [x] The fixed `TRANSPORT_ADMIN` functional role expands only `report.transport` to team scope; with only `report.view` it can read all transport records in the active team but cannot submit reports, manage members, cross teams, or widen task/equipment/attendance/production scope. Model, management API, transport-isolation, and Web option tests pass.
+- [ ] Assign `TRANSPORT_ADMIN` to the intended customer members and runtime-verify the team-wide transport view after the V2 test release.
 - [ ] Five-level organization, functional positions, module-specific data scopes, member enable/disable, and fixed permission assignment are runtime verified.
 - [ ] Team switching, global read-only behavior, privileged writes, and membership changes produce the required audit records.
 - [x] Audit-log query is implemented as read-only list/detail APIs plus a Web page; global access is super-admin only, team access additionally permits project administrators with `audit.view`, and system-account identity is redacted from nested snapshots, arrays, and text.
@@ -103,6 +105,8 @@ If any source conflicts with another, use the least-complete status and keep the
   - The running Web production and generated-daily-report pages display all 43 customer production-month records; mutation/generation/copy and WeChat device click-through remain pending.
 - [x] Attendance implements one active reporter per branch, pre-09:00 replacement, post-09:00 officer changes with reason/before/after audit, missing-branch blocking/reminders, permanent review lock, manager notification, and copyable final text across Web and mini-program tests.
 - [x] Attendance monthly report is generated only from reviewed daily submissions, merges sick leave into leave, and exports the fixed A:R format with natural-month tests.
+- [x] The 2026-07-24 attendance correction adds day/night temporary-worker count and names, includes temporary workers and not-yet-employed counts in the displayed effective actual attendance, preserves reported inputs for editing, and carries each branch's other-situation remark into department summaries, final text, and monthly export. Legacy records without the new field remain readable.
+- [ ] Release the guarded July 2026 acceptance-data repair, then verify that the fixed reviewed daily summary and final text show the two temporary workers, branch remarks, and corrected production source values on the public V2 test instance.
 - [x] The seven real 2026-07-14 branch rows are present in the isolated local test database, retain source-summary inconsistencies as visible data-quality exceptions, and the importer has idempotency/manual-conflict tests.
 - [x] Attendance data-quality messages preserve trusted Chinese source explanations, map all current issue codes to Chinese, and replace unknown English messages with a Chinese confirmation prompt.
 - [ ] Attendance submission, 08:59/09:00 behavior, missing reminders, review lock, manager notification, final-text copy, and monthly export are runtime verified end to end against the latest API.
@@ -141,6 +145,7 @@ If any source conflicts with another, use the least-complete status and keep the
 ## Final Verification
 
 - [x] The 2026-07-23 user-facing Chinese-message pass succeeds: backend `360/360`, Web `138/138` plus production build, mini-program `88/88`, 43 SFC checks and environment isolation; 278 relevant source/test files pass strict UTF-8 decoding with no replacement character, and Web/mini-program request-error maps remain byte-identical.
+- [x] The 2026-07-24 recovered-change regression succeeds against the current worktree: backend `440/440`, Web `174/174`, mini-program `110/110`, release-operations guards `42/42`, `git diff --check`, and a standalone Vite production build all pass. The first parallel Vite run built every asset but hit a Windows libuv exit assertion; the required standalone rerun exited successfully.
 - [x] The isolated public V2 Web now serves release `web-localization-976e8cd-20260723T104552Z`; its public `index.html` and localized equipment/reporting assets match the local production build hashes, V2 health/team options and all three isolated services are healthy with zero restarts, and legacy health remains HTTP 200. This is HTTP/runtime-asset evidence, not a new browser interaction run.
 - [x] Backend full test suite passes after all current changes (356/356 on 2026-07-22), including the multi-period/`ANY`/`ALL` worker and rule-version regression cases.
 - [x] Web unit tests (125/125) and production build pass (2026-07-22); the equipment-focused Web run is 23/23.

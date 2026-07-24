@@ -3,6 +3,7 @@ import { ElMessage } from 'element-plus'
 import { useSessionStore, SESSION_MODES } from '@/stores/session'
 import { isStaleContextResponseError, readAuthToken } from '@/utils/request'
 import { isModeAllowed } from '@/utils/teamManagement'
+import { isTaskLeadershipCandidateContext } from '@/utils/taskPolicy'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -252,7 +253,13 @@ const router = createRouter({
           path: 'tasks',
           name: 'Tasks',
           component: () => import('@/views/tasks/TaskList.vue'),
-          meta: { title: '全部任务', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
+          meta: {
+            title: '全部任务',
+            permission: 'task.view',
+            taskLeadershipCandidateAllowed: true,
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
         },
         {
           path: 'tasks/my',
@@ -273,6 +280,7 @@ const router = createRouter({
           meta: {
             title: '创建任务',
             permission: 'task.create',
+            taskLeadershipCandidateAllowed: true,
             teamRequired: true,
             readOnlyAllowed: false
           }
@@ -284,6 +292,7 @@ const router = createRouter({
           meta: {
             title: '编辑任务',
             permission: 'task.edit',
+            taskLeadershipCandidateAllowed: true,
             teamRequired: true,
             readOnlyAllowed: false
           }
@@ -292,7 +301,13 @@ const router = createRouter({
           path: 'tasks/:id',
           name: 'TaskDetail',
           component: () => import('@/views/tasks/TaskDetail.vue'),
-          meta: { title: '任务详情', permission: 'task.view', teamRequired: true, readOnlyAllowed: true }
+          meta: {
+            title: '任务详情',
+            permission: 'task.view',
+            taskLeadershipCandidateAllowed: true,
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
         },
         {
           path: 'extensions',
@@ -301,6 +316,7 @@ const router = createRouter({
           meta: {
             title: '延期管理',
             permission: 'task.review',
+            taskLeadershipCandidateAllowed: true,
             teamRequired: true,
             readOnlyAllowed: false
           }
@@ -408,7 +424,15 @@ router.beforeEach(async (to) => {
     return session.isTeamSelection ? { name: 'TeamSelect' } : { name: 'Dashboard' }
   }
 
-  if (to.meta.permission && !session.hasPermission(to.meta.permission, to.meta.permissionMatch)) {
+  const taskLeadershipCandidateAllowed = (
+    to.meta.taskLeadershipCandidateAllowed === true &&
+    isTaskLeadershipCandidateContext(session.context)
+  )
+  if (
+    to.meta.permission &&
+    !session.hasPermission(to.meta.permission, to.meta.permissionMatch) &&
+    !taskLeadershipCandidateAllowed
+  ) {
     ElMessage.error('没有访问该功能的权限')
     return { name: 'Dashboard' }
   }

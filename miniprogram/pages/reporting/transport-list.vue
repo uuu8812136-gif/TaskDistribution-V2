@@ -98,10 +98,13 @@ export default {
     let hasShown = false
     const orgOptions = computed(() => buildOrgUnitOptions(orgUnits.value, orgUsers.value))
     const hasMore = computed(() => records.value.length < total.value)
-    const canSubmit = computed(() => userStore.can('report.submit', {
-      write: true,
-      teamRequired: true
-    }))
+    const canSubmit = computed(() => (
+      userStore.can('report.submit', { write: true, teamRequired: true }) &&
+      (
+        userStore.isSuperAdmin ||
+        userStore.context.membership?.functionalRoleKeys?.includes('TRANSPORT_REPORTER')
+      )
+    ))
 
     const readParams = (extra = {}) => scopedReportingParams(
       userStore.mode,

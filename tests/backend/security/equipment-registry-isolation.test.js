@@ -22,6 +22,7 @@ const permissions = require('../../../app/config/permissions');
 const {
   createEquipmentRegistryService
 } = require('../../../app/services/equipmentRegistryService');
+const { createTeamContextService } = require('../../../app/services/teamContextService');
 
 const TEST_DATABASE_NAME = 'equipment_registry_isolation_v2_test';
 const MODELS = [
@@ -54,7 +55,8 @@ function teamContext({
   orgUnitId,
   userId,
   scope = permissions.DATA_SCOPES.TEAM,
-  role = permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN
+  role = permissions.MEMBERSHIP_ROLES.PROJECT_ADMIN,
+  equipmentOrgUnitScopeIds = undefined
 }) {
   return Object.freeze({
     authenticated: true,
@@ -80,6 +82,9 @@ function teamContext({
       : permissions.AUDIT_ACTOR_ROLES.MEMBER,
     permissionKeys: EQUIPMENT_PERMISSIONS,
     moduleDataScopes: Object.freeze({ equipment: scope }),
+    ...(equipmentOrgUnitScopeIds
+      ? { equipmentOrgUnitScopeIds: Object.freeze(equipmentOrgUnitScopeIds.map(String)) }
+      : {}),
     readOnly: false,
     canAccessBusiness: true
   });
@@ -402,6 +407,206 @@ test('ORG_UNIT scope hides other divisions and teams with the same detail 404', 
     input: { name: 'Member cannot create shared category' }
   }), (error) => error.code === 'EQUIPMENT_CATEGORY_TEAM_SCOPE_REQUIRED');
   assert.equal(assetA1.teamId, String(fixture.teamA));
+});
+
+test('equipment branch scope includes the second-level division and all child groups only', async () => {
+  const service = createEquipmentRegistryService();
+  const subA = objectId();
+  const groupA1 = objectId();
+  const groupA2 = objectId();
+  const disabledGroup = objectId();
+  const subA2 = objectId();
+  await OrgUnit.collection.insertMany([
+    {
+      _id: subA,
+      teamId: fixture.teamA,
+      parentId: fixture.orgA1,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'BRANCH_SUB_A',
+      name: 'Branch Sub A',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 2,
+      path: `/${fixture.orgA1}/`
+    },
+    {
+      _id: groupA1,
+      teamId: fixture.teamA,
+      parentId: subA,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'BRANCH_GROUP_A1',
+      name: 'Branch Group A1',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 0,
+      level: 3,
+      path: `/${fixture.orgA1}/${subA}/`
+    },
+    {
+      _id: groupA2,
+      teamId: fixture.teamA,
+      parentId: subA,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'BRANCH_GROUP_A2',
+      name: 'Branch Group A2',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 1,
+      level: 3,
+      path: `/${fixture.orgA1}/${subA}/`
+    },
+    {
+      _id: subA2,
+      teamId: fixture.teamA,
+      parentId: fixture.orgA1,
+      type: permissions.ORG_UNIT_TYPES.SUB_DEPARTMENT,
+      code: 'BRANCH_SUB_A2',
+      name: 'Branch Sub A2',
+      status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+      sortOrder: 1,
+      level: 2,
+      path: `/${fixture.orgA1}/`
+    },
+    {
+      _id: disabledGroup,
+      teamId: fixture.teamA,
+      parentId: subA,
+      type: permissions.ORG_UNIT_TYPES.TEAM_GROUP,
+      code: 'BRANCH_GROUP_DISABLED',
+      name: 'Branch Group Disabled',
+      status: permissions.ORG_UNIT_STATUSES.DISABLED,
+      sortOrder: 2,
+      level: 3,
+      path: `/${fixture.orgA1}/${subA}/`
+    }
+  ]);
+
+  const teamA = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const branchUserId = objectId();
+  await User.collection.insertOne({
+    _id: branchUserId,
+    username: 'branch-scope-user',
+    usernameNormalized: 'branch-scope-user',
+    password: 'unused',
+    name: 'Branch Scope User',
+    roles: [],
+    isSuperAdmin: false,
+    tokenVersion: 0,
+    status: 'active'
+  });
+  await TeamMembership.collection.insertOne({
+    _id: objectId(),
+    teamId: fixture.teamA,
+    userId: branchUserId,
+    orgUnitId: groupA1,
+    role: permissions.MEMBERSHIP_ROLES.MEMBER,
+    positionLevel: permissions.POSITION_LEVEL_BY_KEY[permissions.POSITION_KEYS.TEAM_LEADER],
+    positionKey: permissions.POSITION_KEYS.TEAM_LEADER,
+    functionalRoleKeys: [],
+    permissionKeys: EQUIPMENT_PERMISSIONS,
+    moduleDataScopes: permissions.deriveModuleDataScopes({
+      positionLevel: permissions.POSITION_LEVEL_BY_KEY[permissions.POSITION_KEYS.TEAM_LEADER]
+    }),
+    status: permissions.MEMBERSHIP_STATUSES.ACTIVE,
+    joinedAt: new Date()
+  });
+  const branchScope = await createTeamContextService({
+    User,
+    ProjectTeam,
+    TeamMembership,
+    OrgUnit
+  }).resolveContext({
+    claims: {
+      sub: String(branchUserId),
+      mode: permissions.SESSION_MODES.TEAM,
+      activeTeamId: String(fixture.teamA),
+      tokenVersion: 0
+    },
+    session: { _id: objectId() }
+  });
+  assert.deepEqual(
+    [...branchScope.equipmentOrgUnitScopeIds].sort(),
+    [String(subA), String(groupA1), String(groupA2)].sort()
+  );
+  const otherBranchScope = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: subA2,
+    userId: fixture.userA2,
+    scope: permissions.DATA_SCOPES.ORG_UNIT,
+    role: permissions.MEMBERSHIP_ROLES.MEMBER,
+    equipmentOrgUnitScopeIds: [subA2]
+  });
+  const assetCategory = await category(service, teamA, fixture.orgA1, 'Branch Scope Category');
+  await EquipmentAsset.create({
+    teamId: fixture.teamA,
+    orgUnitId: disabledGroup,
+    assetCode: 'DISABLED-GROUP-ASSET',
+    name: 'Disabled Group Asset',
+    categoryId: assetCategory._id,
+    createdBy: fixture.userA1,
+    updatedBy: fixture.userA1
+  });
+  const subAsset = await equipment(service, teamA, {
+    assetCode: 'BRANCH-SUB', orgUnitId: subA, categoryId: assetCategory._id
+  });
+  const siblingGroupAsset = await equipment(service, teamA, {
+    assetCode: 'BRANCH-GROUP-A2', orgUnitId: groupA2, categoryId: assetCategory._id
+  });
+  await equipment(service, teamA, {
+    assetCode: 'OTHER-BRANCH', orgUnitId: subA2, categoryId: assetCategory._id
+  });
+
+  const listed = await service.listAssets({ authContext: branchScope });
+  assert.deepEqual(listed.equipment.map(({ assetCode }) => assetCode), [
+    'BRANCH-GROUP-A2',
+    'BRANCH-SUB'
+  ]);
+  const options = await service.listOptions({ authContext: branchScope });
+  assert.deepEqual(
+    options.orgUnits.map(({ _id }) => _id).sort(),
+    [String(subA), String(groupA1), String(groupA2)].sort()
+  );
+  assert.equal((await service.getAsset({
+    authContext: branchScope,
+    equipmentId: subAsset._id
+  })).assetCode, 'BRANCH-SUB');
+
+  const qr = await service.getQrPayload({
+    authContext: teamA,
+    equipmentId: siblingGroupAsset._id
+  });
+  const token = JSON.parse(qr.payload).token;
+  assert.equal((await service.getAssetByQrToken({
+    authContext: branchScope,
+    qrToken: token
+  })).assetCode, 'BRANCH-GROUP-A2');
+  await assert.rejects(service.getAssetByQrToken({
+    authContext: otherBranchScope,
+    qrToken: token
+  }), (error) => error.status === 404);
+
+  const createdInSiblingGroup = await equipment(service, branchScope, {
+    assetCode: 'BRANCH-WRITE-A2', orgUnitId: groupA2, categoryId: assetCategory._id
+  });
+  assert.equal(createdInSiblingGroup.orgUnitId, String(groupA2));
+  const subDepartmentAssetWithGroupCustodian = await equipment(service, teamA, {
+    assetCode: 'BRANCH-CUSTODIAN',
+    orgUnitId: subA,
+    categoryId: assetCategory._id,
+    custodianUserId: branchUserId
+  });
+  assert.equal(subDepartmentAssetWithGroupCustodian.custodianUserId, String(branchUserId));
+  await assert.rejects(equipment(service, teamA, {
+    assetCode: 'FOREIGN-BRANCH-CUSTODIAN',
+    orgUnitId: subA,
+    categoryId: assetCategory._id,
+    custodianUserId: fixture.userA2
+  }), (error) => error.code === 'EQUIPMENT_RELATED_RESOURCE_INVALID');
+  await assert.rejects(equipment(service, branchScope, {
+    assetCode: 'OTHER-BRANCH-WRITE', orgUnitId: subA2, categoryId: assetCategory._id
+  }), (error) => error.code === 'EQUIPMENT_RELATED_RESOURCE_INVALID');
 });
 
 test('client teamId and foreign category or custodian references are rejected', async () => {

@@ -143,7 +143,9 @@ function membershipDocument({ _id = objectId(), teamId, userId, orgUnitId, role 
     userId,
     orgUnitId,
     role,
-    positionLevel: isAdmin ? 1 : 5,
+    positionLevel: isAdmin
+      ? permissions.POSITION_LEVELS.DEPARTMENT_MANAGER
+      : permissions.POSITION_LEVELS.EMPLOYEE,
     positionKey: isAdmin
       ? permissions.POSITION_KEYS.DEPARTMENT_MANAGER
       : permissions.POSITION_KEYS.EMPLOYEE,

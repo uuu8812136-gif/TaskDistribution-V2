@@ -24,6 +24,18 @@ const { normalizeObjectId } = require('../services/scopedQueryService');
 const { runWithRequiredTransaction } = require('../services/transactionService');
 const { assertPermission, sameId } = require('../services/teamContextService');
 const {
+  assertTaskPermissionOrLeadershipCandidate,
+  buildTaskAggregateCapabilities,
+  buildTaskCapabilities,
+  dynamicLeadershipTaskFilter,
+  dynamicLeadershipTaskListFilter,
+  hasTaskPermission,
+  isTaskLeadershipCandidate,
+  resolveTaskManagementAuthorization,
+  resolveTaskReadAuthorization,
+  taskBelongsToLeadershipScope
+} = require('../services/taskLeadershipAccessService');
+const {
   isAuthContextError,
   sendAuthContextError
 } = require('../services/authContextError');
@@ -72,6 +84,13 @@ function snapshot(document) {
   });
 }
 
+function responseValue(document, capabilities) {
+  const value = document && typeof document.toJSON === 'function'
+    ? document.toJSON()
+    : { ...(document || {}) };
+  return { ...value, capabilities };
+}
+
 function canAdministrateTask(authContext) {
   return authContext?.isSuperAdmin === true ||
     authContext?.membership?.role === MEMBERSHIP_ROLES.PROJECT_ADMIN;
@@ -108,6 +127,35 @@ async function findScopedTask(req, taskId, session) {
   return withSession(Task.findOne(buildTaskDetailFilter(req, taskId)), session);
 }
 
+async function resolveReadAuthorization(req) {
+  return resolveTaskReadAuthorization({ authContext: req.authContext });
+}
+
+function readableTaskFilter(req, authorization, taskId = null) {
+  if (authorization.mode === 'DYNAMIC_LEADERSHIP') {
+    return taskId
+      ? dynamicLeadershipTaskFilter(authorization, taskId)
+      : dynamicLeadershipTaskListFilter(authorization);
+  }
+  return taskId
+    ? buildTaskDetailFilter(req, taskId)
+    : buildTaskScopedFilter(req);
+}
+
+async function findReadableTask(req, authorization, taskId) {
+  return Task.findOne(readableTaskFilter(req, authorization, taskId));
+}
+
+function extensionCapabilities(req, authorization, extensionRequest, task) {
+  const taskCapabilities = buildTaskCapabilities({
+    authContext: req.authContext,
+    authorization,
+    task,
+    hasPendingExtension: extensionRequest?.status === 'pending'
+  });
+  return Object.freeze({ canApprove: taskCapabilities.canApproveExtension });
+}
+
 function extensionIdentityFilter(req, requestId) {
   const filter = { _id: normalizeObjectId(requestId, 'extensionRequestId') };
   if (req.authContext.mode === SESSION_MODES.TEAM) {
@@ -126,6 +174,29 @@ async function findScopedExtension(req, requestId, session) {
   const task = await findScopedTask(req, extensionRequest.task, session);
   if (!task || !sameId(extensionRequest.teamId, task.teamId)) return null;
   return { extensionRequest, task };
+}
+
+async function findLeadershipExtension(req, requestId, session) {
+  const authorization = await resolveTaskManagementAuthorization({
+    authContext: req.authContext,
+    permissionKeys: ['task.review'],
+    session
+  });
+  if (authorization.mode !== 'DYNAMIC_LEADERSHIP') {
+    return { authorization, extensionRequest: null, task: null };
+  }
+  const extensionRequest = await withSession(ExtensionRequest.findOne({
+    _id: normalizeObjectId(requestId, 'extensionRequestId'),
+    teamId: authorization.teamId
+  }), session);
+  if (!extensionRequest) return { authorization, extensionRequest: null, task: null };
+  const task = await withSession(Task.findOne(
+    dynamicLeadershipTaskFilter(authorization, extensionRequest.task)
+  ), session);
+  if (!task || !sameId(extensionRequest.teamId, task.teamId)) {
+    return { authorization, extensionRequest: null, task: null };
+  }
+  return { authorization, extensionRequest, task };
 }
 
 async function recordTaskMutation({ req, task, before, session }) {
@@ -281,7 +352,7 @@ exports.applyExtension = async (req, res) => {
 
 exports.approveExtension = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.review');
+    assertTaskPermissionOrLeadershipCandidate(req.authContext, 'task.review');
     const actorId = req.authContext.userId;
     const { status, approvedDays, approvalNote } = req.body || {};
     if (!['approved', 'rejected'].includes(status)) {
@@ -292,10 +363,39 @@ exports.approveExtension = async (req, res) => {
     }
 
     const mutation = await runWithRequiredTransaction(async (session) => {
-      const scoped = await findScopedExtension(req, req.params.id, session);
+      let scoped = hasTaskPermission(req.authContext, 'task.review')
+        ? await findScopedExtension(req, req.params.id, session)
+        : null;
+      let actingAsLeader = false;
+      let leadershipAuthorization = null;
+      const intrinsicallyAuthorized = scoped && (
+        sameId(scoped.task.creator, actorId) || canAdministrateTask(req.authContext)
+      );
+      if (!intrinsicallyAuthorized && isTaskLeadershipCandidate(req.authContext)) {
+        const leadership = await findLeadershipExtension(req, req.params.id, session);
+        if (leadership.authorization.mode === 'DYNAMIC_LEADERSHIP') {
+          actingAsLeader = true;
+          leadershipAuthorization = leadership.authorization;
+          if (
+            !scoped ||
+            !taskBelongsToLeadershipScope(leadership.authorization, scoped.task)
+          ) {
+            scoped = leadership.extensionRequest && leadership.task
+              ? {
+                  extensionRequest: leadership.extensionRequest,
+                  task: leadership.task
+                }
+              : null;
+          }
+        }
+      }
       if (!scoped) throw notFound();
       const { extensionRequest, task } = scoped;
-      if (!sameId(task.creator, actorId) && !canAdministrateTask(req.authContext)) {
+      if (
+        !sameId(task.creator, actorId) &&
+        !canAdministrateTask(req.authContext) &&
+        !actingAsLeader
+      ) {
         throw httpError(
           403,
           'Only the task creator or a project administrator may approve extensions',
@@ -306,6 +406,7 @@ exports.approveExtension = async (req, res) => {
         authContext: req.authContext,
         userIds: [extensionRequest.applicant],
         taskOrgUnitId: task.orgUnitId,
+        enforceActorOrgScope: leadershipAuthorization?.mode !== 'DYNAMIC_LEADERSHIP',
         session
       });
       if (extensionRequest.status !== 'pending') {
@@ -332,9 +433,14 @@ exports.approveExtension = async (req, res) => {
         task.status = 'in_progress';
 
         if (task.isMainTask) {
-          const subTasks = await withSession(Task.find(buildTaskScopedFilter(req, {
-            parentTask: task._id
-          })), session);
+          const subTaskFilter = leadershipAuthorization?.mode === 'DYNAMIC_LEADERSHIP'
+            ? {
+                teamId: task.teamId,
+                orgUnitId: task.orgUnitId,
+                parentTask: task._id
+              }
+            : buildTaskScopedFilter(req, { parentTask: task._id });
+          const subTasks = await withSession(Task.find(subTaskFilter), session);
           for (const subTask of subTasks) {
             const beforeSubTask = snapshot(subTask);
             const originalSubTaskTime = new Date(subTask.plannedCompletionTime);
@@ -402,16 +508,16 @@ exports.approveExtension = async (req, res) => {
 
 exports.getExtensionRequests = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.view');
+    const authorization = await resolveReadAuthorization(req);
     const { status, taskId } = req.query || {};
     if (status && !REQUEST_STATUSES.has(status)) throw badRequest('Status is invalid');
 
     let taskIds;
     if (taskId) {
-      const task = await findScopedTask(req, taskId, null);
+      const task = await findReadableTask(req, authorization, taskId);
       taskIds = task ? [task._id] : [];
     } else {
-      const tasks = await Task.find(buildTaskScopedFilter(req)).select('_id');
+      const tasks = await Task.find(readableTaskFilter(req, authorization)).select('_id');
       taskIds = tasks.map((task) => task._id);
     }
 
@@ -420,7 +526,10 @@ exports.getExtensionRequests = async (req, res) => {
       query.teamId = req.authContext.activeTeamId;
     }
     if (status) query.status = status;
-    if (!canAdministrateTask(req.authContext)) {
+    if (
+      authorization.mode !== 'DYNAMIC_LEADERSHIP' &&
+      !canAdministrateTask(req.authContext)
+    ) {
       query.$or = [
         { applicant: req.authContext.userId },
         { approver: req.authContext.userId }
@@ -428,11 +537,23 @@ exports.getExtensionRequests = async (req, res) => {
     }
 
     const requests = await ExtensionRequest.find(query)
-      .populate('task', 'taskName status teamId orgUnitId')
+      .populate(
+        'task',
+        'taskName status teamId orgUnitId creator hasExtensionRequest executorCompletions isMainTask'
+      )
       .populate('applicant', 'name username isSystemAccount')
       .populate('approver', 'name username isSystemAccount')
       .sort({ applyTime: -1 });
-    return res.json({ requests });
+    return res.json({
+      requests: requests.map((request) => responseValue(
+        request,
+        extensionCapabilities(req, authorization, request, request.task)
+      )),
+      capabilities: buildTaskAggregateCapabilities({
+        authContext: req.authContext,
+        authorization
+      })
+    });
   } catch (error) {
     return handleError(res, error, 'getExtensionRequests');
   }
@@ -440,15 +561,24 @@ exports.getExtensionRequests = async (req, res) => {
 
 exports.getExtensionRequestById = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.view');
-    const scoped = await findScopedExtension(req, req.params.id, null);
-    if (!scoped) throw notFound();
-    await scoped.extensionRequest.populate([
+    const authorization = await resolveReadAuthorization(req);
+    const extensionRequest = await ExtensionRequest.findOne(
+      extensionIdentityFilter(req, req.params.id)
+    );
+    if (!extensionRequest) throw notFound();
+    const task = await findReadableTask(req, authorization, extensionRequest.task);
+    if (!task || !sameId(extensionRequest.teamId, task.teamId)) throw notFound();
+    await extensionRequest.populate([
       { path: 'task' },
       { path: 'applicant', select: 'name username phone isSystemAccount' },
       { path: 'approver', select: 'name username phone isSystemAccount' }
     ]);
-    return res.json({ request: scoped.extensionRequest });
+    return res.json({
+      request: responseValue(
+        extensionRequest,
+        extensionCapabilities(req, authorization, extensionRequest, task)
+      )
+    });
   } catch (error) {
     return handleError(res, error, 'getExtensionRequestById');
   }
@@ -456,8 +586,8 @@ exports.getExtensionRequestById = async (req, res) => {
 
 exports.getTaskExtensionHistory = async (req, res) => {
   try {
-    assertPermission(req.authContext, 'task.view');
-    const task = await findScopedTask(req, req.params.taskId, null);
+    const authorization = await resolveReadAuthorization(req);
+    const task = await findReadableTask(req, authorization, req.params.taskId);
     if (!task) throw taskNotFound();
     const history = await ExtensionRequest.find({
       teamId: task.teamId,
@@ -465,7 +595,12 @@ exports.getTaskExtensionHistory = async (req, res) => {
     }).populate('applicant', 'name username isSystemAccount')
       .populate('approver', 'name username isSystemAccount')
       .sort({ applyTime: -1 });
-    return res.json({ history });
+    return res.json({
+      history: history.map((request) => responseValue(
+        request,
+        extensionCapabilities(req, authorization, request, task)
+      ))
+    });
   } catch (error) {
     return handleError(res, error, 'getTaskExtensionHistory');
   }
