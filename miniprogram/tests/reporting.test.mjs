@@ -215,8 +215,7 @@ test('mini-program reporting pages use authenticated file APIs and are registere
 
   assert.match(apiSource, /upload\('\/files'/)
   assert.doesNotMatch(formSource, /\/uploads\//)
-  assert.match(formSource, /sourceType:\s*\['camera'\]/)
-  assert.doesNotMatch(formSource, /sourceType:\s*\[[^\]]*['"]album['"]/)
+  assert.match(formSource, /sourceType:\s*\['camera',\s*'album'\]/)
   assert.match(detailSource, /downloadPrivateFile/)
   assert.equal(registered.has('pages/reporting/transport-list'), true)
   assert.equal(registered.has('pages/reporting/transport-form'), true)

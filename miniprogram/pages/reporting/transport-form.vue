@@ -321,7 +321,7 @@ export default {
       uni.chooseImage({
         count: remaining,
         sizeType: ['compressed'],
-        sourceType: ['camera'],
+        sourceType: ['camera', 'album'],
         success: (response) => {
           const selected = (response.tempFiles || []).map((file, index) => ({
             path: file.path || file.tempFilePath,
