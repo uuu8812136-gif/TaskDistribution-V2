@@ -335,8 +335,15 @@ function assertRestoreTarget({ uri, sourceDatabase, targetDatabase }) {
       'Restore verification database must end with _restore_test or _v2_test'
     );
   }
-  if (targetDatabase === sourceDatabase || targetDatabase === parsed.databaseName) {
+  if (targetDatabase === sourceDatabase || parsed.databaseName === sourceDatabase) {
     fail('RESTORE_SOURCE_OVERWRITE_FORBIDDEN', 'Restore verification cannot target the source database');
+  }
+  if (parsed.databaseName !== targetDatabase) {
+    fail(
+      'RESTORE_TARGET_URI_MISMATCH',
+      'RESTORE_MONGODB_URI database must match RESTORE_DATABASE',
+      { uriDatabase: parsed.databaseName, targetDatabase }
+    );
   }
   return Object.freeze({ ...parsed, targetDatabase });
 }

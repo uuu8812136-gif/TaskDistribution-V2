@@ -1,0 +1,26 @@
+[Unit]
+Description=TaskDistribution V2 test operations health check
+Requires=taskdistribution-v2-test-backup-volume.service
+After=network-online.target taskdistribution-v2-test-backup-volume.service taskdistribution-v2-test-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=taskdistributionv2test
+Group=taskdistributionv2test
+WorkingDirectory=/usr/local/libexec/taskdistribution-v2-test/health
+Environment=NODE_ENV=production
+Environment=HEALTH_API_URL=http://127.0.0.1:18120/health
+Environment=HEALTH_WEB_URL=https://v2-test.horselink.cn/health
+Environment=HEALTH_MONGO_PORT=27150
+Environment=HEALTH_BACKUP_MAX_AGE_HOURS=26
+Environment=HEALTH_DISK_MIN_FREE_GB=1
+EnvironmentFile=/etc/taskdistribution-v2-test/operations.env
+ExecStart=/usr/bin/node /usr/local/libexec/taskdistribution-v2-test/health/health-terminal.js --env-file /etc/taskdistribution-v2-test/operations.env --once --json
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/usr/local/libexec/taskdistribution-v2-test/health
+ReadWritePaths=/mnt/taskdistribution-v2-test-backup
+TimeoutStartSec=2min

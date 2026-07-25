@@ -1,0 +1,12 @@
+[Unit]
+Description=Run TaskDistribution V2 test backup daily
+
+[Timer]
+OnCalendar=*-*-* 02:00:00 Asia/Shanghai
+Persistent=true
+RandomizedDelaySec=5m
+AccuracySec=1m
+Unit=taskdistribution-v2-test-backup.service
+
+[Install]
+WantedBy=timers.target

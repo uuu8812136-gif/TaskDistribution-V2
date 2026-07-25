@@ -1,0 +1,11 @@
+[Unit]
+Description=TaskDistribution V2 test isolated backup volume
+Before=taskdistribution-v2-test-backup.service taskdistribution-v2-test-health.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/libexec/taskdistribution-v2-test/ensure-backup-volume.sh
+
+[Install]
+WantedBy=multi-user.target

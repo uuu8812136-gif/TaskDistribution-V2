@@ -1,0 +1,23 @@
+[Unit]
+Description=TaskDistribution V2 test database and uploads backup
+Requires=taskdistribution-v2-test-backup-volume.service mongod-v2-test.service
+After=network-online.target mongod-v2-test.service taskdistribution-v2-test-backup-volume.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=taskdistributionv2test
+Group=taskdistributionv2test
+WorkingDirectory=/opt/taskdistribution-v2-test/current
+Environment=NODE_ENV=production
+EnvironmentFile=/etc/taskdistribution-v2-test/operations.env
+ExecStart=/usr/bin/node /opt/taskdistribution-v2-test/current/ops/backup.js --env-file /etc/taskdistribution-v2-test/operations.env
+ExecStartPost=/usr/local/libexec/taskdistribution-v2-test/create-scheduled-backup-handoff.sh
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/opt/taskdistribution-v2-test/current /srv/taskdistribution-v2-test/taskdistribution-v2/uploads
+ReadWritePaths=/mnt/taskdistribution-v2-test-backup
+UMask=0077
+TimeoutStartSec=30min

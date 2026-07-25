@@ -134,20 +134,30 @@ test('backup verification rejects any file changed after manifest publication', 
 
 test('restore target is limited to loopback disposable database names', () => {
   assert.equal(assertRestoreTarget({
-    uri: 'mongodb://127.0.0.1:27017/admin',
+    uri: 'mongodb://127.0.0.1:27017/task_distribution_restore_test',
     sourceDatabase: 'task_distribution_v2',
     targetDatabase: 'task_distribution_restore_test'
   }).targetDatabase, 'task_distribution_restore_test');
   assert.throws(() => assertRestoreTarget({
-    uri: 'mongodb://db.example.test:27017/admin',
+    uri: 'mongodb://db.example.test:27017/task_distribution_restore_test',
     sourceDatabase: 'task_distribution_v2',
     targetDatabase: 'task_distribution_restore_test'
   }), (error) => error.code === 'RESTORE_LOOPBACK_REQUIRED');
   assert.throws(() => assertRestoreTarget({
-    uri: 'mongodb://127.0.0.1:27017/admin',
+    uri: 'mongodb://127.0.0.1:27017/task_distribution',
     sourceDatabase: 'task_distribution_v2',
     targetDatabase: 'task_distribution'
   }), (error) => error.code === 'RESTORE_DATABASE_NAME_FORBIDDEN');
+  assert.throws(() => assertRestoreTarget({
+    uri: 'mongodb://127.0.0.1:27017/task_distribution_v2',
+    sourceDatabase: 'task_distribution_v2',
+    targetDatabase: 'task_distribution_restore_test'
+  }), (error) => error.code === 'RESTORE_SOURCE_OVERWRITE_FORBIDDEN');
+  assert.throws(() => assertRestoreTarget({
+    uri: 'mongodb://127.0.0.1:27017/admin',
+    sourceDatabase: 'task_distribution_v2',
+    targetDatabase: 'task_distribution_restore_test'
+  }), (error) => error.code === 'RESTORE_TARGET_URI_MISMATCH');
 });
 
 test('restore tool URI removes only the default database and preserves server options', () => {
@@ -217,14 +227,15 @@ test('restore publishes an atomic isolated report after mocked database reconcil
     return child;
   };
 
+  const targetDatabase = `task_distribution_${randomUUID().slice(0, 8)}_restore_test`;
   const result = await restoreBackup({
     backupRoot,
     backupVolumeRoot,
     uploadRoot,
     restoreRoot,
     logPath: path.join(backupVolumeRoot, 'operations.jsonl'),
-    mongodbUri: 'mongodb://127.0.0.1:27017/admin',
-    targetDatabase: `task_distribution_${randomUUID().slice(0, 8)}_restore_test`,
+    mongodbUri: `mongodb://127.0.0.1:27017/${targetDatabase}`,
+    targetDatabase,
     mongorestorePath,
     mongorestoreSha256: '',
     platform: 'win32',

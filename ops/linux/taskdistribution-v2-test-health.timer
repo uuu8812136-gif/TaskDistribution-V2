@@ -1,0 +1,11 @@
+[Unit]
+Description=Check TaskDistribution V2 test health every five minutes
+
+[Timer]
+OnBootSec=5m
+OnUnitInactiveSec=5m
+AccuracySec=30s
+Unit=taskdistribution-v2-test-health.service
+
+[Install]
+WantedBy=timers.target
