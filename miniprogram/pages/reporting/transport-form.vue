@@ -58,7 +58,7 @@
         </picker>
       </view>
       <view class="field-row">
-        <text class="field-label">车型</text>
+        <text class="field-label required">车型</text>
         <picker
           :range="vehicleTypeOptions"
           range-key="label"
@@ -66,7 +66,7 @@
           data-testid="transport-vehicle-type-picker"
           @change="onVehicleTypeChange"
         >
-          <view class="picker-field">{{ selectedVehicleTypeLabel || '请选择车型（选填）' }}</view>
+          <view class="picker-field">{{ selectedVehicleTypeLabel || '请选择车型' }}</view>
         </picker>
       </view>
       <view class="field-row">
@@ -149,7 +149,6 @@ import {
   buildTransportPayload,
   businessNaturalDate,
   createEmptyTransportLoad,
-  optionalVehicleTypeOptions,
   transportLoadTotal
 } from '@/utils/reporting.js'
 import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
@@ -221,7 +220,7 @@ export default {
     const tripOptions = optionsFor('TRIP')
     const routeOptions = optionsFor('ROUTE')
     const vehiclePlateOptions = optionsFor('VEHICLE_PLATE')
-    const vehicleTypeOptions = computed(() => optionalVehicleTypeOptions(masterData.value))
+    const vehicleTypeOptions = optionsFor('VEHICLE_TYPE')
     const driverOptions = optionsFor('DRIVER')
     const optionIndex = (options, value) => Math.max(
       0,
@@ -349,6 +348,7 @@ export default {
         if (!form.tripMasterId) throw new TypeError('请选择运输车次')
         if (!form.routeMasterId) throw new TypeError('请选择运输路线')
         if (!form.vehiclePlateMasterId) throw new TypeError('请选择车牌号')
+        if (!form.vehicleTypeMasterId) throw new TypeError('请选择车型')
         if (!form.driverMasterId) throw new TypeError('请选择司机姓名')
         buildTransportFields(form)
         if (photos.value.length < 2 || photos.value.length > 10) {

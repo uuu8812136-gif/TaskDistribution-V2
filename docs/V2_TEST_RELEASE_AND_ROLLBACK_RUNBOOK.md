@@ -318,6 +318,48 @@ sudo /usr/bin/env bash "$TOOLS/verify-v2-test-release.sh" \
   --expected-reference-baseline "$REFERENCE_BASELINE"
 ```
 
+### 7.1 2026-07-25 运输历史专项修复
+
+仅当候选包含 `repairAcceptanceTransportJuly2026.js`，且 dry-run 精确显示17条运输记录修正、
+6条固定标记占位记录删除和13个占位附件软删除时，使用本节替代第7节的通用激活脚本。
+第4至6节的候选准备、停写完整备份和物理机 D 盘离机回执仍必须全部完成。
+
+先执行专项 dry-run：
+
+```bash
+HANDOFF="/var/log/taskdistribution-v2-test/releases/${RELEASE_ID}/backup-handoff.json"
+RECEIPT="/tmp/v2-test-offhost-${BACKUP_ID}.json"
+
+sudo /usr/bin/env bash "$TOOLS/activate-v2-test-transport-repair.sh" \
+  --release-id "$RELEASE_ID" \
+  --handoff "$HANDOFF" \
+  --offhost-receipt "$RECEIPT" \
+  --operations-env "$OPS_ENV"
+```
+
+只接受 `DRY_RUN_READY`、`fixedRecordsExpected=17`、`fixedRecordsFound=17`、
+`transportCorrections=17`、`placeholderRecordDeletes=6`、`placeholderFileDeletes=13`、
+`mappings=36` 且 blocker 为0。确认后执行：
+
+```bash
+sudo /usr/bin/env bash "$TOOLS/activate-v2-test-transport-repair.sh" \
+  --release-id "$RELEASE_ID" \
+  --handoff "$HANDOFF" \
+  --offhost-receipt "$RECEIPT" \
+  --operations-env "$OPS_ENV" \
+  --execute \
+  --confirm-instance task-distribution-v2-customer-test \
+  --confirm-database customer_acceptance_v2_test \
+  --confirm-backup-id "$BACKUP_ID"
+```
+
+脚本会再次验签备份，事务内完成36笔数据写入和36条系统审计，随后以 execute 模式复跑并要求
+`NO_CHANGES`；再重建修复后的运输快照和引用基线，切换 Web/API，验证本机及公网健康，并对现库
+执行只读 `DRY_RUN_NO_CHANGES`。只有最终输出 `ACTIVATED_AND_VERIFIED` 才算成功。
+
+一旦写入 `transport-repair-started.json`，失败处理只能恢复本次已验签完整备份，不能只切回旧代码。
+脚本会保持 V2 API/tunnel 停止，并输出 `TRANSPORT_REPAIR_OR_ACTIVATION_FAILED`。
+
 ## 8. 失败处理矩阵
 
 | 失败位置 | 状态 | 处理 |

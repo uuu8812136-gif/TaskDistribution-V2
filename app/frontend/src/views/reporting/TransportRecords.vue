@@ -176,7 +176,7 @@
               clearable
               filterable
               class="full-width"
-              placeholder="请选择车型（选填）"
+              placeholder="请选择车型"
               @change="handleVehicleTypeChange"
             >
               <el-option
@@ -492,6 +492,7 @@ const rules = {
   routeMasterId: [{ required: true, message: '请选择路线', trigger: 'change' }],
   dispatchType: [{ required: true, message: '请选择出车类型', trigger: 'change' }],
   vehiclePlateMasterId: [{ required: true, message: '请选择车牌号', trigger: 'change' }],
+  vehicleTypeMasterId: [{ required: true, message: '请选择车型', trigger: 'change' }],
   driverMasterId: [{ required: true, message: '请选择司机姓名', trigger: 'change' }]
 }
 

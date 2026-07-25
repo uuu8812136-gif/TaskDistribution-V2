@@ -89,6 +89,7 @@ function validForm() {
     route: '仓库-工厂',
     dispatchType: '配送',
     vehiclePlate: 'TEST-PLATE-01',
+    vehicleTypeMasterId: '64b000000000000000000012',
     vehicleType: '厢式货车',
     driverName: '测试司机',
     loadDetails: {

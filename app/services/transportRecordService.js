@@ -1,7 +1,7 @@
 'use strict';
 
 const mongoose = require('mongoose');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const FileAsset = require('../models/FileAsset');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
@@ -43,7 +43,6 @@ const {
   optionalString,
   pagination,
   plain,
-  relatedInvalid,
   reportError,
   requiredString,
   resolveWritableOrgUnit,
@@ -65,6 +64,25 @@ const {
   TRANSPORT_MASTER_KINDS,
   TRANSPORT_MASTER_STATUSES
 } = TransportMasterData;
+
+const TRANSPORT_SUMMARY_COMPANY_NAME = '山东载信物流有限公司';
+const TRANSPORT_SUMMARY_DISPATCH_ORDER = Object.freeze(['配送', '返架']);
+
+function transportMasterSelectionRequired() {
+  return reportError(
+    400,
+    'TRANSPORT_MASTER_SELECTION_REQUIRED',
+    'The transport master-data selections are required; update the mini program and select them again'
+  );
+}
+
+function transportMasterSelectionInvalid() {
+  return reportError(
+    400,
+    'TRANSPORT_MASTER_SELECTION_INVALID',
+    'A selected transport master-data item is inactive, invalid, or outside the active team'
+  );
+}
 
 function assertTransportReporter(context) {
   assertPermission(context, 'report.submit');
@@ -357,7 +375,7 @@ function createTransportRecordService({
       {
         idField: 'vehicleTypeMasterId',
         kind: TRANSPORT_MASTER_KINDS.VEHICLE_TYPE,
-        required: false,
+        required: true,
         apply(master) {
           payload.vehicleType = master?.name || '';
         }
@@ -379,11 +397,11 @@ function createTransportRecordService({
       if (suppliesMasterId) {
         masterId = normalizeRelatedId(input[mapping.idField], { optional: !mapping.required });
       } else if (!existing && mapping.required) {
-        throw relatedInvalid();
+        throw transportMasterSelectionRequired();
       }
       payload[mapping.idField] = masterId;
       if (!masterId) {
-        if (mapping.required) throw relatedInvalid();
+        if (mapping.required) throw transportMasterSelectionRequired();
         if (suppliesMasterId || !existing) mapping.apply(null);
         continue;
       }
@@ -396,7 +414,7 @@ function createTransportRecordService({
         kind: mapping.kind,
         status: TRANSPORT_MASTER_STATUSES.ACTIVE
       }), session);
-      if (!master) throw relatedInvalid();
+      if (!master) throw transportMasterSelectionInvalid();
       mapping.apply(master);
     }
     return payload;
@@ -741,86 +759,198 @@ function createTransportRecordService({
     ]);
     if (!team) throw notFound('Project team');
 
-    const grouped = new Map();
+    const dateColumns = Array.from({ length: dayCount }, (_, index) => index + 1);
+    const driverGroups = new Map();
+    let exportedGroupCount = 0;
     for (const document of documents) {
       const record = serializeTransportRecord(document);
-      const key = JSON.stringify([
+      const driverKey = JSON.stringify([
+        record.driverMasterId,
         record.driverName,
-        record.route,
-        record.vehiclePlate,
-        record.vehicleType,
-        record.dispatchType
+        record.routeMasterId,
+        record.route
       ]);
-      if (!grouped.has(key)) {
-        grouped.set(key, {
+      if (!driverGroups.has(driverKey)) {
+        driverGroups.set(driverKey, {
           driverName: record.driverName,
           route: record.route,
+          vehicles: new Map(),
+          daily: new Map()
+        });
+      }
+      const driverGroup = driverGroups.get(driverKey);
+      const vehicleKey = JSON.stringify([
+        record.vehiclePlateMasterId,
+        record.vehiclePlate,
+        record.vehicleTypeMasterId,
+        record.vehicleType
+      ]);
+      if (!driverGroup.vehicles.has(vehicleKey)) {
+        driverGroup.vehicles.set(vehicleKey, {
           vehiclePlate: record.vehiclePlate,
           vehicleType: record.vehicleType,
-          dispatchType: record.dispatchType,
+          dispatches: new Map()
+        });
+      }
+      const vehicleGroup = driverGroup.vehicles.get(vehicleKey);
+      if (!vehicleGroup.dispatches.has(record.dispatchType)) {
+        vehicleGroup.dispatches.set(record.dispatchType, {
           daily: new Map(),
           remarks: new Set()
         });
+        exportedGroupCount += 1;
       }
-      const group = grouped.get(key);
-      group.daily.set(record.reportDate, (group.daily.get(record.reportDate) || 0) + 1);
-      if (record.remark) group.remarks.add(record.remark);
+      const dispatchGroup = vehicleGroup.dispatches.get(record.dispatchType);
+      dispatchGroup.daily.set(
+        record.reportDate,
+        (dispatchGroup.daily.get(record.reportDate) || 0) + 1
+      );
+      driverGroup.daily.set(
+        record.reportDate,
+        (driverGroup.daily.get(record.reportDate) || 0) + 1
+      );
+      if (record.remark) dispatchGroup.remarks.add(record.remark);
     }
 
-    const dateColumns = Array.from({ length: dayCount }, (_, index) => index + 1);
-    const title = `${formulaSafe(team.name)} ${parsedMonth.year}年${parsedMonth.month}月 货车司机计件明细表`;
-    const rows = [
-      [title],
-      [
-        '序号', '姓名', '路线', '车牌号', '车型', '出车类型',
-        ...dateColumns.map((day) => weekdayLabel(`${month}-${String(day).padStart(2, '0')}`)),
-        '趟数合计', '备注'
-      ],
-      ['', '', '', '', '', '', ...dateColumns, '', '']
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Horselink V2';
+    workbook.created = new Date();
+    workbook.calcProperties.fullCalcOnLoad = true;
+    const worksheet = workbook.addWorksheet('运输月度汇总', {
+      properties: { defaultRowHeight: 22 },
+      pageSetup: {
+        orientation: 'landscape',
+        paperSize: 9,
+        fitToPage: true,
+        fitToWidth: 1,
+        fitToHeight: 0,
+        horizontalCentered: true,
+        margins: {
+          left: 0.2,
+          right: 0.2,
+          top: 0.35,
+          bottom: 0.35,
+          header: 0.1,
+          footer: 0.1
+        }
+      },
+      views: [{ state: 'frozen', xSplit: 6, ySplit: 4, topLeftCell: 'G5' }]
+    });
+    worksheet.columns = [
+      { width: 7 }, { width: 12 }, { width: 22 }, { width: 14 }, { width: 20 }, { width: 11 },
+      ...dateColumns.map(() => ({ width: 4 })),
+      { width: 12 }, { width: 30 }
     ];
-    let sequence = 0;
-    for (const group of grouped.values()) {
-      sequence += 1;
-      const counts = dateColumns.map((day) => (
-        group.daily.get(`${month}-${String(day).padStart(2, '0')}`) || 0
-      ));
-      rows.push([
-        sequence,
-        formulaSafe(group.driverName),
-        formulaSafe(group.route),
-        formulaSafe(group.vehiclePlate),
-        formulaSafe(group.vehicleType),
-        formulaSafe(group.dispatchType),
-        ...counts,
-        counts.reduce((total, value) => total + value, 0),
-        formulaSafe([...group.remarks].join('；'))
-      ]);
-    }
-    const dailyTotals = dateColumns.map((_, offset) => (
-      [...grouped.values()].reduce((total, group) => (
-        total + (group.daily.get(`${month}-${String(offset + 1).padStart(2, '0')}`) || 0)
-      ), 0)
-    ));
-    rows.push([
-      '合计', '', '', '', '', '',
-      ...dailyTotals,
-      dailyTotals.reduce((total, value) => total + value, 0),
-      ''
+    const totalColumn = 6 + dayCount + 1;
+    const remarkColumn = totalColumn + 1;
+    const lastColumnLetter = worksheet.getColumn(remarkColumn).letter;
+
+    worksheet.addRow([TRANSPORT_SUMMARY_COMPANY_NAME]);
+    worksheet.mergeCells(1, 1, 1, remarkColumn);
+    worksheet.addRow([
+      `${parsedMonth.year} 年 ${parsedMonth.month} 月  部门：${formulaSafe(team.name)}  货车司机计件明细表`
     ]);
+    worksheet.mergeCells(2, 1, 2, remarkColumn);
+    worksheet.addRow([
+      '序号', '姓名', '路线', '车牌号', '车型', '出车类型',
+      ...dateColumns.map((day) => weekdayLabel(`${month}-${String(day).padStart(2, '0')}`)),
+      '趟数合计', '备注'
+    ]);
+    worksheet.addRow(['', '', '', '', '', '', ...dateColumns, '', '']);
+    for (const column of [1, 2, 3, 4, 5, 6, totalColumn, remarkColumn]) {
+      worksheet.mergeCells(3, column, 4, column);
+    }
 
-    const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.aoa_to_sheet(rows);
-    worksheet['!merges'] = [{
-      s: { r: 0, c: 0 },
-      e: { r: 0, c: 6 + dayCount + 1 }
-    }];
-    worksheet['!cols'] = [
-      { wch: 8 }, { wch: 12 }, { wch: 24 }, { wch: 14 }, { wch: 24 }, { wch: 12 },
-      ...dateColumns.map(() => ({ wch: 4 })),
-      { wch: 12 }, { wch: 30 }
-    ];
-    XLSX.utils.book_append_sheet(workbook, worksheet, '运输月度汇总');
-    const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+    const subtotalRows = new Set();
+    let sequence = 0;
+    for (const driverGroup of driverGroups.values()) {
+      sequence += 1;
+      const driverStartRow = worksheet.rowCount + 1;
+      for (const vehicleGroup of driverGroup.vehicles.values()) {
+        const vehicleStartRow = worksheet.rowCount + 1;
+        for (const dispatchType of TRANSPORT_SUMMARY_DISPATCH_ORDER) {
+          const dispatchGroup = vehicleGroup.dispatches.get(dispatchType);
+          const counts = dateColumns.map((day) => (
+            dispatchGroup?.daily.get(`${month}-${String(day).padStart(2, '0')}`) || 0
+          ));
+          worksheet.addRow([
+            sequence,
+            formulaSafe(driverGroup.driverName),
+            formulaSafe(driverGroup.route),
+            formulaSafe(vehicleGroup.vehiclePlate),
+            formulaSafe(vehicleGroup.vehicleType),
+            dispatchType,
+            ...counts.map((count) => count || null),
+            counts.reduce((total, value) => total + value, 0),
+            formulaSafe([...(dispatchGroup?.remarks || [])].join('；'))
+          ]);
+        }
+        const vehicleEndRow = worksheet.rowCount;
+        worksheet.mergeCells(vehicleStartRow, 4, vehicleEndRow, 4);
+        worksheet.mergeCells(vehicleStartRow, 5, vehicleEndRow, 5);
+      }
+      const driverEndRow = worksheet.rowCount;
+      for (const column of [1, 2, 3]) {
+        worksheet.mergeCells(driverStartRow, column, driverEndRow, column);
+      }
+      const driverDailyTotals = dateColumns.map((day) => (
+        driverGroup.daily.get(`${month}-${String(day).padStart(2, '0')}`) || 0
+      ));
+      const subtotalRow = worksheet.addRow([
+        '合计：', '', '', '', '', '',
+        ...driverDailyTotals,
+        driverDailyTotals.reduce((total, value) => total + value, 0),
+        ''
+      ]);
+      worksheet.mergeCells(subtotalRow.number, 1, subtotalRow.number, 6);
+      subtotalRows.add(subtotalRow.number);
+    }
+    if (driverGroups.size === 0) {
+      const subtotalRow = worksheet.addRow([
+        '合计：', '', '', '', '', '', ...dateColumns.map(() => 0), 0, ''
+      ]);
+      worksheet.mergeCells(subtotalRow.number, 1, subtotalRow.number, 6);
+      subtotalRows.add(subtotalRow.number);
+    }
+
+    const greenFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFC6E0B4' } };
+    const thinBorder = {
+      top: { style: 'thin', color: { argb: 'FF000000' } },
+      left: { style: 'thin', color: { argb: 'FF000000' } },
+      bottom: { style: 'thin', color: { argb: 'FF000000' } },
+      right: { style: 'thin', color: { argb: 'FF000000' } }
+    };
+    for (let rowNumber = 1; rowNumber <= worksheet.rowCount; rowNumber += 1) {
+      for (let column = 1; column <= remarkColumn; column += 1) {
+        const cell = worksheet.getCell(rowNumber, column);
+        cell.fill = greenFill;
+        cell.alignment = {
+          horizontal: rowNumber <= 4 || subtotalRows.has(rowNumber) ? 'center' : 'center',
+          vertical: 'middle',
+          wrapText: true
+        };
+        if (rowNumber >= 3) cell.border = thinBorder;
+        if (subtotalRows.has(rowNumber)) cell.font = { bold: true };
+      }
+    }
+    worksheet.getRow(1).height = 28;
+    worksheet.getRow(2).height = 26;
+    worksheet.getRow(3).height = 28;
+    worksheet.getRow(4).height = 24;
+    worksheet.getCell(1, 1).font = { bold: true, size: 16, name: '宋体' };
+    worksheet.getCell(2, 1).font = { bold: true, size: 12, name: '宋体' };
+    for (const rowNumber of [3, 4]) {
+      for (let column = 1; column <= remarkColumn; column += 1) {
+        worksheet.getCell(rowNumber, column).font = {
+          bold: true,
+          color: { argb: 'FF0070C0' },
+          name: '宋体'
+        };
+      }
+    }
+    worksheet.autoFilter = `A3:${lastColumnLetter}4`;
+    worksheet.pageSetup.printTitlesRow = '1:4';
+    const buffer = Buffer.from(await workbook.xlsx.writeBuffer());
     await auditService.record({
       req,
       authContext,
@@ -829,7 +959,7 @@ function createTransportRecordService({
       after: {
         month,
         exportedRecordCount: documents.length,
-        exportedGroupCount: grouped.size,
+        exportedGroupCount,
         filters: transportUserFilter(exportQuery)
       },
       targetTeamId: teamId
@@ -837,7 +967,7 @@ function createTransportRecordService({
     return {
       buffer,
       count: documents.length,
-      groupCount: grouped.size,
+      groupCount: exportedGroupCount,
       month
     };
   }

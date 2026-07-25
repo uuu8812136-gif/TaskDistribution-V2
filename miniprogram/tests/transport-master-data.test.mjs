@@ -5,8 +5,7 @@ import test from 'node:test'
 import {
   buildTransportFields,
   buildTransportPayload,
-  createEmptyTransportLoad,
-  optionalVehicleTypeOptions
+  createEmptyTransportLoad
 } from '../utils/reporting.js'
 
 const pageSource = readFileSync(
@@ -31,15 +30,21 @@ test('mini-program transport form loads five independent master-data choices', (
   assert.match(pageSource, /:range="vehicleTypeOptions"/)
   assert.match(pageSource, /data-testid="transport-vehicle-type-picker"/)
   assert.match(pageSource, /:range="driverOptions"/)
-  for (const kind of ['TRIP', 'ROUTE', 'VEHICLE_PLATE', 'DRIVER']) {
+  for (const kind of ['TRIP', 'ROUTE', 'VEHICLE_PLATE', 'VEHICLE_TYPE', 'DRIVER']) {
     assert.match(pageSource, new RegExp(`optionsFor\\('${kind}'\\)`))
   }
-  assert.match(pageSource, /optionalVehicleTypeOptions\(masterData\.value\)/)
   assert.doesNotMatch(pageSource, /<input v-model="form\.vehiclePlate"/)
   assert.doesNotMatch(pageSource, /<input v-model="form\.driverName"/)
   assert.match(apiSource, /get\('\/transport-records\/master-data', params\)/)
   assert.match(pageSource, /requestErrorMessage\(error, '运输基础资料加载失败，请稍后重试'\)/)
   assert.match(pageSource, /uni\.showToast/)
+})
+
+test('mini-program vehicle type is a required active master-data selection', () => {
+  assert.match(pageSource, /<text class="field-label required">车型<\/text>/)
+  assert.match(pageSource, /optionsFor\('VEHICLE_TYPE'\)/)
+  assert.match(pageSource, /if \(!form\.vehicleTypeMasterId\) throw new TypeError\('请选择车型'\)/)
+  assert.doesNotMatch(pageSource, /车型（选填）|无车型（清空）/)
 })
 
 test('mini-program transport create entries require the transport reporter role', () => {
@@ -79,31 +84,7 @@ test('mini-program transport payload keeps master ids and linked snapshots', () 
   assert.equal(fields.driverName, '张师傅')
 })
 
-test('optional vehicle type options expose a clear choice and exclude inactive or unrelated data', () => {
-  const activeVehicleType = {
-    _id: 'type-active',
-    kind: 'VEHICLE_TYPE',
-    status: 'ACTIVE',
-    name: '厢式货车'
-  }
-  const options = optionalVehicleTypeOptions([
-    activeVehicleType,
-    { _id: 'type-disabled', kind: 'VEHICLE_TYPE', status: 'DISABLED', name: '停用车型' },
-    { _id: 'driver-active', kind: 'DRIVER', status: 'ACTIVE', name: '张师傅' }
-  ])
-
-  assert.deepEqual(options.map(({ value, label }) => ({ value, label })), [
-    { value: '', label: '无车型（清空）' },
-    { value: 'type-active', label: '厢式货车' }
-  ])
-  assert.equal(options[0].item, null)
-  assert.equal(options[1].item, activeVehicleType)
-})
-
-test('choosing the clear vehicle type option submits null id and empty snapshot', () => {
-  const clearOption = optionalVehicleTypeOptions([
-    { _id: 'type-active', kind: 'VEHICLE_TYPE', status: 'ACTIVE', name: '厢式货车' }
-  ])[0]
+test('vehicle type is required before a mini-program transport payload is built', () => {
   const form = {
     orgUnitId: 'org-1',
     reportDate: '2026-07-16',
@@ -115,21 +96,18 @@ test('choosing the clear vehicle type option submits null id and empty snapshot'
     dispatchType: '配送',
     vehiclePlateMasterId: 'plate-1',
     vehiclePlate: '鲁AA2991',
-    vehicleTypeMasterId: clearOption.value || '',
-    vehicleType: clearOption.item?.name || '',
+    vehicleTypeMasterId: '',
+    vehicleType: '',
     driverMasterId: 'driver-1',
     driverName: '张师傅',
     loadDetails: createEmptyTransportLoad(),
     remark: ''
   }
 
-  const payload = buildTransportPayload(form, [
+  assert.throws(() => buildTransportPayload(form, [
     'aaaaaaaaaaaaaaaaaaaaaaaa',
     'bbbbbbbbbbbbbbbbbbbbbbbb'
-  ])
-
-  assert.equal(payload.vehicleTypeMasterId, null)
-  assert.equal(payload.vehicleType, '')
+  ]), /请填写车型/)
   assert.match(pageSource, /form\.vehicleTypeMasterId = selected\?\.value \|\| ''/)
   assert.match(pageSource, /form\.vehicleType = selected\?\.item\?\.name \|\| ''/)
 })

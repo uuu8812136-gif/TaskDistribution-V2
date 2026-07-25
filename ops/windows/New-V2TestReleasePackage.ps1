@@ -32,6 +32,7 @@ $releaseOpsPaths = @(
   'ops/linux/prepare-v2-test-candidate.sh',
   'ops/linux/create-v2-test-release-backup.sh',
   'ops/linux/activate-v2-test-candidate.sh',
+  'ops/linux/activate-v2-test-transport-repair.sh',
   'ops/linux/resume-v2-test-candidate-activation.sh',
   'ops/linux/verify-v2-test-release.sh',
   'ops/linux/restore-v2-test-backup.sh',
@@ -204,6 +205,7 @@ $requiredCommittedPaths = @(
   'app/script/backfillCustomerEquipmentOwnership.js',
   'app/services/equipmentOwnershipBackfillService.js',
   'app/script/repairAcceptanceJuly2026Data.js',
+  'app/script/repairAcceptanceTransportJuly2026.js',
   'app/services/acceptanceJuly2026DataRepairService.js',
   'ops/backup.js',
   'ops/verify-backup.js',
@@ -422,6 +424,7 @@ try {
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\backfillCustomerEquipmentOwnership.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\equipmentOwnershipBackfillService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\repairAcceptanceJuly2026Data.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\repairAcceptanceTransportJuly2026.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\acceptanceJuly2026DataRepairService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\v2MigrationPreviewInvariant.js'))
   Invoke-NativeChecked -FilePath $tar -Arguments @('-czf', $temporaryArchive, '-C', $packageRoot, '.')

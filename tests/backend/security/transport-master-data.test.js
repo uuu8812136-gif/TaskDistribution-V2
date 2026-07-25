@@ -561,7 +561,22 @@ test('transport records use server-side master fields and preserve historical sn
       driverName: '不能用原始文本代替司机主数据',
       photoFileIds: photos.map(({ _id }) => String(_id))
     }
-  }), (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID');
+  }), (error) => error.code === 'TRANSPORT_MASTER_SELECTION_REQUIRED');
+
+  await assert.rejects(recordService.createRecord({
+    authContext: fixture.reporterAContext,
+    input: {
+      orgUnitId: String(fixture.orgA),
+      reportDate: '2026-07-16',
+      shift: '白班',
+      tripMasterId: trip._id,
+      routeMasterId: route._id,
+      dispatchType: '配送',
+      vehiclePlateMasterId: vehiclePlate._id,
+      driverMasterId: driver._id,
+      photoFileIds: photos.map(({ _id }) => String(_id))
+    }
+  }), (error) => error.code === 'TRANSPORT_MASTER_SELECTION_REQUIRED');
 
   await assert.rejects(recordService.updateRecord({
     authContext: fixture.ordinaryAContext,
@@ -697,7 +712,7 @@ test('transport records use server-side master fields and preserve historical sn
     authContext: fixture.reporterAContext,
     transportRecordId: record._id,
     input: { tripMasterId: route._id }
-  }), (error) => error.code === 'REPORT_RELATED_RESOURCE_INVALID');
+  }), (error) => error.code === 'TRANSPORT_MASTER_SELECTION_INVALID');
 });
 
 test('transport master-data backfill is dry-run by default and idempotently preserves snapshots', async () => {

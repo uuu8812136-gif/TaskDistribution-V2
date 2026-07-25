@@ -13,6 +13,7 @@ const common = read('../linux/v2-test-release-common.sh')
 const prepare = read('../linux/prepare-v2-test-candidate.sh')
 const backup = read('../linux/create-v2-test-release-backup.sh')
 const activate = read('../linux/activate-v2-test-candidate.sh')
+const activateTransportRepair = read('../linux/activate-v2-test-transport-repair.sh')
 const resume = read('../linux/resume-v2-test-candidate-activation.sh')
 const verify = read('../linux/verify-v2-test-release.sh')
 const previewInvariant = read('../lib/v2MigrationPreviewInvariant.js')
@@ -22,6 +23,7 @@ const migrationFiles = [
   'app/script/backfillCustomerEquipmentOwnership.js',
   'app/services/equipmentOwnershipBackfillService.js',
   'app/script/repairAcceptanceJuly2026Data.js',
+  'app/script/repairAcceptanceTransportJuly2026.js',
   'app/services/acceptanceJuly2026DataRepairService.js'
 ]
 const migrationCollections = [
@@ -50,7 +52,9 @@ test('release package and candidate preparation require and syntax-check both pr
   assert.match(prepare, /node --check "\$temporary\/app\/script\/backfillCustomerEquipmentOwnership\.js"/)
   assert.match(prepare, /node --check "\$temporary\/app\/services\/equipmentOwnershipBackfillService\.js"/)
   assert.match(prepare, /node --check "\$temporary\/app\/script\/repairAcceptanceJuly2026Data\.js"/)
+  assert.match(prepare, /node --check "\$temporary\/app\/script\/repairAcceptanceTransportJuly2026\.js"/)
   assert.match(prepare, /node --check "\$temporary\/app\/services\/acceptanceJuly2026DataRepairService\.js"/)
+  assert.match(prepare, /bash -n "\$temporary\/ops\/linux\/activate-v2-test-transport-repair\.sh"/)
   assert.ok(packageBuilder.includes("'ops/lib/v2MigrationPreviewInvariant.js'"))
   assert.ok(common.includes('ops/lib/v2MigrationPreviewInvariant.js'))
   assert.match(prepare, /node --check "\$temporary\/ops\/lib\/v2MigrationPreviewInvariant\.js"/)
@@ -63,6 +67,23 @@ test('the packaged staging launcher starts only the isolated API behind the exis
   assert.doesNotMatch(stagingLauncher, /http\.createServer|const port = 18130|V2 test Web/)
   assert.match(common, /v2_assert_staging_api_launcher/)
   assert.match(common, /Staging API launcher mismatch/)
+})
+
+test('transport history repair has a dedicated backup-gated activation path', () => {
+  assert.ok(packageBuilder.includes("'ops/linux/activate-v2-test-transport-repair.sh'"))
+  assert.match(activateTransportRepair, /v2_require_inactive "\$V2_API_UNIT"/)
+  assert.match(activateTransportRepair, /value\.destinationVolume !== 'D:'/)
+  assert.match(activateTransportRepair, /v2_migration_input_digest/)
+  assert.match(activateTransportRepair, /repairAcceptanceTransportJuly2026\.js/)
+  assert.match(activateTransportRepair, /report\.dataWrites !== 36/)
+  assert.match(activateTransportRepair, /report\.auditLogsCreated !== 36/)
+  assert.match(activateTransportRepair, /report\.status !== 'NO_CHANGES'/)
+  assert.match(activateTransportRepair, /v2_write_transport_reference_baseline "\$reference_baseline_after"/)
+  assert.match(activateTransportRepair, /ln -s "\$candidate" "\$new_link"/)
+  assert.ok(
+    activateTransportRepair.indexOf('report.dataWrites !== 36') <
+      activateTransportRepair.indexOf('ln -s "$candidate" "$new_link"')
+  )
 })
 
 test('candidate preparation accepts a stopped forward fix only with sealed migration evidence', () => {

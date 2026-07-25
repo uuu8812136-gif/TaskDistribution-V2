@@ -92,20 +92,6 @@ export function createEmptyTransportLoad() {
   return Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, '']))
 }
 
-export function optionalVehicleTypeOptions(masterData = []) {
-  const source = Array.isArray(masterData) ? masterData : []
-  return [
-    { value: '', label: '无车型（清空）', item: null },
-    ...source
-      .filter((item) => item.kind === 'VEHICLE_TYPE' && item.status === 'ACTIVE')
-      .map((item) => ({
-        value: item._id,
-        label: item.name,
-        item
-      }))
-  ]
-}
-
 function attendanceNames(value) {
   const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/)
   return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
@@ -253,8 +239,8 @@ export function buildTransportFields(form) {
     route: requiredText(form.route, '运输路线'),
     dispatchType: form.dispatchType,
     vehiclePlate: requiredText(form.vehiclePlate, '车牌号'),
-    vehicleTypeMasterId: form.vehicleTypeMasterId ? String(form.vehicleTypeMasterId) : null,
-    vehicleType: typeof form.vehicleType === 'string' ? form.vehicleType.trim() : '',
+    vehicleTypeMasterId: requiredText(form.vehicleTypeMasterId, '车型'),
+    vehicleType: requiredText(form.vehicleType, '车型'),
     driverName: requiredText(form.driverName, '司机姓名'),
     loadDetails: Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key, label }) => [
       key,

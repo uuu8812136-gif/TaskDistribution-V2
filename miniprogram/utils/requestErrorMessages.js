@@ -70,6 +70,8 @@ export const REQUEST_ERROR_CODE_MESSAGES = Object.freeze({
   REPORT_TEAM_ID_IMMUTABLE: '项目团队由登录状态确定，不能手工修改',
   REPORT_TEAM_REQUIRED: '跨团队查看时必须先选择项目团队',
   TRANSPORT_REPORTER_REQUIRED: '只有运输提报员可以新增或修改运输记录',
+  TRANSPORT_MASTER_SELECTION_REQUIRED: '当前客户端版本过旧，请更新或刷新后重新选择车次、路线、车牌、车型和司机',
+  TRANSPORT_MASTER_SELECTION_INVALID: '所选运输基础资料已停用或不属于当前部门，请刷新后重新选择',
   TRANSPORT_MASTER_INPUT_INVALID: '运输基础资料内容不正确，请检查后重试',
   TRANSPORT_MASTER_KIND_IMMUTABLE: '运输基础资料类型不可修改',
   TRANSPORT_MASTER_DUPLICATE: '同类运输基础资料已存在，请勿重复添加',

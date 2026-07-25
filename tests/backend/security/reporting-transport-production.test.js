@@ -7,6 +7,7 @@ const appRequire = require('../helpers/appRequire');
 
 const mongoose = appRequire('mongoose');
 const XLSX = appRequire('xlsx');
+const ExcelJS = appRequire('exceljs');
 const { MongoMemoryReplSet } = appRequire('mongodb-memory-server');
 
 const FileAsset = require('../../../app/models/FileAsset');
@@ -379,8 +380,33 @@ test('transport records bind private photos and remain isolated by team and orga
     raw: true
   });
   assert.equal(exported.count, 1);
+  assert.equal(exported.groupCount, 1);
   assert.match(JSON.stringify(rows), /'=DRIVER/);
   assert.match(JSON.stringify(rows), /'\+FORMULA/);
+
+  const styledWorkbook = new ExcelJS.Workbook();
+  await styledWorkbook.xlsx.load(exported.buffer);
+  const styledSheet = styledWorkbook.getWorksheet('运输月度汇总');
+  assert.equal(styledSheet.getCell('A1').value, '山东载信物流有限公司');
+  assert.match(styledSheet.getCell('A2').value, /2026 年 7 月  部门：Report Team A/);
+  assert.equal(styledSheet.getCell('A3').value, '序号');
+  assert.equal(styledSheet.getCell('G3').value, '三');
+  assert.equal(styledSheet.getCell('G4').value, 1);
+  assert.equal(styledSheet.getCell('F5').value, '配送');
+  assert.equal(styledSheet.getCell('F6').value, '返架');
+  assert.equal(styledSheet.getCell('V5').value, 1);
+  assert.equal(styledSheet.getCell('AL5').value, 1);
+  assert.equal(styledSheet.getCell('AL6').value, 0);
+  assert.equal(styledSheet.getCell('A7').value, '合计：');
+  assert.equal(styledSheet.getCell('V7').value, 1);
+  assert.equal(styledSheet.getCell('AL7').value, 1);
+  assert.equal(styledSheet.getCell('G3').fill.fgColor.argb, 'FFC6E0B4');
+  assert.equal(styledSheet.getCell('G3').border.bottom.style, 'thin');
+  assert.equal(styledSheet.getCell('G3').font.color.argb, 'FF0070C0');
+  assert.equal(styledSheet.autoFilter, 'A3:AM4');
+  for (const address of ['A1', 'A2', 'A3', 'A5', 'D5', 'A7']) {
+    assert.equal(styledSheet.getCell(address).isMerged, true, `${address} should be merged`);
+  }
 });
 
 test('transport creation rejects missing, foreign, or forged photo references', async () => {

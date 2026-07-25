@@ -30,6 +30,8 @@ test('web transport form exposes five independently maintained master-data dropd
   assert.doesNotMatch(viewSource, /v-model="form\.vehiclePlate" readonly/)
   assert.doesNotMatch(viewSource, /v-model="form\.vehicleType" readonly/)
   assert.doesNotMatch(viewSource, /v-model="form\.driverName" readonly/)
+  assert.match(viewSource, /vehicleTypeMasterId: \[\{ required: true, message: '请选择车型'/)
+  assert.doesNotMatch(viewSource, /车型（选填）/)
   assert.match(viewSource, /基础资料/)
   assert.match(viewSource, /TRANSPORT_REPORTER/)
 })

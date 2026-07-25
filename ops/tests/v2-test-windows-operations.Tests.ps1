@@ -92,6 +92,7 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'app/script/backfillCustomerEquipmentOwnership.js',
       'app/services/equipmentOwnershipBackfillService.js',
       'app/script/repairAcceptanceJuly2026Data.js',
+      'app/script/repairAcceptanceTransportJuly2026.js',
       'app/services/acceptanceJuly2026DataRepairService.js',
       'ops/backup.js',
       'ops/verify-backup.js',
@@ -126,6 +127,7 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'prepare-v2-test-candidate.sh',
       'create-v2-test-release-backup.sh',
       'activate-v2-test-candidate.sh',
+      'activate-v2-test-transport-repair.sh',
       'resume-v2-test-candidate-activation.sh',
       'verify-v2-test-release.sh',
       'restore-v2-test-backup.sh',
@@ -217,6 +219,7 @@ exit /b 91
       'app/script/backfillCustomerEquipmentOwnership.js',
       'app/services/equipmentOwnershipBackfillService.js',
       'app/script/repairAcceptanceJuly2026Data.js',
+      'app/script/repairAcceptanceTransportJuly2026.js',
       'app/services/acceptanceJuly2026DataRepairService.js'
     )) {
       ($entries -contains $file) | Should Be $true

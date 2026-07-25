@@ -549,6 +549,7 @@ v2_assert_candidate_layout() {
     app/script/backfillCustomerEquipmentOwnership.js \
     app/services/equipmentOwnershipBackfillService.js \
     app/script/repairAcceptanceJuly2026Data.js \
+    app/script/repairAcceptanceTransportJuly2026.js \
     app/services/acceptanceJuly2026DataRepairService.js \
     ops/backup.js \
     ops/verify-backup.js \
@@ -559,6 +560,7 @@ v2_assert_candidate_layout() {
     ops/lib/v2TestMongoTargetGuard.js \
     ops/lib/v2MigrationPreviewInvariant.js \
     ops/lib/transportReleaseInvariant.js \
+    ops/linux/activate-v2-test-transport-repair.sh \
     deploy/RELEASE.json \
     deploy/FILE-MANIFEST.json \
     deploy/linux/staging-server.cjs; do
