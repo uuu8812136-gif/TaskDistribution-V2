@@ -564,6 +564,7 @@ v2_assert_candidate_layout() {
     ops/lib/transportReleaseInvariant.js \
     ops/linux/activate-v2-test-transport-repair.sh \
     ops/linux/activate-v2-test-attendance-correction.sh \
+    ops/linux/activate-v2-test-transport-load-types.sh \
     deploy/RELEASE.json \
     deploy/FILE-MANIFEST.json \
     deploy/linux/staging-server.cjs; do

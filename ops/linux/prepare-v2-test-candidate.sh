@@ -147,6 +147,7 @@ sudo -u taskdistributionv2test /usr/bin/env -i \
 /usr/bin/node --check "$temporary/ops/lib/v2MigrationPreviewInvariant.js"
 /usr/bin/bash -n "$temporary/ops/linux/activate-v2-test-transport-repair.sh"
 /usr/bin/bash -n "$temporary/ops/linux/activate-v2-test-attendance-correction.sh"
+/usr/bin/bash -n "$temporary/ops/linux/activate-v2-test-transport-load-types.sh"
 
 chown -R root:root "$temporary"
 find "$temporary" -type d -exec chmod 0755 {} +
