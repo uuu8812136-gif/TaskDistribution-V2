@@ -213,6 +213,13 @@
 
       <section class="form-section">
         <h3>执行周期</h3>
+        <el-alert
+          title="本周期适用于上方全部检查项；执行频率不同的项目请单独建立一条规则。"
+          type="info"
+          :closable="false"
+          show-icon
+          class="schedule-scope-alert"
+        />
         <div class="form-grid schedule-grid">
           <el-form-item label="周期模式">
             <el-select v-model="form.schedule.mode" class="full-width" @change="handleScheduleModeChange">
@@ -611,6 +618,7 @@ watch(() => props.modelValue, (visible) => {
 .item-order { color: var(--zl-muted); text-align: center; }
 .item-actions { display: grid; grid-template-columns: repeat(3, 32px); justify-content: end; gap: 2px; }
 .item-actions .el-button { width: 32px; height: 32px; margin: 0; }
+.schedule-scope-alert { margin-bottom: 16px; }
 .schedule-grid { align-items: end; }
 .window-editor { display: grid; gap: 8px; margin-bottom: 16px; }
 .window-row { display: grid; grid-template-columns: 44px minmax(120px, 1fr) 160px 160px 34px; align-items: center; gap: 8px; }

@@ -150,6 +150,7 @@ test('calendar execution day stays next to the calendar unit selector', () => {
   assert.ok(weeklyDayIndex > unitIndex)
   assert.ok(monthlyDayIndex > weeklyDayIndex)
   assert.ok(intervalIndex > monthlyDayIndex)
+  assert.match(ruleDialogSource, /本周期适用于上方全部检查项；执行频率不同的项目请单独建立一条规则。/)
 })
 
 test('routine workbench heading actions stay aligned without overflowing at 390px', () => {
