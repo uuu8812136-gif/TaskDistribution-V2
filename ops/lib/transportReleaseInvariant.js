@@ -17,6 +17,7 @@ const FIELD_SPECS = Object.freeze([
   }),
   Object.freeze({ referenceField: 'driverMasterId', kind: 'DRIVER', snapshotField: 'driverName' })
 ]);
+const REFERENCE_MASTER_KINDS = new Set(FIELD_SPECS.map(({ kind }) => kind));
 
 function normalizedId(value) {
   return value === undefined || value === null || value === '' ? null : String(value);
@@ -99,7 +100,9 @@ function validateTransportReleaseState({ records = [], masters = [], baseline } 
 
   if (baseline.fullyBound === true) {
     const expectedMasterIds = new Set((baseline.masterIds || []).map(normalizedId));
-    const currentMasterIds = new Set(masters.map(({ id }) => normalizedId(id)));
+    const currentMasterIds = new Set(masters
+      .filter(({ kind }) => REFERENCE_MASTER_KINDS.has(kind))
+      .map(({ id }) => normalizedId(id)));
     const added = [...currentMasterIds].filter((id) => !expectedMasterIds.has(id)).sort();
     const removed = [...expectedMasterIds].filter((id) => !currentMasterIds.has(id)).sort();
     if (added.length || removed.length) {
@@ -148,4 +151,9 @@ if (require.main === module) {
   }
 }
 
-module.exports = { FIELD_SPECS, normalizedId, validateTransportReleaseState };
+module.exports = {
+  FIELD_SPECS,
+  REFERENCE_MASTER_KINDS,
+  normalizedId,
+  validateTransportReleaseState
+};

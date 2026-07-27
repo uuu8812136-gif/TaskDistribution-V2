@@ -785,13 +785,15 @@ v2_write_transport_reference_baseline() {
         }
       }
     }
+    const referenceKinds=new Set(specs.map(([,kind])=>kind));
     print(JSON.stringify({
       format:"task-distribution-v2-transport-reference-baseline/v1",
       database:d.getName(),
       generatedAt:new Date().toISOString(),
       fullyBound,
       bindings,
-      masterIds:masters.map(master=>id(master._id)).sort()
+      masterIds:masters.filter(master=>referenceKinds.has(master.kind))
+        .map(master=>id(master._id)).sort()
     },null,2));
   ' > "$destination"
 }
