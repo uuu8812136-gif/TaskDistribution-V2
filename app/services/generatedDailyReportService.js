@@ -36,7 +36,7 @@ const { runWithOptionalTransaction } = require('./transactionService');
 const { ATTENDANCE_REVIEW_STATUSES } = AttendanceSubmission;
 const { MAX_REPORT_VERSIONS, MAX_SOURCE_SNAPSHOT_BYTES } = GeneratedDailyReport;
 
-const REPORT_RULE_VERSION = 'production-daily-text-v2-2026-07-24';
+const REPORT_RULE_VERSION = 'production-daily-text-v3-2026-07-27';
 const REPORT_TIME_ZONE = 'Asia/Shanghai';
 const EXPECTED_ATTENDANCE_UNIT_COUNT = 7;
 const PERSIST_RETRY_ATTEMPTS = 5;
@@ -150,7 +150,10 @@ function plannedAttendanceCount(summary = {}, shiftName) {
   if (!hasShiftData) return 0;
   return Math.max(
     0,
-    summaryCount(summary, 'registeredHeadcount') - summaryCount(summary, `${shiftName}.rest.count`)
+    summaryCount(summary, 'registeredHeadcount') -
+      summaryCount(summary, `${shiftName}.rest.count`) +
+      summaryCount(summary, `${shiftName}.notYetEmployed.count`, 0) +
+      summaryCount(summary, `${shiftName}.temporaryWorker.count`, 0)
   );
 }
 

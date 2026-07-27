@@ -141,9 +141,12 @@ sudo -u taskdistributionv2test /usr/bin/env -i \
 /usr/bin/node --check "$temporary/app/script/repairAcceptanceJuly2026Data.js"
 /usr/bin/node --check "$temporary/app/script/repairAcceptanceTransportJuly2026.js"
 /usr/bin/node --check "$temporary/app/services/acceptanceJuly2026DataRepairService.js"
+/usr/bin/node --check "$temporary/app/script/correctAttendancePlanned20260727.js"
+/usr/bin/node --check "$temporary/app/services/attendancePlannedCorrectionService.js"
 /usr/bin/node --check "$temporary/ops/lib/customerRepairReleaseInvariant.js"
 /usr/bin/node --check "$temporary/ops/lib/v2MigrationPreviewInvariant.js"
 /usr/bin/bash -n "$temporary/ops/linux/activate-v2-test-transport-repair.sh"
+/usr/bin/bash -n "$temporary/ops/linux/activate-v2-test-attendance-correction.sh"
 
 chown -R root:root "$temporary"
 find "$temporary" -type d -exec chmod 0755 {} +

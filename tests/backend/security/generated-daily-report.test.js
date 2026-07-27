@@ -113,7 +113,7 @@ function summary(reportDate, overrides = {}) {
       rest: named(overrides.dayRest ?? 5),
       sickLeave: named(overrides.daySick ?? 0),
       absenteeism: named(),
-      notYetEmployed: named(),
+      notYetEmployed: named(overrides.dayNotYetEmployed ?? 0),
       pendingDeparture: named(overrides.dayPending ?? 2),
       temporaryWorker: named(
         overrides.dayTemporary ?? 2,
@@ -127,7 +127,7 @@ function summary(reportDate, overrides = {}) {
       rest: named(overrides.nightRest ?? 68),
       sickLeave: named(overrides.nightSick ?? 0),
       absenteeism: named(),
-      notYetEmployed: named(),
+      notYetEmployed: named(overrides.nightNotYetEmployed ?? 0),
       pendingDeparture: named(overrides.nightPending ?? 0),
       temporaryWorker: named(overrides.nightTemporary ?? 0),
       leaveWithSickCount: (overrides.nightLeave ?? 0) + (overrides.nightSick ?? 0)
@@ -372,7 +372,7 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(result.dailyReport.version, 1);
   assert.equal(result.dailyReport.sourceSnapshot.rule.sourceRange, 'D4:D13');
   assert.equal(result.dailyReport.ruleVersion, REPORT_RULE_VERSION);
-  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v2-2026-07-24');
+  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v3-2026-07-27');
   assert.equal(result.dailyReport.sourceSnapshot.attendance.currentDate.submissions.length, 7);
   assert.ok(result.dailyReport.sourceSnapshot.production.schedules.length >= 12);
   assert.match(result.dailyReport.finalText, /^7月15日变速箱物流部 =HYPERLINK\("x"\)生产日报/m);
@@ -391,7 +391,7 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   );
   assert.match(
     result.dailyReport.finalText,
-    /5\.人员情况:在册人数70人，待离职2人。昨日白班安排出勤65人，实际出勤59人，昨日夜班安排出勤1人，实际出勤1人；今日白班安排出勤65人，夜班安排出勤2人。/
+    /5\.人员情况:在册人数70人，待离职2人。昨日白班安排出勤67人，实际出勤59人，昨日夜班安排出勤1人，实际出勤1人；今日白班安排出勤67人，夜班安排出勤2人。/
   );
   assert.match(result.dailyReport.finalText, /①、到物流技术部帮产1人（张三）；/);
   assert.match(result.dailyReport.finalText, /②、临时工2人（临时甲、临时乙）；/);
@@ -403,14 +403,18 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(events[0].resourceType, permissions.AUDIT_RESOURCE_TYPES.GENERATED_DAILY_REPORT);
 });
 
-test('unused all-zero shift has zero planned attendance instead of the registered headcount', () => {
+test('planned attendance adds not-yet-employed and temporary workers after subtracting rest', () => {
   const source = summary('2026-07-15', {
+    registeredHeadcount: 123,
+    dayRest: 1,
+    dayNotYetEmployed: 2,
+    dayTemporary: 2,
     nightActual: 0,
     nightRest: 0,
     nightTemporary: 0
   });
   assert.equal(plannedAttendanceCount(source, 'nightShift'), 0);
-  assert.equal(plannedAttendanceCount(source, 'dayShift'), 65);
+  assert.equal(plannedAttendanceCount(source, 'dayShift'), 126);
 });
 
 test('same sources are idempotent under concurrent generation', async () => {

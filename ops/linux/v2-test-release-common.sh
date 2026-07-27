@@ -551,6 +551,8 @@ v2_assert_candidate_layout() {
     app/script/repairAcceptanceJuly2026Data.js \
     app/script/repairAcceptanceTransportJuly2026.js \
     app/services/acceptanceJuly2026DataRepairService.js \
+    app/script/correctAttendancePlanned20260727.js \
+    app/services/attendancePlannedCorrectionService.js \
     ops/backup.js \
     ops/verify-backup.js \
     ops/restore.js \
@@ -561,6 +563,7 @@ v2_assert_candidate_layout() {
     ops/lib/v2MigrationPreviewInvariant.js \
     ops/lib/transportReleaseInvariant.js \
     ops/linux/activate-v2-test-transport-repair.sh \
+    ops/linux/activate-v2-test-attendance-correction.sh \
     deploy/RELEASE.json \
     deploy/FILE-MANIFEST.json \
     deploy/linux/staging-server.cjs; do

@@ -94,6 +94,8 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'app/script/repairAcceptanceJuly2026Data.js',
       'app/script/repairAcceptanceTransportJuly2026.js',
       'app/services/acceptanceJuly2026DataRepairService.js',
+      'app/script/correctAttendancePlanned20260727.js',
+      'app/services/attendancePlannedCorrectionService.js',
       'ops/backup.js',
       'ops/verify-backup.js',
       'ops/restore.js',
@@ -128,6 +130,7 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'create-v2-test-release-backup.sh',
       'activate-v2-test-candidate.sh',
       'activate-v2-test-transport-repair.sh',
+      'activate-v2-test-attendance-correction.sh',
       'resume-v2-test-candidate-activation.sh',
       'verify-v2-test-release.sh',
       'restore-v2-test-backup.sh',
@@ -220,7 +223,9 @@ exit /b 91
       'app/services/equipmentOwnershipBackfillService.js',
       'app/script/repairAcceptanceJuly2026Data.js',
       'app/script/repairAcceptanceTransportJuly2026.js',
-      'app/services/acceptanceJuly2026DataRepairService.js'
+      'app/services/acceptanceJuly2026DataRepairService.js',
+      'app/script/correctAttendancePlanned20260727.js',
+      'app/services/attendancePlannedCorrectionService.js'
     )) {
       ($entries -contains $file) | Should Be $true
     }

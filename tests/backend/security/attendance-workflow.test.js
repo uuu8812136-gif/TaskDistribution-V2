@@ -68,6 +68,15 @@ test('unused all-zero shift has zero planned attendance and serialized records e
     }
   };
   assert.equal(plannedAttendanceCount(emptyNightSummary, 'nightShift'), 0);
+  assert.equal(plannedAttendanceCount({
+    registeredHeadcount: 123,
+    dayShift: {
+      actualAttendanceCount: 124,
+      rest: { count: 1 },
+      notYetEmployed: { count: 2 },
+      temporaryWorker: { count: 2 }
+    }
+  }, 'dayShift'), 126);
 
   const serialized = serializeAttendanceSubmission({
     _id: objectId(),
@@ -669,6 +678,7 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
   assert.match(review.finalText, /到物流技术部帮产1人（王五）/);
   assert.match(review.finalText, /临时工2人（临时甲、临时乙）/);
   assert.match(review.finalText, /仓配一分部：客户月报验证/);
+  assert.match(review.finalText, /今日白班安排出勤66人，夜班安排出勤0人/);
   assert.match(review.finalText, /今日实际出勤125人，请假2人/);
   assert.match(review.finalText, /提报人:部门考勤员/);
   const daily = await service.getDailySummary({

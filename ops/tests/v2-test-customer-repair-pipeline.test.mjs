@@ -14,6 +14,7 @@ const prepare = read('../linux/prepare-v2-test-candidate.sh')
 const backup = read('../linux/create-v2-test-release-backup.sh')
 const activate = read('../linux/activate-v2-test-candidate.sh')
 const activateTransportRepair = read('../linux/activate-v2-test-transport-repair.sh')
+const activateAttendanceCorrection = read('../linux/activate-v2-test-attendance-correction.sh')
 const resume = read('../linux/resume-v2-test-candidate-activation.sh')
 const verify = read('../linux/verify-v2-test-release.sh')
 const previewInvariant = read('../lib/v2MigrationPreviewInvariant.js')
@@ -24,7 +25,9 @@ const migrationFiles = [
   'app/services/equipmentOwnershipBackfillService.js',
   'app/script/repairAcceptanceJuly2026Data.js',
   'app/script/repairAcceptanceTransportJuly2026.js',
-  'app/services/acceptanceJuly2026DataRepairService.js'
+  'app/services/acceptanceJuly2026DataRepairService.js',
+  'app/script/correctAttendancePlanned20260727.js',
+  'app/services/attendancePlannedCorrectionService.js'
 ]
 const migrationCollections = [
   'projectteams',
@@ -54,10 +57,30 @@ test('release package and candidate preparation require and syntax-check both pr
   assert.match(prepare, /node --check "\$temporary\/app\/script\/repairAcceptanceJuly2026Data\.js"/)
   assert.match(prepare, /node --check "\$temporary\/app\/script\/repairAcceptanceTransportJuly2026\.js"/)
   assert.match(prepare, /node --check "\$temporary\/app\/services\/acceptanceJuly2026DataRepairService\.js"/)
+  assert.match(prepare, /node --check "\$temporary\/app\/script\/correctAttendancePlanned20260727\.js"/)
+  assert.match(prepare, /node --check "\$temporary\/app\/services\/attendancePlannedCorrectionService\.js"/)
   assert.match(prepare, /bash -n "\$temporary\/ops\/linux\/activate-v2-test-transport-repair\.sh"/)
+  assert.match(prepare, /bash -n "\$temporary\/ops\/linux\/activate-v2-test-attendance-correction\.sh"/)
   assert.ok(packageBuilder.includes("'ops/lib/v2MigrationPreviewInvariant.js'"))
   assert.ok(common.includes('ops/lib/v2MigrationPreviewInvariant.js'))
   assert.match(prepare, /node --check "\$temporary\/ops\/lib\/v2MigrationPreviewInvariant\.js"/)
+})
+
+test('planned-attendance correction has a dedicated backup-gated activation path', () => {
+  assert.ok(packageBuilder.includes("'ops/linux/activate-v2-test-attendance-correction.sh'"))
+  assert.match(activateAttendanceCorrection, /v2_require_inactive "\$V2_API_UNIT"/)
+  assert.match(activateAttendanceCorrection, /value\.destinationVolume !== 'D:'/)
+  assert.match(activateAttendanceCorrection, /v2_migration_input_digest/)
+  assert.match(activateAttendanceCorrection, /correctAttendancePlanned20260727\.js/)
+  assert.match(activateAttendanceCorrection, /report\.dataWrites !== 1/)
+  assert.match(activateAttendanceCorrection, /report\.auditLogsCreated !== 1/)
+  assert.match(activateAttendanceCorrection, /target\.sourceSubmissionCount !== 7/)
+  assert.match(activateAttendanceCorrection, /values\.correctedDayPlanned !== 126/)
+  assert.match(activateAttendanceCorrection, /ln -s "\$candidate" "\$new_link"/)
+  assert.ok(
+    activateAttendanceCorrection.indexOf('report.dataWrites !== 1') <
+      activateAttendanceCorrection.indexOf('ln -s "$candidate" "$new_link"')
+  )
 })
 
 test('the packaged staging launcher starts only the isolated API behind the existing Nginx Web listener', () => {

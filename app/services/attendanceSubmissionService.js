@@ -576,7 +576,13 @@ function plannedAttendanceCount(summary = {}, field) {
     NAMED_QUANTITY_FIELDS.some((key) => (shift[key]?.count || 0) > 0)
   );
   if (!hasShiftData) return 0;
-  return Math.max(0, (summary.registeredHeadcount || 0) - (shift.rest?.count || 0));
+  return Math.max(
+    0,
+    (summary.registeredHeadcount || 0) -
+      (shift.rest?.count || 0) +
+      (shift.notYetEmployed?.count || 0) +
+      (shift.temporaryWorker?.count || 0)
+  );
 }
 
 function summarizeShift(documents, field) {
