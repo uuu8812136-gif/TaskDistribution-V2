@@ -63,6 +63,53 @@ VITE_UPLOAD_BASE_URL=https://test-api.example.com
 
 A production mini-program build without `VITE_API_BASE_URL` fails during startup instead of falling back to the live customer system. The API and upload origins must also be added to the WeChat Mini Program request/upload/download domain allowlists before device testing.
 
+## Remote V2 test access
+
+The following topology was live-verified on 2026-07-27 (Asia/Shanghai). Passwords and private-key contents must stay in the approved local credential store or task record and must never be committed to this repository.
+
+### SSH topology
+
+| Hop | Address visible from that hop | User | Purpose |
+| --- | --- | --- | --- |
+| Public edge host | `82.156.67.62:22` | `Administrator` | SSH jump host and public reverse-proxy host |
+| Customer Windows host | edge loopback `127.0.0.1:23222` | `codexops` | Reverse SSH tunnel to `DKY-20260713SLA:22` |
+| Linux VM | edge loopback `127.0.0.1:23223` | `serveradmin` | Reverse SSH path to `linux-server:22` through Windows loopback `127.0.0.1:22022` |
+
+Ports `23222` and `23223` are bound only to loopback on the edge host. They are not reachable directly from a developer workstation; connect through the public edge host as a jump host.
+
+Current workstation key locations (local and untracked):
+
+```text
+C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\codexops_ed25519
+C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\new-host-local-backup_ed25519
+```
+
+PowerShell/OpenSSH connection forms:
+
+```powershell
+# Customer Windows host
+ssh -J Administrator@82.156.67.62:22 -i "C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\codexops_ed25519" -p 23222 codexops@127.0.0.1
+
+# Linux VM
+ssh -J Administrator@82.156.67.62:22 -i "C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\new-host-local-backup_ed25519" -p 23223 serveradmin@127.0.0.1
+```
+
+Pin the verified host keys in a dedicated `known_hosts` file before routine automation. Do not use `StrictHostKeyChecking=no`, place a password in a command line, or copy either private key into the repository. Local helper scripts belong under the ignored `work/` directory and must read the edge password interactively or from the approved credential store.
+
+### V2 application path
+
+```text
+https://v2-test.horselink.cn
+  -> edge Nginx
+  -> edge loopback 127.0.0.1:38130
+  -> reverse SSH tunnel
+  -> Linux Web 127.0.0.1:18130
+  -> Linux API 127.0.0.1:18120
+  -> MongoDB 127.0.0.1:27150/customer_acceptance_v2_test
+```
+
+The legacy customer system uses the separate edge tunnel `127.0.0.1:38080`. V2 deployment or diagnostics must not stop, rebind, overwrite, or reuse `38080`, the legacy release tree, or the production database. Verify both V2 and legacy health after every V2 deployment.
+
 ## Guardrails
 
 - Development and test modes reject the known live hosts `www.horselink.cn` and `82.156.67.62`.
