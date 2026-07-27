@@ -24,7 +24,7 @@ test('web transport form exposes five independently maintained master-data dropd
   ]) {
     assert.match(viewSource, new RegExp(`v-model="form\\.${field}"`))
   }
-  for (const kind of ['TRIP', 'ROUTE', 'VEHICLE_PLATE', 'VEHICLE_TYPE', 'DRIVER']) {
+  for (const kind of ['TRIP', 'ROUTE', 'VEHICLE_PLATE', 'VEHICLE_TYPE', 'DRIVER', 'LOAD_TYPE']) {
     assert.match(viewSource, new RegExp(`value: '${kind}'`))
   }
   assert.doesNotMatch(viewSource, /v-model="form\.vehiclePlate" readonly/)
@@ -34,6 +34,9 @@ test('web transport form exposes five independently maintained master-data dropd
   assert.doesNotMatch(viewSource, /车型（选填）/)
   assert.match(viewSource, /基础资料/)
   assert.match(viewSource, /TRANSPORT_REPORTER/)
+  assert.match(viewSource, /configuredTransportLoadItems/)
+  assert.match(viewSource, /v-for="item in form\.loadItems"/)
+  assert.doesNotMatch(viewSource, /v-for="item in TRANSPORT_LOAD_FIELDS"/)
 })
 
 test('web transport create and edit entries require the transport reporter role', () => {
@@ -56,7 +59,8 @@ test('web master-data name limits match transport snapshot model limits', () => 
     ROUTE: 200,
     VEHICLE_PLATE: 50,
     VEHICLE_TYPE: 100,
-    DRIVER: 100
+    DRIVER: 100,
+    LOAD_TYPE: 100
   })) {
     assert.match(viewSource, new RegExp(`${kind}: ${maxLength}`))
   }
@@ -68,6 +72,8 @@ test('web transport API exposes team master-data list and maintenance endpoints'
   assert.match(apiSource, /url: '\/transport-records\/master-data'/)
   assert.match(apiSource, /`\/transport-records\/master-data\/\$\{masterDataId\}`/)
   assert.match(apiSource, /`\/transport-records\/master-data\/\$\{masterDataId\}\/status`/)
+  assert.match(apiSource, /method: 'delete'/)
+  assert.match(viewSource, /deleteTransportMasterData/)
 })
 
 test('web transport payload carries all five master ids with historical snapshots', () => {

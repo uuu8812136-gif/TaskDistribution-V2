@@ -212,9 +212,13 @@
           <span>合计 {{ formLoadTotal }}</span>
         </div>
         <div class="quantity-grid">
-          <el-form-item v-for="item in TRANSPORT_LOAD_FIELDS" :key="item.key" :label="item.label">
+          <el-form-item
+            v-for="item in form.loadItems"
+            :key="item.typeId || item.legacyKey"
+            :label="`${item.name}${item.unavailable ? '（已停用或已删除）' : ''}`"
+          >
             <el-input-number
-              v-model="form.loadDetails[item.key]"
+              v-model="item.quantity"
               :min="0"
               :max="2147483647"
               :precision="0"
@@ -263,6 +267,9 @@
       <el-tabs v-model="masterKind">
         <el-tab-pane v-for="item in masterKinds" :key="item.value" :label="item.label" :name="item.value" />
       </el-tabs>
+      <p v-if="masterKind === 'LOAD_TYPE'" class="master-description">
+        维护运输提报里的装载明细项；停用或删除后不再用于新提报，历史记录不受影响。
+      </p>
       <div class="master-toolbar">
         <span>共 {{ masterRows.length }} 条</span>
         <el-button type="primary" @click="openMasterEditor()">
@@ -281,12 +288,15 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="操作" width="160" fixed="right" align="center">
+          <el-table-column label="操作" :width="masterKind === 'LOAD_TYPE' ? 220 : 160" fixed="right" align="center">
             <template #default="{ row }">
               <div class="table-actions">
                 <el-button text type="primary" @click="openMasterEditor(row)">编辑</el-button>
                 <el-button text :type="row.status === 'ACTIVE' ? 'danger' : 'success'" @click="toggleMasterStatus(row)">
                   {{ row.status === 'ACTIVE' ? '停用' : '启用' }}
+                </el-button>
+                <el-button v-if="masterKind === 'LOAD_TYPE'" text type="danger" @click="deleteMaster(row)">
+                  删除
                 </el-button>
               </div>
             </template>
@@ -361,6 +371,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createTransportMasterData,
   createTransportRecord,
+  deleteTransportMasterData,
   exportTransportSummary,
   getTransportMasterData,
   getTransportOptions,
@@ -384,12 +395,11 @@ import {
 } from '@/utils/attachments'
 import {
   TRANSPORT_DISPATCH_OPTIONS,
-  TRANSPORT_LOAD_FIELDS,
   TRANSPORT_SHIFT_OPTIONS,
   aggregateDriverMonthly,
   buildTransportPayload,
+  configuredTransportLoadItems,
   dailyCountText,
-  emptyTransportLoadDetails,
   entityName,
   naturalMonthRange,
   saveBlob
@@ -430,14 +440,16 @@ const masterKinds = Object.freeze([
   { value: 'ROUTE', label: '路线' },
   { value: 'VEHICLE_PLATE', label: '车牌号' },
   { value: 'VEHICLE_TYPE', label: '车型' },
-  { value: 'DRIVER', label: '司机姓名' }
+  { value: 'DRIVER', label: '司机姓名' },
+  { value: 'LOAD_TYPE', label: '装载明细类型' }
 ])
 const masterNameMaxLengths = Object.freeze({
   TRIP: 50,
   ROUTE: 200,
   VEHICLE_PLATE: 50,
   VEHICLE_TYPE: 100,
-  DRIVER: 100
+  DRIVER: 100,
+  LOAD_TYPE: 100
 })
 
 const filters = reactive({
@@ -466,8 +478,8 @@ const canManageMasterData = computed(() => (
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
-const formLoadTotal = computed(() => TRANSPORT_LOAD_FIELDS.reduce(
-  (sum, { key }) => sum + (Number(form.loadDetails[key]) || 0),
+const formLoadTotal = computed(() => form.loadItems.reduce(
+  (sum, item) => sum + (Number(item.quantity) || 0),
   0
 ))
 const selectableMasterData = (kind, selectedId) => masterData.value.filter((item) => (
@@ -478,6 +490,9 @@ const activeRoutes = computed(() => selectableMasterData('ROUTE', form.routeMast
 const activeVehiclePlates = computed(() => selectableMasterData('VEHICLE_PLATE', form.vehiclePlateMasterId))
 const activeVehicleTypes = computed(() => selectableMasterData('VEHICLE_TYPE', form.vehicleTypeMasterId))
 const activeDrivers = computed(() => selectableMasterData('DRIVER', form.driverMasterId))
+const activeLoadTypes = computed(() => masterData.value.filter((item) => (
+  item.kind === 'LOAD_TYPE' && item.status === 'ACTIVE'
+)))
 const masterRows = computed(() => masterData.value.filter((item) => item.kind === masterKind.value))
 const masterKindLabel = computed(() => (
   masterKinds.find((item) => item.value === masterKind.value)?.label || '基础资料'
@@ -516,7 +531,7 @@ function emptyForm() {
     vehicleType: '',
     driverMasterId: '',
     driverName: '',
-    loadDetails: emptyTransportLoadDetails(),
+    loadItems: [],
     remark: '',
     reason: ''
   }
@@ -611,12 +626,13 @@ function resetForm() {
 }
 
 function openCreate() {
-  if (!activeTrips.value.length || !activeRoutes.value.length || !activeVehiclePlates.value.length || !activeDrivers.value.length) {
-    ElMessage.warning('请先补齐趟次、路线、车牌号和司机姓名基础资料')
+  if (!activeTrips.value.length || !activeRoutes.value.length || !activeVehiclePlates.value.length || !activeVehicleTypes.value.length || !activeDrivers.value.length || !activeLoadTypes.value.length) {
+    ElMessage.warning('请先补齐趟次、路线、车牌号、车型、司机姓名和装载明细类型')
     if (canManageMasterData.value) openMasterData()
     return
   }
   resetForm()
+  form.loadItems = configuredTransportLoadItems(masterData.value)
   if (orgUnits.value.length === 1) form.orgUnitId = orgUnits.value[0]._id
   formVisible.value = true
 }
@@ -641,7 +657,7 @@ async function openEdit(transportRecordId) {
     vehiclePlateMasterId: record.vehiclePlateMasterId || masterIdBySnapshot('VEHICLE_PLATE', 'name', record.vehiclePlate),
     vehicleTypeMasterId: record.vehicleTypeMasterId || masterIdBySnapshot('VEHICLE_TYPE', 'name', record.vehicleType),
     driverMasterId: record.driverMasterId || masterIdBySnapshot('DRIVER', 'name', record.driverName),
-    loadDetails: { ...emptyTransportLoadDetails(), ...record.loadDetails },
+    loadItems: configuredTransportLoadItems(masterData.value, record.loadItems || []),
     reason: ''
   })
   photoFileList.value = metadata.map((file) => ({
@@ -743,6 +759,17 @@ async function toggleMasterStatus(item) {
   })
   await setTransportMasterDataStatus(item._id, nextStatus)
   ElMessage.success(`${masterKindLabel.value}已${action}`)
+  await loadMasterData({ includeDisabled: true })
+}
+
+async function deleteMaster(item) {
+  await ElMessageBox.confirm(
+    `确定删除装载明细类型“${masterDisplayName(item)}”吗？历史提报仍会保留原名称和数量。`,
+    '删除确认',
+    { type: 'warning', confirmButtonText: '删除' }
+  )
+  await deleteTransportMasterData(item._id)
+  ElMessage.success('装载明细类型已删除')
   await loadMasterData({ includeDisabled: true })
 }
 
@@ -884,6 +911,7 @@ onBeforeUnmount(clearPreview)
 .summary-table { margin-top: 0; }
 .master-toolbar { justify-content: space-between; gap: 12px; color: #606266; }
 .master-table { margin-top: 12px; }
+.master-description { margin: 0 0 12px; color: #606266; line-height: 1.6; }
 .preview-image { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; object-fit: contain; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }

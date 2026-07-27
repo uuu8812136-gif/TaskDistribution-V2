@@ -30,6 +30,11 @@ export const setTransportMasterDataStatus = (masterDataId, status) => request({
   data: { status }
 })
 
+export const deleteTransportMasterData = (masterDataId) => request({
+  url: `/transport-records/master-data/${masterDataId}`,
+  method: 'delete'
+})
+
 export const getTransportRecords = (params) => request({
   url: '/transport-records',
   method: 'get',

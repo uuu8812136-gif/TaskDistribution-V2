@@ -245,7 +245,7 @@ after(async () => {
   if (replicaSet) await replicaSet.stop();
 });
 
-test('five master-data kinds normalize business keys and reject scoped duplicates', async () => {
+test('six master-data kinds normalize business keys and reject scoped duplicates', async () => {
   const trip = await createMaster(fixture.masterManagerAContext, {
     kind: TransportMasterData.TRANSPORT_MASTER_KINDS.TRIP,
     name: '  第   十  车  '
@@ -275,17 +275,22 @@ test('five master-data kinds normalize business keys and reject scoped duplicate
     kind: TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER,
     name: ' 张师傅 '
   });
+  const loadType = await createMaster(fixture.masterManagerAContext, {
+    kind: TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE,
+    name: ' 标准*塑料托盘 '
+  });
   const storedPlate = await TransportMasterData.findById(plate._id).lean();
   assert.equal(storedPlate.name, '鲁 a a 2991');
   assert.equal(storedPlate.normalizedKey, '鲁AA2991');
   assert.equal(vehicleType.name, '厢式货车');
   assert.equal(driver.name, '张师傅');
+  assert.equal(loadType.name, '标准*塑料托盘');
   assert.deepEqual(
     new Set((await service.listMasterData({
       authContext: fixture.reporterAContext,
       query: { includeDisabled: true }
     })).masterData.map(({ kind }) => kind)),
-    new Set(['TRIP', 'VEHICLE_PLATE', 'VEHICLE_TYPE', 'DRIVER'])
+    new Set(['TRIP', 'VEHICLE_PLATE', 'VEHICLE_TYPE', 'DRIVER', 'LOAD_TYPE'])
   );
 
   const sameKeyOtherTeam = await createMaster(fixture.masterManagerBContext, {
@@ -295,20 +300,24 @@ test('five master-data kinds normalize business keys and reject scoped duplicate
   assert.equal(sameKeyOtherTeam.teamId, String(fixture.teamB));
 });
 
-test('five master-data name limits match immutable transport snapshot fields', async () => {
+test('six master-data name limits match immutable transport snapshot fields', async () => {
   const snapshotLimits = {
     [TransportMasterData.TRANSPORT_MASTER_KINDS.TRIP]: TransportRecord.schema.path('tripLabel').options.maxlength,
     [TransportMasterData.TRANSPORT_MASTER_KINDS.ROUTE]: TransportRecord.schema.path('route').options.maxlength,
     [TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_PLATE]: TransportRecord.schema.path('vehiclePlate').options.maxlength,
     [TransportMasterData.TRANSPORT_MASTER_KINDS.VEHICLE_TYPE]: TransportRecord.schema.path('vehicleType').options.maxlength,
-    [TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER]: TransportRecord.schema.path('driverName').options.maxlength
+    [TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER]: TransportRecord.schema.path('driverName').options.maxlength,
+    [TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE]: TransportRecord.schema
+      .path('loadItems')
+      .schema.path('name').options.maxlength
   };
   assert.deepEqual(snapshotLimits, {
     TRIP: 50,
     ROUTE: 200,
     VEHICLE_PLATE: 50,
     VEHICLE_TYPE: 100,
-    DRIVER: 100
+    DRIVER: 100,
+    LOAD_TYPE: 100
   });
   assert.deepEqual(TransportMasterData.TRANSPORT_MASTER_NAME_MAX_LENGTHS, snapshotLimits);
 
@@ -490,6 +499,10 @@ test('transport records use server-side master fields and preserve historical sn
     kind: TransportMasterData.TRANSPORT_MASTER_KINDS.DRIVER,
     name: '张师傅'
   });
+  const loadType = await createMaster(fixture.masterManagerAContext, {
+    kind: TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE,
+    name: '标准*塑料托盘'
+  });
   const photos = await temporaryPhotos(fixture.teamA, fixture.reporterA);
   const recordService = createTransportRecordService({
     auditService: createAuditService({ AuditLog }),
@@ -531,6 +544,7 @@ test('transport records use server-side master fields and preserve historical sn
       driverMasterId: driver._id,
       driverName: '客户端司机',
       loadDetails: { standardPlasticPallet: 2 },
+      loadItems: [{ typeId: loadType._id, name: '客户端伪造类型', quantity: 2 }],
       photoFileIds: photos.map(({ _id }) => String(_id)),
       remark: '主数据快照测试'
     }
@@ -546,6 +560,22 @@ test('transport records use server-side master fields and preserve historical sn
   assert.equal(record.vehicleType, '厢式货车');
   assert.equal(record.driverMasterId, driver._id);
   assert.equal(record.driverName, '张师傅');
+  assert.deepEqual(record.loadItems, [{
+    typeId: loadType._id,
+    legacyKey: '',
+    name: '标准*塑料托盘',
+    quantity: 2
+  }]);
+  assert.equal(record.loadTotal, 2);
+
+  const legacyClientUpdate = await recordService.updateRecord({
+    authContext: fixture.reporterAContext,
+    transportRecordId: record._id,
+    input: { loadDetails: { standardPlasticPallet: 7 } }
+  });
+  assert.equal(legacyClientUpdate.loadItems[0].name, '标准*塑料托盘');
+  assert.equal(legacyClientUpdate.loadItems[0].quantity, 7);
+  assert.equal(legacyClientUpdate.loadTotal, 7);
 
   await assert.rejects(recordService.createRecord({
     authContext: fixture.reporterAContext,
@@ -630,6 +660,11 @@ test('transport records use server-side master fields and preserve historical sn
     masterDataId: driver._id,
     input: { name: '李师傅' }
   });
+  await service.updateMasterData({
+    authContext: fixture.masterManagerAContext,
+    masterDataId: loadType._id,
+    input: { name: '标准塑料托盘（新名称）' }
+  });
 
   const historical = await recordService.getRecord({
     authContext: fixture.reporterAContext,
@@ -640,6 +675,35 @@ test('transport records use server-side master fields and preserve historical sn
   assert.equal(historical.vehiclePlate, '鲁AA2991');
   assert.equal(historical.vehicleType, '厢式货车');
   assert.equal(historical.driverName, '张师傅');
+  assert.equal(historical.loadItems[0].name, '标准*塑料托盘');
+
+  const editedAfterLoadTypeRename = await recordService.updateRecord({
+    authContext: fixture.reporterAContext,
+    transportRecordId: record._id,
+    input: { loadItems: [{ typeId: loadType._id, quantity: 8 }] }
+  });
+  assert.equal(editedAfterLoadTypeRename.loadItems[0].name, '标准*塑料托盘');
+  assert.equal(editedAfterLoadTypeRename.loadItems[0].quantity, 8);
+
+  await assert.rejects(service.deleteMasterData({
+    authContext: fixture.masterManagerAContext,
+    masterDataId: trip._id
+  }), (error) => error.code === 'TRANSPORT_MASTER_DELETE_UNSUPPORTED');
+  await service.deleteMasterData({
+    authContext: fixture.masterManagerAContext,
+    masterDataId: loadType._id
+  });
+  assert.equal(await TransportMasterData.findById(loadType._id).lean(), null);
+  const updatedAfterLoadTypeDelete = await recordService.updateRecord({
+    authContext: fixture.reporterAContext,
+    transportRecordId: record._id,
+    input: {
+      remark: '装载类型删除后的普通编辑',
+      loadItems: [{ typeId: loadType._id, quantity: 3 }]
+    }
+  });
+  assert.equal(updatedAfterLoadTypeDelete.loadItems[0].name, '标准*塑料托盘');
+  assert.equal(updatedAfterLoadTypeDelete.loadItems[0].quantity, 3);
 
   const unchanged = await recordService.updateRecord({
     authContext: fixture.reporterAContext,
@@ -790,13 +854,16 @@ test('transport master-data backfill is dry-run by default and idempotently pres
 
   const preview = await backfill.run();
   assert.equal(preview.mode, 'dry-run');
-  assert.equal(preview.mastersToCreate, 5);
+  assert.equal(preview.activeTeamsScanned, 2);
+  assert.equal(preview.defaultLoadTypeTeamsToInitialize, 2);
+  assert.equal(preview.mastersToCreate, 33);
+  assert.equal(preview.defaultLoadTypesToCreate, 28);
   assert.equal(preview.recordsToUpdate, 2);
   assert.equal(preview.writePerformed, false);
   assert.equal(await TransportMasterData.countDocuments({}), 0);
 
   const first = await backfill.run(executeOptions);
-  assert.equal(first.mastersCreated, 5);
+  assert.equal(first.mastersCreated, 33);
   assert.equal(first.recordsUpdated, 2);
   assert.equal(first.writePerformed, true);
   const recordsAfter = await TransportRecord.find({}).sort({ reportDate: 1 }).lean();
@@ -828,7 +895,20 @@ test('transport master-data backfill is dry-run by default and idempotently pres
   assert.equal(second.mastersCreated, 0);
   assert.equal(second.recordsUpdated, 0);
   assert.equal(second.writePerformed, false);
-  assert.equal(await TransportMasterData.countDocuments({}), 5);
+  assert.equal(await TransportMasterData.countDocuments({}), 33);
+  for (const teamId of [fixture.teamA, fixture.teamB]) {
+    const loadTypes = await TransportMasterData.find({
+      teamId,
+      kind: TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE
+    }).sort({ sortOrder: 1 }).lean();
+    assert.deepEqual(
+      loadTypes.map(({ name, sortOrder }) => ({ name, sortOrder })),
+      TransportRecord.TRANSPORT_LOAD_FIELDS.map(({ label }, sortOrder) => ({
+        name: label,
+        sortOrder
+      }))
+    );
+  }
   const recordsAfterRenameRerun = await TransportRecord.find({}).sort({ reportDate: 1 }).lean();
   assert.deepEqual(recordsAfterRenameRerun.map((record) => (
     MASTER_REFERENCE_FIELDS.map(({ field }) => String(record[field]))
@@ -840,5 +920,23 @@ test('transport master-data backfill is dry-run by default and idempotently pres
   assert.equal(await AuditLog.countDocuments({
     action: permissions.AUDIT_ACTIONS.IMPORT,
     resourceType: permissions.AUDIT_RESOURCE_TYPES.TRANSPORT_MASTER_DATA
-  }), 1);
+  }), 2);
+  const loadTypeAudits = await AuditLog.find({
+    action: permissions.AUDIT_ACTIONS.IMPORT,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.TRANSPORT_MASTER_DATA,
+    'after.defaultLoadTypesCreated': 14
+  }).lean();
+  assert.equal(loadTypeAudits.length, 2);
+
+  await TransportMasterData.deleteMany({
+    teamId: fixture.teamB,
+    kind: TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE
+  });
+  const afterCustomerDeletesAll = await backfill.run(executeOptions);
+  assert.equal(afterCustomerDeletesAll.defaultLoadTypeTeamsToInitialize, 0);
+  assert.equal(afterCustomerDeletesAll.mastersCreated, 0);
+  assert.equal(await TransportMasterData.countDocuments({
+    teamId: fixture.teamB,
+    kind: TransportMasterData.TRANSPORT_MASTER_KINDS.LOAD_TYPE
+  }), 0);
 });

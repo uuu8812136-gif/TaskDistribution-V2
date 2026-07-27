@@ -38,6 +38,9 @@ test('mini-program transport form loads five independent master-data choices', (
   assert.match(apiSource, /get\('\/transport-records\/master-data', params\)/)
   assert.match(pageSource, /requestErrorMessage\(error, '运输基础资料加载失败，请稍后重试'\)/)
   assert.match(pageSource, /uni\.showToast/)
+  assert.match(pageSource, /configuredTransportLoadItems/)
+  assert.match(pageSource, /v-for="item in form\.loadItems"/)
+  assert.doesNotMatch(pageSource, /v-for="field in loadFields"/)
 })
 
 test('mini-program vehicle type is a required active master-data selection', () => {

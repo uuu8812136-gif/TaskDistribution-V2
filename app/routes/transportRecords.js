@@ -44,6 +44,12 @@ router.patch(
   requirePermission('report.transport.master.manage'),
   transportRecordController.updateMasterData
 );
+router.delete(
+  '/master-data/:masterDataId',
+  requireTeamContext,
+  requirePermission('report.transport.master.manage'),
+  transportRecordController.deleteMasterData
+);
 
 router.get(
   '/export',

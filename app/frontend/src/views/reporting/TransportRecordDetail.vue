@@ -43,9 +43,9 @@
       <section class="detail-section">
         <h2>装载明细</h2>
         <div class="quantity-band">
-          <div v-for="item in TRANSPORT_LOAD_FIELDS" :key="item.key">
-            <span>{{ item.label }}</span>
-            <strong>{{ record.loadDetails[item.key] || 0 }}</strong>
+          <div v-for="item in record.loadItems" :key="item.typeId || item.legacyKey">
+            <span>{{ item.name }}</span>
+            <strong>{{ item.quantity || 0 }}</strong>
           </div>
         </div>
       </section>
@@ -124,7 +124,6 @@ import {
 } from '@/api/reporting'
 import { useSessionStore } from '@/stores/session'
 import {
-  TRANSPORT_LOAD_FIELDS,
   entityName,
   transportChangedFields
 } from '@/utils/reporting'

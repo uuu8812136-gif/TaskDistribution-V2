@@ -15,6 +15,7 @@ import {
   buildTransportFields,
   buildTransportPayload,
   businessNaturalDate,
+  configuredTransportLoadItems,
   dailyReportSourceSummary,
   scopedReportingParams
 } from '../utils/reporting.js'
@@ -112,6 +113,21 @@ test('transport form uses the server fixed template and never accepts client tea
   assert.deepEqual(payload.photoFileIds, FILE_IDS)
   assert.equal(payload.remark, '正常')
   assert.equal(payload.teamId, undefined)
+})
+
+test('transport form builds dynamic load items from active server configuration', () => {
+  const loadItems = configuredTransportLoadItems([
+    { _id: '64b000000000000000000021', kind: 'LOAD_TYPE', status: 'ACTIVE', name: '塑料托盘' },
+    { _id: '64b000000000000000000022', kind: 'LOAD_TYPE', status: 'DISABLED', name: '停用类型' }
+  ])
+  loadItems[0].quantity = '6'
+  const fields = buildTransportFields({ ...validForm(), loadDetails: undefined, loadItems })
+  assert.deepEqual(fields.loadItems, [{
+    typeId: '64b000000000000000000021',
+    legacyKey: '',
+    quantity: 6
+  }])
+  assert.equal('loadDetails' in fields, false)
 })
 
 test('transport submission enforces 2 to 10 private FileAsset ids', () => {

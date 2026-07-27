@@ -18,6 +18,7 @@ import {
   buildDailySchedulePayload,
   buildMonthlySchedulePayload,
   buildTransportPayload,
+  configuredTransportLoadItems,
   createDailyTemplate,
   copyPlainText,
   dailyReportSourceSummary,
@@ -187,6 +188,33 @@ test('transport payload emits only the fixed form and opaque photo ids', () => {
     '64b000000000000000000002'
   ])
   assert.equal('teamId' in payload, false)
+})
+
+test('transport load items come from active master data and preserve unavailable history', () => {
+  const items = configuredTransportLoadItems([
+    { _id: 'type-1', kind: 'LOAD_TYPE', status: 'ACTIVE', name: '塑料托盘' },
+    { _id: 'type-2', kind: 'LOAD_TYPE', status: 'DISABLED', name: '停用类型' },
+    { _id: 'driver-1', kind: 'DRIVER', status: 'ACTIVE', name: '张师傅' }
+  ], [
+    { typeId: 'type-1', name: '旧塑料托盘', quantity: 3 },
+    { typeId: 'deleted-type', name: '已删除类型', quantity: 2 }
+  ])
+  assert.deepEqual(items, [
+    { typeId: 'type-1', legacyKey: '', name: '塑料托盘', quantity: 3 },
+    { typeId: 'deleted-type', legacyKey: '', name: '已删除类型', quantity: 2, unavailable: true }
+  ])
+
+  const payload = buildTransportPayload({
+    orgUnitId: 'org-1', reportDate: '2026-07-16', shift: '白班',
+    tripLabel: '第1趟', route: '工厂至仓库', dispatchType: '配送',
+    vehiclePlate: '鲁A1', vehicleType: '厢式货车', driverName: '张三',
+    loadItems: items, remark: '', reason: ''
+  }, ['64b000000000000000000001', '64b000000000000000000002'])
+  assert.deepEqual(payload.loadItems, [
+    { typeId: 'type-1', legacyKey: '', quantity: 3 },
+    { typeId: 'deleted-type', legacyKey: '', quantity: 2 }
+  ])
+  assert.equal('loadDetails' in payload, false)
 })
 
 test('driver monthly summary groups the fixed business key and counts each date', () => {

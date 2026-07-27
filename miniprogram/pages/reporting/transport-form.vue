@@ -83,10 +83,10 @@
         <text class="section-total">合计 {{ loadTotal }}</text>
       </view>
       <view class="load-grid">
-        <view v-for="field in loadFields" :key="field.key" class="load-row">
-          <text class="load-label">{{ field.label }}</text>
+        <view v-for="item in form.loadItems" :key="item.typeId || item.legacyKey" class="load-row">
+          <text class="load-label">{{ item.name }}{{ item.unavailable ? '（已停用或已删除）' : '' }}</text>
           <input
-            v-model="form.loadDetails[field.key]"
+            v-model="item.quantity"
             class="quantity-field"
             type="number"
             maxlength="10"
@@ -142,13 +142,12 @@ import { useUserStore } from '@/stores/user.js'
 import {
   REPORTING_MODULE_SCOPES,
   TRANSPORT_DISPATCH_OPTIONS,
-  TRANSPORT_LOAD_FIELDS,
   TRANSPORT_SHIFT_OPTIONS,
   buildOrgUnitOptions,
   buildTransportFields,
   buildTransportPayload,
   businessNaturalDate,
-  createEmptyTransportLoad,
+  configuredTransportLoadItems,
   transportLoadTotal
 } from '@/utils/reporting.js'
 import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
@@ -179,7 +178,7 @@ export default {
       vehicleType: '',
       driverMasterId: '',
       driverName: '',
-      loadDetails: createEmptyTransportLoad(),
+      loadItems: [],
       remark: ''
     })
     const photos = ref([])
@@ -239,7 +238,7 @@ export default {
     const selectedVehiclePlateLabel = computed(() => optionLabel(vehiclePlateOptions, form.vehiclePlateMasterId))
     const selectedVehicleTypeLabel = computed(() => optionLabel(vehicleTypeOptions, form.vehicleTypeMasterId))
     const selectedDriverLabel = computed(() => optionLabel(driverOptions, form.driverMasterId))
-    const loadTotal = computed(() => transportLoadTotal(form.loadDetails))
+    const loadTotal = computed(() => transportLoadTotal(form.loadItems))
 
     const loadOrganizations = async () => {
       if (!isTeamScope.value) return
@@ -263,6 +262,7 @@ export default {
     const loadMasterData = async () => {
       const response = await getTransportMasterData()
       masterData.value = response.masterData || []
+      form.loadItems = configuredTransportLoadItems(masterData.value)
     }
 
     onLoad(() => {
@@ -350,6 +350,7 @@ export default {
         if (!form.vehiclePlateMasterId) throw new TypeError('请选择车牌号')
         if (!form.vehicleTypeMasterId) throw new TypeError('请选择车型')
         if (!form.driverMasterId) throw new TypeError('请选择司机姓名')
+        if (!form.loadItems.length) throw new TypeError('请先在后台维护装载明细类型')
         buildTransportFields(form)
         if (photos.value.length < 2 || photos.value.length > 10) {
           throw new TypeError('现场照片必须为2至10张')
@@ -405,7 +406,6 @@ export default {
       driverOptions,
       driverIndex,
       selectedDriverLabel,
-      loadFields: TRANSPORT_LOAD_FIELDS,
       loadTotal,
       onOrgChange,
       onDateChange,

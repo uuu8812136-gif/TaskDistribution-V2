@@ -36,7 +36,8 @@ const MASTER_LABELS = Object.freeze({
   [TRANSPORT_MASTER_KINDS.ROUTE]: '路线',
   [TRANSPORT_MASTER_KINDS.VEHICLE_PLATE]: '车牌号',
   [TRANSPORT_MASTER_KINDS.VEHICLE_TYPE]: '车型',
-  [TRANSPORT_MASTER_KINDS.DRIVER]: '司机姓名'
+  [TRANSPORT_MASTER_KINDS.DRIVER]: '司机姓名',
+  [TRANSPORT_MASTER_KINDS.LOAD_TYPE]: '装载明细类型'
 });
 
 function masterError(status, code, message) {
@@ -269,11 +270,49 @@ function createTransportMasterDataService({
     }, connection);
   }
 
+  async function deleteMasterData({ authContext, req, masterDataId }) {
+    const context = assertTransportMasterWriter(authContext);
+    return runWithOptionalTransaction(async (session) => {
+      const id = normalizeRelatedId(masterDataId);
+      const document = await execute(TransportMasterDataModel.findOne({
+        _id: id,
+        teamId: context.activeTeamId
+      }), session);
+      if (!document) {
+        throw masterError(404, 'TRANSPORT_MASTER_NOT_FOUND', '运输基础资料不存在');
+      }
+      if (document.kind !== TRANSPORT_MASTER_KINDS.LOAD_TYPE) {
+        throw masterError(
+          400,
+          'TRANSPORT_MASTER_DELETE_UNSUPPORTED',
+          '只有装载明细类型支持删除，其他基础资料请使用停用'
+        );
+      }
+      const before = serializeTransportMasterData(document);
+      await execute(TransportMasterDataModel.deleteOne({
+        _id: document._id,
+        teamId: context.activeTeamId
+      }), session);
+      await auditService.record({
+        req,
+        authContext: context,
+        action: AUDIT_ACTIONS.DELETE,
+        resourceType: AUDIT_RESOURCE_TYPES.TRANSPORT_MASTER_DATA,
+        resourceId: document._id,
+        before,
+        targetTeamId: context.activeTeamId,
+        session
+      });
+      return before;
+    }, connection);
+  }
+
   return Object.freeze({
     listMasterData,
     createMasterData,
     updateMasterData,
-    setMasterDataStatus
+    setMasterDataStatus,
+    deleteMasterData
   });
 }
 

@@ -92,6 +92,40 @@ export function createEmptyTransportLoad() {
   return Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, '']))
 }
 
+export function configuredTransportLoadItems(masterData = [], recordItems = []) {
+  const previousById = new Map(recordItems
+    .filter((item) => item?.typeId)
+    .map((item) => [String(item.typeId), item]))
+  const previousByName = new Map(recordItems
+    .filter((item) => item?.name)
+    .map((item) => [String(item.name), item]))
+  const items = masterData
+    .filter((item) => item?.kind === 'LOAD_TYPE' && item?.status === 'ACTIVE')
+    .map((item) => {
+      const previous = previousById.get(String(item._id)) || previousByName.get(String(item.name))
+      return {
+        typeId: String(item._id),
+        legacyKey: '',
+        name: item.name,
+        quantity: previous?.quantity ?? ''
+      }
+    })
+  const includedIds = new Set(items.map((item) => item.typeId))
+  const includedNames = new Set(items.map((item) => item.name))
+  for (const item of recordItems) {
+    if (!item?.name || includedNames.has(String(item.name))) continue
+    if (item.typeId && includedIds.has(String(item.typeId))) continue
+    items.push({
+      typeId: item.typeId ? String(item.typeId) : null,
+      legacyKey: item.legacyKey || '',
+      name: String(item.name),
+      quantity: item.quantity ?? '',
+      unavailable: true
+    })
+  }
+  return items
+}
+
 function attendanceNames(value) {
   const source = Array.isArray(value) ? value : String(value || '').split(/[、,，;；\n]/)
   return [...new Set(source.map((item) => String(item).trim()).filter(Boolean))]
@@ -242,11 +276,19 @@ export function buildTransportFields(form) {
     vehicleTypeMasterId: requiredText(form.vehicleTypeMasterId, '车型'),
     vehicleType: requiredText(form.vehicleType, '车型'),
     driverName: requiredText(form.driverName, '司机姓名'),
-    loadDetails: Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key, label }) => [
+    remark: typeof form.remark === 'string' ? form.remark.trim() : ''
+  }
+  if (Array.isArray(form.loadItems)) {
+    fields.loadItems = form.loadItems.map((item) => ({
+      typeId: item.typeId || null,
+      legacyKey: item.legacyKey || '',
+      quantity: quantity(item.quantity, item.name || '装载数量')
+    }))
+  } else {
+    fields.loadDetails = Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key, label }) => [
       key,
       quantity(form.loadDetails?.[key], label)
-    ])),
-    remark: typeof form.remark === 'string' ? form.remark.trim() : ''
+    ]))
   }
   for (const field of [
     'tripMasterId',
@@ -280,6 +322,12 @@ export function buildTransportPayload(form, photoFileIds) {
 }
 
 export function transportLoadTotal(loadDetails = {}) {
+  if (Array.isArray(loadDetails)) {
+    return loadDetails.reduce((total, item) => {
+      const value = Number(item?.quantity)
+      return total + (Number.isFinite(value) ? value : 0)
+    }, 0)
+  }
   return TRANSPORT_LOAD_FIELDS.reduce((total, { key }) => {
     const value = Number(loadDetails[key])
     return total + (Number.isFinite(value) ? value : 0)

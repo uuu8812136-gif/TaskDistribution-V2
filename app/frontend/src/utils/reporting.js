@@ -208,8 +208,42 @@ export function emptyTransportLoadDetails() {
   return Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, 0]))
 }
 
+export function configuredTransportLoadItems(masterData = [], recordItems = []) {
+  const previousById = new Map(recordItems
+    .filter((item) => item?.typeId)
+    .map((item) => [String(item.typeId), item]))
+  const previousByName = new Map(recordItems
+    .filter((item) => item?.name)
+    .map((item) => [String(item.name), item]))
+  const items = masterData
+    .filter((item) => item?.kind === 'LOAD_TYPE' && item?.status === 'ACTIVE')
+    .map((item) => {
+      const previous = previousById.get(String(item._id)) || previousByName.get(String(item.name))
+      return {
+        typeId: String(item._id),
+        legacyKey: '',
+        name: item.name,
+        quantity: integerOrZero(previous?.quantity)
+      }
+    })
+  const includedIds = new Set(items.map((item) => item.typeId))
+  const includedNames = new Set(items.map((item) => item.name))
+  for (const item of recordItems) {
+    if (!item?.name || includedNames.has(String(item.name))) continue
+    if (item.typeId && includedIds.has(String(item.typeId))) continue
+    items.push({
+      typeId: item.typeId ? String(item.typeId) : null,
+      legacyKey: item.legacyKey || '',
+      name: String(item.name),
+      quantity: integerOrZero(item.quantity),
+      unavailable: true
+    })
+  }
+  return items
+}
+
 export function buildTransportPayload(form, photoFileIds) {
-  return {
+  const payload = {
     orgUnitId: form.orgUnitId,
     reportDate: form.reportDate,
     shift: form.shift,
@@ -224,14 +258,23 @@ export function buildTransportPayload(form, photoFileIds) {
     vehicleType: form.vehicleType.trim(),
     driverMasterId: form.driverMasterId || null,
     driverName: form.driverName.trim(),
-    loadDetails: Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [
-      key,
-      integerOrZero(form.loadDetails?.[key])
-    ])),
     photoFileIds: [...photoFileIds],
     remark: form.remark.trim(),
     reason: form.reason.trim() || null
   }
+  if (Array.isArray(form.loadItems)) {
+    payload.loadItems = form.loadItems.map((item) => ({
+      typeId: item.typeId || null,
+      legacyKey: item.legacyKey || '',
+      quantity: integerOrZero(item.quantity)
+    }))
+  } else {
+    payload.loadDetails = Object.fromEntries(TRANSPORT_LOAD_FIELDS.map(({ key }) => [
+      key,
+      integerOrZero(form.loadDetails?.[key])
+    ]))
+  }
+  return payload
 }
 
 export function naturalMonthRange(month) {

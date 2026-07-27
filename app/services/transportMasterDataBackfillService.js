@@ -3,9 +3,15 @@
 const path = require('node:path');
 const mongoose = require('mongoose');
 const { verifyBackupSet } = require('../../ops/lib/backupCore');
+const AuditLog = require('../models/AuditLog');
+const ProjectTeam = require('../models/ProjectTeam');
 const TransportMasterData = require('../models/TransportMasterData');
 const TransportRecord = require('../models/TransportRecord');
-const { AUDIT_ACTIONS, AUDIT_RESOURCE_TYPES } = require('../config/permissions');
+const {
+  AUDIT_ACTIONS,
+  AUDIT_RESOURCE_TYPES,
+  TEAM_STATUSES
+} = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const { normalizeId } = require('./reportingServiceSupport');
 const { runWithRequiredTransaction } = require('./transactionService');
@@ -15,6 +21,7 @@ const {
   TRANSPORT_MASTER_STATUSES,
   transportMasterNormalizedKey
 } = TransportMasterData;
+const { TRANSPORT_LOAD_FIELDS } = TransportRecord;
 const BACKFILL_REPORT_FORMAT = 'transport-master-data-backfill/v1';
 const TRANSPORT_RECORD_COLLECTION = 'transportrecords';
 const MASTER_REFERENCE_FIELDS = Object.freeze([
@@ -93,7 +100,7 @@ function candidateKey(teamId, kind, value) {
   return `${normalizeId(teamId)}:${kind}:${transportMasterNormalizedKey(kind, value)}`;
 }
 
-function buildCandidates(records) {
+function buildCandidates(records, activeTeams = []) {
   const candidates = new Map();
   for (const record of records) {
     for (const { field, kind, snapshotField } of MASTER_REFERENCE_FIELDS) {
@@ -114,12 +121,29 @@ function buildCandidates(records) {
       }
     }
   }
+  for (const team of activeTeams) {
+    for (const [sortOrder, { label }] of TRANSPORT_LOAD_FIELDS.entries()) {
+      const key = candidateKey(team._id, TRANSPORT_MASTER_KINDS.LOAD_TYPE, label);
+      if (!candidates.has(key)) {
+        candidates.set(key, {
+          key,
+          teamId: team._id,
+          kind: TRANSPORT_MASTER_KINDS.LOAD_TYPE,
+          normalizedKey: transportMasterNormalizedKey(TRANSPORT_MASTER_KINDS.LOAD_TYPE, label),
+          payload: { name: label },
+          sortOrder
+        });
+      }
+    }
+  }
   return { candidates: [...candidates.values()], conflicts: [] };
 }
 
 function createTransportMasterDataBackfillService({
+  AuditLogModel = AuditLog,
   TransportMasterDataModel = TransportMasterData,
   TransportRecordModel = TransportRecord,
+  ProjectTeamModel = ProjectTeam,
   auditService = createAuditService(),
   backupVerifier = verifyBackupSet,
   now = () => new Date(),
@@ -138,10 +162,40 @@ function createTransportMasterDataBackfillService({
     const backup = execute
       ? await verifyExecutionBackup({ backupDirectory, databaseName, backupVerifier })
       : null;
-    const records = await TransportRecordModel.find({})
-      .sort({ reportDate: -1, submittedAt: -1, _id: -1 })
-      .lean();
-    const { candidates, conflicts } = buildCandidates(records);
+    const [records, activeTeams] = await Promise.all([
+      TransportRecordModel.find({})
+        .sort({ reportDate: -1, submittedAt: -1, _id: -1 })
+        .lean(),
+      ProjectTeamModel.find({ status: TEAM_STATUSES.ACTIVE })
+        .sort({ _id: 1 })
+        .select({ _id: 1 })
+        .lean()
+    ]);
+    const activeTeamIds = activeTeams.map(({ _id }) => _id);
+    const [configuredTeamIds, initializedTeamIds] = activeTeamIds.length === 0
+      ? [[], []]
+      : await Promise.all([
+          TransportMasterDataModel.distinct('teamId', {
+            teamId: { $in: activeTeamIds },
+            kind: TRANSPORT_MASTER_KINDS.LOAD_TYPE
+          }),
+          AuditLogModel.distinct('targetTeamId', {
+            targetTeamId: { $in: activeTeamIds },
+            resourceType: AUDIT_RESOURCE_TYPES.TRANSPORT_MASTER_DATA,
+            $or: [
+              { 'before.kind': TRANSPORT_MASTER_KINDS.LOAD_TYPE },
+              { 'after.kind': TRANSPORT_MASTER_KINDS.LOAD_TYPE },
+              { 'after.defaultLoadTypesCreated': { $gt: 0 } }
+            ]
+          })
+        ]);
+    const loadTypesInitialized = new Set(
+      [...configuredTeamIds, ...initializedTeamIds].map(normalizeId)
+    );
+    const teamsNeedingDefaultLoadTypes = activeTeams.filter(
+      ({ _id }) => !loadTypesInitialized.has(normalizeId(_id))
+    );
+    const { candidates, conflicts } = buildCandidates(records, teamsNeedingDefaultLoadTypes);
     const existingMasters = candidates.length === 0
       ? []
       : await TransportMasterDataModel.find({
@@ -173,25 +227,38 @@ function createTransportMasterDataBackfillService({
       database: { name: databaseName },
       backup,
       recordsScanned: records.length,
+      activeTeamsScanned: activeTeams.length,
+      defaultLoadTypeTeamsToInitialize: teamsNeedingDefaultLoadTypes.length,
       candidates: candidates.length,
       existingMasters: existingMasters.length,
       mastersToCreate: missingCandidates.length,
+      defaultLoadTypesToCreate: missingCandidates.filter(
+        ({ kind }) => kind === TRANSPORT_MASTER_KINDS.LOAD_TYPE
+      ).length,
       recordsToUpdate: previewRecordUpdates,
       conflicts
     };
-    if (!execute || records.length === 0) {
+    if (!execute || (missingCandidates.length === 0 && previewRecordUpdates === 0)) {
       return { ...baseReport, mastersCreated: 0, recordsUpdated: 0, writePerformed: false };
     }
 
     return runWithRequiredTransaction(async (session) => {
       let mastersCreated = 0;
+      const teamStats = new Map();
+      const statsFor = (teamId) => {
+        const id = normalizeId(teamId);
+        if (!teamStats.has(id)) {
+          teamStats.set(id, { mastersCreated: 0, defaultLoadTypesCreated: 0, recordsUpdated: 0 });
+        }
+        return teamStats.get(id);
+      };
       for (const candidate of missingCandidates) {
         const payload = {
           teamId: candidate.teamId,
           kind: candidate.kind,
           ...candidate.payload,
           status: TRANSPORT_MASTER_STATUSES.ACTIVE,
-          sortOrder: 0,
+          sortOrder: candidate.sortOrder ?? 0,
           createdBy: null,
           updatedBy: null
         };
@@ -200,10 +267,14 @@ function createTransportMasterDataBackfillService({
           : await TransportMasterDataModel.create(payload);
         masterByKey.set(candidate.key, document);
         mastersCreated += 1;
+        const stats = statsFor(candidate.teamId);
+        stats.mastersCreated += 1;
+        if (candidate.kind === TRANSPORT_MASTER_KINDS.LOAD_TYPE) {
+          stats.defaultLoadTypesCreated += 1;
+        }
       }
 
       let recordsUpdated = 0;
-      const teamStats = new Map();
       for (const record of records) {
         const refs = {};
         for (const { field, kind, snapshotField } of MASTER_REFERENCE_FIELDS) {
@@ -225,17 +296,18 @@ function createTransportMasterDataBackfillService({
         if (session) query.session(session);
         await query;
         recordsUpdated += 1;
-        const teamId = normalizeId(record.teamId);
-        teamStats.set(teamId, (teamStats.get(teamId) || 0) + 1);
+        statsFor(record.teamId).recordsUpdated += 1;
       }
 
-      for (const [teamId, updatedRecordCount] of teamStats) {
+      for (const [teamId, stats] of teamStats) {
         await auditService.recordSystem({
           action: AUDIT_ACTIONS.IMPORT,
           resourceType: AUDIT_RESOURCE_TYPES.TRANSPORT_MASTER_DATA,
           after: {
-            source: 'transport-record-backfill',
-            updatedRecordCount,
+            source: 'transport-master-data-backfill',
+            mastersCreated: stats.mastersCreated,
+            defaultLoadTypesCreated: stats.defaultLoadTypesCreated,
+            updatedRecordCount: stats.recordsUpdated,
             snapshotFieldsChanged: false
           },
           targetTeamId: teamId,

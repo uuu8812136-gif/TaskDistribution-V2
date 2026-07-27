@@ -52,6 +52,28 @@ const loadDetailsSchema = new mongoose.Schema(
   { _id: false, strict: 'throw' }
 );
 
+const loadItemSchema = new mongoose.Schema({
+  typeId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'TransportMasterData',
+    default: null
+  },
+  legacyKey: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: ''
+  },
+  name: {
+    type: String,
+    required: true,
+    trim: true,
+    minlength: 1,
+    maxlength: 100
+  },
+  quantity: quantityField()
+}, { _id: false, strict: 'throw' });
+
 const transportRecordSchema = new mongoose.Schema({
   teamId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -145,6 +167,26 @@ const transportRecordSchema = new mongoose.Schema({
     type: loadDetailsSchema,
     required: true,
     default: () => ({})
+  },
+  loadItems: {
+    type: [loadItemSchema],
+    default: [],
+    validate: [
+      {
+        validator: (values) => values.length <= 200,
+        message: 'loadItems cannot contain more than 200 items'
+      },
+      {
+        validator: (values) => values.every((item) => item.typeId || item.legacyKey),
+        message: 'loadItems must identify a configured or legacy type'
+      },
+      {
+        validator: (values) => new Set(values.map((item) => (
+          item.typeId ? `id:${item.typeId}` : `legacy:${item.legacyKey}`
+        ))).size === values.length,
+        message: 'loadItems must not contain duplicate types'
+      }
+    ]
   },
   photoFileIds: {
     type: [{

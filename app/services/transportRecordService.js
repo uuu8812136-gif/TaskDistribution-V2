@@ -161,7 +161,22 @@ function normalizeLoadDetails(input, existing = null) {
   ]));
 }
 
-function loadTotal(loadDetails) {
+function mergeLegacyLoadDetails(loadItems, loadDetails, input) {
+  if (!Array.isArray(loadItems) || loadItems.length === 0 || !input) return loadItems;
+  const legacyKeyByName = new Map(
+    TRANSPORT_LOAD_FIELDS.map(({ key, label }) => [label, key])
+  );
+  return loadItems.map((item) => {
+    const legacyKey = item.legacyKey || legacyKeyByName.get(item.name);
+    if (!legacyKey || !Object.prototype.hasOwnProperty.call(input, legacyKey)) return item;
+    return { ...item, quantity: loadDetails[legacyKey] };
+  });
+}
+
+function loadTotal(loadDetails, loadItems = []) {
+  if (Array.isArray(loadItems) && loadItems.length > 0) {
+    return loadItems.reduce((total, item) => total + (item.quantity || 0), 0);
+  }
   return TRANSPORT_LOAD_FIELDS.reduce(
     (total, { key }) => total + (loadDetails?.[key] || 0),
     0
@@ -173,6 +188,22 @@ function serializeTransportRecord(document) {
   const details = Object.fromEntries(
     TRANSPORT_LOAD_FIELDS.map(({ key }) => [key, value.loadDetails?.[key] ?? 0])
   );
+  const storedLoadItems = Array.isArray(value.loadItems)
+    ? value.loadItems.map((item) => ({
+        typeId: normalizeId(item.typeId),
+        legacyKey: item.legacyKey || '',
+        name: item.name,
+        quantity: item.quantity || 0
+      }))
+    : [];
+  const loadItems = storedLoadItems.length > 0
+    ? storedLoadItems
+    : TRANSPORT_LOAD_FIELDS.map(({ key, label }) => ({
+        typeId: null,
+        legacyKey: key,
+        name: label,
+        quantity: details[key] || 0
+      }));
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -191,7 +222,8 @@ function serializeTransportRecord(document) {
     driverMasterId: normalizeId(value.driverMasterId),
     driverName: value.driverName,
     loadDetails: details,
-    loadTotal: loadTotal(details),
+    loadItems,
+    loadTotal: loadTotal(details, storedLoadItems),
     photoFileIds: (value.photoFileIds || []).map(normalizeId),
     remark: value.remark || '',
     submittedAt: value.submittedAt,
@@ -221,6 +253,12 @@ function serializeReportChangeRecord(document) {
 
 function transportPayload(input, existing, defaultReportDate) {
   const created = !existing;
+  const hasLegacyLoadDetails = Object.prototype.hasOwnProperty.call(input, 'loadDetails');
+  const normalizedLoadDetails = normalizeLoadDetails(
+    hasLegacyLoadDetails ? input.loadDetails : undefined,
+    existing?.loadDetails
+  );
+  const existingLoadItems = Array.isArray(existing?.loadItems) ? existing.loadItems : [];
   return {
     reportDate: naturalDate(
       created || Object.prototype.hasOwnProperty.call(input, 'reportDate')
@@ -250,10 +288,10 @@ function transportPayload(input, existing, defaultReportDate) {
     vehiclePlate: created ? '' : existing.vehiclePlate,
     vehicleType: created ? '' : existing.vehicleType || '',
     driverName: created ? '' : existing.driverName,
-    loadDetails: normalizeLoadDetails(
-      Object.prototype.hasOwnProperty.call(input, 'loadDetails') ? input.loadDetails : undefined,
-      existing?.loadDetails
-    ),
+    loadDetails: normalizedLoadDetails,
+    loadItems: !Object.prototype.hasOwnProperty.call(input, 'loadItems') && hasLegacyLoadDetails
+      ? mergeLegacyLoadDetails(existingLoadItems, normalizedLoadDetails, input.loadDetails)
+      : existingLoadItems,
     remark: Object.prototype.hasOwnProperty.call(input, 'remark')
       ? optionalString(input.remark, 'remark', 2000)
       : existing?.remark || ''
@@ -346,6 +384,77 @@ function createTransportRecordService({
     connection
   });
 
+  async function resolveLoadItemsPayload({ context, input, existing, payload, session }) {
+    if (!Object.prototype.hasOwnProperty.call(input, 'loadItems')) return payload;
+    if (!Array.isArray(input.loadItems) || input.loadItems.length === 0 || input.loadItems.length > 200) {
+      throw reportError(
+        400,
+        'TRANSPORT_LOAD_ITEMS_INVALID',
+        'loadItems must contain between 1 and 200 configured load types'
+      );
+    }
+
+    const normalized = input.loadItems.map((item, index) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        throw reportError(400, 'TRANSPORT_LOAD_ITEMS_INVALID', `loadItems.${index} must be an object`);
+      }
+      const legacyField = TRANSPORT_LOAD_FIELDS.find(({ key }) => key === item.legacyKey);
+      const typeId = item.typeId ? normalizeRelatedId(item.typeId) : null;
+      if (!typeId && !legacyField) {
+        throw reportError(
+          400,
+          'TRANSPORT_LOAD_ITEMS_INVALID',
+          `loadItems.${index} must identify a configured load type`
+        );
+      }
+      return {
+        typeId,
+        legacyKey: typeId ? '' : legacyField.key,
+        legacyName: legacyField?.label || '',
+        quantity: integer(item.quantity, `loadItems.${index}.quantity`, { fallback: 0 })
+      };
+    });
+    const tokens = normalized.map(({ typeId, legacyKey }) => (
+      typeId ? `id:${normalizeId(typeId)}` : `legacy:${legacyKey}`
+    ));
+    if (new Set(tokens).size !== tokens.length) {
+      throw reportError(400, 'TRANSPORT_LOAD_ITEMS_INVALID', 'loadItems must not contain duplicate types');
+    }
+
+    const activeMasters = await execute(TransportMasterDataModel.find({
+      _id: { $in: normalized.map(({ typeId }) => typeId).filter(Boolean) },
+      teamId: context.activeTeamId,
+      kind: TRANSPORT_MASTER_KINDS.LOAD_TYPE,
+      status: TRANSPORT_MASTER_STATUSES.ACTIVE
+    }).lean(), session);
+    const activeById = new Map(activeMasters.map((master) => [normalizeId(master._id), master]));
+    const existingByToken = new Map((existing?.loadItems || []).map((item) => [
+      item.typeId ? `id:${normalizeId(item.typeId)}` : `legacy:${item.legacyKey}`,
+      item
+    ]));
+
+    payload.loadItems = normalized.map(({ typeId, legacyKey, legacyName, quantity }) => {
+      const id = normalizeId(typeId);
+      const master = activeById.get(id);
+      const token = typeId ? `id:${id}` : `legacy:${legacyKey}`;
+      const previous = existingByToken.get(token);
+      if (typeId && !master && !previous) {
+        throw reportError(
+          400,
+          'TRANSPORT_LOAD_TYPE_INVALID',
+          'A selected load type is inactive, deleted, invalid, or outside the active team'
+        );
+      }
+      return {
+        typeId,
+        legacyKey,
+        name: previous?.name || master?.name || legacyName,
+        quantity
+      };
+    });
+    return payload;
+  }
+
   async function resolveMasterDataPayload({ context, input, existing, payload, session }) {
     const mappings = [
       {
@@ -417,7 +526,7 @@ function createTransportRecordService({
       if (!master) throw transportMasterSelectionInvalid();
       mapping.apply(master);
     }
-    return payload;
+    return resolveLoadItemsPayload({ context, input, existing, payload, session });
   }
   async function scopedRead({
     authContext,

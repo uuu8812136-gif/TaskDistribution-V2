@@ -27,9 +27,9 @@
           <text class="total-text">合计 {{ record.loadTotal || 0 }}</text>
         </view>
         <view class="load-list">
-          <view v-for="field in loadFields" :key="field.key" class="load-row">
-            <text class="load-label">{{ field.label }}</text>
-            <text class="load-value">{{ record.loadDetails?.[field.key] || 0 }}</text>
+          <view v-for="item in record.loadItems" :key="item.typeId || item.legacyKey" class="load-row">
+            <text class="load-label">{{ item.name }}</text>
+            <text class="load-value">{{ item.quantity || 0 }}</text>
           </view>
         </view>
       </view>
@@ -77,7 +77,6 @@ import {
 import { useUserStore } from '@/stores/user.js'
 import { formatDate } from '@/utils/format.js'
 import {
-  TRANSPORT_LOAD_FIELDS,
   buildOrgUnitOptions,
   orgUnitLabel,
   scopedReportingParams
@@ -183,7 +182,6 @@ export default {
       record,
       loading,
       openingFileId,
-      loadFields: TRANSPORT_LOAD_FIELDS,
       displayOrg,
       formatDate,
       photoName,

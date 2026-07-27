@@ -73,6 +73,22 @@ function createTransportRecordController({
       }
     },
 
+    async deleteMasterData(req, res, next) {
+      try {
+        const masterData = await masterDataService.deleteMasterData({
+          authContext: req.authContext,
+          req,
+          masterDataId: req.params.masterDataId
+        });
+        return res.json({
+          message: 'Transport load type deleted',
+          masterData
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async listOptions(req, res, next) {
       try {
         const result = await service.listOptions({
