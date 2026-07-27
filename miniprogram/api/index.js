@@ -331,6 +331,10 @@ export const getEquipmentRepairs = (params = {}) => {
   return get('/equipment/repairs', params)
 }
 
+export const getEquipmentRepairLocations = (params = {}) => {
+  return get('/equipment/repairs/locations', params)
+}
+
 export const getEquipmentRepair = (repairId, params = {}) => {
   return get(`/equipment/repairs/${repairId}`, params)
 }

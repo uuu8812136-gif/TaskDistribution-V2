@@ -8,6 +8,7 @@ const Message = require('../models/Message');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
+const User = require('../models/User');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
@@ -70,6 +71,17 @@ const DEPUTY_POSITION_KEYS = new Set([
   POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER,
   POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT
 ]);
+const REPAIR_STATUS_MESSAGE_LABELS = Object.freeze({
+  [EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING]: '待分部负责人审核',
+  [EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING]: '待分部负责人验收',
+  [EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING]: '待设备管理员接单',
+  [EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING]: '待设备管理员确认配件价格',
+  [EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING]: '待副经理/经理助理审批',
+  [EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING]: '待部门经理终审',
+  [EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR]: '已退回创建人',
+  [EQUIPMENT_REPAIR_STATUSES.COMPLETED]: '已完成',
+  [EQUIPMENT_REPAIR_STATUSES.VOIDED]: '已作废'
+});
 
 class EquipmentRepairError extends Error {
   constructor(status, code, message) {
@@ -122,6 +134,19 @@ function optionalString(value, field, maxLength, fallback = '') {
   const normalized = value.trim();
   if (normalized.length > maxLength) throw inputError(`${field} is too long`);
   return normalized;
+}
+
+function normalizeRepairLocations(values) {
+  if (!Array.isArray(values) || values.length > 100) {
+    throw inputError('locations must contain at most 100 entries');
+  }
+  const locations = values.map((value, index) => (
+    requiredString(value, `locations[${index}]`, 500)
+  ));
+  if (new Set(locations).size !== locations.length) {
+    throw inputError('locations must not contain duplicates');
+  }
+  return locations;
 }
 
 function requiredDate(value, field) {
@@ -207,13 +232,15 @@ function serializePartItem(item) {
   };
 }
 
-function serializeActionLog(item) {
+function serializeActionLog(item, actorNames = new Map()) {
+  const actorId = normalizeId(item.actorId);
   return {
     _id: normalizeId(item._id),
     action: item.action,
     fromStatus: item.fromStatus || null,
     toStatus: item.toStatus,
-    actorId: normalizeId(item.actorId),
+    actorId,
+    actorName: actorNames.get(actorId) || '',
     actorPositionKey: item.actorPositionKey || '',
     note: item.note || '',
     corrections: item.corrections || null,
@@ -221,7 +248,56 @@ function serializeActionLog(item) {
   };
 }
 
-function serializeRepair(document, availableActions = []) {
+const summaryDateFormatter = new Intl.DateTimeFormat('zh-CN', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23'
+});
+
+function summaryDate(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '-';
+  return summaryDateFormatter.format(date).replaceAll('/', '-');
+}
+
+function repairSummaryText(value) {
+  if (value.status !== EQUIPMENT_REPAIR_STATUSES.COMPLETED) return '';
+  const snapshot = value.equipmentSnapshot || {};
+  const lines = [
+    `报修部门：${snapshot.departmentName || '-'}`,
+    `报修分部：${snapshot.orgUnitName || '-'}`,
+    `设备编码：${snapshot.assetCode || '-'}`,
+    `设备名称：${snapshot.name || '-'}`,
+    `存放地点：${snapshot.location || '-'}`,
+    `车牌号：${value.plateNumber || snapshot.plateNumber || '-'}`
+  ];
+  if (value.type === EQUIPMENT_REPAIR_TYPES.FAULT_REPORT) {
+    lines.push(
+      `报修时间：${summaryDate(value.reportTime)}`,
+      `报修地点：${value.reportLocation || '-'}`,
+      `联系人：${value.contactName || '-'}`,
+      `联系电话：${value.contactPhone || '-'}`,
+      `故障描述：${value.faultDescription || '-'}`
+    );
+  } else {
+    lines.push(
+      `维修日期：${value.repairDate ? summaryDate(value.repairDate).slice(0, 10) : '-'}`,
+      `维修人：${value.repairerName || '-'}`,
+      `维修说明：${value.repairDescription || '-'}`
+    );
+    if (value.type === EQUIPMENT_REPAIR_TYPES.PARTS_REPAIR) {
+      lines.push(`维修金额：${((value.totalAmountCents || 0) / 100).toFixed(2)}元`);
+    }
+  }
+  return lines.join('\n');
+}
+
+function serializeRepair(document, availableActions = [], actorNames = new Map()) {
   const value = plain(document);
   return {
     _id: normalizeId(value._id),
@@ -248,7 +324,8 @@ function serializeRepair(document, availableActions = []) {
     returnedFromStatus: value.returnedFromStatus || null,
     lastActionBy: normalizeId(value.lastActionBy),
     lastActionAt: value.lastActionAt,
-    actionLogs: (value.actionLogs || []).map(serializeActionLog),
+    actionLogs: (value.actionLogs || []).map((item) => serializeActionLog(item, actorNames)),
+    summaryText: repairSummaryText(value),
     revision: value.revision,
     availableActions,
     createdAt: value.createdAt,
@@ -556,6 +633,7 @@ function createEquipmentRepairService({
   OrgUnitModel = OrgUnit,
   ProjectTeamModel = ProjectTeam,
   TeamMembershipModel = TeamMembership,
+  UserModel = User,
   auditService = createAuditService(),
   fileAssetService = null,
   connection = mongoose.connection
@@ -581,6 +659,23 @@ function createEquipmentRepairService({
       EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
       EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
     ].includes(order.status);
+  }
+
+  async function actorNameMap(documents, session = null) {
+    const actorIds = [...new Set(
+      (Array.isArray(documents) ? documents : [documents])
+        .flatMap((document) => (plain(document)?.actionLogs || []).map(({ actorId }) => normalizeId(actorId)))
+        .filter(Boolean)
+    )];
+    if (actorIds.length === 0) return new Map();
+    const query = UserModel.find({ _id: { $in: actorIds } }).select('_id name').lean();
+    if (session) query.session(session);
+    const users = await query;
+    return new Map(users.map((user) => [normalizeId(user._id), user.name || '']));
+  }
+
+  async function serializeRepairWithActors(document, availableActions = [], session = null) {
+    return serializeRepair(document, availableActions, await actorNameMap(document, session));
   }
 
   async function canActAsSubDepartmentLeader(context, order, session = null) {
@@ -640,7 +735,8 @@ function createEquipmentRepairService({
     let recipients = [];
     const membershipFilter = {
       teamId: order.teamId,
-      status: MEMBERSHIP_STATUSES.ACTIVE
+      status: MEMBERSHIP_STATUSES.ACTIVE,
+      permissionKeys: 'equipment.repair'
     };
     switch (order.status) {
       case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
@@ -701,7 +797,7 @@ function createEquipmentRepairService({
         : order.status === EQUIPMENT_REPAIR_STATUSES.VOIDED
           ? '设备维修流程已作废'
           : '设备维修待办';
-    const content = `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修单状态：${order.status}`;
+    const content = `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修单状态：${REPAIR_STATUS_MESSAGE_LABELS[order.status] || order.status}`;
     for (const recipient of recipients) {
       const updateOptions = { upsert: true };
       if (session) updateOptions.session = session;
@@ -788,55 +884,69 @@ function createEquipmentRepairService({
     });
     let filter = scopedFilter;
     const todoOnly = query.todo === 'true' || query.todo === true;
-    if (todoOnly && SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
-      const subDepartmentIds = await subDepartmentOrgUnitIds({
-        OrgUnitModel,
-        teamId,
-        orgUnitId: context.membership.orgUnitId
-      });
-      const canLead = await canMembershipActAsSubDepartmentLeader({
-        TeamMembershipModel,
-        OrgUnitModel,
-        membership: context.membership,
-        teamId,
-        orgUnitIds: subDepartmentIds
-      });
-      if (canLead) {
-        const leadershipScope = await leadershipOrgUnitIds({
-          OrgUnitModel,
-          teamId,
-          orgUnitIds: subDepartmentIds
+    if (todoOnly) {
+      const todoClauses = [];
+      if (context.isSuperAdmin === true) {
+        todoClauses.push(todoStatusFilter(context));
+      } else {
+        todoClauses.push({
+          status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR,
+          createdBy: context.userId
         });
-        filter = {
-          $or: [
-            scopedFilter,
-            {
-              $and: [
-                baseFilter,
-                {
-                  teamId,
-                  orgUnitId: { $in: leadershipScope },
-                  status: { $in: [
-                    EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
-                    EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
-                  ] }
-                }
-              ]
-            }
-          ]
-        };
+        if (SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
+          const subDepartmentIds = await subDepartmentOrgUnitIds({
+            OrgUnitModel,
+            teamId,
+            orgUnitId: context.membership.orgUnitId
+          });
+          const canLead = await canMembershipActAsSubDepartmentLeader({
+            TeamMembershipModel,
+            OrgUnitModel,
+            membership: context.membership,
+            teamId,
+            orgUnitIds: subDepartmentIds
+          });
+          if (canLead) {
+            todoClauses.push({
+              orgUnitId: { $in: await leadershipOrgUnitIds({
+                OrgUnitModel,
+                teamId,
+                orgUnitIds: subDepartmentIds
+              }) },
+              status: { $in: [
+                EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
+                EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
+              ] }
+            });
+          }
+        }
+        if (isAssetAdmin(context)) {
+          todoClauses.push({ status: { $in: [
+            EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING,
+            EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING
+          ] } });
+        }
+        if (isDeputyOrAssistant(context)) {
+          todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING });
+        }
+        if (isDepartmentManager(context)) {
+          todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING });
+        }
       }
+      filter = { $and: [baseFilter, { teamId }, { $or: todoClauses }] };
     }
     const [documents, total] = await Promise.all([
       EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
       EquipmentRepairOrderModel.countDocuments(filter)
     ]);
-    const repairs = (await Promise.all(
-      documents.map(async (document) => (
-        serializeRepair(document, await resolveAllowedActions(context, document))
-      ))
-    )).filter((repair) => query.todo !== 'true' && query.todo !== true || repair.availableActions.length > 0);
-    return { repairs, total: todoOnly ? repairs.length : total, page, pageSize };
+    const [availableActions, names] = await Promise.all([
+      Promise.all(documents.map((document) => resolveAllowedActions(context, document))),
+      actorNameMap(documents)
+    ]);
+    const repairs = documents.map((document, index) => (
+      serializeRepair(document, availableActions[index], names)
+    )).filter((repair) => !todoOnly || repair.availableActions.length > 0);
+    return { repairs, total, page, pageSize };
   }
 
   async function getRepair({ authContext, requestedTeamId, method = 'GET', repairId }) {
@@ -848,17 +958,58 @@ function createEquipmentRepairService({
         _id: normalizeDetailId(repairId),
         teamId: context.activeTeamId
       }).lean();
-      if (
-        candidate &&
-        isSubDepartmentStage(candidate) &&
-        await belongsToOrderSubDepartment(context, candidate) &&
-        await canActAsSubDepartmentLeader(context, candidate)
-      ) {
+      if (candidate && (await resolveAllowedActions(context, candidate)).length > 0) {
         document = candidate;
       }
     }
     if (!document) throw notFound();
-    return serializeRepair(document, await resolveAllowedActions(context, document));
+    return serializeRepairWithActors(document, await resolveAllowedActions(context, document));
+  }
+
+  async function listRepairLocations({ authContext, requestedTeamId, method = 'GET' }) {
+    const context = assertBusinessContext(authContext);
+    assertPermission(context, 'equipment.view');
+    const teamId = await resolveReadTeamId(context, requestedTeamId);
+    const team = await ProjectTeamModel.findOne({ _id: teamId, status: TEAM_STATUSES.ACTIVE })
+      .select('settings.repairLocations')
+      .lean();
+    if (!team) throw notFound();
+    return { locations: team.settings?.repairLocations || [] };
+  }
+
+  async function updateRepairLocations({ authContext, req, input = {} }) {
+    const context = assertTeamContext(authContext);
+    assertPermission(context, 'equipment.edit');
+    if (!input || typeof input !== 'object' || Array.isArray(input) ||
+        Object.keys(input).some((key) => !['locations', 'reason'].includes(key))) {
+      throw inputError('Only locations and reason can be updated');
+    }
+    const locations = normalizeRepairLocations(input.locations);
+    const reason = optionalString(input.reason, 'reason', 2000);
+    return runRepairTransaction(async (session) => {
+      const team = await execute(ProjectTeamModel.findOne({
+        _id: context.activeTeamId,
+        status: TEAM_STATUSES.ACTIVE
+      }), session);
+      if (!team) throw notFound();
+      const before = { repairLocations: [...(team.settings?.repairLocations || [])] };
+      team.settings = team.settings || {};
+      team.settings.repairLocations = locations;
+      await team.save({ session: session || undefined });
+      await auditService.record({
+        req,
+        authContext: context,
+        action: AUDIT_ACTIONS.UPDATE,
+        resourceType: AUDIT_RESOURCE_TYPES.PROJECT_TEAM,
+        resourceId: team._id,
+        before,
+        after: { repairLocations: locations },
+        reason: reason || null,
+        targetTeamId: context.activeTeamId,
+        session
+      });
+      return locations;
+    });
   }
 
   function createPayload(input, type) {
@@ -918,7 +1069,11 @@ function createEquipmentRepairService({
             createdBy: context.userId,
             idempotencyKey
           }), session);
-          if (existing) return serializeRepair(existing, await resolveAllowedActions(context, existing, session));
+          if (existing) return serializeRepairWithActors(
+            existing,
+            await resolveAllowedActions(context, existing, session),
+            session
+          );
         }
         const asset = await execute(EquipmentAssetModel.findOne(assetFilter), session);
         if (!asset) throw repairError(404, 'EQUIPMENT_NOT_FOUND', 'Equipment does not exist');
@@ -978,7 +1133,11 @@ function createEquipmentRepairService({
           await document.save({ session: session || undefined });
         }
         await notifyCurrentStage(document, session);
-        const after = serializeRepair(document, await resolveAllowedActions(context, document, session));
+        const after = await serializeRepairWithActors(
+          document,
+          await resolveAllowedActions(context, document, session),
+          session
+        );
         await auditService.record({
           req,
           authContext: context,
@@ -998,7 +1157,10 @@ function createEquipmentRepairService({
           createdBy: context.userId,
           idempotencyKey
         });
-        if (existing) return serializeRepair(existing, await resolveAllowedActions(context, existing));
+        if (existing) return serializeRepairWithActors(
+          existing,
+          await resolveAllowedActions(context, existing)
+        );
       }
       throw error;
     }
@@ -1121,14 +1283,9 @@ function createEquipmentRepairService({
           session
         });
       }
-      if (
-        !current &&
-        candidate &&
-        isSubDepartmentStage(candidate) &&
-        await belongsToOrderSubDepartment(context, candidate, session) &&
-        await canActAsSubDepartmentLeader(context, candidate, session)
-      ) {
-        current = candidate;
+      if (!current && candidate) {
+        const candidateActions = await resolveAllowedActions(context, candidate, session);
+        if (candidateActions.includes(input.action)) current = candidate;
       }
       if (!current) throw notFound();
       if (current.revision !== revision) {
@@ -1138,7 +1295,7 @@ function createEquipmentRepairService({
       if (!available.includes(input.action)) {
         throw repairError(403, 'EQUIPMENT_REPAIR_ACTION_FORBIDDEN', 'Current role cannot perform this repair action');
       }
-      const before = serializeRepair(current, available);
+      const before = await serializeRepairWithActors(current, available, session);
       let toStatus;
       let setValues = {};
       let correctionSnapshot = null;
@@ -1235,7 +1392,11 @@ function createEquipmentRepairService({
         throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order changed concurrently');
       }
       await notifyCurrentStage(updated, session);
-      const after = serializeRepair(updated, await resolveAllowedActions(context, updated, session));
+      const after = await serializeRepairWithActors(
+        updated,
+        await resolveAllowedActions(context, updated, session),
+        session
+      );
       await auditService.record({
         req,
         authContext: context,
@@ -1347,8 +1508,10 @@ function createEquipmentRepairService({
     createRepair,
     exportRepairs,
     getRepair,
+    listRepairLocations,
     listRepairs,
-    transitionRepair
+    transitionRepair,
+    updateRepairLocations
   });
 }
 
@@ -1356,6 +1519,8 @@ module.exports = {
   EquipmentRepairError,
   allowedActions,
   createEquipmentRepairService,
+  normalizeRepairLocations,
   normalizePricedParts,
+  repairSummaryText,
   serializeRepair
 };

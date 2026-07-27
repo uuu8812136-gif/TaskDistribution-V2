@@ -13,6 +13,25 @@ const projectTeamSettingsSchema = new mongoose.Schema({
     trim: true,
     maxlength: 64,
     default: 'Asia/Shanghai'
+  },
+  repairLocations: {
+    type: [{
+      type: String,
+      trim: true,
+      minlength: 1,
+      maxlength: 500
+    }],
+    default: [],
+    validate: [
+      {
+        validator: (values) => values.length <= 100,
+        message: 'repairLocations cannot contain more than 100 entries'
+      },
+      {
+        validator: (values) => new Set(values).size === values.length,
+        message: 'repairLocations must not contain duplicates'
+      }
+    ]
   }
 }, {
   _id: false,

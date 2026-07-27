@@ -1,7 +1,7 @@
 export const REPAIR_TYPES = Object.freeze([
-  Object.freeze({ value: 'FAULT_REPORT', label: '故障报修' }),
-  Object.freeze({ value: 'PARTS_REPAIR', label: '需更换配件维修' }),
-  Object.freeze({ value: 'NO_PARTS_REPAIR', label: '不需换件维修' })
+  Object.freeze({ value: 'FAULT_REPORT', label: '故障报修', shortLabel: '故障报修' }),
+  Object.freeze({ value: 'PARTS_REPAIR', label: '需更换配件维修', shortLabel: '更换配件' }),
+  Object.freeze({ value: 'NO_PARTS_REPAIR', label: '不需换件维修', shortLabel: '无需换件' })
 ])
 
 export const REPAIR_STATUS_LABELS = Object.freeze({
@@ -29,12 +29,25 @@ export const REPAIR_ACTION_LABELS = Object.freeze({
   VOID: '作废流程'
 })
 
+export const REPAIR_POSITION_LABELS = Object.freeze({
+  SUPER_ADMIN: '超级管理员',
+  DEPARTMENT_MANAGER: '部门经理',
+  DEPARTMENT_DEPUTY_MANAGER: '部门副经理',
+  DEPARTMENT_MANAGER_ASSISTANT: '部门经理助理',
+  SUB_DEPARTMENT_MANAGER: '分部经理',
+  SUB_DEPARTMENT_DEPUTY_MANAGER: '分部副经理',
+  SUPERVISOR: '主管',
+  TEAM_LEADER: '班组长',
+  EMPLOYEE: '员工'
+})
+
 export const repairTypeLabel = (value) => (
   REPAIR_TYPES.find((item) => item.value === value)?.label || value || '-'
 )
 
 export const repairStatusLabel = (value) => REPAIR_STATUS_LABELS[value] || value || '-'
 export const repairActionLabel = (value) => REPAIR_ACTION_LABELS[value] || value || '-'
+export const repairPositionLabel = (value) => REPAIR_POSITION_LABELS[value] || '未标注岗位'
 
 export function repairStatusTone(value) {
   if (value === 'COMPLETED') return 'success'

@@ -397,7 +397,7 @@ test('Asia/Shanghai execution windows use configurable weekly and monthly anchor
   assert.equal(monthEnd.scheduledFor.toISOString(), '2030-02-27T23:00:00.000Z');
 });
 
-test('worker time progression sends inspection and maintenance roles once', async () => {
+test('worker time progression sends branch-scoped inspection and maintenance reminders once', async () => {
   const baseClock = () => new Date('2030-01-15T01:30:00.000Z');
   const routineService = createEquipmentRoutineService({ clock: baseClock });
   await createRule(routineService, 'INSPECTION', {
@@ -416,18 +416,20 @@ test('worker time progression sends inspection and maintenance roles once', asyn
   const worker = createEquipmentRoutineWorkerService({ routineService, clock: baseClock });
 
   await worker.runOnce({ now: '2030-01-15T01:30:00.000Z', teamId: fixture.ids.team });
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.employee }), 1);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.subManager }), 2);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.assetAdmin }), 1);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.deputy }), 1);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.departmentManager }), 1);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.employee }), 0);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.subManager }), 4);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.subDeputy }), 4);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.assetAdmin }), 0);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.deputy }), 0);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.departmentManager }), 0);
 
   await Promise.all([
     worker.runOnce({ now: '2030-01-15T02:30:00.000Z', teamId: fixture.ids.team }),
     worker.runOnce({ now: '2030-01-15T02:30:00.000Z', teamId: fixture.ids.team })
   ]);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.assetAdmin }), 2);
-  assert.equal(await Message.countDocuments({ recipient: fixture.ids.departmentManager }), 2);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.subManager }), 5);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.subDeputy }), 5);
+  assert.equal(await Message.countDocuments({ recipient: fixture.ids.employee }), 0);
   const totalAfterConcurrentRun = await Message.countDocuments({});
   await worker.runOnce({ now: '2030-01-15T02:30:00.000Z', teamId: fixture.ids.team });
   assert.equal(await Message.countDocuments({}), totalAfterConcurrentRun);

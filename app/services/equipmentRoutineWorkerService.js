@@ -304,18 +304,18 @@ function createEquipmentRoutineWorkerService({
       levels.push({
         key: 'INITIAL',
         thresholdMs: 0,
-        group: RECIPIENT_GROUPS.EXECUTORS_AND_SUB_DEPARTMENT_MANAGER
+        group: RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER
       });
       levels.push({
         key: 'ESCALATED',
         thresholdMs: config.inspectionEscalationMinutes * 60 * 1000,
-        group: RECIPIENT_GROUPS.ASSET_ADMIN_AND_DEPARTMENT_MANAGER
+        group: RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER
       });
     } else {
       levels.push(
         { key: 'DAY_1', thresholdMs: DAY_MS, group: RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER },
-        { key: 'DAY_2', thresholdMs: 2 * DAY_MS, group: RECIPIENT_GROUPS.ASSET_ADMIN },
-        { key: 'DAY_3', thresholdMs: 3 * DAY_MS, group: RECIPIENT_GROUPS.DEPUTY_ASSISTANT_AND_MANAGER }
+        { key: 'DAY_2', thresholdMs: 2 * DAY_MS, group: RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER },
+        { key: 'DAY_3', thresholdMs: 3 * DAY_MS, group: RECIPIENT_GROUPS.SUB_DEPARTMENT_MANAGER }
       );
     }
     let attempted = 0;

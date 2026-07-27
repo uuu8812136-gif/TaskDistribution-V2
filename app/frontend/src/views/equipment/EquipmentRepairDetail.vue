@@ -72,6 +72,17 @@
           </el-table>
         </section>
 
+        <section v-if="repair.summaryText" class="info-band summary-band">
+          <div class="section-heading">
+            <h2>维修摘要</h2>
+            <el-button type="primary" plain @click="copyRepairSummary">
+              <el-icon><CopyDocument /></el-icon>
+              复制摘要
+            </el-button>
+          </div>
+          <pre>{{ repair.summaryText }}</pre>
+        </section>
+
         <section v-if="repair.availableActions.length" class="action-band">
           <h2>当前可处理</h2>
           <div class="action-buttons">
@@ -100,7 +111,7 @@
                 <strong>{{ repairActionLabel(item.action) }}</strong>
                 <span>{{ repairStatusLabel(item.fromStatus) }} → {{ repairStatusLabel(item.toStatus) }}</span>
                 <p v-if="item.note">{{ item.note }}</p>
-                <small>{{ item.actorPositionKey || '用户' }} · {{ shortId(item.actorId) }}</small>
+                <small>{{ item.actorName || '未知操作人' }} · {{ repairPositionLabel(item.actorPositionKey) }}</small>
               </div>
             </el-timeline-item>
           </el-timeline>
@@ -162,7 +173,18 @@
             <el-form-item label="报修时间" required>
               <el-date-picker v-model="actionForm.reportTime" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" class="full-width" />
             </el-form-item>
-            <el-form-item label="报修地点" required><el-input v-model="actionForm.reportLocation" /></el-form-item>
+            <el-form-item label="报修地点" required>
+              <el-select
+                v-model="actionForm.reportLocation"
+                filterable
+                allow-create
+                default-first-option
+                class="full-width"
+                placeholder="选择或输入报修地点"
+              >
+                <el-option v-for="location in repairLocations" :key="location" :label="location" :value="location" />
+              </el-select>
+            </el-form-item>
             <el-form-item label="车牌号"><el-input v-model="actionForm.plateNumber" /></el-form-item>
             <el-form-item label="联系人" required><el-input v-model="actionForm.contactName" /></el-form-item>
             <el-form-item label="联系电话" required><el-input v-model="actionForm.contactPhone" /></el-form-item>
@@ -219,11 +241,12 @@ import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import AuthenticatedAttachments from '@/components/AuthenticatedAttachments.vue'
 import { requestErrorMessage } from '@/utils/request'
-import { getEquipmentRepair, transitionEquipmentRepair } from '@/api/equipment'
+import { getEquipmentRepair, getEquipmentRepairLocations, transitionEquipmentRepair } from '@/api/equipment'
 import {
   REPAIR_ACTION_TONES,
   emptyRepairPart,
   repairActionLabel,
+  repairPositionLabel,
   repairStatusLabel,
   repairStatusTone,
   repairTypeLabel
@@ -232,6 +255,7 @@ import {
 const route = useRoute()
 const router = useRouter()
 const repair = ref(null)
+const repairLocations = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const actionVisible = ref(false)
@@ -278,7 +302,6 @@ function emptyActionForm() {
 
 const displayDate = (value) => value ? dayjs(value).format('YYYY-MM-DD') : '-'
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
-const shortId = (value) => value ? `用户 ${String(value).slice(-6)}` : '-'
 const lineAmount = (row) => Math.round((Number(row.quantity) || 0) * (Number(row.unitPrice) || 0) * 100) / 100
 
 async function loadRepair() {
@@ -288,6 +311,33 @@ async function loadRepair() {
     repair.value = result.repair
   } finally {
     loading.value = false
+  }
+}
+
+async function loadRepairLocations() {
+  const result = await getEquipmentRepairLocations(teamId.value ? { teamId: teamId.value } : {})
+  repairLocations.value = result.locations || []
+}
+
+async function copyRepairSummary() {
+  const text = repair.value?.summaryText || ''
+  if (!text) return
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      textarea.remove()
+    }
+    ElMessage.success('维修摘要已复制')
+  } catch {
+    ElMessage.error('复制失败，请使用系统复制功能')
   }
 }
 
@@ -400,7 +450,7 @@ async function submitAction() {
   }
 }
 
-onMounted(loadRepair)
+onMounted(() => Promise.all([loadRepair(), loadRepairLocations()]))
 </script>
 
 <style scoped>
@@ -415,6 +465,7 @@ onMounted(loadRepair)
 .info-band h2, .action-band h2 { margin: 0 0 12px; color: #1f2733; font-size: 17px; letter-spacing: 0; }
 .section-heading { justify-content: space-between; }
 .section-heading strong { color: #245d3f; }
+.summary-band pre { margin: 0; padding: 14px 16px; border: 1px solid #dce4ee; border-radius: 6px; background: #f7faff; color: #344054; font: inherit; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .action-band { border-top-color: #9cc7ad; }
 .action-buttons { flex-wrap: wrap; }
 .timeline-content { display: grid; gap: 5px; color: #344054; }

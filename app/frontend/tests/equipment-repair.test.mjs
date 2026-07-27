@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   REPAIR_ACTION_LABELS,
@@ -47,4 +48,17 @@ test('new dynamic part rows receive stable non-empty keys', () => {
   assert.ok(first.itemKey)
   assert.notEqual(first.itemKey, second.itemKey)
   assert.equal(first.name, '')
+})
+
+test('repair pages expose maintained locations, readable actors, and a copyable completion summary', () => {
+  const list = readFileSync(new URL('../src/views/equipment/EquipmentRepairs.vue', import.meta.url), 'utf8')
+  const detail = readFileSync(new URL('../src/views/equipment/EquipmentRepairDetail.vue', import.meta.url), 'utf8')
+
+  assert.match(list, /维护报修地点/)
+  assert.match(list, /allow-create/)
+  assert.match(list, /filterable/)
+  assert.match(detail, /维修摘要/)
+  assert.match(detail, /复制摘要/)
+  assert.match(detail, /item\.actorName \|\| '未知操作人'/)
+  assert.match(detail, /repairPositionLabel\(item\.actorPositionKey\)/)
 })

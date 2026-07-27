@@ -31,6 +31,31 @@ function createEquipmentRepairController({ service = createEquipmentRepairServic
       }
     },
 
+    async listLocations(req, res, next) {
+      try {
+        return res.json(await service.listRepairLocations({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method
+        }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async updateLocations(req, res, next) {
+      try {
+        const locations = await service.updateRepairLocations({
+          authContext: req.authContext,
+          req,
+          input: req.body || {}
+        });
+        return res.json({ message: 'Repair locations updated', locations });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async create(req, res, next) {
       try {
         const repair = await service.createRepair({

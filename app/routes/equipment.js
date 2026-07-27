@@ -155,6 +155,14 @@ router.post(
 );
 
 router.get('/repairs/export', equipmentExport, equipmentRepairController.export);
+router.get('/repairs/locations', equipmentView, equipmentRepairController.listLocations);
+router.put(
+  '/repairs/locations',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRepairController.updateLocations
+);
 router.get('/repairs', equipmentView, equipmentRepairController.list);
 router.post(
   '/repairs',

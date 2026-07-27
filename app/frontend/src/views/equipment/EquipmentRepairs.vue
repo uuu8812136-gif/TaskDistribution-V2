@@ -6,6 +6,10 @@
         <p>记录设备报修、维修、配件和审批 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
+        <el-button v-if="canManageLocations" @click="openLocationManagement">
+          <el-icon><Edit /></el-icon>
+          报修地点
+        </el-button>
         <el-button v-if="canExport" :loading="exporting" @click="handleExport">
           <el-icon><Download /></el-icon>
           导出
@@ -136,7 +140,16 @@
               <el-date-picker v-model="createForm.reportTime" type="datetime" value-format="YYYY-MM-DDTHH:mm:ssZ" class="full-width" />
             </el-form-item>
             <el-form-item label="报修地点" prop="reportLocation">
-              <el-input v-model="createForm.reportLocation" maxlength="500" />
+              <el-select
+                v-model="createForm.reportLocation"
+                filterable
+                allow-create
+                default-first-option
+                class="full-width"
+                placeholder="选择或输入报修地点"
+              >
+                <el-option v-for="location in repairLocations" :key="location" :label="location" :value="location" />
+              </el-select>
             </el-form-item>
             <el-form-item label="车牌号">
               <el-input v-model="createForm.plateNumber" maxlength="100" />
@@ -211,6 +224,30 @@
         <el-button type="primary" :loading="submitting" @click="submitCreate">提交</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="locationVisible"
+      title="维护报修地点"
+      width="min(620px, 94vw)"
+      destroy-on-close
+      append-to-body
+    >
+      <el-select
+        v-model="locationDraft"
+        multiple
+        filterable
+        allow-create
+        default-first-option
+        class="full-width"
+        placeholder="输入地点后按回车添加"
+      >
+        <el-option v-for="location in repairLocations" :key="location" :label="location" :value="location" />
+      </el-select>
+      <template #footer>
+        <el-button @click="locationVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingLocations" @click="saveLocations">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -223,7 +260,9 @@ import {
   createEquipmentRepair,
   exportEquipmentRepairs,
   getEquipmentList,
-  getEquipmentRepairs
+  getEquipmentRepairLocations,
+  getEquipmentRepairs,
+  updateEquipmentRepairLocations
 } from '@/api/equipment'
 import { deleteFile, getFileMetadata, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
@@ -249,8 +288,12 @@ const loading = ref(false)
 const submitting = ref(false)
 const exporting = ref(false)
 const createVisible = ref(false)
+const locationVisible = ref(false)
+const savingLocations = ref(false)
 const createFormRef = ref(null)
 const photoFileList = ref([])
+const repairLocations = ref([])
+const locationDraft = ref([])
 const selectedTeamId = ref(String(route.query.teamId || ''))
 let repairsRequestId = 0
 
@@ -258,6 +301,7 @@ const filters = reactive({ keyword: '', type: '', status: '', todo: false, page:
 const createForm = reactive(emptyCreateForm())
 const canCreate = computed(() => session.can('equipment.repair', { write: true, teamRequired: true }))
 const canExport = computed(() => session.hasPermission('equipment.export'))
+const canManageLocations = computed(() => session.can('equipment.edit', { write: true, teamRequired: true }))
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
@@ -334,6 +378,15 @@ async function loadEquipmentOptions() {
   equipmentOptions.value = result.equipment || []
 }
 
+async function loadRepairLocations() {
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    repairLocations.value = []
+    return
+  }
+  const result = await getEquipmentRepairLocations(requestTeamParams.value)
+  repairLocations.value = result.locations || []
+}
+
 function applyFilters() {
   filters.page = 1
   loadRepairs()
@@ -348,6 +401,25 @@ function handleTeamChange() {
   filters.page = 1
   router.replace({ query: selectedTeamId.value ? { teamId: selectedTeamId.value } : {} })
   loadRepairs()
+  loadRepairLocations()
+}
+
+function openLocationManagement() {
+  locationDraft.value = [...repairLocations.value]
+  locationVisible.value = true
+}
+
+async function saveLocations() {
+  const locations = [...new Set(locationDraft.value.map((value) => value.trim()).filter(Boolean))]
+  savingLocations.value = true
+  try {
+    const result = await updateEquipmentRepairLocations({ locations })
+    repairLocations.value = result.locations || []
+    locationVisible.value = false
+    ElMessage.success('报修地点已更新')
+  } finally {
+    savingLocations.value = false
+  }
 }
 
 function openCreate() {
@@ -453,7 +525,7 @@ async function handleExport() {
 }
 
 onMounted(async () => {
-  await Promise.all([loadRepairs(), loadEquipmentOptions()])
+  await Promise.all([loadRepairs(), loadEquipmentOptions(), loadRepairLocations()])
   if (route.query.create === '1' && canCreate.value) openCreate()
 })
 </script>

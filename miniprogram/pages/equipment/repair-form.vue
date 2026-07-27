@@ -19,7 +19,7 @@
           :class="{ active: form.type === item.value }"
           @click="form.type = item.value"
         >
-          {{ item.label }}
+          {{ item.shortLabel || item.label }}
         </button>
       </view>
     </view>
@@ -37,7 +37,15 @@
           <view class="picker-value">{{ form.reportClock || '选择时间' }}</view>
         </picker>
       </label>
-      <label class="field-row"><text>地点</text><input v-model="form.reportLocation" maxlength="500" placeholder="请输入现场地点" /></label>
+      <label class="field-row">
+        <text>地点</text>
+        <view class="location-control">
+          <input v-model="form.reportLocation" maxlength="500" placeholder="请输入现场地点" />
+          <picker v-if="repairLocations.length" :range="repairLocations" @change="selectRepairLocation">
+            <text>选择</text>
+          </picker>
+        </view>
+      </label>
       <label class="field-row"><text>车牌号</text><input v-model="form.plateNumber" maxlength="100" placeholder="选填" /></label>
       <label class="field-row"><text>联系人</text><input v-model="form.contactName" maxlength="100" placeholder="请输入联系人" /></label>
       <label class="field-row"><text>联系电话</text><input v-model="form.contactPhone" type="number" maxlength="50" placeholder="请输入联系电话" /></label>
@@ -57,7 +65,7 @@
           </view>
           <button v-if="photos.length < 5" class="camera-button" @click="capturePhotos">
             <text class="camera-icon">＋</text>
-            <text>现场拍照</text>
+            <text>拍照/相册</text>
           </button>
         </view>
       </view>
@@ -105,6 +113,7 @@ import {
   createEquipmentRepair,
   deleteTemporaryPrivateFile,
   getEquipmentDetail,
+  getEquipmentRepairLocations,
   getPrivateFileMetadataSilently,
   uploadEquipmentRepairPhoto
 } from '@/api/index.js'
@@ -128,6 +137,7 @@ export default {
     const equipment = ref(null)
     const submitting = ref(false)
     const photos = ref([])
+    const repairLocations = ref([])
     const form = reactive({
       type: 'FAULT_REPORT',
       reportDate: today(),
@@ -157,7 +167,7 @@ export default {
         const result = await uni.chooseMedia({
           count: remaining,
           mediaType: ['image'],
-          sourceType: ['camera'],
+          sourceType: ['camera', 'album'],
           sizeType: ['compressed'],
           camera: 'back'
         })
@@ -168,7 +178,7 @@ export default {
         })))
       } catch (error) {
         if (!String(error?.errMsg || '').includes('cancel')) {
-          uni.showToast({ title: '现场拍照失败', icon: 'none' })
+          uni.showToast({ title: '选择照片失败', icon: 'none' })
         }
       }
     }
@@ -178,6 +188,9 @@ export default {
       urls: photos.value.map((item) => item.tempFilePath)
     })
     const removePhoto = (index) => photos.value.splice(index, 1)
+    const selectRepairLocation = (event) => {
+      form.reportLocation = repairLocations.value[Number(event.detail.value)] || form.reportLocation
+    }
     const addPart = () => {
       if (form.partItems.length >= 100) return uni.showToast({ title: '最多100条配件', icon: 'none' })
       form.partItems.push(createRepairPart(form.partItems.length))
@@ -193,7 +206,7 @@ export default {
             !form.contactName.trim() || !form.contactPhone.trim() || !form.faultDescription.trim()) {
           return '请完整填写报修信息'
         }
-        if (photos.value.length < 1 || photos.value.length > 5) return '请现场拍摄1-5张照片'
+        if (photos.value.length < 1 || photos.value.length > 5) return '请上传1-5张现场照片'
       } else {
         if (!form.repairDate || !form.repairerName.trim()) return '请填写维修日期和维修人'
         if (form.type === 'PARTS_REPAIR' && form.partItems.some((item) => !item.name.trim())) {
@@ -268,6 +281,8 @@ export default {
         uni.showToast({ title: '设备参数缺失', icon: 'none' })
         return
       }
+      const locationsResult = await getEquipmentRepairLocations()
+      repairLocations.value = locationsResult.locations || []
       await loadEquipment()
       if (REPAIR_TYPES.some((item) => item.value === options.type)) form.type = options.type
     })
@@ -277,10 +292,12 @@ export default {
       equipment,
       form,
       photos,
+      repairLocations,
       submitting,
       capturePhotos,
       previewPhoto,
       removePhoto,
+      selectRepairLocation,
       addPart,
       removePart,
       submit
@@ -298,13 +315,16 @@ export default {
 .asset-meta { display: flex; flex-wrap: wrap; gap: 10rpx 28rpx; margin-top: 18rpx; color: #667085; font-size: 23rpx; }
 .section-title, .parts-heading > text, .photo-heading > text:first-child { color: #1f2733; font-size: 27rpx; font-weight: 600; }
 .type-segment { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18rpx; border: 1px solid #cfd8e3; border-radius: 8rpx; overflow: hidden; }
-.type-option { min-width: 0; min-height: 82rpx; padding: 10rpx; border-radius: 0; color: #52606d; background: #fff; font-size: 22rpx; line-height: 1.4; overflow-wrap: anywhere; }
+.type-option { min-width: 0; min-height: 88rpx; padding: 10rpx 6rpx; border-radius: 0; color: #52606d; background: #fff; font-size: 24rpx; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .type-option + .type-option { border-left: 1px solid #cfd8e3; }
 .type-option.active { color: #fff; background: #4096ff; }
 .field-list { display: grid; gap: 0; }
 .field-row { display: grid; grid-template-columns: 160rpx minmax(0, 1fr); align-items: center; min-height: 92rpx; border-bottom: 1px solid #e8edf3; }
 .field-row > text, .field-block > text { color: #344054; font-size: 24rpx; }
 .field-row input, .picker-value { min-width: 0; color: #1f2733; font-size: 25rpx; text-align: right; }
+.location-control { display: flex; align-items: center; justify-content: flex-end; gap: 14rpx; min-width: 0; }
+.location-control input { flex: 1; }
+.location-control picker { flex: 0 0 auto; padding: 8rpx 12rpx; border-left: 1px solid #dce4ee; color: #1677ff; font-size: 22rpx; }
 .field-block { display: grid; gap: 14rpx; padding: 22rpx 0; border-bottom: 1px solid #e8edf3; }
 .field-block textarea { width: 100%; height: 180rpx; padding: 18rpx; box-sizing: border-box; border: 1px solid #dce4ee; border-radius: 8rpx; font-size: 25rpx; }
 .photo-field, .parts-area { padding-top: 24rpx; }

@@ -35,6 +35,18 @@ export const REPAIR_ACTION_TONES = Object.freeze({
   VOID: 'danger'
 })
 
+export const REPAIR_POSITION_LABELS = Object.freeze({
+  SUPER_ADMIN: '超级管理员',
+  DEPARTMENT_MANAGER: '部门经理',
+  DEPARTMENT_DEPUTY_MANAGER: '部门副经理',
+  DEPARTMENT_MANAGER_ASSISTANT: '部门经理助理',
+  SUB_DEPARTMENT_MANAGER: '分部经理',
+  SUB_DEPARTMENT_DEPUTY_MANAGER: '分部副经理',
+  SUPERVISOR: '主管',
+  TEAM_LEADER: '班组长',
+  EMPLOYEE: '员工'
+})
+
 export function repairTypeLabel(value) {
   return REPAIR_TYPE_OPTIONS.find((item) => item.value === value)?.label || value || '-'
 }
@@ -52,6 +64,10 @@ export function repairStatusTone(value) {
 
 export function repairActionLabel(value) {
   return REPAIR_ACTION_LABELS[value] || value || '-'
+}
+
+export function repairPositionLabel(value) {
+  return REPAIR_POSITION_LABELS[value] || '未标注岗位'
 }
 
 let partSequence = 0

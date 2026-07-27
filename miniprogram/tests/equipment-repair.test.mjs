@@ -30,6 +30,26 @@ test('mini program part rows and preview amounts are deterministic', () => {
   assert.equal(repairLineAmount({ quantity: 1.5, unitPrice: 12.34 }), 18.51)
 })
 
+test('mini program repair controls stay compact and expose locations, album photos, and readable history', () => {
+  const form = readFileSync(new URL('../pages/equipment/repair-form.vue', import.meta.url), 'utf8')
+  const detail = readFileSync(new URL('../pages/equipment/repair-detail.vue', import.meta.url), 'utf8')
+
+  assert.deepEqual(REPAIR_TYPES.map((item) => item.shortLabel), [
+    '故障报修',
+    '更换配件',
+    '无需换件'
+  ])
+  assert.match(form, /sourceType: \['camera', 'album'\]/)
+  assert.match(form, /拍照\/相册/)
+  assert.match(form, /getEquipmentRepairLocations/)
+  assert.match(detail, /维修摘要/)
+  assert.match(detail, /copyRepairSummary/)
+  assert.match(detail, /action === primaryAction/)
+  assert.match(detail, /grid-column: 1 \/ -1/)
+  assert.match(detail, /item\.actorName \|\| '未知操作人'/)
+  assert.match(detail, /repairPositionLabel\(item\.actorPositionKey\)/)
+})
+
 test('global read-only repair navigation carries an explicit team through list, detail, and files', () => {
   const workbench = readFileSync(new URL('../pages/workbench/index.vue', import.meta.url), 'utf8')
   const list = readFileSync(new URL('../pages/equipment/repair-list.vue', import.meta.url), 'utf8')

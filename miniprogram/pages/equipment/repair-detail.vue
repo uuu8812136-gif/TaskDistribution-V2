@@ -57,13 +57,25 @@
       </view>
     </view>
 
+    <view v-if="repair?.summaryText" class="section-band summary-band">
+      <view class="section-heading">
+        <text class="section-title">维修摘要</text>
+        <button class="copy-summary" @click="copyRepairSummary">复制</button>
+      </view>
+      <text class="summary-text">{{ repair.summaryText }}</text>
+    </view>
+
     <view v-if="repair?.availableActions?.length" class="section-band action-band">
       <text class="section-title">当前待办</text>
       <view class="action-grid">
         <button
           v-for="action in repair.availableActions"
           :key="action"
-          :class="{ danger: ['REJECT_TO_CREATOR', 'REJECT_TO_PREVIOUS', 'VOID'].includes(action), active: selectedAction === action }"
+          :class="{
+            primary: action === primaryAction,
+            danger: ['REJECT_TO_CREATOR', 'REJECT_TO_PREVIOUS', 'VOID'].includes(action),
+            active: selectedAction === action
+          }"
           @click="selectAction(action)"
         >
           {{ repairActionLabel(action) }}
@@ -94,7 +106,15 @@
         </template>
 
         <template v-if="showFaultResubmit">
-          <label class="field-row"><text>报修地点</text><input v-model="actionForm.reportLocation" /></label>
+          <label class="field-row">
+            <text>报修地点</text>
+            <view class="location-control">
+              <input v-model="actionForm.reportLocation" />
+              <picker v-if="repairLocations.length" :range="repairLocations" @change="selectRepairLocation">
+                <text>选择</text>
+              </picker>
+            </view>
+          </label>
           <label class="field-row"><text>车牌号</text><input v-model="actionForm.plateNumber" /></label>
           <label class="field-row"><text>联系人</text><input v-model="actionForm.contactName" /></label>
           <label class="field-row"><text>联系电话</text><input v-model="actionForm.contactPhone" type="number" /></label>
@@ -131,7 +151,7 @@
             <strong>{{ repairActionLabel(item.action) }}</strong>
             <text>{{ repairStatusLabel(item.fromStatus) }} → {{ repairStatusLabel(item.toStatus) }}</text>
             <text v-if="item.note" class="timeline-note">{{ item.note }}</text>
-            <small>{{ formatDate(item.actedAt, 'YYYY-MM-DD HH:mm') }} · {{ item.actorPositionKey || '用户' }}</small>
+            <small>{{ formatDate(item.actedAt, 'YYYY-MM-DD HH:mm') }} · {{ item.actorName || '未知操作人' }} · {{ repairPositionLabel(item.actorPositionKey) }}</small>
           </view>
         </view>
       </view>
@@ -145,6 +165,7 @@ import { onLoad, onShow } from '@dcloudio/uni-app'
 import {
   downloadPrivateFile,
   getEquipmentRepair,
+  getEquipmentRepairLocations,
   transitionEquipmentRepair
 } from '@/api/index.js'
 import { formatDate } from '@/utils/format.js'
@@ -152,6 +173,7 @@ import {
   createRepairPart,
   repairActionLabel,
   repairLineAmount,
+  repairPositionLabel,
   repairStatusLabel,
   repairStatusTone,
   repairTypeLabel
@@ -163,10 +185,14 @@ export default {
     const repairId = ref('')
     const teamId = ref('')
     const repair = ref(null)
+    const repairLocations = ref([])
     const selectedAction = ref('')
     const submitting = ref(false)
     const actionForm = reactive(emptyActionForm())
     const reversedLogs = computed(() => [...(repair.value?.actionLogs || [])].reverse())
+    const primaryAction = computed(() => repair.value?.availableActions?.find((action) => (
+      !['REJECT_TO_CREATOR', 'REJECT_TO_PREVIOUS', 'VOID'].includes(action)
+    )) || '')
     const showPricing = computed(() => selectedAction.value === 'CONFIRM_PRICING')
     const showRepairCorrections = computed(() => (
       repair.value?.type !== 'FAULT_REPORT' &&
@@ -231,6 +257,15 @@ export default {
           unitPrice: item.unitPrice ?? 0
         }))
       })
+    }
+
+    const selectRepairLocation = (event) => {
+      actionForm.reportLocation = repairLocations.value[Number(event.detail.value)] || actionForm.reportLocation
+    }
+
+    const copyRepairSummary = () => {
+      if (!repair.value?.summaryText) return
+      uni.setClipboardData({ data: repair.value.summaryText })
     }
 
     const addPart = () => {
@@ -329,25 +364,37 @@ export default {
       repairId.value = options.repairId || ''
       teamId.value = options.teamId || ''
     })
-    onShow(load)
+    onShow(async () => {
+      await Promise.all([
+        load(),
+        getEquipmentRepairLocations(teamId.value ? { teamId: teamId.value } : {}).then((result) => {
+          repairLocations.value = result.locations || []
+        })
+      ])
+    })
     return {
       repair,
+      repairLocations,
       selectedAction,
       actionForm,
       submitting,
       reversedLogs,
+      primaryAction,
       showPricing,
       showRepairCorrections,
       showFaultResubmit,
       noteRequired,
       pricingTotal,
       selectAction,
+      selectRepairLocation,
+      copyRepairSummary,
       addPart,
       removePart,
       submitAction,
       previewRepairPhoto,
       repairActionLabel,
       repairLineAmount,
+      repairPositionLabel,
       repairStatusLabel,
       repairStatusTone,
       repairTypeLabel,
@@ -385,14 +432,18 @@ export default {
 .part-display-row text { margin-top: 4rpx; color: #667085; font-size: 21rpx; }
 .part-price { flex: 0 0 230rpx; text-align: right; }
 .action-band { border-color: #9cc7ad; }
-.action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 18rpx; }
-.action-grid button { min-width: 0; min-height: 70rpx; padding: 8rpx 12rpx; border: 1px solid #b8d8c4; border-radius: 8rpx; color: #245d3f; background: #eaf7ef; font-size: 22rpx; line-height: 1.35; overflow-wrap: anywhere; }
+.action-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12rpx; margin-top: 18rpx; }
+.action-grid button { min-width: 0; min-height: 70rpx; padding: 8rpx 6rpx; border: 1px solid #dce4ee; border-radius: 8rpx; color: #52606d; background: #f7faff; font-size: 20rpx; line-height: 1.35; overflow-wrap: anywhere; }
+.action-grid button.primary { grid-column: 1 / -1; min-height: 78rpx; border-color: #8bc5a2; color: #fff; background: #2f7d52; font-size: 24rpx; }
 .action-grid button.danger { border-color: #f0b8b4; color: #b42318; background: #feeceb; }
 .action-grid button.active { border-color: #1677ff; box-shadow: 0 0 0 2rpx rgba(22, 119, 255, .2); }
 .action-form { margin-top: 22rpx; padding-top: 20rpx; border-top: 1px solid #e8edf3; }
 .field-row { display: grid; grid-template-columns: 150rpx minmax(0, 1fr); align-items: center; min-height: 84rpx; border-bottom: 1px solid #e8edf3; }
 .field-row text, .field-block > text { color: #344054; font-size: 23rpx; }
 .field-row input, .field-row picker { min-width: 0; text-align: right; font-size: 24rpx; }
+.location-control { display: flex; align-items: center; justify-content: flex-end; gap: 14rpx; min-width: 0; }
+.location-control input { flex: 1; }
+.location-control picker { flex: 0 0 auto; padding: 8rpx 12rpx; border-left: 1px solid #dce4ee; color: #1677ff; font-size: 21rpx; }
 .field-block { display: grid; gap: 12rpx; padding: 18rpx 0; }
 .field-block textarea { width: 100%; height: 160rpx; padding: 15rpx; box-sizing: border-box; border: 1px solid #dce4ee; border-radius: 8rpx; font-size: 23rpx; }
 .form-hint { display: block; color: #667085; font-size: 21rpx; }
@@ -411,6 +462,8 @@ export default {
 .pricing-total { padding-top: 14rpx; color: #245d3f; text-align: right; font-size: 26rpx; font-weight: 700; }
 .note-field { margin-top: 10rpx; }
 .submit-action { height: 78rpx; margin: 16rpx 0 0; border-radius: 8rpx; color: #fff; background: #4096ff; font-size: 25rpx; line-height: 78rpx; }
+.copy-summary { width: 104rpx; height: 58rpx; margin: 0; border: 1px solid #b8d8c4; border-radius: 8rpx; color: #245d3f; background: #eaf7ef; font-size: 22rpx; line-height: 56rpx; }
+.summary-text { display: block; margin-top: 16rpx; padding: 18rpx; border: 1px solid #dce4ee; border-radius: 8rpx; background: #f7faff; color: #344054; font-size: 22rpx; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
 .timeline { margin-top: 20rpx; }
 .timeline-row { display: grid; grid-template-columns: 24rpx minmax(0, 1fr); gap: 14rpx; padding-bottom: 24rpx; }
 .timeline-dot { width: 16rpx; height: 16rpx; margin-top: 8rpx; border: 4rpx solid #b8d8c4; border-radius: 50%; background: #245d3f; }

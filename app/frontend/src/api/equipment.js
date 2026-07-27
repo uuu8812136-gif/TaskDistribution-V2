@@ -273,6 +273,18 @@ export const getEquipmentRepairs = (params) => request({
   params
 })
 
+export const getEquipmentRepairLocations = (params) => request({
+  url: '/equipment/repairs/locations',
+  method: 'get',
+  params
+})
+
+export const updateEquipmentRepairLocations = (data) => request({
+  url: '/equipment/repairs/locations',
+  method: 'put',
+  data
+})
+
 export const getEquipmentRepair = (repairId, params) => request({
   url: `/equipment/repairs/${repairId}`,
   method: 'get',

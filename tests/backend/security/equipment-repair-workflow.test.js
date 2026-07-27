@@ -56,6 +56,7 @@ function authContext({
   userId = objectId(),
   positionKey = permissions.POSITION_KEYS.EMPLOYEE,
   functionalRoleKeys = [],
+  permissionKeys = ['equipment.view', 'equipment.repair', 'equipment.export'],
   scope = permissions.DATA_SCOPES.ORG_UNIT,
   isSuperAdmin = false
 }) {
@@ -94,7 +95,7 @@ function authContext({
     actorRole: isSuperAdmin
       ? permissions.AUDIT_ACTOR_ROLES.SUPER_ADMIN
       : permissions.AUDIT_ACTOR_ROLES.MEMBER,
-    permissionKeys: Object.freeze(['equipment.view', 'equipment.repair', 'equipment.export']),
+    permissionKeys: Object.freeze([...permissionKeys]),
     moduleDataScopes: Object.freeze({ equipment: scope }),
     readOnly: false,
     canAccessBusiness: true
@@ -287,7 +288,11 @@ async function action(service, authContextValue, repair, actionName, extra = {})
   });
 }
 
-async function persistActorMembership(context, { orgUnitId, positionKey } = {}) {
+async function persistActorMembership(context, {
+  orgUnitId,
+  positionKey,
+  permissionKeys = ['equipment.view', 'equipment.repair']
+} = {}) {
   const effectivePositionKey = positionKey || context.membership.positionKey;
   const positionLevel = permissions.POSITION_LEVEL_BY_KEY[effectivePositionKey];
   const normalizedUserId = new mongoose.Types.ObjectId(context.userId);
@@ -316,7 +321,7 @@ async function persistActorMembership(context, { orgUnitId, positionKey } = {}) 
     positionLevel,
     positionKey: effectivePositionKey,
     functionalRoleKeys: [],
-    permissionKeys: ['equipment.view', 'equipment.repair'],
+    permissionKeys,
     moduleDataScopes: permissions.deriveModuleDataScopes({ positionLevel }),
     status: permissions.MEMBERSHIP_STATUSES.ACTIVE
   });
@@ -396,6 +401,15 @@ test('repair deputy is primary and supervisor fallback is scoped to the exact su
   await persistActorMembership(role.supervisor);
   await persistActorMembership(role.wrongSubManager);
   await persistActorMembership(rootMisassignedManager);
+  const noRepairPermissionManager = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA1._id,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+    permissionKeys: ['equipment.view']
+  });
+  await persistActorMembership(noRepairPermissionManager, {
+    permissionKeys: ['equipment.view']
+  });
 
   const created = await createFault(service, role.creator, { idempotencyKey: 'repair-supervisor-fallback' });
   assert.equal(created.availableActions.length, 0);
@@ -421,9 +435,16 @@ test('repair deputy is primary and supervisor fallback is scoped to the exact su
   assert.equal(await Message.countDocuments({ recipient: role.supervisor.userId }), 0);
   assert.equal(await Message.countDocuments({ recipient: role.wrongSubManager.userId }), 0);
   assert.equal(await Message.countDocuments({ recipient: rootMisassignedManager.userId }), 0);
+  assert.equal(await Message.countDocuments({ recipient: noRepairPermissionManager.userId }), 0);
 
   await TeamMembership.updateMany({
-    userId: { $in: [role.subManager.userId, role.subDeputy.userId] }
+    userId: {
+      $in: [
+        role.subManager.userId,
+        role.subDeputy.userId,
+        noRepairPermissionManager.userId
+      ]
+    }
   }, { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } });
   await createFault(service, role.creator, {
     idempotencyKey: 'repair-supervisor-fallback-notification'
@@ -527,10 +548,94 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
   });
   assert.equal(repair.totalAmount, 27.68);
   assert.deepEqual(repair.partItems.map((item) => item.amount), [24.68, 3]);
+  await persistActorMembership(role.assistant);
+  await persistActorMembership(role.manager);
+  const assistantWithOrgScope = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA2._id,
+    userId: role.assistant.userId,
+    positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const assistantTodo = await service.listRepairs({
+    authContext: assistantWithOrgScope,
+    query: { todo: true }
+  });
+  assert.equal(assistantTodo.total, 1);
+  assert.equal(assistantTodo.repairs[0]._id, repair._id);
+  assert.ok(assistantTodo.repairs[0].availableActions.includes('DEPUTY_APPROVE'));
+  assert.equal((await service.getRepair({
+    authContext: assistantWithOrgScope,
+    repairId: repair._id
+  }))._id, repair._id);
   repair = await action(service, role.assistant, repair, 'DEPUTY_APPROVE', { note: '同意价格' });
   assert.equal(repair.status, 'MANAGER_APPROVAL_PENDING');
+  const managerWithOrgScope = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA2._id,
+    userId: role.manager.userId,
+    positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const managerTodo = await service.listRepairs({
+    authContext: managerWithOrgScope,
+    query: { todo: true }
+  });
+  assert.equal(managerTodo.total, 1);
+  assert.equal(managerTodo.repairs[0]._id, repair._id);
   repair = await action(service, role.manager, repair, 'MANAGER_APPROVE', { note: '同意结案' });
   assert.equal(repair.status, 'COMPLETED');
+  assert.match(repair.summaryText, /设备编码：FC-A1-001/);
+  assert.match(repair.summaryText, /维修金额：27\.68元/);
+  assert.ok(repair.actionLogs.every((item) => Object.hasOwn(item, 'actorName')));
+  assert.equal(
+    repair.actionLogs.find(({ actorId }) => actorId === role.assistant.userId)?.actorName,
+    `repair-${role.assistant.userId}`
+  );
+  assert.equal(
+    repair.actionLogs.find(({ actorId }) => actorId === role.manager.userId)?.actorName,
+    `repair-${role.manager.userId}`
+  );
+});
+
+test('repair locations are team scoped, validated, and writable only with equipment edit permission', async () => {
+  const service = createService();
+  const role = actors();
+  const editor = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA1._id,
+    permissionKeys: ['equipment.view', 'equipment.edit']
+  });
+
+  await assert.rejects(service.updateRepairLocations({
+    authContext: role.creator,
+    input: { locations: ['一号库东门'] }
+  }), (error) => error.status === 403);
+  await assert.rejects(service.updateRepairLocations({
+    authContext: editor,
+    input: { locations: ['一号库东门', '一号库东门'] }
+  }), (error) => error.status === 400);
+
+  const locations = await service.updateRepairLocations({
+    authContext: editor,
+    input: { locations: ['一号库东门', '重汽4号门/幸福仓库'], reason: '维护常用地点' }
+  });
+  assert.deepEqual(locations, ['一号库东门', '重汽4号门/幸福仓库']);
+  assert.deepEqual(
+    (await service.listRepairLocations({ authContext: role.creator })).locations,
+    locations
+  );
+  assert.deepEqual(
+    (await service.listRepairLocations({ authContext: role.otherTeam })).locations,
+    []
+  );
+  const audit = await AuditLog.findOne({
+    action: permissions.AUDIT_ACTIONS.UPDATE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.PROJECT_TEAM,
+    resourceId: String(fixtures.teamA._id)
+  }).lean();
+  assert.ok(audit);
+  assert.deepEqual(audit.after.repairLocations, locations);
 });
 
 test('no-parts repair supports reject previous, reject creator, resubmit, and void', async () => {
