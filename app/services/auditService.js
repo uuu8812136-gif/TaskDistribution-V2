@@ -544,7 +544,7 @@ function createAuditService(options = {}) {
     throw new TypeError('AuditLog model with a create function is required');
   }
 
-  async function record({
+  function buildPayload({
     req = null,
     authContext = null,
     systemActor = false,
@@ -554,8 +554,7 @@ function createAuditService(options = {}) {
     before,
     after,
     reason = null,
-    targetTeamId,
-    session = null
+    targetTeamId
   } = {}) {
     assertConfiguredValue(action, actionSet, 'action');
     assertConfiguredValue(resourceType, resourceTypeSet, 'resourceType');
@@ -567,7 +566,7 @@ function createAuditService(options = {}) {
       systemActor
     });
     const snapshots = sanitizeAuditSnapshots({ before, after }, limits);
-    const payload = {
+    return {
       ...contextFields,
       action,
       resourceType,
@@ -575,6 +574,10 @@ function createAuditService(options = {}) {
       ...snapshots,
       reason: redactSensitiveText(reason, 2000)
     };
+  }
+
+  async function record({ session = null, ...input } = {}) {
+    const payload = buildPayload(input);
 
     // Mongoose requires an array form when create options (notably session)
     // must be applied to every inserted document.
@@ -586,11 +589,29 @@ function createAuditService(options = {}) {
     return AuditLog.create(payload);
   }
 
+  async function recordManySystem(inputs, { session = null } = {}) {
+    if (!Array.isArray(inputs) || inputs.length === 0) {
+      throw new TypeError('recordManySystem requires a non-empty input array');
+    }
+    if (typeof AuditLog.bulkWrite !== 'function') {
+      throw new TypeError('AuditLog model with a bulkWrite function is required');
+    }
+    const operations = inputs.map((input) => ({
+      insertOne: { document: buildPayload({ ...input, systemActor: true }) }
+    }));
+    const result = await AuditLog.bulkWrite(operations, { session, ordered: true });
+    if (result.insertedCount !== operations.length) {
+      throw new Error('Audit bulk insert count mismatch');
+    }
+    return result;
+  }
+
   return Object.freeze({
     record,
     recordSystem(input = {}) {
       return record({ ...input, systemActor: true });
-    }
+    },
+    recordManySystem
   });
 }
 

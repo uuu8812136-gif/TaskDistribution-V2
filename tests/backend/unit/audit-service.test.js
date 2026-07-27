@@ -17,11 +17,17 @@ const {
 
 function fakeAuditModel(createImplementation = async (payload) => payload) {
   const calls = [];
+  const bulkCalls = [];
   return {
     calls,
+    bulkCalls,
     async create(...args) {
       calls.push(args);
       return createImplementation(...args);
+    },
+    async bulkWrite(...args) {
+      bulkCalls.push(args);
+      return { insertedCount: args[0].length };
     }
   };
 }
@@ -189,6 +195,38 @@ test('maps request and auth context and passes a mongoose session unchanged', as
   assert.equal(payload.ip, '10.10.0.8');
   assert.equal(payload.userAgent, 'audit-service-test');
   assert.doesNotMatch(payload.requestPath, /token/);
+});
+
+test('bulk system audits retain one sanitized insert per resource in the transaction', async () => {
+  const AuditLog = fakeAuditModel();
+  const service = createAuditService({ AuditLog });
+  const session = { id: 'bulk-audit-session' };
+
+  const result = await service.recordManySystem([
+    {
+      action: permissions.AUDIT_ACTIONS.DELETE,
+      resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
+      resourceId: 'message-1',
+      before: { password: 'secret', state: 'old' },
+      after: { deleted: true }
+    },
+    {
+      action: permissions.AUDIT_ACTIONS.CORRECT,
+      resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
+      resourceId: 'message-2',
+      before: { state: 'old' },
+      after: { state: 'new' }
+    }
+  ], { session });
+
+  assert.equal(result.insertedCount, 2);
+  assert.equal(AuditLog.bulkCalls.length, 1);
+  const [operations, options] = AuditLog.bulkCalls[0];
+  assert.equal(options.session, session);
+  assert.equal(operations.length, 2);
+  assert.equal(operations[0].insertOne.document.actorRole, permissions.AUDIT_ACTOR_ROLES.SYSTEM);
+  assert.equal(operations[0].insertOne.document.before.password, REDACTED_VALUE);
+  assert.equal(operations[1].insertOne.document.resourceId, 'message-2');
 });
 
 test('redacts credentials from scalar fields before audit persistence', async () => {

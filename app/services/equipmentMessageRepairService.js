@@ -347,45 +347,53 @@ function createEquipmentMessageRepairService({
         });
       }
 
+      const messageWrites = [];
+      const auditWrites = [];
+      let expectedDeletes = 0;
+      let expectedUpdates = 0;
       for (const operation of before.operations) {
         if (operation.type === 'DELETE_ROUTINE_MESSAGE') {
-          const result = await MessageModel.deleteOne({
-            _id: operation.message._id,
-            teamId: operation.message.teamId,
-            recipient: operation.message.recipient,
-            deduplicationKey: operation.message.deduplicationKey,
-            __v: operation.message.__v ?? 0
-          }, { session });
-          if (result.deletedCount !== 1) {
-            fail('ROUTINE_MESSAGE_CHANGED', 'A routine reminder changed during repair');
-          }
-          await auditService.recordSystem({
+          expectedDeletes += 1;
+          messageWrites.push({
+            deleteOne: {
+              filter: {
+                _id: operation.message._id,
+                teamId: operation.message.teamId,
+                recipient: operation.message.recipient,
+                deduplicationKey: operation.message.deduplicationKey,
+                __v: operation.message.__v ?? 0
+              }
+            }
+          });
+          auditWrites.push({
             action: AUDIT_ACTIONS.DELETE,
             resourceType: AUDIT_RESOURCE_TYPES.MESSAGE,
             resourceId: operation.message._id,
             before: snapshot(operation.message),
             after: snapshot({ deleted: true, reason: 'recipient-outside-current-branch-leadership' }),
             reason: REPAIR_REASON,
-            targetTeamId: operation.message.teamId,
-            session
+            targetTeamId: operation.message.teamId
           });
           continue;
         }
 
+        expectedUpdates += 1;
         const updatedAt = now();
-        const result = await MessageModel.updateOne({
-          _id: operation.message._id,
-          teamId: operation.message.teamId,
-          content: operation.beforeContent,
-          __v: operation.message.__v ?? 0
-        }, {
-          $set: { content: operation.afterContent, updatedAt },
-          $inc: { __v: 1 }
-        }, { session, runValidators: true });
-        if (result.matchedCount !== 1 || result.modifiedCount !== 1) {
-          fail('REPAIR_MESSAGE_CHANGED', 'A repair notification changed during localization');
-        }
-        await auditService.recordSystem({
+        messageWrites.push({
+          updateOne: {
+            filter: {
+              _id: operation.message._id,
+              teamId: operation.message.teamId,
+              content: operation.beforeContent,
+              __v: operation.message.__v ?? 0
+            },
+            update: {
+              $set: { content: operation.afterContent, updatedAt },
+              $inc: { __v: 1 }
+            }
+          }
+        });
+        auditWrites.push({
           action: AUDIT_ACTIONS.CORRECT,
           resourceType: AUDIT_RESOURCE_TYPES.MESSAGE,
           resourceId: operation.message._id,
@@ -397,10 +405,27 @@ function createEquipmentMessageRepairService({
             __v: (operation.message.__v ?? 0) + 1
           }),
           reason: REPAIR_REASON,
-          targetTeamId: operation.message.teamId,
-          session
+          targetTeamId: operation.message.teamId
         });
       }
+
+      const messageResult = await MessageModel.bulkWrite(messageWrites, { session, ordered: true });
+      if (
+        messageResult.deletedCount !== expectedDeletes ||
+        messageResult.matchedCount !== expectedUpdates ||
+        messageResult.modifiedCount !== expectedUpdates
+      ) {
+        fail('MESSAGE_REPAIR_WRITE_COUNT_MISMATCH', 'Message repair bulk write count mismatch', {
+          expectedDeletes,
+          expectedUpdates,
+          actualDeletes: messageResult.deletedCount,
+          actualMatches: messageResult.matchedCount,
+          actualUpdates: messageResult.modifiedCount,
+          writePerformed: false,
+          transactionRolledBack: true
+        });
+      }
+      await auditService.recordManySystem(auditWrites, { session });
 
       const after = await analyze(session);
       if (after.state !== 'ALREADY_APPLIED' || after.operations.length !== 0 || after.blockers.length !== 0) {

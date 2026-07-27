@@ -193,6 +193,7 @@ async function seed() {
   });
   return {
     team,
+    planId: plan._id,
     managerId,
     employeeId,
     retainedRoutineMessageId: routineMessages[0]._id,
@@ -291,4 +292,54 @@ test('execution deletes only invalid routine recipients and localizes repair mes
   assert.equal(replay.status, 'NO_CHANGES');
   assert.equal(replay.writePerformed, false);
   assert.equal(backupGuardCalls, 1);
+});
+
+test('bulk execution handles the observed 4291-message cleanup volume atomically', async () => {
+  const fixture = await seed();
+  const createdAt = new Date('2026-07-27T12:00:00.000Z');
+  await Message.collection.insertMany(Array.from({ length: 4289 }, (_, index) => ({
+    teamId: fixture.team._id,
+    type: 'system',
+    title: '设备点检逾期提醒',
+    content: `错误批量提醒 ${index}`,
+    recipient: fixture.employeeId,
+    isRead: false,
+    deduplicationKey: `routine-plan:${fixture.planId}:bulk:${index}`,
+    extraData: {
+      resourceType: 'EQUIPMENT_ROUTINE_PLAN',
+      planId: String(fixture.planId),
+      level: 'ESCALATED'
+    },
+    createdAt,
+    updatedAt: createdAt,
+    __v: 0
+  })));
+
+  const service = createEquipmentMessageRepairService({
+    connection: mongoose.connection,
+    allowedExecutionDatabaseNames: [DATABASE_NAME],
+    backupVerifier: async () => ({}),
+    collectionInventory: async () => [],
+    backupGuard: async ({ databaseName }) => ({
+      backupDirectory: 'E:\\verified-backup',
+      backupId: 'backup-bulk-test',
+      databaseName,
+      collectionCountsVerified: true,
+      completeRestoreSetVerified: true
+    })
+  });
+
+  const dryRun = await service.run();
+  assert.equal(dryRun.before.plannedWriteCount, 4291);
+
+  const executed = await service.run({
+    execute: true,
+    confirmDatabase: DATABASE_NAME,
+    backupDirectory: 'E:\\verified-backup'
+  });
+  assert.equal(executed.status, 'EXECUTED');
+  assert.equal(executed.dataWrites, 4291);
+  assert.equal(executed.auditLogsCreated, 4291);
+  assert.equal(await Message.countDocuments({}), 2);
+  assert.equal(await AuditLog.countDocuments({ resourceType: 'MESSAGE' }), 4291);
 });
