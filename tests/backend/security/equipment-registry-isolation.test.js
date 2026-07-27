@@ -14,6 +14,7 @@ const AuditLog = require('../../../app/models/AuditLog');
 const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
 const EquipmentChangeRecord = require('../../../app/models/EquipmentChangeRecord');
+const FileAsset = require('../../../app/models/FileAsset');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
 const TeamMembership = require('../../../app/models/TeamMembership');
@@ -30,6 +31,7 @@ const MODELS = [
   EquipmentAsset,
   EquipmentCategory,
   EquipmentChangeRecord,
+  FileAsset,
   OrgUnit,
   ProjectTeam,
   TeamMembership,
@@ -656,6 +658,166 @@ test('client teamId and foreign category or custodian references are rejected', 
   assert.equal(await EquipmentAsset.countDocuments({}), 0);
 });
 
+test('interactive equipment writes persist four-level categories, template fields, and up to ten photos', async () => {
+  const fileCalls = [];
+  const service = createEquipmentRegistryService({
+    fileAssetService: {
+      async reconcileOwnerFiles(input) {
+        fileCalls.push(input);
+        return input.attachments.map(({ fileId }) => ({ fileId: String(fileId) }));
+      }
+    }
+  });
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await service.createCategory({
+    authContext: context,
+    input: { name: '运输装备' }
+  });
+  const type = await service.createCategory({
+    authContext: context,
+    input: { name: '车辆', parentId: major._id }
+  });
+  const primary = await service.createCategory({
+    authContext: context,
+    input: { name: '厢式货车', parentId: type._id }
+  });
+  const secondary = await service.createCategory({
+    authContext: context,
+    input: { name: '4.2米轻卡', parentId: primary._id }
+  });
+  await assert.rejects(service.createCategory({
+    authContext: context,
+    input: { name: '不允许的第五级', parentId: secondary._id }
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_DEPTH_LIMIT');
+
+  const movableRoot = await service.createCategory({
+    authContext: context,
+    input: { name: '待移动分类' }
+  });
+  await service.createCategory({
+    authContext: context,
+    input: { name: '待移动分类下级', parentId: movableRoot._id }
+  });
+  await assert.rejects(service.updateCategory({
+    authContext: context,
+    categoryId: movableRoot._id,
+    input: { parentId: primary._id }
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_DEPTH_LIMIT');
+  const firstPhotoId = objectId();
+  const secondPhotoId = objectId();
+  const created = await service.createAsset({
+    authContext: context,
+    input: {
+      orgUnitId: String(fixture.orgA1),
+      categoryId: secondary._id,
+      sourceSequence: '1',
+      assetCode: '鲁A0C01F',
+      name: '4.2米轻卡',
+      plateNumber: '鲁A0C01F',
+      environmentalRegistrationCode: '/',
+      productCode: 'LZZJBADB4KE765069',
+      specification: '4.2米轻卡',
+      unit: '辆',
+      productionDate: '2019-10-01',
+      activationDate: '2019-10-01',
+      vehicleLength: '4.2米',
+      ratedCapacityText: '/',
+      forkliftPosition: '/',
+      powerType: '柴油',
+      emissionStandard: '国5',
+      brand: '豪沃',
+      manufacturer: '中国重汽',
+      bookQuantity: 1,
+      physicalQuantity: 1,
+      quantity: 1,
+      location: '外仓',
+      photoFileIds: [String(firstPhotoId), String(secondPhotoId)]
+    }
+  });
+  assert.deepEqual([
+    created.majorCategoryName,
+    created.equipmentTypeName,
+    created.primaryName,
+    created.secondaryName
+  ], ['运输装备', '车辆', '厢式货车', '4.2米轻卡']);
+  assert.equal(created.assetType, 'TRANSPORT_EQUIPMENT');
+  assert.equal(created.powerType, '柴油');
+  assert.equal(created.emissionStandard, '国5');
+  assert.deepEqual(created.photoFileIds, [String(firstPhotoId), String(secondPhotoId)]);
+  assert.equal(fileCalls[0].method, 'POST');
+  assert.deepEqual(fileCalls[0].allowedMimeTypes, [
+    'image/jpeg', 'image/png', 'image/webp', 'image/gif'
+  ]);
+
+  const updated = await service.updateAsset({
+    authContext: context,
+    equipmentId: created._id,
+    input: { photoFileIds: [String(secondPhotoId)], reason: '删除一张旧照片' }
+  });
+  assert.deepEqual(updated.photoFileIds, [String(secondPhotoId)]);
+  assert.equal(fileCalls[1].method, 'PATCH');
+
+  await assert.rejects(service.updateAsset({
+    authContext: context,
+    equipmentId: created._id,
+    input: { photoFileIds: Array.from({ length: 11 }, () => String(objectId())) }
+  }), (error) => error.code === 'EQUIPMENT_INPUT_INVALID');
+});
+
+test('interactive equipment photos bind and remove real FileAsset records transactionally', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const rootCategory = await category(service, context, fixture.orgA1, '运输装备');
+  const photo = await FileAsset.create({
+    teamId: fixture.teamA,
+    ownerType: FileAsset.FILE_OWNER_TYPES.TEMPORARY,
+    ownerId: null,
+    storageKey: `${fixture.teamA}/2026/07/00000000-0000-4000-8000-000000000001.png`,
+    originalName: 'equipment-photo.png',
+    mimeType: 'image/png',
+    size: 68,
+    sha256: 'a'.repeat(64),
+    uploaderId: fixture.userA1,
+    status: FileAsset.FILE_STATUSES.TEMPORARY
+  });
+
+  const created = await service.createAsset({
+    authContext: context,
+    input: {
+      assetCode: 'PHOTO-REAL-001',
+      name: '设备照片绑定测试',
+      orgUnitId: String(fixture.orgA1),
+      categoryId: rootCategory._id,
+      photoFileIds: [String(photo._id)]
+    }
+  });
+
+  const bound = await FileAsset.findById(photo._id).lean();
+  assert.deepEqual(created.photoFileIds, [String(photo._id)]);
+  assert.equal(bound.status, FileAsset.FILE_STATUSES.ACTIVE);
+  assert.equal(bound.ownerType, FileAsset.FILE_OWNER_TYPES.EQUIPMENT);
+  assert.equal(String(bound.ownerId), created._id);
+
+  const updated = await service.updateAsset({
+    authContext: context,
+    equipmentId: created._id,
+    input: { photoFileIds: [] }
+  });
+  const removed = await FileAsset.findById(photo._id).lean();
+  assert.deepEqual(updated.photoFileIds, []);
+  assert.equal(removed.status, FileAsset.FILE_STATUSES.DELETED);
+  assert.equal(String(removed.deletedBy), String(fixture.userA1));
+  assert.ok(removed.deletedAt instanceof Date);
+});
+
 test('asset create and edit atomically append change records and audit logs', async () => {
   const service = createEquipmentRegistryService();
   const context = teamContext({
@@ -837,8 +999,8 @@ test('asset type filter is exact for both list and Excel export', async () => {
   assert.equal(exported.count, 1);
   const workbook = XLSX.read(exported.buffer, { type: 'buffer' });
   const rows = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-  assert.deepEqual(rows.map((row) => row['Asset Code']), ['TYPE-TRANSPORT']);
-  assert.deepEqual(rows.map((row) => row['Asset Type']), ['TRANSPORT_EQUIPMENT']);
+  assert.deepEqual(workbook.SheetNames, ['设备台账']);
+  assert.deepEqual(rows.map((row) => row.固定资产编号), ['TYPE-TRANSPORT']);
 
   const partial = await service.listAssets({
     authContext: context,

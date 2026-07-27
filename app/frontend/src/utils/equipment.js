@@ -91,10 +91,14 @@ const IMPORT_DECISION_LABELS = Object.freeze({
 const IMPORT_FIELD_LABELS = Object.freeze({
   sourceSequence: '序号',
   assetType: '资产类型',
-  assetCode: '资产编号',
+  majorCategoryName: '设备所属大类',
+  equipmentTypeName: '设备所属类型',
+  primaryName: '设备一级名称',
+  secondaryName: '设备二级名称',
+  assetCode: '固定资产编号',
   sourceAssetCode: '原资产编号',
   name: '设备名称',
-  productCode: '产品编码/SN/PN',
+  productCode: '产品/品牌编码',
   plateNumber: '车牌号',
   serialNumber: '序列号',
   brandSerialNumber: '品牌编号',
@@ -103,7 +107,9 @@ const IMPORT_FIELD_LABELS = Object.freeze({
   specification: '规格型号',
   manufacturer: '生产厂家',
   vehicleLength: '车长',
-  ratedCapacityText: '吨位/额定载重',
+  ratedCapacityText: '吨位',
+  powerType: '设备动力类型',
+  emissionStandard: '排放标准',
   quantity: '数量',
   bookQuantity: '账存数量',
   physicalQuantity: '实盘数量',
@@ -118,8 +124,8 @@ const IMPORT_FIELD_LABELS = Object.freeze({
   custodianUserId: '保管人',
   custodianDisplayName: '使用人',
   location: '存放地点',
-  forkliftPosition: '高低位',
-  environmentalRegistrationCode: '叉车环保编号',
+  forkliftPosition: '高位/低位',
+  environmentalRegistrationCode: '环保编号',
   conditionText: '原表状态',
   status: '设备状态',
   remark: '备注',
@@ -131,10 +137,10 @@ const IMPORT_FIELD_LABELS = Object.freeze({
 })
 
 const IMPORT_EXCEPTION_LABELS = Object.freeze({
-  ASSET_CODE_COLLISION_EXISTING: '资产编号与现有测试数据冲突',
-  ASSET_CODE_GENERATED_FOR_TEST: '已生成测试资产编号',
-  ASSET_CODE_MISSING: '资产编号缺失',
-  ASSET_CODE_TOO_LONG: '资产编号过长',
+  ASSET_CODE_COLLISION_EXISTING: '固定资产编号与现有测试数据冲突',
+  ASSET_CODE_GENERATED_FOR_TEST: '已生成测试固定资产编号',
+  ASSET_CODE_MISSING: '固定资产编号缺失',
+  ASSET_CODE_TOO_LONG: '固定资产编号过长',
   BOOK_QUANTITY_INVALID: '账存数量无效',
   CATEGORY_AMBIGUOUS: '设备分类匹配到多项',
   CATEGORY_ID_INVALID: '设备分类标识无效',
@@ -143,9 +149,9 @@ const IMPORT_EXCEPTION_LABELS = Object.freeze({
   CUSTODIAN_ID_INVALID: '保管人标识无效',
   CUSTODIAN_NOT_FOUND: '未找到保管人',
   DATE_INVALID: '日期格式无效',
-  DUPLICATE_ASSET_CODE: '资产编号重复',
-  DUPLICATE_ASSET_CODE_EXISTING: '资产编号已存在',
-  DUPLICATE_ASSET_CODE_IN_FILE: '文件内资产编号重复',
+  DUPLICATE_ASSET_CODE: '固定资产编号重复',
+  DUPLICATE_ASSET_CODE_EXISTING: '固定资产编号已存在',
+  DUPLICATE_ASSET_CODE_IN_FILE: '文件内固定资产编号重复',
   DUPLICATE_SOURCE_IDENTIFIER_IN_FILE: '来源标识与文件内其他设备重复',
   FIELD_MISALIGNMENT: '字段疑似错位',
   HEADER_NOT_RECOGNIZED: '表头无法识别',
@@ -167,7 +173,7 @@ const IMPORT_EXCEPTION_LABELS = Object.freeze({
   POSSIBLE_IDLE_DUPLICATE: '闲置记录可能与在用设备重复',
   QUANTITY_UNIT_EMBEDDED: '数量中包含单位',
   QUANTITY_MISMATCH: '数量信息冲突',
-  SOURCE_ASSET_CODE_DUPLICATE: '来源表中的资产编号重复',
+  SOURCE_ASSET_CODE_DUPLICATE: '来源表中的固定资产编号重复',
   STATUS_CONFLICT: '设备状态冲突',
   STATUS_MISSING: '设备状态缺失',
   STATUS_UNRECOGNIZED: '设备状态无法识别',
@@ -175,10 +181,10 @@ const IMPORT_EXCEPTION_LABELS = Object.freeze({
 })
 
 const IMPORT_EXCEPTION_ACTIONS = Object.freeze({
-  ASSET_CODE_COLLISION_EXISTING: '请核对并填写未被占用的资产编号',
-  ASSET_CODE_GENERATED_FOR_TEST: '请核对来源资产编号，确认是否采用系统生成的测试编号',
-  ASSET_CODE_MISSING: '请填写唯一的资产编号，或跳过该行',
-  ASSET_CODE_TOO_LONG: '请缩短资产编号后再确认',
+  ASSET_CODE_COLLISION_EXISTING: '请核对并填写未被占用的固定资产编号',
+  ASSET_CODE_GENERATED_FOR_TEST: '请核对来源固定资产编号，确认是否采用系统生成的测试编号',
+  ASSET_CODE_MISSING: '请填写唯一的固定资产编号，或跳过该行',
+  ASSET_CODE_TOO_LONG: '请缩短固定资产编号后再确认',
   BOOK_QUANTITY_INVALID: '请核对账存数量并填写有效数字',
   CATEGORY_AMBIGUOUS: '请选择正确的设备分类',
   CATEGORY_ID_INVALID: '请选择有效的设备分类',
@@ -187,9 +193,9 @@ const IMPORT_EXCEPTION_ACTIONS = Object.freeze({
   CUSTODIAN_ID_INVALID: '请选择有效的保管人，也可确认暂不指定',
   CUSTODIAN_NOT_FOUND: '请选择该组织内的在用成员，也可确认暂不指定',
   DATE_INVALID: '请核对原始日期并填写有效日期',
-  DUPLICATE_ASSET_CODE: '请填写唯一的资产编号，或跳过重复记录',
-  DUPLICATE_ASSET_CODE_EXISTING: '请填写新的资产编号，或跳过该行',
-  DUPLICATE_ASSET_CODE_IN_FILE: '请为重复记录填写不同的资产编号，或跳过该行',
+  DUPLICATE_ASSET_CODE: '请填写唯一的固定资产编号，或跳过重复记录',
+  DUPLICATE_ASSET_CODE_EXISTING: '请填写新的固定资产编号，或跳过该行',
+  DUPLICATE_ASSET_CODE_IN_FILE: '请为重复记录填写不同的固定资产编号，或跳过该行',
   DUPLICATE_SOURCE_IDENTIFIER_IN_FILE: '请核对重复来源标识，确认保留或跳过该行',
   FIELD_MISALIGNMENT: '请核对原始表格列位置并填写正确值',
   HEADER_NOT_RECOGNIZED: '请使用规定的设备导入模板并检查表头',
@@ -211,7 +217,7 @@ const IMPORT_EXCEPTION_ACTIONS = Object.freeze({
   POSSIBLE_IDLE_DUPLICATE: '请核对是否为同一设备，确认更新或跳过重复记录',
   QUANTITY_UNIT_EMBEDDED: '请核对拆分后的数量和单位',
   QUANTITY_MISMATCH: '请核对账存数量与实盘数量后确认',
-  SOURCE_ASSET_CODE_DUPLICATE: '请核对来源表中的重复资产编号',
+  SOURCE_ASSET_CODE_DUPLICATE: '请核对来源表中的重复固定资产编号',
   STATUS_CONFLICT: '请选择设备当前的正确状态',
   STATUS_MISSING: '请选择设备状态',
   STATUS_UNRECOGNIZED: '请选择系统支持的设备状态',
@@ -257,24 +263,75 @@ export function moveChecklistItem(items, index, direction) {
 }
 
 export function buildEquipmentPayload(form) {
+  const physicalQuantity = form.physicalQuantity === '' || form.physicalQuantity == null
+    ? null
+    : Number(form.physicalQuantity)
+  const bookQuantity = form.bookQuantity === '' || form.bookQuantity == null
+    ? null
+    : Number(form.bookQuantity)
+  const quantity = physicalQuantity ?? bookQuantity ?? Number(form.quantity ?? 1)
   return {
     orgUnitId: form.orgUnitId,
-    assetCode: form.assetCode.trim(),
-    name: form.name.trim(),
+    sourceSequence: String(form.sourceSequence || '').trim(),
+    assetCode: String(form.assetCode || '').trim(),
+    name: String(
+      form.secondaryName || form.primaryName || form.name ||
+      form.equipmentTypeName || form.majorCategoryName || ''
+    ).trim(),
     categoryId: form.categoryId,
-    specification: form.specification.trim(),
-    manufacturer: form.manufacturer.trim(),
-    quantity: Number(form.quantity),
-    unit: form.unit.trim(),
-    acquisitionDate: form.acquisitionDate || null,
-    originalValue: form.originalValue === '' || form.originalValue === null
+    majorCategoryName: String(form.majorCategoryName || '').trim(),
+    equipmentTypeName: String(form.equipmentTypeName || '').trim(),
+    primaryName: String(form.primaryName || '').trim(),
+    secondaryName: String(form.secondaryName || '').trim(),
+    plateNumber: String(form.plateNumber || '').trim(),
+    environmentalRegistrationCode: String(form.environmentalRegistrationCode || '').trim(),
+    productCode: String(form.productCode || '').trim(),
+    specification: String(form.specification || '').trim(),
+    manufacturer: String(form.manufacturer || '').trim(),
+    brand: String(form.brand || '').trim(),
+    vehicleLength: String(form.vehicleLength || '').trim(),
+    ratedCapacityText: String(form.ratedCapacityText || '').trim(),
+    forkliftPosition: String(form.forkliftPosition || '').trim(),
+    powerType: String(form.powerType || '').trim(),
+    emissionStandard: String(form.emissionStandard || '').trim(),
+    quantity,
+    bookQuantity,
+    physicalQuantity,
+    unit: String(form.unit || '').trim(),
+    acquisitionDate: form.activationDate || form.acquisitionDate || null,
+    productionDate: form.productionDate || null,
+    activationDate: form.activationDate || null,
+    originalValue: form.originalValue === '' || form.originalValue == null
       ? null
       : Number(form.originalValue),
     custodianUserId: form.custodianUserId || null,
-    location: form.location.trim(),
-    remark: form.remark.trim(),
-    reason: form.reason.trim() || null
+    location: String(form.location || '').trim(),
+    photoFileIds: [...(form.photoFileIds || [])],
+    remark: String(form.remark || '').trim(),
+    reason: String(form.reason || '').trim() || null
   }
+}
+
+export function equipmentCategoryPath(categories = [], categoryId = '') {
+  const byId = new Map((categories || []).map((item) => [String(item._id), item]))
+  const path = []
+  const visited = new Set()
+  let cursor = byId.get(String(categoryId))
+  while (cursor) {
+    const id = String(cursor._id)
+    if (visited.has(id)) return []
+    visited.add(id)
+    path.unshift(cursor)
+    cursor = cursor.parentId ? byId.get(String(cursor.parentId)) : null
+  }
+  return path
+}
+
+export function equipmentCategoryChildren(categories = [], parentId = null) {
+  const normalizedParent = parentId ? String(parentId) : ''
+  return (categories || []).filter((item) => (
+    item.status === 'ACTIVE' && String(item.parentId || '') === normalizedParent
+  ))
 }
 
 function positiveInteger(value, fieldName) {

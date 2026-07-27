@@ -161,7 +161,7 @@
                     </el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column prop="assetCode" label="资产编号" min-width="120" show-overflow-tooltip />
+                <el-table-column prop="assetCode" label="固定资产编号" min-width="145" show-overflow-tooltip />
                 <el-table-column label="异常字段" min-width="105">
                   <template #default="{ row }">{{ equipmentImportFieldLabel(row.field) }}</template>
                 </el-table-column>
@@ -227,7 +227,7 @@
                         <el-option v-for="item in EQUIPMENT_STATUS_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
                       </el-select>
                       <el-date-picker
-                        v-else-if="row.field === 'acquisitionDate'"
+                        v-else-if="['acquisitionDate', 'productionDate', 'activationDate'].includes(row.field)"
                         v-model="decisionState[row._id].value"
                         type="date"
                         value-format="YYYY-MM-DD"
@@ -333,26 +333,33 @@ import {
 
 const IMPORT_PREVIEW_COLUMNS = Object.freeze([
   { key: 'sourceSequence', label: '序号', width: 72, align: 'center' },
-  { key: 'assetType', label: '资产类型', minWidth: 125 },
-  { key: 'assetCode', label: '资产编码', minWidth: 135 },
-  { key: 'sourceAssetCode', label: '原资产编码', minWidth: 135 },
-  { key: 'name', label: '名称', minWidth: 150 },
-  { key: 'productCode', label: '产品编码/SN/PN', minWidth: 160 },
+  { key: 'majorCategoryName', label: '设备所属大类', minWidth: 135 },
+  { key: 'equipmentTypeName', label: '设备所属类型', minWidth: 135 },
+  { key: 'primaryName', label: '设备一级名称', minWidth: 145 },
+  { key: 'secondaryName', label: '设备二级名称', minWidth: 145 },
+  { key: 'assetCode', label: '固定资产编号', minWidth: 145 },
   { key: 'plateNumber', label: '车牌号', minWidth: 115 },
-  { key: 'serialNumber', label: '序列号', minWidth: 130 },
-  { key: 'brand', label: '品牌', minWidth: 105 },
-  { key: 'brandSerialNumber', label: '品牌编号', minWidth: 125 },
+  { key: 'environmentalRegistrationCode', label: '环保编号', minWidth: 130 },
+  { key: 'productCode', label: '产品/品牌编码', minWidth: 160 },
   { key: 'specification', label: '型号规格', minWidth: 145 },
+  { key: 'unit', label: '单位', width: 72 },
+  { key: 'productionDate', label: '出厂日期', minWidth: 120 },
+  { key: 'activationDate', label: '启用日期', minWidth: 120 },
+  { key: 'vehicleLength', label: '车长', minWidth: 90 },
+  { key: 'ratedCapacityText', label: '吨位', minWidth: 90 },
+  { key: 'forkliftPosition', label: '高位/低位', minWidth: 100 },
+  { key: 'powerType', label: '设备动力类型', minWidth: 125 },
+  { key: 'emissionStandard', label: '排放标准', minWidth: 105 },
+  { key: 'brand', label: '品牌', minWidth: 105 },
   { key: 'manufacturer', label: '生产厂家', minWidth: 140 },
   { key: 'bookQuantity', label: '账存数量', width: 96, align: 'right' },
   { key: 'physicalQuantity', label: '实盘数量', width: 96, align: 'right' },
-  { key: 'unit', label: '单位', width: 72 },
-  { key: 'activationDate', label: '启用日期', minWidth: 120 },
-  { key: 'custodianDisplayName', label: '使用人', minWidth: 105 },
   { key: 'orgUnitNameSnapshot', label: '所在部室', minWidth: 125 },
+  { key: 'custodianDisplayName', label: '使用人', minWidth: 105 },
+  { key: 'status', label: '状态', minWidth: 90 },
   { key: 'location', label: '存放地点', minWidth: 125 },
-  { key: 'conditionText', label: '状态', minWidth: 90 },
-  { key: 'photoCount', label: '照片', width: 72, align: 'center' },
+  { key: 'photoCount', label: '设备照片', width: 90, align: 'center' },
+  { key: 'remark', label: '备注', minWidth: 160 },
   { key: 'issueCount', label: '异常', width: 72, align: 'center' }
 ])
 const IMPORT_JOB_STORAGE_KEY = 'equipmentImportPreviewJobId'

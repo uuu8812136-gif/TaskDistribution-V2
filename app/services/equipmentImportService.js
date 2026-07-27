@@ -86,8 +86,14 @@ const CANDIDATE_FIELDS = new Set([
   'assetCode',
   'name',
   'categoryId',
+  'majorCategoryName',
+  'equipmentTypeName',
+  'primaryName',
+  'secondaryName',
   'specification',
   'manufacturer',
+  'powerType',
+  'emissionStandard',
   'quantity',
   'unit',
   'acquisitionDate',
@@ -146,6 +152,40 @@ function normalizeLookupText(value) {
   return textValue(value, 500).normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase('zh-CN');
 }
 
+function candidateCategoryHierarchy(candidate = {}) {
+  return [
+    candidate.majorCategoryName,
+    candidate.equipmentTypeName,
+    candidate.primaryName,
+    candidate.secondaryName
+  ].map((value) => textValue(value, 200)).filter(Boolean);
+}
+
+function categoryHierarchy(category, categoriesById) {
+  if (!category) return [];
+  const path = [];
+  const visited = new Set();
+  let cursor = category;
+  while (cursor) {
+    const id = String(cursor._id || '');
+    if (!id || visited.has(id)) return [];
+    visited.add(id);
+    path.unshift(cursor);
+    cursor = cursor.parentId ? categoriesById.get(String(cursor.parentId)) : null;
+  }
+  return path;
+}
+
+function categoryHierarchyMatches(candidate, category, categoriesById) {
+  const expected = candidateCategoryHierarchy(candidate).map(normalizeLookupText);
+  if (expected.length === 0) return false;
+  const actual = categoryHierarchy(category, categoriesById)
+    .map(({ name }) => normalizeLookupText(name));
+  return actual.length === expected.length && actual.every((value, index) => (
+    value === expected[index]
+  ));
+}
+
 function plain(document) {
   return typeof document?.toObject === 'function'
     ? document.toObject({ depopulate: true, versionKey: false })
@@ -159,6 +199,10 @@ function serializeCandidate(candidate) {
     sourceAssetCode: value.sourceAssetCode || '',
     sourceSequence: value.sourceSequence || '',
     assetType: value.assetType || '',
+    majorCategoryName: value.majorCategoryName || '',
+    equipmentTypeName: value.equipmentTypeName || '',
+    primaryName: value.primaryName || '',
+    secondaryName: value.secondaryName || '',
     sourceSheetName: value.sourceSheetName || '',
     sourceRowNumber: value.sourceRowNumber ?? null,
     sourceRawValues: value.sourceRawValues || null,
@@ -175,6 +219,8 @@ function serializeCandidate(candidate) {
     brand: value.brand || '',
     vehicleLength: value.vehicleLength || '',
     ratedCapacityText: value.ratedCapacityText || '',
+    powerType: value.powerType || '',
+    emissionStandard: value.emissionStandard || '',
     quantity: value.quantity,
     bookQuantity: value.bookQuantity ?? null,
     physicalQuantity: value.physicalQuantity ?? null,
@@ -556,17 +602,34 @@ function createEquipmentImportService({
         });
       }
       if (!directCategory.supplied) {
-        const matches = categoriesByText.get(normalizeLookupText(candidate.categoryName)) || [];
+        const hierarchyNames = candidateCategoryHierarchy(candidate);
+        const matches = hierarchyNames.length > 0
+          ? refs.categories.filter((item) => categoryHierarchyMatches(
+            candidate,
+            item,
+            categoriesById
+          ))
+          : categoriesByText.get(normalizeLookupText(candidate.categoryName)) || [];
         if (matches.length === 1) category = matches[0];
         else {
           addException(row, {
             field: 'categoryId',
             exceptionType: matches.length > 1 ? 'CATEGORY_AMBIGUOUS' : 'CATEGORY_NOT_FOUND',
-            originalValue: candidate.categoryName || null
+            originalValue: hierarchyNames.length > 0
+              ? hierarchyNames.join(' / ')
+              : candidate.categoryName || null
           });
         }
       }
       candidate.categoryId = category?._id || null;
+      if (category) {
+        const resolvedNames = categoryHierarchy(category, categoriesById)
+          .map(({ name }) => name);
+        candidate.majorCategoryName = candidate.majorCategoryName || resolvedNames[0] || '';
+        candidate.equipmentTypeName = candidate.equipmentTypeName || resolvedNames[1] || '';
+        candidate.primaryName = candidate.primaryName || resolvedNames[2] || '';
+        candidate.secondaryName = candidate.secondaryName || resolvedNames[3] || '';
+      }
 
       const directCustodian = resolveDirectId(candidate.custodianUserId, usersById);
       let custodian = directCustodian.value;
@@ -1322,6 +1385,18 @@ function createEquipmentImportService({
           sourceAssetCode: optionalText(candidate.sourceAssetCode, 'sourceAssetCode', 500),
           sourceSequence: optionalText(candidate.sourceSequence, 'sourceSequence', 100),
           assetType: optionalText(candidate.assetType, 'assetType', 100),
+          majorCategoryName: optionalText(
+            candidate.majorCategoryName,
+            'majorCategoryName',
+            100
+          ),
+          equipmentTypeName: optionalText(
+            candidate.equipmentTypeName,
+            'equipmentTypeName',
+            100
+          ),
+          primaryName: optionalText(candidate.primaryName, 'primaryName', 200),
+          secondaryName: optionalText(candidate.secondaryName, 'secondaryName', 200),
           sourceSheetName: optionalText(state.row.sheetName, 'sourceSheetName', 100),
           sourceRowNumber: state.row.rowNumber,
           sourceRawValues: state.row.rawValues || null,
@@ -1337,6 +1412,12 @@ function createEquipmentImportService({
           brand: optionalText(candidate.brand, 'brand', 200),
           vehicleLength: optionalText(candidate.vehicleLength, 'vehicleLength', 100),
           ratedCapacityText: optionalText(candidate.ratedCapacityText, 'ratedCapacityText', 100),
+          powerType: optionalText(candidate.powerType, 'powerType', 100),
+          emissionStandard: optionalText(
+            candidate.emissionStandard,
+            'emissionStandard',
+            100
+          ),
           quantity,
           bookQuantity,
           physicalQuantity,

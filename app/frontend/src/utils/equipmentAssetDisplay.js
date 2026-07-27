@@ -8,7 +8,7 @@ import {
 
 export const EQUIPMENT_ASSET_TYPE_OPTIONS = Object.freeze([
   { value: 'TRANSPORT_EQUIPMENT', label: '运输装备', sheetName: '运输装备' },
-  { value: 'HANDLING_EQUIPMENT', label: '装卸装备', sheetName: '装卸装备' },
+  { value: 'HANDLING_EQUIPMENT', label: '装卸搬运设备', sheetName: '装卸搬运设备' },
   { value: 'LOGISTICS_INFORMATION_EQUIPMENT', label: '物流信息装备', sheetName: '物流信息装备' },
   { value: 'AUXILIARY_FACILITY', label: '辅助设施设备', sheetName: '辅助设施设备' },
   { value: 'IDLE', label: '闲置', sheetName: '闲置' }
@@ -19,6 +19,7 @@ const ASSET_TYPE_ALIASES = Object.freeze({
   '运输装备': 'TRANSPORT_EQUIPMENT',
   HANDLING_EQUIPMENT: 'HANDLING_EQUIPMENT',
   '装卸装备': 'HANDLING_EQUIPMENT',
+  '装卸搬运设备': 'HANDLING_EQUIPMENT',
   LOGISTICS_INFORMATION_EQUIPMENT: 'LOGISTICS_INFORMATION_EQUIPMENT',
   '物流信息装备': 'LOGISTICS_INFORMATION_EQUIPMENT',
   AUXILIARY_FACILITY: 'AUXILIARY_FACILITY',
@@ -37,6 +38,13 @@ const DATE_PRECISION_LABELS = Object.freeze({
   YEAR: '精确到年',
   RAW: '保留原值',
   UNKNOWN: '精度未知'
+})
+
+const EQUIPMENT_STATUS_LABELS = Object.freeze({
+  IN_USE: '在用',
+  IDLE: '闲置',
+  STOPPED: '停用',
+  SCRAPPED: '报废'
 })
 
 const COMMON_START_COLUMNS = Object.freeze([
@@ -130,69 +138,100 @@ const COMMON_END_COLUMNS = Object.freeze([
   { key: 'issueCount', label: '异常', width: 76, align: 'center' }
 ])
 
+const EQUIPMENT_TEMPLATE_COLUMNS = Object.freeze([
+  { key: 'sourceSequence', label: '序号', width: 76, align: 'center' },
+  { key: 'majorCategoryName', label: '设备所属大类', minWidth: 138 },
+  { key: 'equipmentTypeName', label: '设备所属类型', minWidth: 138 },
+  { key: 'primaryName', label: '设备一级名称', minWidth: 145 },
+  { key: 'secondaryName', label: '设备二级名称', minWidth: 150 },
+  { key: 'assetCode', label: '固定资产编号', minWidth: 150 },
+  { key: 'plateNumber', label: '车牌号', minWidth: 120 },
+  { key: 'environmentalRegistrationCode', label: '环保编号', minWidth: 135 },
+  { key: 'productCode', label: '产品/品牌编码', minWidth: 165 },
+  { key: 'specification', label: '型号规格', minWidth: 145 },
+  { key: 'unit', label: '单位', width: 76 },
+  { key: 'productionDate', label: '出厂日期', minWidth: 120 },
+  { key: 'activationDate', label: '启用日期', minWidth: 120 },
+  { key: 'vehicleLength', label: '车长', minWidth: 90 },
+  { key: 'ratedCapacityText', label: '吨位', minWidth: 90 },
+  { key: 'forkliftPosition', label: '高位/低位', minWidth: 100 },
+  { key: 'powerType', label: '设备动力类型', minWidth: 125 },
+  { key: 'emissionStandard', label: '排放标准', minWidth: 105 },
+  { key: 'brand', label: '品牌', minWidth: 105 },
+  { key: 'manufacturer', label: '生产厂家', minWidth: 135 },
+  { key: 'bookQuantity', label: '账存数量', width: 96, align: 'right' },
+  { key: 'physicalQuantity', label: '实盘数量', width: 96, align: 'right' },
+  { key: 'orgUnitNameSnapshot', label: '所在部室', minWidth: 125 },
+  { key: 'custodianDisplayName', label: '使用人', minWidth: 105 },
+  { key: 'status', label: '状态', minWidth: 90 },
+  { key: 'location', label: '存放地点', minWidth: 125 },
+  { key: 'photoCount', label: '设备照片', width: 90, align: 'center' },
+  { key: 'remark', label: '备注', minWidth: 180 }
+])
+
 export const EQUIPMENT_DETAIL_GROUPS = Object.freeze([
   {
-    title: '来源信息',
+    title: '分类与标识',
     fields: [
-      { key: 'sourceSheetName', label: '来源 Sheet' },
-      { key: 'sourceRowNumber', label: '来源行号' },
       { key: 'sourceSequence', label: '序号' },
-      { key: 'assetType', label: '资产类型' }
-    ]
-  },
-  {
-    title: '设备标识',
-    fields: [
-      { key: 'assetCode', label: '资产编码' },
-      { key: 'sourceAssetCode', label: '原资产编码' },
-      { key: 'name', label: '名称' },
-      { key: 'productCode', label: '产品编码/SN/PN' },
+      { key: 'majorCategoryName', label: '设备所属大类' },
+      { key: 'equipmentTypeName', label: '设备所属类型' },
+      { key: 'primaryName', label: '设备一级名称' },
+      { key: 'secondaryName', label: '设备二级名称' },
+      { key: 'assetCode', label: '固定资产编号' },
       { key: 'plateNumber', label: '车牌号' },
-      { key: 'serialNumber', label: 'SN/序列号' },
-      { key: 'brandSerialNumber', label: '品牌编号' }
+      { key: 'environmentalRegistrationCode', label: '环保编号' },
+      { key: 'productCode', label: '产品/品牌编码' }
     ]
   },
   {
     title: '技术参数',
     fields: [
-      { key: 'brand', label: '品牌' },
       { key: 'specification', label: '型号规格' },
-      { key: 'manufacturer', label: '生产厂家' },
+      { key: 'unit', label: '单位' },
+      { key: 'productionDate', label: '出厂日期' },
+      { key: 'activationDate', label: '启用日期' },
       { key: 'vehicleLength', label: '车长' },
-      { key: 'ratedCapacityText', label: '吨位/额定载重' },
-      { key: 'environmentalRegistrationCode', label: '叉车环保编号' }
+      { key: 'ratedCapacityText', label: '吨位' },
+      { key: 'forkliftPosition', label: '高位/低位' },
+      { key: 'powerType', label: '设备动力类型' },
+      { key: 'emissionStandard', label: '排放标准' },
+      { key: 'brand', label: '品牌' },
+      { key: 'manufacturer', label: '生产厂家' }
     ]
   },
   {
-    title: '数量与使用状态',
+    title: '数量与使用信息',
     fields: [
       { key: 'bookQuantity', label: '账存数量' },
       { key: 'physicalQuantity', label: '实盘数量' },
-      { key: 'quantity', label: '系统数量' },
-      { key: 'unit', label: '单位' },
-      { key: 'custodianDisplayName', label: '使用人' },
       { key: 'orgUnitNameSnapshot', label: '所在部室' },
+      { key: 'custodianDisplayName', label: '使用人' },
+      { key: 'status', label: '状态' },
       { key: 'location', label: '存放地点' },
-      { key: 'forkliftPosition', label: '高低位' },
-      { key: 'conditionText', label: '原表状态' },
-      { key: 'status', label: '系统状态' }
+      { key: 'photoCount', label: '设备照片' }
     ]
   },
   {
-    title: '日期信息',
+    title: '历史来源补充信息',
     fields: [
-      { key: 'productionDate', label: '出厂日期' },
+      { key: 'assetType', label: '原资产类型' },
+      { key: 'sourceSheetName', label: '来源 Sheet' },
+      { key: 'sourceRowNumber', label: '来源行号' },
+      { key: 'sourceAssetCode', label: '原资产编号' },
+      { key: 'name', label: '原设备名称' },
+      { key: 'serialNumber', label: 'SN/序列号' },
+      { key: 'brandSerialNumber', label: '品牌编号' },
       { key: 'productionDateDisplay', label: '出厂日期显示值' },
       { key: 'productionDateRaw', label: '出厂日期原值' },
       { key: 'productionDatePrecision', label: '出厂日期精度' },
-      { key: 'activationDate', label: '启用日期' },
       { key: 'activationDateDisplay', label: '启用日期显示值' },
       { key: 'activationDateRaw', label: '启用日期原值' },
       { key: 'activationDatePrecision', label: '启用日期精度' },
       { key: 'idlePlacedAt', label: '闲置时间' },
       { key: 'idlePlacedAtRaw', label: '闲置时间原值' },
       { key: 'idlePlacedAtDisplay', label: '闲置时间显示值' },
-      { key: 'acquisitionDate', label: '系统购置日期' }
+      { key: 'conditionText', label: '原表状态' }
     ]
   },
   {
@@ -214,18 +253,7 @@ export function equipmentAssetTypeLabel(value, sourceSheetName = '') {
 }
 
 export function equipmentAssetTableColumns(value) {
-  const normalized = normalizeEquipmentAssetType(value)
-  const typeColumns = TYPE_COLUMNS[normalized] || [
-    { key: 'specification', label: '型号规格', minWidth: 150 },
-    { key: 'manufacturer', label: '生产厂家', minWidth: 145 },
-    { key: 'bookQuantity', label: '账存数量', width: 96, align: 'right' },
-    { key: 'physicalQuantity', label: '实盘数量', width: 96, align: 'right' },
-    { key: 'unit', label: '单位', width: 76 },
-    { key: 'custodianDisplayName', label: '使用人', minWidth: 112 },
-    { key: 'location', label: '存放地点', minWidth: 130 },
-    { key: 'conditionText', label: '状态', minWidth: 92 }
-  ]
-  return [...COMMON_START_COLUMNS, ...typeColumns, ...COMMON_END_COLUMNS]
+  return EQUIPMENT_TEMPLATE_COLUMNS
 }
 
 export function equipmentTableMinWidth(columns = []) {
@@ -307,6 +335,15 @@ export function equipmentFieldValue(record = {}, key) {
     return formatNumber(Object.prototype.hasOwnProperty.call(record, 'physicalQuantity') ? record.physicalQuantity : record.quantity)
   }
   if (key === 'quantity') return formatNumber(record.quantity)
+  if (key === 'majorCategoryName') {
+    return record.majorCategoryName || equipmentAssetTypeLabel(record.assetType, record.sourceSheetName)
+  }
+  if (key === 'equipmentTypeName') return record.equipmentTypeName || '-'
+  if (key === 'primaryName') return record.primaryName || '-'
+  if (key === 'secondaryName') return record.secondaryName || record.name || '-'
+  if (key === 'status') {
+    return record.conditionText || EQUIPMENT_STATUS_LABELS[record.status] || record.status || '-'
+  }
   if (key === 'custodianDisplayName') return record.custodianDisplayName || record.custodianName || '-'
   if (key === 'orgUnitNameSnapshot') return record.orgUnitNameSnapshot || record.orgUnitName || '-'
   if (key === 'categoryName') return record.categoryName || '-'

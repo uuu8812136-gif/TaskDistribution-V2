@@ -120,6 +120,115 @@ test('real fixed-asset headers remain distinct and preserve source-only columns'
   assert.equal(idle.idlePlacedAtRaw, '2026.3');
 });
 
+test('2026-07-27 equipment ledger template maps all classification and technical fields', () => {
+  const headers = [
+    '序号',
+    '设备所属大类',
+    '设备所属类型',
+    '设备一级名称',
+    '设备二级名称',
+    '固定资产编号',
+    '车牌号',
+    '环保编号',
+    '产品/品牌编码',
+    '型号规格',
+    '单位',
+    '出厂日期',
+    '启用日期',
+    '车长',
+    '吨位',
+    '高位/低位',
+    '设备动力类型：锂电/铅酸/柴油',
+    '排放标准',
+    '品牌',
+    '生产厂家',
+    '账存数量',
+    '实盘数量',
+    '所在部室',
+    '使用人',
+    '状态',
+    '存放地点',
+    '设备照片（支持上传1-10张照片）',
+    '备注'
+  ];
+  const values = [
+    1,
+    '运输装备',
+    '车辆',
+    '厢式货车',
+    '4.2米轻卡',
+    '鲁A0C01F',
+    '鲁A0C01F',
+    '/',
+    'LZZJBADB4KE765069',
+    '4.2米轻卡',
+    '辆',
+    '2019年10月',
+    '2019/10/1',
+    '4.2米',
+    '/',
+    '/',
+    '柴油',
+    '国5',
+    '豪沃',
+    '中国重汽',
+    1,
+    1,
+    '综合管理室',
+    '李华2',
+    '在用',
+    '外仓',
+    null,
+    null
+  ];
+  const parsed = parseEquipmentWorkbook(workbookBuffer([
+    ['设备台账模板', [headers, values]]
+  ]));
+  assert.equal(parsed.rows.length, 1);
+  const candidate = parsed.rows[0].candidate;
+  assert.equal(candidate.assetCode, '鲁A0C01F');
+  assert.equal(candidate.assetType, 'TRANSPORT_EQUIPMENT');
+  assert.equal(candidate.majorCategoryName, '运输装备');
+  assert.equal(candidate.equipmentTypeName, '车辆');
+  assert.equal(candidate.primaryName, '厢式货车');
+  assert.equal(candidate.secondaryName, '4.2米轻卡');
+  assert.equal(candidate.name, '4.2米轻卡');
+  assert.equal(candidate.categoryName, '4.2米轻卡');
+  assert.equal(candidate.plateNumber, '鲁A0C01F');
+  assert.equal(candidate.environmentalRegistrationCode, '/');
+  assert.equal(candidate.productCode, 'LZZJBADB4KE765069');
+  assert.equal(candidate.powerType, '柴油');
+  assert.equal(candidate.emissionStandard, '国5');
+  assert.equal(candidate.brand, '豪沃');
+  assert.equal(candidate.manufacturer, '中国重汽');
+  assert.equal(candidate.bookQuantity, 1);
+  assert.equal(candidate.physicalQuantity, 1);
+  assert.equal(candidate.orgUnitName, '综合管理室');
+  assert.equal(candidate.custodianName, '李华2');
+  assert.equal(candidate.location, '外仓');
+  assert.equal(candidate.status, EquipmentAsset.EQUIPMENT_STATUSES.IN_USE);
+});
+
+test('2026-07-27 equipment ledger major categories map to stable asset types', () => {
+  const parsed = parseEquipmentWorkbook(workbookBuffer([
+    ['设备台账模板', [
+      ['设备所属大类', '设备所属类型', '设备一级名称', '设备二级名称', '固定资产编号'],
+      ['运输装备', '车辆', '厢式货车', '轻卡', 'TYPE-001'],
+      ['装卸搬运设备', '叉车', '内燃叉车', '柴油叉车', 'TYPE-002'],
+      ['物流信息装备', '信息硬件', '手持终端', '扫码终端', 'TYPE-003']
+    ]]
+  ]));
+
+  assert.deepEqual(
+    parsed.rows.map(({ candidate }) => candidate.assetType),
+    [
+      'TRANSPORT_EQUIPMENT',
+      'HANDLING_EQUIPMENT',
+      'LOGISTICS_INFORMATION_EQUIPMENT'
+    ]
+  );
+});
+
 test('partial source dates retain value, precision and exact raw text', () => {
   const year = parseSourceDateValue('2024年', { field: 'activationDate' });
   assert.equal(year.precision, EquipmentAsset.DATE_PRECISIONS.YEAR);

@@ -14,6 +14,8 @@ import {
   buildCategoryTree,
   buildEquipmentPayload,
   entityName,
+  equipmentCategoryChildren,
+  equipmentCategoryPath,
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
   equipmentImportFieldLabel,
@@ -71,17 +73,36 @@ test('equipment payload contains only normalized fixed fields', () => {
   })
   assert.deepEqual(payload, {
     orgUnitId: 'org-1',
+    sourceSequence: '',
     assetCode: 'A-001',
     name: '叉车',
     categoryId: 'category-1',
+    majorCategoryName: '',
+    equipmentTypeName: '',
+    primaryName: '',
+    secondaryName: '',
+    plateNumber: '',
+    environmentalRegistrationCode: '',
+    productCode: '',
     specification: '2T',
     manufacturer: '厂商',
+    brand: '',
+    vehicleLength: '',
+    ratedCapacityText: '',
+    forkliftPosition: '',
+    powerType: '',
+    emissionStandard: '',
     quantity: 2,
+    bookQuantity: null,
+    physicalQuantity: null,
     unit: '台',
     acquisitionDate: null,
+    productionDate: null,
+    activationDate: null,
     originalValue: null,
     custodianUserId: null,
     location: '一库',
+    photoFileIds: [],
     remark: '正常',
     reason: '新增'
   })
@@ -96,6 +117,39 @@ test('category tree and labels are deterministic', () => {
   assert.deepEqual(tree[0].children.map((item) => item._id), ['child-a', 'child-b'])
   assert.equal(entityName([{ _id: 'org-1', name: '一分部' }], 'org-1'), '一分部')
   assert.equal(optionForValue(EQUIPMENT_STATUS_OPTIONS, 'IN_USE').label, '在用')
+
+  const categories = [
+    { _id: 'major', parentId: null, name: '运输装备', status: 'ACTIVE' },
+    { _id: 'type', parentId: 'major', name: '车辆', status: 'ACTIVE' },
+    { _id: 'primary', parentId: 'type', name: '厢式货车', status: 'ACTIVE' },
+    { _id: 'secondary', parentId: 'primary', name: '4.2米轻卡', status: 'ACTIVE' }
+  ]
+  assert.deepEqual(
+    equipmentCategoryPath(categories, 'secondary').map((item) => item._id),
+    ['major', 'type', 'primary', 'secondary']
+  )
+  assert.deepEqual(
+    equipmentCategoryChildren(categories, 'type').map((item) => item._id),
+    ['primary']
+  )
+})
+
+test('category maintenance stops at the fixed four-level equipment hierarchy', () => {
+  const view = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentCategories.vue'),
+    'utf8'
+  )
+  assert.match(view, /row\.status === 'ACTIVE' && categoryDepth\(row\) < 4/)
+  assert.match(view, /if \(parent && categoryDepth\(parent\) >= 4\) return/)
+})
+
+test('equipment list keeps the customer ledger column order instead of promoting the asset code', () => {
+  const view = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentList.vue'),
+    'utf8'
+  )
+  assert.match(view, /:fixed="column\.key === 'sourceSequence' \? 'left' : undefined"/)
+  assert.doesNotMatch(view, /\['sourceSequence', 'assetCode'/)
 })
 
 test('checklist editor supports repeated additions, stable ordering and a one-item minimum', () => {
@@ -140,7 +194,7 @@ test('equipment import decisions expose only actions accepted by the backend', (
     IMPORT_DECISION_ACTIONS.USE_RESOLVED_VALUE,
     IMPORT_DECISION_ACTIONS.SKIP_ROW
   ])
-  assert.equal(equipmentImportExceptionLabel('ASSET_CODE_MISSING'), '资产编号缺失')
+  assert.equal(equipmentImportExceptionLabel('ASSET_CODE_MISSING'), '固定资产编号缺失')
 })
 
 test('equipment import issues always expose localized labels and actions', () => {
@@ -164,11 +218,15 @@ test('equipment import issues always expose localized labels and actions', () =>
 
   assert.equal(equipmentImportExceptionLabel('UNKNOWN_BACKEND_CODE'), '其他数据异常')
   assert.equal(equipmentImportFieldLabel('_sourceIdentity'), '来源标识')
+  assert.equal(equipmentImportFieldLabel('assetCode'), '固定资产编号')
+  assert.equal(equipmentImportFieldLabel('productCode'), '产品/品牌编码')
+  assert.equal(equipmentImportFieldLabel('forkliftPosition'), '高位/低位')
+  assert.equal(equipmentImportFieldLabel('environmentalRegistrationCode'), '环保编号')
   assert.equal(equipmentImportFieldLabel('untrustedField'), '其他字段')
   assert.equal(equipmentImportSuggestedAction({
     exceptionType: 'DUPLICATE_ASSET_CODE_EXISTING',
     suggestedAction: 'Choose a new asset code or skip this row'
-  }), '请填写新的资产编号，或跳过该行')
+  }), '请填写新的固定资产编号，或跳过该行')
   assert.equal(equipmentImportSuggestedAction({
     exceptionType: 'UNKNOWN_BACKEND_CODE',
     suggestedAction: 'Do something technical'
@@ -191,6 +249,8 @@ test('equipment import dialog never renders raw backend error text', () => {
   assert.doesNotMatch(dialog, /row\.suggestedAction/)
   assert.match(dialog, /equipmentImportOriginalValue\(row\)/)
   assert.match(dialog, /equipmentImportSuggestedAction\(row\)/)
+  assert.match(dialog, /\['acquisitionDate', 'productionDate', 'activationDate'\]\.includes\(row\.field\)/)
+  assert.match(dialog, /prop="assetCode" label="固定资产编号"/)
 })
 
 test('equipment import confirmation carries the optimistic version and explicit decisions', () => {

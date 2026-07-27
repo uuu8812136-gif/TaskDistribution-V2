@@ -5,6 +5,7 @@ const XLSX = require('xlsx');
 const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentCategory = require('../models/EquipmentCategory');
 const EquipmentChangeRecord = require('../models/EquipmentChangeRecord');
+const FileAsset = require('../models/FileAsset');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
@@ -22,6 +23,7 @@ const {
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const { normalizeId } = require('./authSessionService');
+const { createFileAssetService } = require('./fileAssetService');
 const {
   buildScopedDetailFilter,
   buildScopedFilter,
@@ -50,6 +52,29 @@ const { EQUIPMENT_CHANGE_TYPES } = EquipmentChangeRecord;
 const QR_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,86}$/;
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
+const MAX_EQUIPMENT_CATEGORY_DEPTH = 4;
+const MAX_INTERACTIVE_EQUIPMENT_PHOTOS = 10;
+const EQUIPMENT_PHOTO_MIME_TYPES = Object.freeze([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif'
+]);
+const ASSET_TYPE_BY_MAJOR_CATEGORY = Object.freeze({
+  运输装备: 'TRANSPORT_EQUIPMENT',
+  装卸装备: 'HANDLING_EQUIPMENT',
+  装卸搬运设备: 'HANDLING_EQUIPMENT',
+  物流信息装备: 'LOGISTICS_INFORMATION_EQUIPMENT',
+  辅助设施设备: 'AUXILIARY_FACILITY',
+  辅助设施: 'AUXILIARY_FACILITY',
+  闲置: 'IDLE'
+});
+const EQUIPMENT_STATUS_LABELS = Object.freeze({
+  IN_USE: '在用',
+  IDLE: '闲置',
+  STOPPED: '停用',
+  SCRAPPED: '报废'
+});
 
 class EquipmentRegistryError extends Error {
   constructor(status, code, message) {
@@ -135,6 +160,35 @@ function optionalDate(value, field, fallback = null) {
   return date;
 }
 
+function interactivePhotoFileIds(value) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw registryError(400, 'EQUIPMENT_INPUT_INVALID', 'photoFileIds must be an array');
+  }
+  const ids = value.map((item) => {
+    try {
+      return normalizeObjectId(item, 'photoFileIds');
+    } catch {
+      throw registryError(
+        400,
+        'EQUIPMENT_INPUT_INVALID',
+        'photoFileIds must contain valid file ids'
+      );
+    }
+  });
+  if (
+    ids.length > MAX_INTERACTIVE_EQUIPMENT_PHOTOS ||
+    new Set(ids.map(String)).size !== ids.length
+  ) {
+    throw registryError(
+      400,
+      'EQUIPMENT_INPUT_INVALID',
+      `photoFileIds must contain at most ${MAX_INTERACTIVE_EQUIPMENT_PHOTOS} unique files`
+    );
+  }
+  return ids;
+}
+
 function integer(value, field, { min = 0, max = 2147483647, fallback = 0 } = {}) {
   if (value === undefined || value === null || value === '') return fallback;
   const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : value;
@@ -190,6 +244,10 @@ function serializeAsset(document) {
     sourceAssetCode: value.sourceAssetCode || '',
     sourceSequence: value.sourceSequence || '',
     assetType: value.assetType || '',
+    majorCategoryName: value.majorCategoryName || '',
+    equipmentTypeName: value.equipmentTypeName || '',
+    primaryName: value.primaryName || '',
+    secondaryName: value.secondaryName || '',
     sourceSheetName: value.sourceSheetName || '',
     sourceRowNumber: value.sourceRowNumber ?? null,
     sourceRawValues: value.sourceRawValues || null,
@@ -205,6 +263,8 @@ function serializeAsset(document) {
     brand: value.brand || '',
     vehicleLength: value.vehicleLength || '',
     ratedCapacityText: value.ratedCapacityText || '',
+    powerType: value.powerType || '',
+    emissionStandard: value.emissionStandard || '',
     quantity: value.quantity,
     bookQuantity: value.bookQuantity ?? null,
     physicalQuantity: value.physicalQuantity ?? null,
@@ -314,8 +374,10 @@ function createEquipmentRegistryService({
   TeamMembershipModel = TeamMembership,
   UserModel = User,
   auditService = createAuditService(),
+  fileAssetService = null,
   connection = mongoose.connection
 } = {}) {
+  const files = fileAssetService || createFileAssetService({ connection });
   async function resolveReadTeamId(authContext, requestedTeamId) {
     const context = assertBusinessContext(authContext);
     if (context.mode === SESSION_MODES.TEAM) {
@@ -452,6 +514,38 @@ function createEquipmentRegistryService({
     return category;
   }
 
+  async function categorySnapshots({ context, category, session }) {
+    const path = [];
+    const visited = new Set();
+    let cursor = category;
+    while (cursor) {
+      const cursorId = normalizeId(cursor._id);
+      if (!cursorId || visited.has(cursorId)) throw relatedInvalid();
+      visited.add(cursorId);
+      path.unshift(cursor);
+      if (!cursor.parentId) break;
+      cursor = await execute(EquipmentCategoryModel.findOne({
+        _id: cursor.parentId,
+        teamId: context.activeTeamId
+      }), session);
+      if (!cursor) throw relatedInvalid();
+    }
+    if (path.length > MAX_EQUIPMENT_CATEGORY_DEPTH) {
+      throw registryError(
+        409,
+        'EQUIPMENT_CATEGORY_DEPTH_LIMIT',
+        `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
+      );
+    }
+    const names = path.map(({ name }) => name);
+    return {
+      majorCategoryName: names[0] || '',
+      equipmentTypeName: names[1] || '',
+      primaryName: names[2] || '',
+      secondaryName: names[3] || ''
+    };
+  }
+
   async function resolveCustodian({ context, custodianUserId, orgUnitId, session }) {
     const userId = normalizeRelatedId(custodianUserId, { optional: true });
     if (!userId) return null;
@@ -487,7 +581,7 @@ function createEquipmentRegistryService({
     session
   }) {
     const normalizedParentId = normalizeRelatedId(parentId, { optional: true });
-    if (!normalizedParentId) return null;
+    if (!normalizedParentId) return { parent: null, parentDepth: 0 };
     if (currentCategoryId && sameId(normalizedParentId, currentCategoryId)) {
       throw relatedInvalid();
     }
@@ -500,6 +594,7 @@ function createEquipmentRegistryService({
 
     const visited = new Set();
     let cursor = parent;
+    let parentDepth = 1;
     while (cursor?.parentId) {
       const cursorId = normalizeId(cursor._id);
       if (visited.has(cursorId) || (currentCategoryId && sameId(cursor.parentId, currentCategoryId))) {
@@ -511,8 +606,45 @@ function createEquipmentRegistryService({
         teamId: context.activeTeamId
       }), session);
       if (!cursor) throw relatedInvalid();
+      parentDepth += 1;
     }
-    return parent;
+    if (parentDepth >= MAX_EQUIPMENT_CATEGORY_DEPTH) {
+      throw registryError(
+        409,
+        'EQUIPMENT_CATEGORY_DEPTH_LIMIT',
+        `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
+      );
+    }
+    return { parent, parentDepth };
+  }
+
+  async function categorySubtreeHeight({ context, categoryId, session }) {
+    const categories = await execute(EquipmentCategoryModel.find({
+      teamId: context.activeTeamId
+    }).select('_id parentId').lean(), session);
+    const childrenByParent = new Map();
+    for (const item of categories) {
+      const parentId = normalizeId(item.parentId);
+      if (!parentId) continue;
+      const children = childrenByParent.get(parentId) || [];
+      children.push(normalizeId(item._id));
+      childrenByParent.set(parentId, children);
+    }
+    let maximumDepth = 1;
+    const queue = [{ id: normalizeId(categoryId), depth: 1 }];
+    const visited = new Set();
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current.id || visited.has(current.id)) {
+        throw registryError(409, 'EQUIPMENT_CATEGORY_CYCLE', 'Category hierarchy cannot contain a cycle');
+      }
+      visited.add(current.id);
+      maximumDepth = Math.max(maximumDepth, current.depth);
+      for (const childId of childrenByParent.get(current.id) || []) {
+        queue.push({ id: childId, depth: current.depth + 1 });
+      }
+    }
+    return maximumDepth;
   }
 
   function categoryUserFilter(query = {}) {
@@ -556,6 +688,10 @@ function createEquipmentRegistryService({
         { sourceAssetCode: pattern },
         { sourceSequence: pattern },
         { assetType: pattern },
+        { majorCategoryName: pattern },
+        { equipmentTypeName: pattern },
+        { primaryName: pattern },
+        { secondaryName: pattern },
         { productCode: pattern },
         { plateNumber: pattern },
         { serialNumber: pattern },
@@ -567,6 +703,8 @@ function createEquipmentRegistryService({
         { location: pattern },
         { conditionText: pattern },
         { forkliftPosition: pattern },
+        { powerType: pattern },
+        { emissionStandard: pattern },
         { custodianDisplayName: pattern },
         { orgUnitNameSnapshot: pattern },
         { environmentalRegistrationCode: pattern }
@@ -609,7 +747,7 @@ function createEquipmentRegistryService({
     assertNoClientTeamId(input);
     try {
       return await runWithOptionalTransaction(async (session) => {
-        const parent = await assertCategoryParent({
+        const { parent } = await assertCategoryParent({
           context,
           parentId: input.parentId,
           session
@@ -661,12 +799,24 @@ function createEquipmentRegistryService({
           category.sortOrder = integer(input.sortOrder, 'sortOrder');
         }
         if (Object.prototype.hasOwnProperty.call(input, 'parentId')) {
-          const parent = await assertCategoryParent({
+          const { parent, parentDepth } = await assertCategoryParent({
             context,
             parentId: input.parentId,
             currentCategoryId: category._id,
             session
           });
+          const subtreeHeight = await categorySubtreeHeight({
+            context,
+            categoryId: category._id,
+            session
+          });
+          if (parentDepth + subtreeHeight > MAX_EQUIPMENT_CATEGORY_DEPTH) {
+            throw registryError(
+              409,
+              'EQUIPMENT_CATEGORY_DEPTH_LIMIT',
+              `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
+            );
+          }
           category.parentId = parent?._id || null;
         }
         if (Object.prototype.hasOwnProperty.call(input, 'status')) {
@@ -737,6 +887,16 @@ function createEquipmentRegistryService({
 
   function assetPayload(input, existing = null) {
     const created = existing === null;
+    const supplied = (field) => Object.prototype.hasOwnProperty.call(input, field);
+    const stringValue = (field, max) => supplied(field)
+      ? optionalString(input[field], field, max)
+      : existing?.[field] || '';
+    const numberValue = (field, fallback = null) => supplied(field)
+      ? optionalNumber(input[field], field, { min: 0, fallback })
+      : existing?.[field] ?? fallback;
+    const dateValue = (field) => supplied(field)
+      ? optionalDate(input[field], field)
+      : existing?.[field] || null;
     if (created && input.status && input.status !== EQUIPMENT_STATUSES.IN_USE) {
       throw registryError(
         409,
@@ -755,37 +915,53 @@ function createEquipmentRegistryService({
         'Equipment status changes require the dedicated approval workflow'
       );
     }
+    const productionDate = dateValue('productionDate');
+    const activationDate = dateValue('activationDate');
     return {
-      assetCode: created || Object.prototype.hasOwnProperty.call(input, 'assetCode')
+      assetCode: created || supplied('assetCode')
         ? requiredString(input.assetCode, 'assetCode', 100)
         : existing?.assetCode,
-      name: created || Object.prototype.hasOwnProperty.call(input, 'name')
+      name: created || supplied('name')
         ? requiredString(input.name, 'name', 200)
         : existing?.name,
-      specification: Object.prototype.hasOwnProperty.call(input, 'specification')
-        ? optionalString(input.specification, 'specification', 500)
-        : existing?.specification || '',
-      manufacturer: Object.prototype.hasOwnProperty.call(input, 'manufacturer')
-        ? optionalString(input.manufacturer, 'manufacturer', 200)
-        : existing?.manufacturer || '',
-      quantity: Object.prototype.hasOwnProperty.call(input, 'quantity')
-        ? optionalNumber(input.quantity, 'quantity', { min: 0, fallback: 1 })
-        : existing?.quantity ?? 1,
-      unit: Object.prototype.hasOwnProperty.call(input, 'unit')
-        ? optionalString(input.unit, 'unit', 50)
-        : existing?.unit || '',
-      acquisitionDate: Object.prototype.hasOwnProperty.call(input, 'acquisitionDate')
-        ? optionalDate(input.acquisitionDate, 'acquisitionDate')
-        : existing?.acquisitionDate || null,
-      originalValue: Object.prototype.hasOwnProperty.call(input, 'originalValue')
-        ? optionalNumber(input.originalValue, 'originalValue')
-        : existing?.originalValue ?? null,
-      location: Object.prototype.hasOwnProperty.call(input, 'location')
-        ? optionalString(input.location, 'location', 500)
-        : existing?.location || '',
-      remark: Object.prototype.hasOwnProperty.call(input, 'remark')
-        ? optionalString(input.remark, 'remark', 2000)
-        : existing?.remark || '',
+      sourceSequence: stringValue('sourceSequence', 100),
+      assetType: stringValue('assetType', 100),
+      productCode: stringValue('productCode', 500),
+      plateNumber: stringValue('plateNumber', 100),
+      specification: stringValue('specification', 500),
+      manufacturer: stringValue('manufacturer', 200),
+      brand: stringValue('brand', 200),
+      vehicleLength: stringValue('vehicleLength', 100),
+      ratedCapacityText: stringValue('ratedCapacityText', 100),
+      powerType: stringValue('powerType', 100),
+      emissionStandard: stringValue('emissionStandard', 100),
+      quantity: numberValue('quantity', 1),
+      bookQuantity: numberValue('bookQuantity'),
+      physicalQuantity: numberValue('physicalQuantity'),
+      unit: stringValue('unit', 50),
+      acquisitionDate: dateValue('acquisitionDate'),
+      productionDate,
+      productionDatePrecision: supplied('productionDate')
+        ? productionDate ? EquipmentAsset.DATE_PRECISIONS.DAY : null
+        : existing?.productionDatePrecision || null,
+      productionDateRaw: supplied('productionDate') ? '' : existing?.productionDateRaw || '',
+      productionDateDisplay: supplied('productionDate')
+        ? ''
+        : existing?.productionDateDisplay || '',
+      activationDate,
+      activationDatePrecision: supplied('activationDate')
+        ? activationDate ? EquipmentAsset.DATE_PRECISIONS.DAY : null
+        : existing?.activationDatePrecision || null,
+      activationDateRaw: supplied('activationDate') ? '' : existing?.activationDateRaw || '',
+      activationDateDisplay: supplied('activationDate')
+        ? ''
+        : existing?.activationDateDisplay || '',
+      originalValue: numberValue('originalValue'),
+      location: stringValue('location', 500),
+      conditionText: stringValue('conditionText', 200),
+      forkliftPosition: stringValue('forkliftPosition', 100),
+      environmentalRegistrationCode: stringValue('environmentalRegistrationCode', 200),
+      remark: stringValue('remark', 2000),
       status: created ? EQUIPMENT_STATUSES.IN_USE : existing.status
     };
   }
@@ -889,6 +1065,7 @@ function createEquipmentRegistryService({
     const context = assertTeamContext(authContext);
     assertPermission(context, 'equipment.create');
     assertNoClientTeamId(input);
+    const requestedPhotoFileIds = interactivePhotoFileIds(input.photoFileIds);
     try {
       return await runWithOptionalTransaction(async (session) => {
         const orgUnit = await resolveWritableOrgUnit({
@@ -907,15 +1084,40 @@ function createEquipmentRegistryService({
           orgUnitId: orgUnit._id,
           session
         });
+        const snapshots = await categorySnapshots({ context, category, session });
+        const normalizedPayload = assetPayload(input);
+        if (!normalizedPayload.assetType && snapshots.majorCategoryName) {
+          normalizedPayload.assetType = ASSET_TYPE_BY_MAJOR_CATEGORY[snapshots.majorCategoryName] ||
+            snapshots.majorCategoryName;
+        }
         const equipment = await createOne(EquipmentAssetModel, {
           teamId: context.activeTeamId,
           orgUnitId: orgUnit._id,
           categoryId: category._id,
           custodianUserId: custodian?._id || null,
-          ...assetPayload(input),
+          custodianDisplayName: custodian?.name || '',
+          orgUnitNameSnapshot: orgUnit.name || '',
+          ...snapshots,
+          ...normalizedPayload,
+          photoFileIds: [],
           createdBy: context.userId,
           updatedBy: context.userId
         }, session);
+        if (requestedPhotoFileIds !== undefined) {
+          const bound = await files.reconcileOwnerFiles({
+            authContext: context,
+            req,
+            attachments: requestedPhotoFileIds.map((fileId) => ({ fileId })),
+            previousAttachments: [],
+            ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT,
+            ownerId: equipment._id,
+            method: 'POST',
+            allowedMimeTypes: EQUIPMENT_PHOTO_MIME_TYPES,
+            session
+          });
+          equipment.photoFileIds = bound.map(({ fileId }) => fileId);
+          await equipment.save({ session: session || undefined });
+        }
         const after = serializeAsset(equipment);
         await createOne(EquipmentChangeRecordModel, {
           teamId: context.activeTeamId,
@@ -949,6 +1151,7 @@ function createEquipmentRegistryService({
     const context = assertTeamContext(authContext);
     assertPermission(context, 'equipment.edit');
     assertNoClientTeamId(input);
+    const requestedPhotoFileIds = interactivePhotoFileIds(input.photoFileIds);
     try {
       return await runWithOptionalTransaction(async (session) => {
         const filter = buildScopedDetailFilter({
@@ -981,10 +1184,35 @@ function createEquipmentRegistryService({
           orgUnitId: orgUnit._id,
           session
         });
-        Object.assign(equipment, assetPayload(input, equipment), {
+        const snapshots = await categorySnapshots({ context, category, session });
+        const normalizedPayload = assetPayload(input, equipment);
+        if (!sameId(equipment.categoryId, category._id)) {
+          normalizedPayload.assetType = ASSET_TYPE_BY_MAJOR_CATEGORY[snapshots.majorCategoryName] ||
+            snapshots.majorCategoryName || normalizedPayload.assetType;
+        }
+        let nextPhotoFileIds = equipment.photoFileIds || [];
+        if (requestedPhotoFileIds !== undefined) {
+          const bound = await files.reconcileOwnerFiles({
+            authContext: context,
+            req,
+            attachments: requestedPhotoFileIds.map((fileId) => ({ fileId })),
+            previousAttachments: (equipment.photoFileIds || []).map((fileId) => ({ fileId })),
+            ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT,
+            ownerId: equipment._id,
+            method: 'PATCH',
+            allowedMimeTypes: EQUIPMENT_PHOTO_MIME_TYPES,
+            session
+          });
+          nextPhotoFileIds = bound.map(({ fileId }) => fileId);
+        }
+        Object.assign(equipment, normalizedPayload, {
           orgUnitId: orgUnit._id,
           categoryId: category._id,
           custodianUserId: custodian?._id || null,
+          custodianDisplayName: custodian?.name || '',
+          orgUnitNameSnapshot: orgUnit.name || '',
+          ...snapshots,
+          photoFileIds: nextPhotoFileIds,
           updatedBy: context.userId
         });
         await equipment.save({ session: session || undefined });
@@ -1118,57 +1346,44 @@ function createEquipmentRegistryService({
     const documents = await EquipmentAssetModel.find(filter)
       .sort({ assetCode: 1, _id: 1 })
       .lean();
-    const rows = documents.map((document) => {
+    const rows = documents.map((document, index) => {
       const item = serializeAsset(document);
       return {
-        'Asset Code': formulaSafe(item.assetCode),
-        'Source Asset Code': formulaSafe(item.sourceAssetCode),
-        'Source Sequence': formulaSafe(item.sourceSequence),
-        'Asset Type': formulaSafe(item.assetType),
-        'Source Sheet': formulaSafe(item.sourceSheetName),
-        'Source Row': item.sourceRowNumber ?? '',
-        'Product Code': formulaSafe(item.productCode),
-        'Plate Number': formulaSafe(item.plateNumber),
-        'Serial Number': formulaSafe(item.serialNumber),
-        'Brand Serial Number': formulaSafe(item.brandSerialNumber),
-        Name: formulaSafe(item.name),
-        Status: item.status,
-        'Condition Text': formulaSafe(item.conditionText),
-        Specification: formulaSafe(item.specification),
-        Manufacturer: formulaSafe(item.manufacturer),
-        Brand: formulaSafe(item.brand),
-        'Vehicle Length': formulaSafe(item.vehicleLength),
-        'Rated Capacity': formulaSafe(item.ratedCapacityText),
-        Quantity: item.quantity,
-        'Book Quantity': item.bookQuantity ?? '',
-        'Physical Quantity': item.physicalQuantity ?? '',
-        Unit: formulaSafe(item.unit),
-        'Acquisition Date': item.acquisitionDate || '',
-        'Production Date': item.productionDate || '',
-        'Production Date Precision': item.productionDatePrecision || '',
-        'Production Date Raw': formulaSafe(item.productionDateRaw),
-        'Production Date Display': formulaSafe(item.productionDateDisplay),
-        'Activation Date': item.activationDate || '',
-        'Activation Date Precision': item.activationDatePrecision || '',
-        'Activation Date Raw': formulaSafe(item.activationDateRaw),
-        'Activation Date Display': formulaSafe(item.activationDateDisplay),
-        'Idle Placed At': item.idlePlacedAt || '',
-        'Idle Placed At Raw': formulaSafe(item.idlePlacedAtRaw),
-        'Original Value': item.originalValue ?? '',
-        Custodian: formulaSafe(item.custodianDisplayName),
-        'Organization Unit': formulaSafe(item.orgUnitNameSnapshot),
-        Location: formulaSafe(item.location),
-        'Forklift Position': formulaSafe(item.forkliftPosition),
-        'Environmental Registration Code': formulaSafe(item.environmentalRegistrationCode),
-        Remark: formulaSafe(item.remark),
-        'Organization Unit ID': item.orgUnitId,
-        'Category ID': item.categoryId,
-        'Custodian User ID': item.custodianUserId || ''
+        序号: item.sourceSequence || index + 1,
+        设备所属大类: formulaSafe(item.majorCategoryName),
+        设备所属类型: formulaSafe(item.equipmentTypeName),
+        设备一级名称: formulaSafe(item.primaryName),
+        设备二级名称: formulaSafe(item.secondaryName || item.name),
+        固定资产编号: formulaSafe(item.assetCode),
+        车牌号: formulaSafe(item.plateNumber),
+        环保编号: formulaSafe(item.environmentalRegistrationCode),
+        '产品/品牌编码': formulaSafe(item.productCode),
+        型号规格: formulaSafe(item.specification),
+        单位: formulaSafe(item.unit),
+        出厂日期: item.productionDateDisplay || item.productionDate || '',
+        启用日期: item.activationDateDisplay || item.activationDate || '',
+        车长: formulaSafe(item.vehicleLength),
+        吨位: formulaSafe(item.ratedCapacityText),
+        '高位/低位': formulaSafe(item.forkliftPosition),
+        '设备动力类型：锂电/铅酸/柴油': formulaSafe(item.powerType),
+        排放标准: formulaSafe(item.emissionStandard),
+        品牌: formulaSafe(item.brand),
+        生产厂家: formulaSafe(item.manufacturer),
+        账存数量: item.bookQuantity ?? item.quantity,
+        实盘数量: item.physicalQuantity ?? item.quantity,
+        所在部室: formulaSafe(item.orgUnitNameSnapshot),
+        使用人: formulaSafe(item.custodianDisplayName),
+        状态: formulaSafe(item.conditionText || EQUIPMENT_STATUS_LABELS[item.status] || item.status),
+        存放地点: formulaSafe(item.location),
+        '设备照片（支持上传1-10张照片）': item.photoFileIds.length
+          ? `${item.photoFileIds.length}张`
+          : '',
+        备注: formulaSafe(item.remark)
       };
     });
     const workbook = XLSX.utils.book_new();
     const worksheet = XLSX.utils.json_to_sheet(rows, { cellDates: true });
-    XLSX.utils.book_append_sheet(workbook, worksheet, 'Equipment');
+    XLSX.utils.book_append_sheet(workbook, worksheet, '设备台账');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     await auditService.record({
       req,

@@ -86,7 +86,7 @@
           :width="column.width"
           :min-width="column.minWidth"
           :align="column.align || 'left'"
-          :fixed="['sourceSequence', 'assetCode', 'name'].includes(column.key) ? 'left' : undefined"
+          :fixed="column.key === 'sourceSequence' ? 'left' : undefined"
           show-overflow-tooltip
         >
           <template #default="{ row }">
@@ -127,62 +127,157 @@
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑设备' : '新建设备'"
-      width="min(760px, 95vw)"
+      class="equipment-editor-dialog"
+      width="min(980px, 96vw)"
       destroy-on-close
       append-to-body
       @closed="resetForm"
     >
       <el-form ref="formRef" :model="form" :rules="rules" label-position="top" status-icon>
-        <div class="form-grid">
-          <el-form-item label="所属组织" prop="orgUnitId">
-            <el-select v-model="form.orgUnitId" filterable class="full-width" @change="form.custodianUserId = ''">
-              <el-option v-for="item in options.orgUnits" :key="item._id" :label="item.name" :value="item._id" />
-            </el-select>
+        <section class="form-section">
+          <h3>设备分类</h3>
+          <div class="form-grid">
+            <el-form-item label="设备所属大类" prop="categoryId">
+              <el-select v-model="form.majorCategoryId" filterable class="full-width" @change="handleCategoryLevelChange(0)">
+                <el-option v-for="item in majorCategoryOptions" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="设备所属类型">
+              <el-select v-model="form.equipmentTypeCategoryId" clearable filterable class="full-width" :disabled="!form.majorCategoryId" @change="handleCategoryLevelChange(1)">
+                <el-option v-for="item in equipmentTypeOptions" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="设备一级名称">
+              <el-select v-model="form.primaryCategoryId" clearable filterable class="full-width" :disabled="!form.equipmentTypeCategoryId" @change="handleCategoryLevelChange(2)">
+                <el-option v-for="item in primaryCategoryOptions" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="设备二级名称">
+              <el-select v-model="form.secondaryCategoryId" clearable filterable class="full-width" :disabled="!form.primaryCategoryId" @change="handleCategoryLevelChange(3)">
+                <el-option v-for="item in secondaryCategoryOptions" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h3>设备标识</h3>
+          <div class="form-grid">
+            <el-form-item label="序号">
+              <el-input v-model="form.sourceSequence" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="固定资产编号" prop="assetCode">
+              <el-input v-model="form.assetCode" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="车牌号">
+              <el-input v-model="form.plateNumber" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="环保编号">
+              <el-input v-model="form.environmentalRegistrationCode" maxlength="200" />
+            </el-form-item>
+            <el-form-item label="产品/品牌编码">
+              <el-input v-model="form.productCode" maxlength="500" />
+            </el-form-item>
+            <el-form-item label="型号规格">
+              <el-input v-model="form.specification" maxlength="500" />
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h3>技术参数</h3>
+          <div class="form-grid">
+            <el-form-item label="单位">
+              <el-input v-model="form.unit" maxlength="50" />
+            </el-form-item>
+            <el-form-item label="出厂日期">
+              <el-date-picker v-model="form.productionDate" type="date" value-format="YYYY-MM-DD" class="full-width" />
+            </el-form-item>
+            <el-form-item label="启用日期">
+              <el-date-picker v-model="form.activationDate" type="date" value-format="YYYY-MM-DD" class="full-width" />
+            </el-form-item>
+            <el-form-item label="车长">
+              <el-input v-model="form.vehicleLength" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="吨位">
+              <el-input v-model="form.ratedCapacityText" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="高位/低位">
+              <el-input v-model="form.forkliftPosition" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="设备动力类型">
+              <el-select v-model="form.powerType" clearable filterable allow-create class="full-width">
+                <el-option v-for="item in POWER_TYPE_OPTIONS" :key="item" :label="item" :value="item" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="排放标准">
+              <el-input v-model="form.emissionStandard" maxlength="100" />
+            </el-form-item>
+            <el-form-item label="品牌">
+              <el-input v-model="form.brand" maxlength="200" />
+            </el-form-item>
+            <el-form-item label="生产厂家">
+              <el-input v-model="form.manufacturer" maxlength="200" />
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h3>数量与使用信息</h3>
+          <div class="form-grid">
+            <el-form-item label="账存数量">
+              <el-input-number v-model="form.bookQuantity" :min="0" :precision="0" controls-position="right" class="full-width" />
+            </el-form-item>
+            <el-form-item label="实盘数量">
+              <el-input-number v-model="form.physicalQuantity" :min="0" :precision="0" controls-position="right" class="full-width" />
+            </el-form-item>
+            <el-form-item label="所在部室" prop="orgUnitId">
+              <el-select v-model="form.orgUnitId" filterable class="full-width" @change="form.custodianUserId = ''">
+                <el-option v-for="item in options.orgUnits" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="使用人">
+              <el-select v-model="form.custodianUserId" clearable filterable class="full-width">
+                <el-option v-for="item in formCustodians" :key="item._id" :label="item.name" :value="item._id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="状态">
+              <div class="readonly-field">
+                <el-tag :type="formStatusOption.type" effect="plain">{{ formStatusOption.label }}</el-tag>
+              </div>
+            </el-form-item>
+            <el-form-item label="存放地点">
+              <el-input v-model="form.location" maxlength="500" />
+            </el-form-item>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h3>照片与备注</h3>
+          <el-form-item label="设备照片（支持上传1-10张照片）">
+            <el-upload
+              v-model:file-list="photoFileList"
+              :auto-upload="false"
+              :limit="10"
+              accept="image/*"
+              list-type="text"
+              :on-change="handlePhotoChange"
+              :on-preview="previewPhoto"
+              :on-exceed="handlePhotoExceed"
+            >
+              <el-button>
+                <el-icon><Upload /></el-icon>
+                选择照片
+              </el-button>
+            </el-upload>
           </el-form-item>
-          <el-form-item label="设备分类" prop="categoryId">
-            <el-select v-model="form.categoryId" filterable class="full-width">
-              <el-option v-for="item in activeCategories" :key="item._id" :label="item.name" :value="item._id" />
-            </el-select>
+          <el-form-item label="备注">
+            <el-input v-model="form.remark" type="textarea" :rows="3" maxlength="2000" show-word-limit />
           </el-form-item>
-          <el-form-item label="资产编号" prop="assetCode">
-            <el-input v-model="form.assetCode" maxlength="100" />
+          <el-form-item label="操作说明">
+            <el-input v-model="form.reason" type="textarea" :rows="2" maxlength="2000" show-word-limit />
           </el-form-item>
-          <el-form-item label="设备名称" prop="name">
-            <el-input v-model="form.name" maxlength="200" />
-          </el-form-item>
-          <el-form-item label="规格型号">
-            <el-input v-model="form.specification" maxlength="500" />
-          </el-form-item>
-          <el-form-item label="生产厂家">
-            <el-input v-model="form.manufacturer" maxlength="200" />
-          </el-form-item>
-          <el-form-item label="数量" prop="quantity">
-            <el-input-number v-model="form.quantity" :min="0" :precision="0" controls-position="right" class="full-width" />
-          </el-form-item>
-          <el-form-item label="单位">
-            <el-input v-model="form.unit" maxlength="50" />
-          </el-form-item>
-          <el-form-item label="购置日期">
-            <el-date-picker v-model="form.acquisitionDate" type="date" value-format="YYYY-MM-DD" class="full-width" />
-          </el-form-item>
-          <el-form-item label="原值">
-            <el-input-number v-model="form.originalValue" :min="0" :precision="2" controls-position="right" class="full-width" />
-          </el-form-item>
-          <el-form-item label="保管人">
-            <el-select v-model="form.custodianUserId" clearable filterable class="full-width">
-              <el-option v-for="item in formCustodians" :key="item._id" :label="item.name" :value="item._id" />
-            </el-select>
-          </el-form-item>
-          <el-form-item label="存放地点">
-            <el-input v-model="form.location" maxlength="500" />
-          </el-form-item>
-        </div>
-        <el-form-item label="备注">
-          <el-input v-model="form.remark" type="textarea" :rows="3" maxlength="2000" show-word-limit />
-        </el-form-item>
-        <el-form-item label="操作说明">
-          <el-input v-model="form.reason" type="textarea" :rows="2" maxlength="2000" show-word-limit />
-        </el-form-item>
+        </section>
         <el-alert
           v-if="activeCategories.length === 0"
           title="请先建立至少一个启用的设备分类"
@@ -199,6 +294,10 @@
       </template>
     </el-dialog>
 
+    <el-dialog v-model="photoPreviewVisible" title="设备照片" width="min(760px, 94vw)" append-to-body @closed="clearPhotoPreview">
+      <img v-if="photoPreviewUrl" :src="photoPreviewUrl" :alt="photoPreviewName" class="preview-image" />
+    </el-dialog>
+
     <EquipmentImportDialog
       v-model="importDialogVisible"
       :org-units="options.orgUnits"
@@ -210,7 +309,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
@@ -223,11 +322,19 @@ import {
   getEquipmentOptions,
   updateEquipment
 } from '@/api/equipment'
+import { deleteFile, downloadFileBlob, getFileMetadata, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
+import {
+  cleanupTemporaryFiles,
+  managedFileId,
+  prepareAttachmentReferences
+} from '@/utils/attachments'
 import {
   EQUIPMENT_STATUS_OPTIONS,
   buildEquipmentPayload,
   entityName,
+  equipmentCategoryChildren,
+  equipmentCategoryPath,
   optionForValue,
   saveBlob
 } from '@/utils/equipment'
@@ -235,8 +342,11 @@ import {
   EQUIPMENT_ASSET_TYPE_OPTIONS,
   equipmentAssetTableColumns,
   equipmentFieldValue,
-  equipmentTableMinWidth
+  equipmentTableMinWidth,
+  normalizeEquipmentPhotoIds
 } from '@/utils/equipmentAssetDisplay'
+
+const POWER_TYPE_OPTIONS = Object.freeze(['锂电', '铅酸', '柴油'])
 
 const route = useRoute()
 const router = useRouter()
@@ -248,6 +358,10 @@ const dialogVisible = ref(false)
 const importDialogVisible = ref(false)
 const editingId = ref('')
 const formRef = ref(null)
+const photoFileList = ref([])
+const photoPreviewVisible = ref(false)
+const photoPreviewUrl = ref('')
+const photoPreviewName = ref('')
 const assets = ref([])
 const categories = ref([])
 const total = ref(0)
@@ -268,7 +382,24 @@ const canCreate = computed(() => session.can('equipment.create', { write: true, 
 const canEdit = computed(() => session.can('equipment.edit', { write: true, teamRequired: true }))
 const canImport = computed(() => session.can('equipment.import', { write: true, teamRequired: true }))
 const activeCategories = computed(() => categories.value.filter((item) => item.status === 'ACTIVE'))
+const majorCategoryOptions = computed(() => equipmentCategoryChildren(categories.value))
+const equipmentTypeOptions = computed(() => equipmentCategoryChildren(
+  categories.value,
+  form.majorCategoryId
+))
+const primaryCategoryOptions = computed(() => equipmentCategoryChildren(
+  categories.value,
+  form.equipmentTypeCategoryId
+))
+const secondaryCategoryOptions = computed(() => equipmentCategoryChildren(
+  categories.value,
+  form.primaryCategoryId
+))
 const formCustodians = computed(() => options.custodians.filter((item) => item.orgUnitId === form.orgUnitId))
+const formStatusOption = computed(() => optionForValue(
+  EQUIPMENT_STATUS_OPTIONS,
+  form.status || 'IN_USE'
+))
 const tableColumns = computed(() => equipmentAssetTableColumns(filters.assetType))
 const tableMinWidth = computed(() => equipmentTableMinWidth(tableColumns.value))
 const requestTeamParams = computed(() => (
@@ -283,25 +414,47 @@ async function handleImportPublished() {
 const rules = {
   orgUnitId: [{ required: true, message: '请选择所属组织', trigger: 'change' }],
   categoryId: [{ required: true, message: '请选择设备分类', trigger: 'change' }],
-  assetCode: [{ required: true, message: '请输入资产编号', trigger: 'blur' }],
-  name: [{ required: true, message: '请输入设备名称', trigger: 'blur' }],
-  quantity: [{ required: true, message: '请输入数量', trigger: 'change' }]
+  assetCode: [{ required: true, message: '请输入固定资产编号', trigger: 'blur' }]
 }
 
 function emptyForm() {
   return {
     orgUnitId: '',
     categoryId: '',
+    majorCategoryId: '',
+    equipmentTypeCategoryId: '',
+    primaryCategoryId: '',
+    secondaryCategoryId: '',
+    majorCategoryName: '',
+    equipmentTypeName: '',
+    primaryName: '',
+    secondaryName: '',
+    sourceSequence: '',
     assetCode: '',
     name: '',
+    plateNumber: '',
+    environmentalRegistrationCode: '',
+    productCode: '',
     specification: '',
     manufacturer: '',
+    brand: '',
+    vehicleLength: '',
+    ratedCapacityText: '',
+    forkliftPosition: '',
+    powerType: '',
+    emissionStandard: '',
     quantity: 1,
+    bookQuantity: 1,
+    physicalQuantity: 1,
     unit: '台',
     acquisitionDate: '',
+    productionDate: '',
+    activationDate: '',
     originalValue: null,
     custodianUserId: '',
+    status: 'IN_USE',
     location: '',
+    photoFileIds: [],
     remark: '',
     reason: ''
   }
@@ -367,7 +520,7 @@ async function initialize() {
   await Promise.all([loadReferenceData(), loadAssets()])
   if (route.query.edit && canEdit.value) {
     const item = assets.value.find((asset) => asset._id === route.query.edit)
-    if (item) openEdit(item)
+    if (item) await openEdit(item)
   }
 }
 
@@ -390,7 +543,45 @@ async function handleTeamChange(teamId) {
 function resetForm() {
   editingId.value = ''
   Object.assign(form, emptyForm())
+  photoFileList.value = []
   formRef.value?.clearValidate()
+}
+
+function syncCategorySelection() {
+  const ids = [
+    form.majorCategoryId,
+    form.equipmentTypeCategoryId,
+    form.primaryCategoryId,
+    form.secondaryCategoryId
+  ].filter(Boolean)
+  form.categoryId = ids.at(-1) || ''
+  form.majorCategoryName = form.majorCategoryId ? categoryName(form.majorCategoryId) : ''
+  form.equipmentTypeName = form.equipmentTypeCategoryId
+    ? categoryName(form.equipmentTypeCategoryId)
+    : ''
+  form.primaryName = form.primaryCategoryId ? categoryName(form.primaryCategoryId) : ''
+  form.secondaryName = form.secondaryCategoryId ? categoryName(form.secondaryCategoryId) : ''
+}
+
+function handleCategoryLevelChange(level) {
+  const fields = [
+    'majorCategoryId',
+    'equipmentTypeCategoryId',
+    'primaryCategoryId',
+    'secondaryCategoryId'
+  ]
+  fields.slice(level + 1).forEach((field) => { form[field] = '' })
+  syncCategorySelection()
+  formRef.value?.validateField('categoryId').catch(() => {})
+}
+
+function applyCategoryPath(categoryId) {
+  const path = equipmentCategoryPath(categories.value, categoryId).slice(0, 4)
+  form.majorCategoryId = path[0]?._id || ''
+  form.equipmentTypeCategoryId = path[1]?._id || ''
+  form.primaryCategoryId = path[2]?._id || ''
+  form.secondaryCategoryId = path[3]?._id || ''
+  syncCategorySelection()
 }
 
 function openCreate() {
@@ -399,15 +590,37 @@ function openCreate() {
   dialogVisible.value = true
 }
 
-function openEdit(item) {
+async function openEdit(item) {
   editingId.value = item._id
   Object.assign(form, {
     ...emptyForm(),
     ...item,
     acquisitionDate: item.acquisitionDate ? dayjs(item.acquisitionDate).format('YYYY-MM-DD') : '',
+    productionDate: item.productionDate ? dayjs(item.productionDate).format('YYYY-MM-DD') : '',
+    activationDate: item.activationDate ? dayjs(item.activationDate).format('YYYY-MM-DD') : '',
     originalValue: item.originalValue ?? null,
+    bookQuantity: item.bookQuantity ?? item.quantity ?? 1,
+    physicalQuantity: item.physicalQuantity ?? item.quantity ?? 1,
     custodianUserId: item.custodianUserId || '',
     reason: ''
+  })
+  applyCategoryPath(item.categoryId)
+  const metadataResults = await Promise.allSettled(
+    normalizeEquipmentPhotoIds(item.photoFileIds).map((fileId) => (
+      getFileMetadata(fileId, requestTeamParams.value.teamId)
+    ))
+  )
+  photoFileList.value = metadataResults.map((result, index) => {
+    const fileId = normalizeEquipmentPhotoIds(item.photoFileIds)[index]
+    const metadata = result.status === 'fulfilled' ? result.value.file : null
+    return {
+      uid: fileId,
+      fileId,
+      name: metadata?.originalName || `设备照片-${index + 1}`,
+      size: metadata?.size || 0,
+      mimeType: metadata?.mimeType || '',
+      status: 'success'
+    }
   })
   dialogVisible.value = true
 }
@@ -416,16 +629,60 @@ async function submitForm() {
   const valid = await formRef.value?.validate().catch(() => false)
   if (!valid) return
   submitting.value = true
+  let uploadedFileIds = []
   try {
-    const payload = buildEquipmentPayload(form)
+    const prepared = await prepareAttachmentReferences(photoFileList.value, uploadTemporaryFile)
+    uploadedFileIds = prepared.uploadedFileIds
+    const payload = buildEquipmentPayload({
+      ...form,
+      photoFileIds: prepared.references.map(({ fileId }) => fileId)
+    })
     if (editingId.value) await updateEquipment(editingId.value, payload)
     else await createEquipment(payload)
+    uploadedFileIds = []
     ElMessage.success(editingId.value ? '设备已更新' : '设备已创建')
     dialogVisible.value = false
     await loadAssets()
+  } catch (error) {
+    await cleanupTemporaryFiles(
+      [...uploadedFileIds, ...(error.uploadedFileIds || [])],
+      deleteFile
+    )
+    throw error
   } finally {
     submitting.value = false
   }
+}
+
+function handlePhotoChange(file, fileList) {
+  if (!file.raw) return
+  if (!file.raw.type?.startsWith('image/')) {
+    ElMessage.warning('设备照片只能选择图片文件')
+    photoFileList.value = fileList.filter((item) => item.uid !== file.uid)
+  }
+}
+
+function handlePhotoExceed() {
+  ElMessage.warning('设备照片最多上传10张')
+}
+
+function clearPhotoPreview() {
+  if (photoPreviewUrl.value) URL.revokeObjectURL(photoPreviewUrl.value)
+  photoPreviewUrl.value = ''
+  photoPreviewName.value = ''
+}
+
+async function previewPhoto(file) {
+  clearPhotoPreview()
+  photoPreviewName.value = file.name || '设备照片'
+  if (file.raw) photoPreviewUrl.value = URL.createObjectURL(file.raw)
+  else {
+    const fileId = managedFileId(file)
+    if (!fileId) return
+    const blob = await downloadFileBlob(fileId, requestTeamParams.value.teamId)
+    photoPreviewUrl.value = URL.createObjectURL(blob)
+  }
+  photoPreviewVisible.value = true
 }
 
 async function handleExport() {
@@ -458,6 +715,7 @@ function goDetail(item) {
 }
 
 onMounted(initialize)
+onBeforeUnmount(clearPhotoPreview)
 </script>
 
 <style scoped lang="scss">
@@ -478,6 +736,11 @@ onMounted(initialize)
 .table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.form-section + .form-section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--zl-border-soft); }
+.form-section h3 { margin: 0 0 14px; color: var(--zl-text); font-size: 15px; letter-spacing: 0; }
+.readonly-field { min-height: 32px; display: flex; align-items: center; }
+.preview-image { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
+:global(.equipment-editor-dialog .el-dialog__body) { max-height: 72vh; overflow-y: auto; }
 .full-width { width: 100%; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }

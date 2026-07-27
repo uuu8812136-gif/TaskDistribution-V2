@@ -563,6 +563,74 @@ test('preview stages rows without touching the registry and confirmation publish
   assert.equal(await EquipmentAsset.countDocuments({ assetCode: 'IMPORT-001' }), 1);
 });
 
+test('new ledger imports resolve the exact four-level category path before publication', async () => {
+  const ids = [objectId(), objectId(), objectId(), objectId()];
+  await EquipmentCategory.collection.insertMany([
+    { _id: ids[0], teamId: fixture.teamA, name: '运输装备', parentId: null, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[1], teamId: fixture.teamA, name: '车辆', parentId: ids[0], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[2], teamId: fixture.teamA, name: '厢式货车', parentId: ids[1], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[3], teamId: fixture.teamA, name: '4.2米轻卡', parentId: ids[2], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 }
+  ]);
+  const authContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const upload = multiSheetWorkbookUpload([['设备台账模板', [{
+    序号: 1,
+    设备所属大类: '运输装备',
+    设备所属类型: '车辆',
+    设备一级名称: '厢式货车',
+    设备二级名称: '4.2米轻卡',
+    固定资产编号: '鲁A0C01F',
+    车牌号: '鲁A0C01F',
+    环保编号: '/',
+    '产品/品牌编码': 'LZZJBADB4KE765069',
+    型号规格: '4.2米轻卡',
+    单位: '辆',
+    出厂日期: '2019/10/1',
+    启用日期: '2019/10/1',
+    车长: '4.2米',
+    吨位: '/',
+    '高位/低位': '/',
+    '设备动力类型：锂电/铅酸/柴油': '柴油',
+    排放标准: '国5',
+    品牌: '豪沃',
+    生产厂家: '中国重汽',
+    账存数量: 1,
+    实盘数量: 1,
+    所在部室: 'A1',
+    使用人: 'User A1',
+    状态: '在用',
+    存放地点: '外仓'
+  }]]]);
+  const service = createEquipmentImportService();
+  const preview = await service.createPreview({ authContext, upload, input: {} });
+  assert.equal(preview.exceptionCount, 0);
+  assert.equal(preview.importJob.rows[0].candidate.categoryId, String(ids[3]));
+  const confirmed = await service.confirmImport({
+    authContext,
+    importJobId: preview.importJob._id,
+    input: {
+      expectedVersion: preview.importJob.version,
+      reason: '确认新版设备台账模板',
+      decisions: []
+    }
+  });
+  assert.equal(confirmed.importJob.publishedRows, 1);
+  const asset = await EquipmentAsset.findOne({ assetCode: '鲁A0C01F' }).lean();
+  assert.deepEqual([
+    asset.majorCategoryName,
+    asset.equipmentTypeName,
+    asset.primaryName,
+    asset.secondaryName
+  ], ['运输装备', '车辆', '厢式货车', '4.2米轻卡']);
+  assert.equal(String(asset.categoryId), String(ids[3]));
+  assert.equal(asset.name, '4.2米轻卡');
+  assert.equal(asset.powerType, '柴油');
+  assert.equal(asset.emissionStandard, '国5');
+});
+
 test('a second-level equipment row accepts a custodian from its child group only', async () => {
   const service = createEquipmentImportService();
   const subDepartment = objectId();

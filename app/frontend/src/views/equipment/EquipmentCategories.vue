@@ -38,6 +38,9 @@
         empty-text="暂无设备分类"
       >
         <el-table-column prop="name" label="分类名称" min-width="230" />
+        <el-table-column label="分类层级" min-width="140">
+          <template #default="{ row }">{{ categoryLevelLabel(categoryDepth(row)) }}</template>
+        </el-table-column>
         <el-table-column prop="sortOrder" label="排序值" width="100" align="right" />
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
@@ -51,7 +54,7 @@
             <div class="table-actions">
               <template v-if="canEdit">
                 <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
-                <el-button v-if="row.status === 'ACTIVE'" text type="primary" @click="openCreate(row)">新增下级</el-button>
+                <el-button v-if="row.status === 'ACTIVE' && categoryDepth(row) < 4" text type="primary" @click="openCreate(row)">新增下级</el-button>
                 <el-button v-if="row.status === 'ACTIVE'" text type="danger" @click="disableCategory(row)">停用</el-button>
                 <el-button v-else text type="success" @click="enableCategory(row)">启用</el-button>
               </template>
@@ -83,7 +86,7 @@
             placeholder="留空则作为根分类"
           />
         </el-form-item>
-        <el-form-item label="分类名称" prop="name">
+        <el-form-item :label="currentLevelLabel" prop="name">
           <el-input v-model="form.name" maxlength="100" />
         </el-form-item>
         <el-form-item label="排序值" prop="sortOrder">
@@ -115,6 +118,7 @@ import { useSessionStore } from '@/stores/session'
 import {
   CATEGORY_STATUS_OPTIONS,
   buildCategoryTree,
+  equipmentCategoryPath,
   optionForValue
 } from '@/utils/equipment'
 
@@ -154,13 +158,19 @@ const tree = computed(() => buildCategoryTree(filtered.value))
 const visibleCount = computed(() => filtered.value.length)
 const parentOptions = computed(() => {
   const convert = (items) => items
-    .filter((item) => item._id !== editingId.value && item.status === 'ACTIVE')
+    .filter((item) => (
+      item._id !== editingId.value && item.status === 'ACTIVE' && categoryDepth(item) < 4
+    ))
     .map((item) => ({
       value: item._id,
       label: item.name,
       children: convert(item.children || [])
     }))
   return convert(buildCategoryTree(categories.value))
+})
+const currentLevelLabel = computed(() => {
+  const parent = categories.value.find((item) => item._id === form.parentId)
+  return categoryLevelLabel(parent ? categoryDepth(parent) + 1 : 1)
 })
 
 const rules = {
@@ -173,6 +183,13 @@ function emptyForm() {
 }
 
 const categoryStatus = (status) => optionForValue(CATEGORY_STATUS_OPTIONS, status)
+const categoryDepth = (item) => equipmentCategoryPath(categories.value, item?._id).length || 1
+const categoryLevelLabel = (depth) => ([
+  '设备所属大类',
+  '设备所属类型',
+  '设备一级名称',
+  '设备二级名称'
+][Math.min(Math.max(Number(depth) || 1, 1), 4) - 1])
 const applyFilter = () => undefined
 
 async function loadCategories() {
@@ -195,6 +212,7 @@ function resetForm() {
 }
 
 function openCreate(parent) {
+  if (parent && categoryDepth(parent) >= 4) return
   resetForm()
   form.parentId = parent?._id || ''
   dialogVisible.value = true

@@ -59,6 +59,30 @@ const equipmentAssetSchema = new mongoose.Schema({
     maxlength: 100,
     default: ''
   },
+  majorCategoryName: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: ''
+  },
+  equipmentTypeName: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: ''
+  },
+  primaryName: {
+    type: String,
+    trim: true,
+    maxlength: 200,
+    default: ''
+  },
+  secondaryName: {
+    type: String,
+    trim: true,
+    maxlength: 200,
+    default: ''
+  },
   sourceSheetName: {
     type: String,
     trim: true,
@@ -140,6 +164,18 @@ const equipmentAssetSchema = new mongoose.Schema({
     default: ''
   },
   ratedCapacityText: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: ''
+  },
+  powerType: {
+    type: String,
+    trim: true,
+    maxlength: 100,
+    default: ''
+  },
+  emissionStandard: {
     type: String,
     trim: true,
     maxlength: 100,

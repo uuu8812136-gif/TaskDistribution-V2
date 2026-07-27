@@ -7,7 +7,7 @@
         </el-button>
         <div>
           <h1>{{ equipment?.name || '设备详情' }}</h1>
-          <p>{{ equipment?.assetCode || '' }}</p>
+          <p>固定资产编号：{{ equipment?.assetCode || '' }}</p>
         </div>
       </div>
       <div class="heading-actions">
@@ -361,7 +361,7 @@
     <el-dialog v-model="qrVisible" title="设备二维码" width="min(430px, 92vw)" append-to-body>
       <div class="qr-sheet">
         <strong>{{ equipment?.name }}</strong>
-        <span>{{ equipment?.assetCode }}</span>
+        <span>固定资产编号：{{ equipment?.assetCode }}</span>
         <img v-if="qrImage" :src="qrImage" alt="设备二维码" />
       </div>
       <template #footer>
@@ -781,7 +781,7 @@ function escapeHtml(value) {
 function printQr() {
   const printWindow = window.open('', '_blank', 'width=520,height=640')
   if (!printWindow) return
-  printWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(equipment.value.assetCode)}</title><style>body{font-family:Arial,sans-serif;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 8px}p{font-size:16px;margin:0 0 18px}img{width:360px;height:360px}</style></head><body><h1>${escapeHtml(equipment.value.name)}</h1><p>${escapeHtml(equipment.value.assetCode)}</p><img src="${qrImage.value}" onload="window.print();window.close()"></body></html>`)
+  printWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(equipment.value.assetCode)}</title><style>body{font-family:Arial,sans-serif;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 8px}p{font-size:16px;margin:0 0 18px}img{width:360px;height:360px}</style></head><body><h1>${escapeHtml(equipment.value.name)}</h1><p>固定资产编号：${escapeHtml(equipment.value.assetCode)}</p><img src="${qrImage.value}" onload="window.print();window.close()"></body></html>`)
   printWindow.document.close()
 }
 

@@ -103,6 +103,11 @@
               {{ rememberStatusMessage }}
             </span>
           </div>
+          <blockquote class="login-motto" data-testid="login-motto">
+            <p class="motto-title">沟通、协作、持续进步</p>
+            <p class="motto-welcome">欢迎你，我的朋友。</p>
+            <footer>-马延浩</footer>
+          </blockquote>
           <el-form-item class="login-submit">
             <el-button
               type="primary"
@@ -118,12 +123,6 @@
         </el-form>
       </section>
     </main>
-
-    <blockquote class="login-motto">
-      <p>沟通、协作、持续进步</p>
-      <p>欢迎你，我的朋友。</p>
-      <footer>-马延浩</footer>
-    </blockquote>
   </div>
 </template>
 
@@ -476,7 +475,7 @@ onMounted(async () => {
     flex-wrap: wrap;
     gap: 4px 10px;
     min-height: 24px;
-    margin: -8px 0 18px;
+    margin: -8px 0 12px;
 
     :deep(.el-checkbox__label) {
       color: #eaf3ff;
@@ -490,6 +489,45 @@ onMounted(async () => {
     }
   }
 
+  .login-motto {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 3px 12px;
+    width: 100%;
+    margin: 0 0 18px;
+    padding: 8px 2px 8px 12px;
+    color: #dbeafe;
+    border-left: 2px solid rgb(96 165 250 / 72%);
+    text-shadow: 0 2px 12px rgb(2 12 35 / 48%);
+
+    p,
+    footer {
+      margin: 0;
+      letter-spacing: 0;
+    }
+
+    .motto-title {
+      grid-column: 1 / -1;
+      color: #f2f7ff;
+      font-size: 14px;
+      font-weight: 600;
+      line-height: 20px;
+    }
+
+    .motto-welcome,
+    footer {
+      color: #bdd3ef;
+      font-size: 13px;
+      line-height: 19px;
+    }
+
+    footer {
+      white-space: nowrap;
+      text-align: right;
+    }
+  }
+
   .login-button {
     width: 100%;
     min-height: 46px;
@@ -500,35 +538,11 @@ onMounted(async () => {
   }
 }
 
-.login-motto {
-  width: 100%;
-  margin: 0;
-  color: #dbeafe;
-  text-align: left;
-  text-shadow: 0 2px 12px rgb(2 12 35 / 72%);
-
-  p,
-  footer {
-    margin: 0;
-    font-size: 15px;
-    line-height: 1.7;
-    letter-spacing: 0;
-  }
-
-  footer {
-    margin-top: 2px;
-  }
-}
-
 @media (max-width: 900px) {
   .login-container {
     grid-template-columns: minmax(0, 440px);
     align-content: center;
     gap: 18px;
-  }
-
-  .login-motto {
-    text-align: center;
   }
 }
 
@@ -566,10 +580,6 @@ onMounted(async () => {
     h1 {
       font-size: 25px;
     }
-  }
-
-  .login-motto {
-    padding-bottom: 8px;
   }
 }
 

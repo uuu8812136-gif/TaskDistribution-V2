@@ -26,24 +26,23 @@ test('asset types support backend enums and original Chinese sheet names', () =>
   ])
   assert.equal(normalizeEquipmentAssetType('', '运输装备'), 'TRANSPORT_EQUIPMENT')
   assert.equal(normalizeEquipmentAssetType('辅助设施设备'), 'AUXILIARY_FACILITY')
-  assert.equal(equipmentAssetTypeLabel('HANDLING_EQUIPMENT'), '装卸装备')
+  assert.equal(normalizeEquipmentAssetType('装卸搬运设备'), 'HANDLING_EQUIPMENT')
+  assert.equal(equipmentAssetTypeLabel('HANDLING_EQUIPMENT'), '装卸搬运设备')
   assert.equal(equipmentAssetTypeLabel('', '闲置'), '闲置')
 })
 
-test('each asset type exposes a fixed, source-specific table layout', () => {
+test('equipment table follows the 2026-07-27 ledger template for every asset type', () => {
   const transportKeys = equipmentAssetTableColumns('TRANSPORT_EQUIPMENT').map((item) => item.key)
-  assert.ok(transportKeys.includes('plateNumber'))
-  assert.ok(transportKeys.includes('vehicleLength'))
-  assert.ok(transportKeys.includes('ratedCapacityText'))
-
-  const handlingKeys = equipmentAssetTableColumns('装卸装备').map((item) => item.key)
-  assert.ok(handlingKeys.includes('forkliftPosition'))
-  assert.ok(handlingKeys.includes('environmentalRegistrationCode'))
-
-  const idleKeys = equipmentAssetTableColumns('IDLE').map((item) => item.key)
-  assert.ok(idleKeys.includes('sourceAssetCode'))
-  assert.ok(idleKeys.includes('idlePlacedAt'))
-  assert.ok(idleKeys.includes('remark'))
+  assert.deepEqual(transportKeys, equipmentAssetTableColumns('IDLE').map((item) => item.key))
+  assert.deepEqual(transportKeys, [
+    'sourceSequence',
+    'majorCategoryName', 'equipmentTypeName', 'primaryName', 'secondaryName',
+    'assetCode', 'plateNumber', 'environmentalRegistrationCode', 'productCode',
+    'specification', 'unit', 'productionDate', 'activationDate', 'vehicleLength',
+    'ratedCapacityText', 'forkliftPosition', 'powerType', 'emissionStandard',
+    'brand', 'manufacturer', 'bookQuantity', 'physicalQuantity',
+    'orgUnitNameSnapshot', 'custodianDisplayName', 'status', 'location', 'photoCount', 'remark'
+  ])
 })
 
 test('detail groups cover every imported fixed-asset source field', () => {
@@ -103,8 +102,8 @@ test('equipment quality issues localize persisted English descriptions', () => {
     suggestedValue: 'CUST26-HDL-001',
     message: 'Source asset code is missing, too long, or duplicated'
   })
-  assert.equal(generatedCode.title, '已生成测试资产编号')
-  assert.equal(generatedCode.field, '资产编号')
+  assert.equal(generatedCode.title, '已生成测试固定资产编号')
+  assert.equal(generatedCode.field, '固定资产编号')
   assert.equal(generatedCode.detail, '建议值：CUST26-HDL-001')
   assert.doesNotMatch(JSON.stringify(generatedCode), /Source asset code/u)
 

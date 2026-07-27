@@ -60,6 +60,8 @@ test('login remember option uses browser credentials and displays the customer m
   assert.match(loginSource, /沟通、协作、持续进步/)
   assert.match(loginSource, /欢迎你，我的朋友。/)
   assert.match(loginSource, /<footer>-马延浩<\/footer>/)
+  assert.match(loginSource, /class="login-options"[\s\S]*?data-testid="login-motto"[\s\S]*?class="login-submit"/)
+  assert.doesNotMatch(loginSource, /<\/main>[\s\S]*?class="login-motto"/)
   assert.match(loginSource, /grid-template-columns: minmax\(0, 440px\) minmax\(260px, 420px\)/)
   assert.match(loginSource, /@media \(max-width: 900px\)/)
   assert.match(layoutSource, /const credentialSync = await synchronizeRememberedPassword/)

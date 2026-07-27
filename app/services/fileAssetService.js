@@ -99,7 +99,7 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     resourceModel: 'EQUIPMENT_ASSET',
     moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
     readPermission: 'equipment.view',
-    writePermission: 'equipment.edit'
+    writePermissionsAny: Object.freeze(['equipment.create', 'equipment.edit'])
   }),
   [FILE_OWNER_TYPES.EQUIPMENT_IMPORT_SOURCE]: Object.freeze({
     resourceModel: 'IMPORT_JOB',

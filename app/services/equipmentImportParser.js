@@ -9,8 +9,12 @@ const MAX_RAW_VALUE_LENGTH = 500;
 
 const HEADER_ALIASES = Object.freeze({
   sequence: ['序号', 'No.', 'No'],
-  assetCode: ['资产编码', '资产编号', 'Asset Code'],
-  productCode: ['产品编码SN/PN', '产品编码'],
+  majorCategoryName: ['设备所属大类'],
+  equipmentTypeName: ['设备所属类型'],
+  primaryName: ['设备一级名称'],
+  secondaryName: ['设备二级名称'],
+  assetCode: ['固定资产编号', '资产编码', '资产编号', 'Asset Code'],
+  productCode: ['产品/品牌编码', '产品编码SN/PN', '产品编码'],
   plateNumber: ['车牌号'],
   serialNumber: ['编号/牌号'],
   brandSerialNumber: ['品牌编号'],
@@ -37,8 +41,10 @@ const HEADER_ALIASES = Object.freeze({
   vehicleLength: ['车长'],
   ratedCapacityText: ['吨位'],
   idlePlacedAt: ['放置日期'],
-  forkliftPosition: ['叉车是否高低位', '高低位'],
-  environmentalRegistrationCode: ['叉车环保编号']
+  forkliftPosition: ['高位/低位', '叉车是否高低位', '高低位'],
+  environmentalRegistrationCode: ['环保编号', '叉车环保编号'],
+  powerType: ['设备动力类型：锂电/铅酸/柴油', '设备动力类型', '动力类型'],
+  emissionStandard: ['排放标准']
 });
 
 const HEADER_KEYS = new Set(
@@ -63,6 +69,7 @@ const CATEGORY_ALIASES = Object.freeze({
 const ASSET_TYPE_BY_SHEET = Object.freeze({
   运输装备: 'TRANSPORT_EQUIPMENT',
   装卸装备: 'HANDLING_EQUIPMENT',
+  装卸搬运设备: 'HANDLING_EQUIPMENT',
   物流信息装备: 'LOGISTICS_INFORMATION_EQUIPMENT',
   辅助设施设备: 'AUXILIARY_FACILITY',
   辅助设施: 'AUXILIARY_FACILITY',
@@ -553,7 +560,21 @@ function parseDataRow({
     }
   }
   if (isFooterRow(row)) return null;
-  const name = textValue(readAlias(row, headerMap, HEADER_ALIASES.name), 500);
+  const majorCategoryName = textValue(
+    readAlias(row, headerMap, HEADER_ALIASES.majorCategoryName),
+    100
+  );
+  const equipmentTypeName = textValue(
+    readAlias(row, headerMap, HEADER_ALIASES.equipmentTypeName),
+    100
+  );
+  const primaryName = textValue(readAlias(row, headerMap, HEADER_ALIASES.primaryName), 200);
+  const secondaryName = textValue(
+    readAlias(row, headerMap, HEADER_ALIASES.secondaryName),
+    200
+  );
+  const explicitName = textValue(readAlias(row, headerMap, HEADER_ALIASES.name), 500);
+  const name = explicitName || secondaryName || primaryName || equipmentTypeName;
   const sequence = readAlias(row, headerMap, HEADER_ALIASES.sequence);
   const sourceAssetCode = textValue(
     readAlias(row, headerMap, HEADER_ALIASES.assetCode),
@@ -600,11 +621,10 @@ function parseDataRow({
     }));
   }
 
-  const categoryName = canonicalCategory(
-    sheetName,
-    readAlias(row, headerMap, HEADER_ALIASES.category)
-  );
-  const assetType = ASSET_TYPE_BY_SHEET[textValue(sheetName, 100)] || textValue(sheetName, 100);
+  const categoryName = secondaryName || primaryName || equipmentTypeName || majorCategoryName ||
+    canonicalCategory(sheetName, readAlias(row, headerMap, HEADER_ALIASES.category));
+  const assetTypeSource = majorCategoryName || textValue(sheetName, 100);
+  const assetType = ASSET_TYPE_BY_SHEET[assetTypeSource] || assetTypeSource;
   const orgUnitName = textValue(readAlias(row, headerMap, HEADER_ALIASES.orgUnit), 200);
   const custodianName = textValue(readAlias(row, headerMap, HEADER_ALIASES.custodian), 200);
   const quantityResult = parseQuantity(
@@ -753,6 +773,10 @@ function parseDataRow({
       sourceAssetCode,
       sourceSequence: textValue(sequence, 100),
       assetType,
+      majorCategoryName,
+      equipmentTypeName,
+      primaryName,
+      secondaryName,
       sourceSheetName: textValue(sheetName, 100),
       sourceRowNumber: rowNumber,
       sourceRawValues,
@@ -773,6 +797,11 @@ function parseDataRow({
       vehicleLength: textValue(readAlias(row, headerMap, HEADER_ALIASES.vehicleLength), 100),
       ratedCapacityText: textValue(
         readAlias(row, headerMap, HEADER_ALIASES.ratedCapacityText),
+        100
+      ),
+      powerType: textValue(readAlias(row, headerMap, HEADER_ALIASES.powerType), 100),
+      emissionStandard: textValue(
+        readAlias(row, headerMap, HEADER_ALIASES.emissionStandard),
         100
       ),
       quantity: compatibilityQuantity,
