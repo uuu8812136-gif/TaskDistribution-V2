@@ -140,6 +140,18 @@ test('Web makes simultaneous calendar and runtime rules visible and quick to con
   assert.match(workbenchSource, /routineScheduleLabel\(row\.ruleSnapshot\?\.schedule\)/)
 })
 
+test('calendar execution day stays next to the calendar unit selector', () => {
+  const unitIndex = ruleDialogSource.indexOf('label="日历单位"')
+  const weeklyDayIndex = ruleDialogSource.indexOf('label="每周执行日"')
+  const monthlyDayIndex = ruleDialogSource.indexOf('label="每月执行日"')
+  const intervalIndex = ruleDialogSource.indexOf(':label="calendarIntervalLabel"')
+
+  assert.ok(unitIndex >= 0)
+  assert.ok(weeklyDayIndex > unitIndex)
+  assert.ok(monthlyDayIndex > weeklyDayIndex)
+  assert.ok(intervalIndex > monthlyDayIndex)
+})
+
 test('routine workbench heading actions stay aligned without overflowing at 390px', () => {
   assert.match(workbenchSource, /\.page-heading, \.heading-actions, \.toolbar, \.pagination-row \{ display: flex; align-items: center; \}/)
   assert.match(workbenchSource, /\.heading-actions \{ gap: 8px; \}/)

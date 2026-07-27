@@ -99,14 +99,6 @@
           </div>
         </div>
         <div class="form-grid execution-grid">
-          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'WEEK'" label="每周执行日">
-            <el-select v-model="form.executionConfig.weeklyDay" class="full-width">
-              <el-option v-for="day in weekDayOptions" :key="day.value" :label="day.label" :value="day.value" />
-            </el-select>
-          </el-form-item>
-          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'MONTH'" label="每月执行日">
-            <el-input-number v-model="form.executionConfig.monthlyDay" :min="1" :max="31" :precision="0" class="full-width" />
-          </el-form-item>
           <el-form-item v-if="form.routineType === 'INSPECTION'" label="二次升级等待（分钟）">
             <el-input-number
               v-model="form.executionConfig.inspectionEscalationMinutes"
@@ -236,6 +228,14 @@
 
           <el-form-item v-if="usesCalendar" label="日历单位">
             <el-segmented v-model="form.schedule.calendar.unit" :options="calendarUnitOptions" block />
+          </el-form-item>
+          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'WEEK'" label="每周执行日">
+            <el-select v-model="form.executionConfig.weeklyDay" class="full-width">
+              <el-option v-for="day in weekDayOptions" :key="day.value" :label="day.label" :value="day.value" />
+            </el-select>
+          </el-form-item>
+          <el-form-item v-if="usesCalendar && form.schedule.calendar.unit === 'MONTH'" label="每月执行日">
+            <el-input-number v-model="form.executionConfig.monthlyDay" :min="1" :max="31" :precision="0" class="full-width" />
           </el-form-item>
           <el-form-item v-if="usesCalendar" :label="calendarIntervalLabel">
             <el-input-number
