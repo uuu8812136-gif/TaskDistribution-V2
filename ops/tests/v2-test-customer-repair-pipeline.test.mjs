@@ -169,6 +169,26 @@ test('stopped-state digest and both on-host and D: backup gates cover all migrat
   assert.match(activate, /Migration inputs changed after the stopped-state backup/)
 })
 
+test('release backup grants off-host read access only after the exact backup is verified', () => {
+  const directoryValidated = backup.indexOf('test "$backup_directory" = "${backup_root}/${backup_id}"')
+  const backupVerified = backup.indexOf('"$candidate/ops/verify-backup.js"')
+  const migrationEvidenceVerified = backup.indexOf('if (manifest.database?.name !== database || missing.length)')
+  const accessGranted = backup.indexOf('setfacl -R -m u:serveradmin:rX "$backup_directory"')
+  const handoffWritten = backup.indexOf('handoff="$evidence_dir/backup-handoff.json"')
+  for (const position of [
+    directoryValidated,
+    backupVerified,
+    migrationEvidenceVerified,
+    accessGranted,
+    handoffWritten
+  ]) assert.ok(position >= 0)
+  assert.ok(directoryValidated < backupVerified)
+  assert.ok(backupVerified < migrationEvidenceVerified)
+  assert.ok(migrationEvidenceVerified < accessGranted)
+  assert.ok(accessGranted < handoffWritten)
+  assert.doesNotMatch(backup, /setfacl -R -m u:serveradmin:rX "\$backup_root"/)
+})
+
 test('activation runs both new migrations as dry-run, execute and idempotent replay before switching current', () => {
   const equipmentDry = activate.indexOf('"$candidate/app/script/backfillCustomerEquipmentOwnership.js" "$equipment_dry"')
   const acceptanceDry = activate.indexOf('"$candidate/app/script/repairAcceptanceJuly2026Data.js" "$acceptance_dry"')

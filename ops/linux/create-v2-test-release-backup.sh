@@ -169,6 +169,8 @@ if (manifest.database?.name !== database || missing.length) {
 }
 NODE
 
+setfacl -R -m u:serveradmin:rX "$backup_directory"
+
 handoff="$evidence_dir/backup-handoff.json"
 /usr/bin/node - "$handoff" "$release_id" "$current_before" "$backup_id" \
   "$backup_directory" "$manifest_sha256" \
