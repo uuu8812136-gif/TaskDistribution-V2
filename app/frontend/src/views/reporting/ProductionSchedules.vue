@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>生产排产</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>维护日排产和月排产，供生产日报取数 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
     </header>
 

@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>生产日报</h1>
-        <p>{{ activeTeamName }}</p>
+        <p>汇总出勤和排产，生成当日汇报文字 · {{ activeTeamName }}</p>
       </div>
       <el-button :loading="pageLoading" circle aria-label="刷新生产日报" @click="refresh">
         <el-icon><Refresh /></el-icon>

@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>点检与保养工作台</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>查看待执行计划、执行记录和待处理异常 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-button

@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>设备维修</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>记录设备报修、维修、配件和审批 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-button v-if="canExport" :loading="exporting" @click="handleExport">

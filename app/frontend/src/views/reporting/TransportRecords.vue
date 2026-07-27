@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>运输提报</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>记录运输趟次、司机、车辆和现场照片 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-button @click="openSummary">

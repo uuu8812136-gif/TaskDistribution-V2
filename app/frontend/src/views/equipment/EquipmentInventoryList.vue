@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>设备盘点</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>按批次核对设备实物和账面信息 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <el-button v-if="canCreate" type="primary" @click="openCreate">
         <el-icon><Plus /></el-icon>

@@ -81,6 +81,16 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
 })
 
+test('routine rule terms include short customer-facing explanations without changing the payload', () => {
+  for (const text of [
+    '点检用于检查设备状态，保养用于记录维护工作。',
+    '异常超过该时间未处理，就继续通知上一级负责人。',
+    '决定手机定位失败时是否允许保存照片并提交记录。',
+    '决定计划是手动发起，还是按日期或运行小时自动生成。',
+    '决定提交时什么时候必须拍摄现场照片。'
+  ]) assert.ok(ruleDialogSource.includes(text), `missing description: ${text}`)
+})
+
 test('routine exception actions trust the server access policy instead of guessing fixed positions', () => {
   assert.match(workbenchSource, /row\.accessPolicy\?\.canHandle === true/)
   assert.doesNotMatch(workbenchSource, /membership\.positionKey === 'SUB_DEPARTMENT_MANAGER'/)

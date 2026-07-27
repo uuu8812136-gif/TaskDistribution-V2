@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>审计日志</h1>
-        <p>{{ scopeLabel }}</p>
+        <p>查看登录、操作和业务数据变更记录 · {{ scopeLabel }}</p>
       </div>
       <el-tooltip content="刷新审计日志" placement="bottom">
         <el-button circle aria-label="刷新审计日志" :loading="loading" @click="loadAuditLogs">

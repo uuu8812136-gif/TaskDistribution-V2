@@ -20,6 +20,7 @@
               :disabled="isEditing"
               block
             />
+            <p class="field-hint">点检用于检查设备状态，保养用于记录维护工作。</p>
           </el-form-item>
           <el-form-item label="设备类型" prop="categoryId">
             <el-tree-select
@@ -54,7 +55,7 @@
         <div class="section-heading">
           <div>
             <h3>执行窗口与提醒</h3>
-            <p>白班、夜班、每周执行日和每月执行日均可维护，不作为固定常量。</p>
+            <p>设置允许执行的班次和时间，停用的窗口不会安排任务。</p>
           </div>
           <el-button v-if="!readOnly && form.executionConfig.windows.length < 8" @click="addExecutionWindow">
             <el-icon><Plus /></el-icon>
@@ -114,6 +115,7 @@
               :precision="0"
               class="full-width"
             />
+            <p class="field-hint">异常超过该时间未处理，就继续通知上一级负责人。</p>
           </el-form-item>
           <el-form-item label="现场定位策略">
             <el-select v-model="form.executionConfig.locationPolicy" class="full-width">
@@ -121,6 +123,7 @@
               <el-option label="可选定位" value="OPTIONAL" />
               <el-option label="必须取得定位" value="REQUIRED" />
             </el-select>
+            <p class="field-hint">决定手机定位失败时是否允许保存照片并提交记录。</p>
           </el-form-item>
           <el-form-item v-if="form.executionConfig.locationPolicy === 'REQUIRED'" label="最大定位误差（米）">
             <el-input-number
@@ -131,9 +134,11 @@
               clearable
               class="full-width"
             />
+            <p class="field-hint">定位误差超过这个距离时，按定位失败处理。</p>
           </el-form-item>
           <el-form-item label="时区">
             <el-input v-model="form.executionConfig.timeZone" maxlength="64" />
+            <p class="field-hint">用于判断执行窗口和到期时间，国内保持 Asia/Shanghai。</p>
           </el-form-item>
         </div>
         <el-alert
@@ -149,7 +154,7 @@
         <div class="section-heading">
           <div>
             <h3>{{ routineProjectTitle }}</h3>
-            <p>同一规则内的项目使用相同周期，执行时逐项填写结果。</p>
+            <p>添加现场要做的项目，标为必检的项目必须填写结果。</p>
           </div>
           <el-button
             v-if="!readOnly"
@@ -226,6 +231,7 @@
                 :value="item.value"
               />
             </el-select>
+            <p class="field-hint">决定计划是手动发起，还是按日期或运行小时自动生成。</p>
           </el-form-item>
 
           <el-form-item v-if="usesCalendar" label="日历单位">
@@ -248,6 +254,7 @@
               class="full-width"
               placeholder="选择首次到期时间"
             />
+            <p class="field-hint">系统从这个时间开始计算后续周期。</p>
           </el-form-item>
 
           <el-form-item v-if="usesRuntime" label="每运行多少小时">
@@ -263,6 +270,7 @@
           </el-form-item>
           <el-form-item v-if="form.schedule.mode === 'COMBINED'" label="组合到期规则">
             <el-segmented v-model="form.schedule.duePolicy" :options="duePolicyOptions" block />
+            <p class="field-hint">任一到期是满足一个就生成，全部到期是两个都满足才生成。</p>
           </el-form-item>
         </div>
         <el-alert
@@ -286,6 +294,7 @@
                 :value="item.value"
               />
             </el-select>
+            <p class="field-hint">决定提交时什么时候必须拍摄现场照片。</p>
           </el-form-item>
           <el-form-item label="异常说明">
             <el-switch
@@ -294,6 +303,7 @@
               active-text="必填"
               inactive-text="选填"
             />
+            <p class="field-hint">决定检查结果为异常时，是否必须填写原因。</p>
           </el-form-item>
         </div>
       </section>
@@ -583,6 +593,7 @@ watch(() => props.modelValue, (visible) => {
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .span-full { grid-column: 1 / -1; }
 .full-width { width: 100%; }
+.field-hint { flex-basis: 100%; margin: 6px 0 0; color: var(--zl-muted); font-size: 12px; line-height: 1.5; }
 .checklist-editor { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 8px; }
 .checklist-header,
 .checklist-row {

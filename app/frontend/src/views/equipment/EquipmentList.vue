@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>设备台账</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>维护设备资料、照片、状态和二维码 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-button v-if="canImport" @click="importDialogVisible = true">

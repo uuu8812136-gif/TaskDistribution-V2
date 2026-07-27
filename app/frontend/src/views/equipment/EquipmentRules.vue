@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>点检与保养规则</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }} · 同类型设备可同时启用多条独立规则</p>
+        <p>设置检查项目、执行周期和现场留证要求 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-dropdown

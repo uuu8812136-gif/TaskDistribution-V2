@@ -3,7 +3,7 @@
     <header class="page-heading">
       <div>
         <h1>出勤日报</h1>
-        <p>{{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>提报分部出勤、完成审核并生成月汇总 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <el-button v-if="canSubmit" type="primary" @click="openCreate">
         <el-icon><Plus /></el-icon>

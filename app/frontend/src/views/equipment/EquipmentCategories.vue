@@ -7,7 +7,7 @@
         </el-button>
         <div>
           <h1>设备分类</h1>
-          <p>当前团队共享分类字典</p>
+          <p>设置台账和点检保养规则使用的分类 · 当前团队共享</p>
         </div>
       </div>
       <el-button v-if="canCreate" type="primary" @click="openCreate(null)">
