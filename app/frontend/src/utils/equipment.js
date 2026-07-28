@@ -74,6 +74,36 @@ export function effectiveRoutineDueState(entry = {}) {
   return ROUTINE_PLAN_DUE_STATE_MAP[raw] || raw
 }
 
+export function selectExecutableRoutinePlan(plans = []) {
+  const candidates = Array.isArray(plans)
+    ? plans.filter((plan) => ['OVERDUE', 'IN_WINDOW'].includes(plan?.status))
+    : []
+  const statusRank = { OVERDUE: 0, IN_WINDOW: 1 }
+  const timestamp = (value) => {
+    const parsed = Date.parse(value || '')
+    return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
+  }
+  return [...candidates].sort((left, right) => (
+    (statusRank[left.status] - statusRank[right.status]) ||
+    (timestamp(left.dueAt) - timestamp(right.dueAt)) ||
+    (timestamp(left.scheduledFor) - timestamp(right.scheduledFor)) ||
+    String(left._id || '').localeCompare(String(right._id || ''))
+  ))[0] || null
+}
+
+export function isRoutineScheduleExecutable(entry = {}) {
+  if (entry?.rule?.schedule?.mode === 'MANUAL') return true
+  if (typeof entry?.executable === 'boolean') return entry.executable
+  return Boolean(selectExecutableRoutinePlan(entry?.plans))
+}
+
+export function routineExecutionStatusLabel(entry = {}) {
+  if (entry?.executionStatus === 'PERIOD_COMPLETED') return '本周期已完成'
+  if (entry?.executionStatus === 'WAITING_FOR_READING') return '待录入运行小时'
+  if (entry?.executionStatus === 'NOT_DUE') return '未到执行周期'
+  return isRoutineScheduleExecutable(entry) ? '' : '当前不可执行'
+}
+
 export const IMPORT_DECISION_ACTIONS = Object.freeze({
   ACCEPT_AS_IS: 'ACCEPT_AS_IS',
   ACCEPT_SUGGESTION: 'ACCEPT_SUGGESTION',

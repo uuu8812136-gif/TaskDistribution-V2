@@ -5,7 +5,15 @@ const XLSX = require('xlsx');
 const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentCategory = require('../models/EquipmentCategory');
 const EquipmentChangeRecord = require('../models/EquipmentChangeRecord');
+const EquipmentRepairOrder = require('../models/EquipmentRepairOrder');
+const EquipmentRoutineException = require('../models/EquipmentRoutineException');
+const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
+const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
+const EquipmentRuntimeReading = require('../models/EquipmentRuntimeReading');
+const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
+const EquipmentStatusApproval = require('../models/EquipmentStatusApproval');
 const FileAsset = require('../models/FileAsset');
+const InventoryItem = require('../models/InventoryItem');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
@@ -369,6 +377,16 @@ function createEquipmentRegistryService({
   EquipmentAssetModel = EquipmentAsset,
   EquipmentCategoryModel = EquipmentCategory,
   EquipmentChangeRecordModel = EquipmentChangeRecord,
+  EquipmentRoutinePlanModel = EquipmentRoutinePlan,
+  equipmentDependencyModels = [
+    EquipmentRepairOrder,
+    EquipmentRoutineException,
+    EquipmentRoutineRecord,
+    EquipmentRuntimeReading,
+    EquipmentStatusApplication,
+    EquipmentStatusApproval,
+    InventoryItem
+  ],
   OrgUnitModel = OrgUnit,
   ProjectTeamModel = ProjectTeam,
   TeamMembershipModel = TeamMembership,
@@ -1246,6 +1264,95 @@ function createEquipmentRegistryService({
     }
   }
 
+  async function deleteAsset({ authContext, req, equipmentId, input = {} }) {
+    const context = assertTeamContext(authContext);
+    assertPermission(context, 'equipment.edit');
+    assertNoClientTeamId(input);
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw registryError(400, 'EQUIPMENT_DELETE_INPUT_INVALID', 'input must be an object');
+    }
+    const unsupportedKey = Object.keys(input).find((key) => key !== 'reason');
+    if (unsupportedKey) {
+      throw registryError(
+        400,
+        'EQUIPMENT_DELETE_INPUT_INVALID',
+        `input.${unsupportedKey} is not supported`
+      );
+    }
+    const reason = optionalString(input.reason, 'reason', 2000, 'Deleted from equipment ledger');
+
+    return runWithOptionalTransaction(async (session) => {
+      const filter = buildScopedDetailFilter({
+        authContext: context,
+        moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+        id: normalizeDetailId(equipmentId),
+        method: 'DELETE'
+      });
+      const equipment = await execute(EquipmentAssetModel.findOne(filter), session);
+      if (!equipment) throw notFound();
+
+      const dependencyFilter = {
+        teamId: context.activeTeamId,
+        equipmentId: equipment._id
+      };
+      const dependencies = await Promise.all(
+        equipmentDependencyModels.map((Model) => execute(Model.exists(dependencyFilter), session))
+      );
+      if (dependencies.some(Boolean)) {
+        throw registryError(
+          409,
+          'EQUIPMENT_DELETE_HAS_HISTORY',
+          'Equipment with inspection, maintenance, repair, inventory, runtime, or status history cannot be deleted'
+        );
+      }
+
+      const before = serializeAsset(equipment);
+      if ((equipment.photoFileIds || []).length > 0) {
+        await files.reconcileOwnerFiles({
+          authContext: context,
+          req,
+          attachments: [],
+          previousAttachments: equipment.photoFileIds.map((fileId) => ({ fileId })),
+          ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT,
+          ownerId: equipment._id,
+          method: 'DELETE',
+          allowedMimeTypes: EQUIPMENT_PHOTO_MIME_TYPES,
+          session
+        });
+      }
+      await execute(EquipmentRoutinePlanModel.deleteMany(dependencyFilter), session);
+      const deleted = await execute(EquipmentAssetModel.deleteOne({
+        _id: equipment._id,
+        teamId: context.activeTeamId
+      }), session);
+      if (deleted.deletedCount !== 1) throw notFound();
+
+      await createOne(EquipmentChangeRecordModel, {
+        teamId: context.activeTeamId,
+        orgUnitId: equipment.orgUnitId,
+        equipmentId: equipment._id,
+        changeType: EQUIPMENT_CHANGE_TYPES.DELETE,
+        before,
+        after: { deleted: true },
+        operatorId: context.userId,
+        reason
+      }, session);
+      await auditService.record({
+        req,
+        authContext: context,
+        action: AUDIT_ACTIONS.DELETE,
+        resourceType: AUDIT_RESOURCE_TYPES.EQUIPMENT_ASSET,
+        resourceId: equipment._id,
+        before,
+        after: { deleted: true },
+        reason,
+        targetTeamId: context.activeTeamId,
+        session
+      });
+      return before;
+    }, connection);
+  }
+
   async function getHistory({
     authContext,
     requestedTeamId,
@@ -1400,6 +1507,7 @@ function createEquipmentRegistryService({
     createAsset,
     createCategory,
     disableCategory,
+    deleteAsset,
     exportAssets,
     getAsset,
     getAssetByQrToken,

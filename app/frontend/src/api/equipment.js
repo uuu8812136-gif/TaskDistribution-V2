@@ -24,6 +24,12 @@ export const updateEquipment = (equipmentId, data) => request({
   data
 })
 
+export const deleteEquipment = (equipmentId, data = {}) => request({
+  url: `/equipment/${equipmentId}`,
+  method: 'delete',
+  data
+})
+
 export const getEquipmentOptions = (params) => request({
   url: '/equipment/options',
   method: 'get',

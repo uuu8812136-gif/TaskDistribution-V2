@@ -22,14 +22,17 @@ import {
   equipmentImportOriginalValue,
   equipmentImportSuggestedAction,
   isEquipmentImportDecisionComplete,
+  isRoutineScheduleExecutable,
   moveChecklistItem,
   normalizeRuntimeHours,
   optionForValue,
   routineAbnormalNotesComplete,
   routineItemResultOptions,
+  routineExecutionStatusLabel,
   routineScheduleLabel,
   routineScheduleSummary,
   effectiveRoutineDueState,
+  selectExecutableRoutinePlan,
   removeChecklistItemAt,
   EQUIPMENT_STATUS_OPTIONS
 } from '../src/utils/equipment.js'
@@ -150,6 +153,11 @@ test('equipment list keeps the customer ledger column order instead of promoting
   )
   assert.match(view, /:fixed="column\.key === 'sourceSequence' \? 'left' : undefined"/)
   assert.doesNotMatch(view, /\['sourceSequence', 'assetCode'/)
+  const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
+  assert.match(view, /@click="handleDelete\(row\)"/)
+  assert.match(view, /ElMessageBox\.confirm/)
+  assert.match(api, /method: 'delete'/)
+  assert.match(api, /`\/equipment\/\$\{equipmentId\}`/)
 })
 
 test('checklist editor supports repeated additions, stable ordering and a one-item minimum', () => {
@@ -376,6 +384,20 @@ test('routine due state prefers the authoritative open-plan status', () => {
   assert.equal(effectiveRoutineDueState({ planStatus: 'IN_WINDOW', status: 'OVERDUE' }), 'DUE')
   assert.equal(effectiveRoutineDueState({ planStatus: 'PLANNED', status: 'OVERDUE' }), 'UPCOMING')
   assert.equal(effectiveRoutineDueState({ dueState: 'WAITING_FOR_READING', status: 'UPCOMING' }), 'WAITING_FOR_READING')
+  const executable = {
+    executable: true,
+    rule: { schedule: { mode: 'CALENDAR' } },
+    plans: [{ _id: 'plan-1', status: 'OVERDUE' }]
+  }
+  assert.equal(isRoutineScheduleExecutable(executable), true)
+  assert.equal(selectExecutableRoutinePlan(executable.plans)?._id, 'plan-1')
+  assert.equal(isRoutineScheduleExecutable({
+    executable: false,
+    executionStatus: 'PERIOD_COMPLETED',
+    rule: { schedule: { mode: 'CALENDAR' } }
+  }), false)
+  assert.equal(routineExecutionStatusLabel({ executionStatus: 'PERIOD_COMPLETED' }), '本周期已完成')
+  assert.equal(isRoutineScheduleExecutable({ rule: { schedule: { mode: 'MANUAL' } } }), true)
 })
 
 test('routine execution and runtime reading payloads contain only accepted fields', () => {

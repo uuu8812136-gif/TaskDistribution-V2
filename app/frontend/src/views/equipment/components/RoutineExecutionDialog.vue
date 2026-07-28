@@ -98,7 +98,8 @@ import {
   optionForValue,
   routineAbnormalNotesComplete,
   routineItemResultOptions,
-  routineScheduleLabel
+  routineScheduleLabel,
+  selectExecutableRoutinePlan
 } from '@/utils/equipment'
 
 const props = defineProps({
@@ -126,6 +127,7 @@ function emptyForm() {
     itemResults: [],
     abnormalSummary: '',
     photoFileIds: [],
+    planId: '',
     idempotencyKey: createIdempotencyKey()
   }
 }
@@ -134,6 +136,7 @@ function resetForm() {
   const sourceRule = rule.value
   Object.assign(form, emptyForm(), {
     ruleId: sourceRule?._id || '',
+    planId: selectExecutableRoutinePlan(props.scheduleEntry?.plans)?._id || '',
     runtimeHours: props.currentRuntimeHours ?? null,
     itemResults: (sourceRule?.checklistItems || []).map((item, index) => ({
       itemKey: item.key || `item-${index + 1}`,

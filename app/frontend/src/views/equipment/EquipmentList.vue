@@ -101,11 +101,20 @@
             <span v-else>{{ tableCellValue(row, column) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="150" fixed="right" align="center">
+        <el-table-column label="操作" width="210" fixed="right" align="center">
           <template #default="{ row }">
             <div class="table-actions">
               <el-button text type="primary" @click="goDetail(row)">详情</el-button>
               <el-button v-if="canEdit" text type="primary" @click="openEdit(row)">编辑</el-button>
+              <el-button
+                v-if="canEdit"
+                text
+                type="danger"
+                :loading="deletingId === row._id"
+                @click="handleDelete(row)"
+              >
+                删除
+              </el-button>
             </div>
           </template>
         </el-table-column>
@@ -312,10 +321,11 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import EquipmentImportDialog from './components/EquipmentImportDialog.vue'
 import {
   createEquipment,
+  deleteEquipment,
   exportEquipment,
   getEquipmentCategories,
   getEquipmentList,
@@ -354,6 +364,7 @@ const session = useSessionStore()
 const loading = ref(false)
 const exporting = ref(false)
 const submitting = ref(false)
+const deletingId = ref('')
 const dialogVisible = ref(false)
 const importDialogVisible = ref(false)
 const editingId = ref('')
@@ -651,6 +662,33 @@ async function submitForm() {
     throw error
   } finally {
     submitting.value = false
+  }
+}
+
+async function handleDelete(item) {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除设备“${item.name || item.assetCode}”吗？删除后不可恢复。`,
+      '删除设备',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+
+  deletingId.value = item._id
+  try {
+    await deleteEquipment(item._id, { reason: '后台设备台账删除' })
+    ElMessage.success('设备已删除')
+    if (assets.value.length === 1 && filters.page > 1) filters.page -= 1
+    await loadAssets()
+  } finally {
+    deletingId.value = ''
   }
 }
 

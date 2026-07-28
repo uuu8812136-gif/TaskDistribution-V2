@@ -230,6 +230,20 @@ export function selectExecutableRoutinePlan(plans = []) {
   ))[0] || null
 }
 
+export function isRoutineScheduleExecutable(entry = {}) {
+  if (entry?.rule?.schedule?.mode === 'MANUAL') return true
+  if (typeof entry?.executable === 'boolean') return entry.executable
+  return Boolean(selectExecutableRoutinePlan(entry?.plans))
+}
+
+export function routineExecutionStatusLabel(entry = {}) {
+  const status = entry?.executionStatus || ''
+  if (status === 'PERIOD_COMPLETED') return '本周期已完成'
+  if (status === 'WAITING_FOR_READING') return '待录入运行小时'
+  if (status === 'NOT_DUE') return '未到执行周期'
+  return isRoutineScheduleExecutable(entry) ? '' : '当前不可执行'
+}
+
 export function groupRoutineSchedules(schedules = []) {
   const values = Array.isArray(schedules) ? schedules : normalizeRoutineSchedules(schedules)
   const definitions = [

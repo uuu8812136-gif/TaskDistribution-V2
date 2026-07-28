@@ -14,6 +14,8 @@ const AuditLog = require('../../../app/models/AuditLog');
 const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
 const EquipmentChangeRecord = require('../../../app/models/EquipmentChangeRecord');
+const EquipmentRoutinePlan = require('../../../app/models/EquipmentRoutinePlan');
+const EquipmentRuntimeReading = require('../../../app/models/EquipmentRuntimeReading');
 const FileAsset = require('../../../app/models/FileAsset');
 const OrgUnit = require('../../../app/models/OrgUnit');
 const ProjectTeam = require('../../../app/models/ProjectTeam');
@@ -31,6 +33,8 @@ const MODELS = [
   EquipmentAsset,
   EquipmentCategory,
   EquipmentChangeRecord,
+  EquipmentRoutinePlan,
+  EquipmentRuntimeReading,
   FileAsset,
   OrgUnit,
   ProjectTeam,
@@ -1081,4 +1085,105 @@ test('global read-only mode requires an explicit active team and cannot write', 
     authContext: global,
     input: { orgUnitId: String(fixture.orgA1), name: 'Forbidden' }
   }), (error) => error.status === 403);
+});
+
+test('equipment deletion removes an unused asset and generated plans while retaining audit evidence', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const equipmentCategory = await category(service, context, fixture.orgA1, 'Delete category');
+  const asset = await equipment(service, context, {
+    assetCode: 'DELETE-UNUSED-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: equipmentCategory._id
+  });
+  await EquipmentRoutinePlan.create({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    equipmentId: asset._id,
+    categoryId: equipmentCategory._id,
+    ruleId: objectId(),
+    ruleVersion: 1,
+    ruleSnapshot: { name: 'Generated plan' },
+    routineType: 'INSPECTION',
+    cycleKey: 'calendar:2030-01-01T00:00:00.000Z',
+    windowKey: 'DAY_SHIFT',
+    windowName: 'Day shift',
+    scheduledFor: new Date('2030-01-01T00:00:00.000Z'),
+    dueAt: new Date('2030-01-01T01:00:00.000Z'),
+    status: 'PLANNED'
+  });
+
+  const deleted = await service.deleteAsset({
+    authContext: context,
+    equipmentId: asset._id,
+    input: { reason: 'Created by mistake' }
+  });
+
+  assert.equal(deleted.assetCode, 'DELETE-UNUSED-001');
+  assert.equal(await EquipmentAsset.countDocuments({ _id: asset._id }), 0);
+  assert.equal(await EquipmentRoutinePlan.countDocuments({ equipmentId: asset._id }), 0);
+  assert.equal(await EquipmentChangeRecord.countDocuments({
+    equipmentId: asset._id,
+    changeType: 'DELETE'
+  }), 1);
+  assert.equal(await AuditLog.countDocuments({
+    resourceId: asset._id,
+    action: permissions.AUDIT_ACTIONS.DELETE
+  }), 1);
+});
+
+test('equipment deletion rejects assets with business history and respects data scope', async () => {
+  const service = createEquipmentRegistryService();
+  const orgA1 = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const orgA2 = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA2,
+    userId: fixture.userA2,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const categoryA1 = await category(service, orgA1, fixture.orgA1, 'Delete protected A1');
+  const categoryA2 = await category(service, orgA2, fixture.orgA2, 'Delete protected A2');
+  const assetA1 = await equipment(service, orgA1, {
+    assetCode: 'DELETE-HISTORY-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: categoryA1._id
+  });
+  const assetA2 = await equipment(service, orgA2, {
+    assetCode: 'DELETE-SCOPE-001',
+    orgUnitId: fixture.orgA2,
+    categoryId: categoryA2._id
+  });
+  await EquipmentRuntimeReading.collection.insertOne({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    equipmentId: new mongoose.Types.ObjectId(assetA1._id),
+    hours: 1,
+    recordedAt: new Date(),
+    operatorId: fixture.userA1,
+    source: 'MANUAL',
+    reason: 'History guard'
+  });
+
+  await assert.rejects(service.deleteAsset({
+    authContext: orgA1,
+    equipmentId: assetA1._id,
+    input: {}
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_DELETE_HAS_HISTORY');
+  await assert.rejects(service.deleteAsset({
+    authContext: orgA1,
+    equipmentId: assetA2._id,
+    input: {}
+  }), (error) => error.status === 404);
+  assert.equal(await EquipmentAsset.countDocuments({
+    _id: { $in: [assetA1._id, assetA2._id] }
+  }), 2);
 });

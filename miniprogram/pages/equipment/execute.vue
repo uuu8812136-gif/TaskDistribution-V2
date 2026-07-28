@@ -7,7 +7,11 @@
       <text v-if="rule.description" class="rule-description">{{ rule.description }}</text>
     </view>
 
-    <view v-if="rule" class="items-band">
+    <view v-if="rule && !executionAllowed" class="blocked-band">
+      <text>{{ executionStatusLabel }}</text>
+    </view>
+
+    <view v-if="rule && executionAllowed" class="items-band">
       <view v-for="(item, index) in rule.checklistItems" :key="item.key" class="item-row">
         <view class="item-heading">
           <text class="item-index">{{ index + 1 }}</text>
@@ -40,7 +44,7 @@
       </view>
     </view>
 
-    <view v-if="rule" class="extra-band">
+    <view v-if="rule && executionAllowed" class="extra-band">
       <view v-if="needsRuntime" class="field-block">
         <text class="field-label">本次累计运行小时</text>
         <input v-model="runtimeHours" type="digit" class="field-input" :disabled="submitting" placeholder="请输入仪表读数" />
@@ -88,8 +92,10 @@ import {
 } from '@/api/index.js'
 import {
   buildRoutineRecordPayload,
+  isRoutineScheduleExecutable,
   normalizeRoutineSchedules,
   resultOptionsFor,
+  routineExecutionStatusLabel,
   routineTypeLabel,
   scheduleDescription,
   selectExecutableRoutinePlan
@@ -106,6 +112,8 @@ export default {
     const ruleId = ref('')
     const planId = ref('')
     const rule = ref(null)
+    const executionAllowed = ref(false)
+    const executionStatusLabel = ref('当前不可执行')
     const results = reactive({})
     const runtimeHours = ref('')
     const abnormalSummary = ref('')
@@ -138,12 +146,15 @@ export default {
         return
       }
       rule.value = entry.rule
+      executionAllowed.value = isRoutineScheduleExecutable(entry)
+      executionStatusLabel.value = routineExecutionStatusLabel(entry)
       const currentPlan = selectExecutableRoutinePlan(entry.plans)
       planId.value = currentPlan?._id || ''
       runtimeHours.value = response.equipment?.currentRuntimeHours == null
         ? ''
         : String(response.equipment.currentRuntimeHours)
       rule.value.checklistItems.forEach((item) => itemResult(item))
+      return executionAllowed.value
     }
     const formatWatermarkTime = (date) => {
       const pad = (value) => String(value).padStart(2, '0')
@@ -328,6 +339,10 @@ export default {
       }
       submitting.value = true
       try {
+        if (!await load()) {
+          uni.showToast({ title: executionStatusLabel.value, icon: 'none' })
+          return
+        }
         const placeholderFileIds = photos.value.map((_, index) => (
           String(index + 1).padStart(24, '0')
         ))
@@ -386,7 +401,7 @@ export default {
       }))
     })
     return {
-      rule, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,
+      rule, executionAllowed, executionStatusLabel, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,
       resultOptions, needsRuntime,
       photoRuleLabel, itemResult, selectResult, takePhoto, removePhoto, submit,
       routineTypeLabel, scheduleDescription
@@ -397,8 +412,9 @@ export default {
 
 <style scoped lang="scss">
 .execute-page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #eef3fb; }
-.rule-band, .items-band, .extra-band { background: #fff; border: 1px solid #dce4ee; border-radius: 8rpx; }
+.rule-band, .blocked-band, .items-band, .extra-band { background: #fff; border: 1px solid #dce4ee; border-radius: 8rpx; }
 .rule-band { padding: 24rpx; }
+.blocked-band { margin-top: 20rpx; padding: 28rpx 24rpx; color: #52606d; background: #f7f9fb; text-align: center; font-size: 25rpx; }
 .rule-type { display: inline-block; padding: 7rpx 12rpx; border-radius: 8rpx; color: #245d3f; background: #eaf7ef; font-size: 21rpx; }
 .rule-name, .rule-cycle, .rule-description { display: block; }
 .rule-name { margin-top: 14rpx; color: #1f2733; font-size: 32rpx; font-weight: 700; }

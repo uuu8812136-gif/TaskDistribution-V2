@@ -48,6 +48,9 @@
           <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
             执行{{ routineTypeLabel(entry.routineType) }}
           </button>
+          <text v-else-if="hasExecutionPermission(entry)" class="execution-unavailable">
+            {{ routineExecutionStatusLabel(entry) }}
+          </text>
         </view>
       </view>
     </view>
@@ -91,8 +94,10 @@ import {
   dueStateLabel,
   dueStateTone,
   groupRoutineSchedules,
+  isRoutineScheduleExecutable,
   loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
+  routineExecutionStatusLabel,
   routineTypeLabel,
   scheduleDescription
 } from '@/utils/equipment.js'
@@ -123,10 +128,11 @@ export default {
       userStore.can('equipment.status.apply', { write: true, teamRequired: true }) &&
       userStore.context.membership?.functionalRoleKeys?.includes('ASSET_ADMIN')
     ))
-    const canExecute = (entry) => userStore.isTeamMode && userStore.can(
+    const hasExecutionPermission = (entry) => userStore.isTeamMode && userStore.can(
       entry.routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect',
       { write: true, teamRequired: true }
     )
+    const canExecute = (entry) => hasExecutionPermission(entry) && isRoutineScheduleExecutable(entry)
     const load = async () => {
       if (!equipmentId.value || loading.value) return
       loading.value = true
@@ -181,8 +187,8 @@ export default {
     onShow(load)
     return {
       userStore, equipment, schedules, scheduleGroups, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
-      canExecute, openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
-      resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
+      canExecute, hasExecutionPermission, openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
+      resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, routineExecutionStatusLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
     }
   }
 }
@@ -223,6 +229,7 @@ export default {
 .tone-info { color: #52606d; background: #edf2f7; }
 .due-grid { display: flex; flex-wrap: wrap; gap: 10rpx 24rpx; margin-top: 16rpx; color: #64748b; font-size: 22rpx; }
 .execute-button { margin-top: 22rpx; color: #fff; background: #4096ff; }
+.execution-unavailable { display: block; margin-top: 22rpx; padding: 20rpx; color: #52606d; background: #f2f4f7; border-radius: 8rpx; text-align: center; font-size: 24rpx; }
 .empty-state { padding: 140rpx 20rpx; color: #909399; text-align: center; font-size: 25rpx; }
 .activity-list { overflow: hidden; }
 .activity-row { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; padding: 22rpx 24rpx; border-bottom: 1px solid #e8edf3; }

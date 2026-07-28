@@ -4,7 +4,8 @@ const mongoose = require('mongoose');
 
 const EQUIPMENT_CHANGE_TYPES = Object.freeze({
   CREATE: 'CREATE',
-  UPDATE: 'UPDATE'
+  UPDATE: 'UPDATE',
+  DELETE: 'DELETE'
 });
 const EQUIPMENT_CHANGE_TYPE_VALUES = Object.freeze(
   Object.values(EQUIPMENT_CHANGE_TYPES)

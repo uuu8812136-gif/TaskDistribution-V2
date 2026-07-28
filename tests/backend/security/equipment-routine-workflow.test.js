@@ -625,7 +625,18 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
   const rules = {};
   for (const unit of ['DAY', 'WEEK', 'MONTH']) {
     rules[unit] = await createRule(routineService, 'INSPECTION', {
-      windows: oneWindow,
+      windows: unit === 'DAY'
+        ? [
+            ...oneWindow,
+            {
+              key: 'NIGHT_SHIFT',
+              name: 'Night shift',
+              startTime: '19:00',
+              endTime: '21:00',
+              enabled: true
+            }
+          ]
+        : oneWindow,
       schedule: {
         mode: 'CALENDAR',
         calendar: {
@@ -664,6 +675,55 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
   });
   assert.equal(String(record.planId), String(dailyPlan._id));
   assert.equal((await EquipmentRoutinePlan.findById(dailyPlan._id).lean()).status, 'COMPLETED');
+  assert.ok((await EquipmentRoutinePlan.find({
+    ruleId: rules.DAY._id,
+    cycleKey: dailyPlan.cycleKey,
+    _id: { $ne: dailyPlan._id }
+  }).lean()).every(({ status }) => status === 'CANCELLED'));
+
+  const completedSchedule = await routineService.getSchedule({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id)
+  });
+  const completedDaily = completedSchedule.schedules.find(({ rule }) => (
+    String(rule._id) === String(rules.DAY._id)
+  ));
+  assert.equal(completedDaily.executable, false);
+  assert.equal(completedDaily.executionStatus, 'PERIOD_COMPLETED');
+
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rules.DAY._id),
+      itemResults: [{
+        itemKey: rules.DAY.checklistItems[0].key,
+        result: 'NORMAL'
+      }],
+      idempotencyKey: 'daily-period-second-submission'
+    }
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PERIOD_COMPLETED'
+  ));
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rules.DAY._id),
+      planId: String(dailyPlan._id),
+      itemResults: [{
+        itemKey: rules.DAY.checklistItems[0].key,
+        result: 'NORMAL'
+      }],
+      idempotencyKey: 'daily-completed-plan-second-submission'
+    }
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+  ));
+  assert.equal(await EquipmentRoutineRecord.countDocuments({
+    equipmentId: fixture.asset._id,
+    ruleId: rules.DAY._id
+  }), 1);
 
   const unrelatedAfter = await EquipmentRoutinePlan.find({
     ruleId: { $in: unrelatedRuleIds }
@@ -899,13 +959,13 @@ test('COMBINED ANY keeps only the first due dimension and advances idempotently 
     }
   });
   assert.ok(calendarCompletion);
-  assert.equal((await EquipmentRoutinePlan.findById(sameCalendarCycleSibling._id).lean()).status, 'PLANNED');
+  assert.equal((await EquipmentRoutinePlan.findById(sameCalendarCycleSibling._id).lean()).status, 'CANCELLED');
   assert.deepEqual(
     (await EquipmentRoutinePlan.find({
       _id: { $in: laterCalendarCyclePlans.map(({ _id }) => _id) }
     }).sort({ scheduledFor: 1, windowKey: 1 }).lean()).map(({ status }) => status),
     ['CANCELLED', 'CANCELLED'],
-    'calendar completion must cancel the old generation without swallowing a same-cycle shift'
+    'calendar completion must cancel the remaining plans from the old generation'
   );
   await worker.runOnce({ now, teamId: fixture.ids.team });
   const nextCyclePlans = await EquipmentRoutinePlan.find({

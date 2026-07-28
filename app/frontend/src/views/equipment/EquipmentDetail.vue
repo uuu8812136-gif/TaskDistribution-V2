@@ -229,13 +229,16 @@
             <el-table-column label="操作" width="96" fixed="right" align="center">
               <template #default="{ row }">
                 <el-button
-                  v-if="canExecuteRoutine(row.rule?.routineType)"
+                  v-if="canExecuteRoutine(row)"
                   text
                   type="primary"
                   @click="openRoutineExecution(row)"
                 >
                   执行
                 </el-button>
+                <span v-else-if="hasRoutinePermission(row.rule?.routineType)" class="execution-unavailable">
+                  {{ routineExecutionStatusLabel(row) }}
+                </span>
                 <span v-else>-</span>
               </template>
             </el-table-column>
@@ -403,7 +406,9 @@ import {
   ROUTINE_TYPE_OPTIONS,
   entityName,
   effectiveRoutineDueState,
+  isRoutineScheduleExecutable,
   optionForValue,
+  routineExecutionStatusLabel,
   routineScheduleLabel,
   routineScheduleSummary
 } from '@/utils/equipment'
@@ -567,9 +572,13 @@ async function loadEquipmentPhotos() {
   }
 }
 
-function canExecuteRoutine(routineType) {
+function hasRoutinePermission(routineType) {
   const permission = routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect'
   return session.can(permission, { write: true, teamRequired: true })
+}
+
+function canExecuteRoutine(entry) {
+  return hasRoutinePermission(entry?.rule?.routineType) && isRoutineScheduleExecutable(entry)
 }
 
 function openRoutineRules() {

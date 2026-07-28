@@ -88,7 +88,7 @@
         <view class="routine-heading">
           <view>
             <text class="routine-title">现场作业</text>
-            <text class="routine-hint">{{ hasExecutableRoutine ? '选择要执行的点检或保养项' : '当前账号仅可查看设备信息' }}</text>
+            <text class="routine-hint">{{ routineHint }}</text>
           </view>
           <text class="routine-count">{{ schedules.length }} 项</text>
         </view>
@@ -106,7 +106,9 @@
             <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
               执行{{ routineTypeLabel(entry.routineType) }}
             </button>
-            <text v-else class="read-only-label">仅查看</text>
+            <text v-else class="read-only-label">
+              {{ hasExecutionPermission(entry) ? routineExecutionStatusLabel(entry) : '仅查看' }}
+            </text>
           </view>
         </view>
         <view v-if="schedules.length === 0" class="routine-empty">该设备尚未配置点检或保养规则</view>
@@ -159,8 +161,10 @@ import {
   classifyEquipmentScanFailure,
   equipmentLookupFailureMessage,
   groupRoutineSchedules,
+  isRoutineScheduleExecutable,
   loadEquipmentMonthlyActivity,
   lookupEquipmentFromQr,
+  routineExecutionStatusLabel,
   routineTypeLabel,
   scheduleDescription
 } from '@/utils/equipment.js'
@@ -203,6 +207,12 @@ export default {
     ))
     const scheduleGroups = computed(() => groupRoutineSchedules(schedules.value))
     const hasExecutableRoutine = computed(() => schedules.value.some((entry) => canExecute(entry)))
+    const hasRoutinePermission = computed(() => schedules.value.some((entry) => hasExecutionPermission(entry)))
+    const routineHint = computed(() => {
+      if (hasExecutableRoutine.value) return '选择要执行的点检或保养项'
+      if (hasRoutinePermission.value) return '当前没有到期的点检或保养项'
+      return '当前账号仅可查看设备信息'
+    })
     const requestTeamId = () => userStore.isGlobalReadOnly ? selectedTeamId.value : ''
 
     const requireQueryContext = () => {
@@ -322,10 +332,11 @@ export default {
       lookup(manualCode.value)
     }
 
-    const canExecute = (entry) => userStore.isTeamMode && userStore.can(
+    const hasExecutionPermission = (entry) => userStore.isTeamMode && userStore.can(
       entry.routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect',
       { write: true, teamRequired: true }
     )
+    const canExecute = (entry) => hasExecutionPermission(entry) && isRoutineScheduleExecutable(entry)
 
     const openDetail = () => {
       const teamId = requestTeamId()
@@ -396,10 +407,12 @@ export default {
       statusMessage,
       scanPermissionDenied,
       hasExecutableRoutine,
+      routineHint,
       startScan,
       openCameraSettings,
       lookupManualCode,
       canExecute,
+      hasExecutionPermission,
       openDetail,
       openRepair,
       openRuntimeReading,
@@ -408,6 +421,7 @@ export default {
       statusLabel,
       resultLabel,
       dueStateLabel,
+      routineExecutionStatusLabel,
       routineTypeLabel,
       scheduleDescription,
       repairStatusLabel,

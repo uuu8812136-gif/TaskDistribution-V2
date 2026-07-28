@@ -145,6 +145,20 @@ function createEquipmentController({
       }
     },
 
+    async deleteAsset(req, res, next) {
+      try {
+        const equipment = await service.deleteAsset({
+          authContext: req.authContext,
+          req,
+          equipmentId: req.params.equipmentId,
+          input: req.body || {}
+        });
+        return res.json({ message: 'Equipment deleted', equipment });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async getHistory(req, res, next) {
       try {
         const result = await service.getHistory({

@@ -353,6 +353,12 @@ router.patch(
   equipmentEdit,
   equipmentController.updateAsset
 );
+router.delete(
+  '/:equipmentId',
+  requireTeamContext,
+  equipmentEdit,
+  equipmentController.deleteAsset
+);
 
 module.exports = router;
 module.exports.importUploadMiddleware = importUploadMiddleware;

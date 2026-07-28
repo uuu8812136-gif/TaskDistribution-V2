@@ -166,6 +166,53 @@ function combinedAnyGenerationPrefix(cycleKey) {
   return match ? match[1] : null;
 }
 
+function cycleVersionSegment(ruleVersion) {
+  const version = Number(ruleVersion);
+  return Number.isInteger(version) && version > 1 ? `v${version}:` : '';
+}
+
+function submissionCycleKey(rule, schedule) {
+  const version = cycleVersionSegment(rule.version);
+  if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR) {
+    return `calendar:${version}${new Date(schedule.nextDueAt).toISOString()}`;
+  }
+  if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS) {
+    return `runtime:${version}${Number(schedule.nextDueRuntimeHours).toFixed(6)}`;
+  }
+  const recordKey = schedule.latestRecordId || 'initial';
+  const calendarKey = schedule.nextDueAt ? new Date(schedule.nextDueAt).toISOString() : 'none';
+  const runtimeKey = schedule.nextDueRuntimeHours === null || schedule.nextDueRuntimeHours === undefined
+    ? 'none'
+    : Number(schedule.nextDueRuntimeHours).toFixed(6);
+  return `submission:${recordKey}:${version}calendar:${calendarKey}:runtime:${runtimeKey}`;
+}
+
+function submissionDueState(rule, schedule, runtimeHours) {
+  let runtimeState = schedule.runtimeStatus;
+  if (
+    runtimeHours !== null &&
+    schedule.nextDueRuntimeHours !== null &&
+    schedule.nextDueRuntimeHours !== undefined &&
+    rule.schedule.runtime
+  ) {
+    runtimeState = classifyRuntimeDue({
+      currentHours: runtimeHours,
+      nextDueHours: schedule.nextDueRuntimeHours,
+      intervalHours: rule.schedule.runtime.intervalHours
+    });
+  }
+  if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR) {
+    return schedule.calendarStatus;
+  }
+  if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS) {
+    return runtimeState;
+  }
+  if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED) {
+    return combineDueStates(schedule.calendarStatus, runtimeState, rule.schedule.duePolicy);
+  }
+  return 'ON_DEMAND';
+}
+
 function normalizeRelatedId(value) {
   try {
     return normalizeObjectId(value, 'related resource id');
@@ -581,6 +628,42 @@ function createEquipmentRoutineService({
       status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
     }, {
       $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+    }), session);
+  }
+
+  async function materializeSubmissionPlan({ rule, asset, schedule, performedAt, session }) {
+    const cycleKey = submissionCycleKey(rule, schedule);
+    const windowKey = rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS
+      ? 'RUNTIME'
+      : 'PERIOD';
+    const filter = {
+      teamId: rule.teamId,
+      ruleId: rule._id,
+      equipmentId: asset._id,
+      cycleKey,
+      windowKey
+    };
+    await execute(EquipmentRoutinePlanModel.updateOne(filter, {
+      $setOnInsert: {
+        teamId: rule.teamId,
+        orgUnitId: asset.orgUnitId,
+        equipmentId: asset._id,
+        categoryId: asset.categoryId,
+        ruleId: rule._id,
+        ruleVersion: rule.version,
+        ruleSnapshot: serializeRule(rule),
+        routineType: rule.routineType,
+        cycleKey,
+        windowKey,
+        windowName: '周期执行',
+        scheduledFor: performedAt,
+        dueAt: performedAt,
+        status: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+      }
+    }, { upsert: true, setDefaultsOnInsert: true }), session);
+    return execute(EquipmentRoutinePlanModel.findOne({
+      ...filter,
+      status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
     }), session);
   }
 
@@ -1108,6 +1191,20 @@ function createEquipmentRoutineService({
         : schedule.plans.some(({ status }) => status === 'IN_WINDOW')
           ? 'IN_WINDOW'
           : schedule.plans.length > 0 ? 'PLANNED' : schedule.status;
+      const manual = schedule.rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL;
+      const hasExecutablePlan = schedule.plans.some(({ status }) => (
+        status === EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW ||
+        status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+      ));
+      const calculatedDue = schedule.status === 'DUE' || schedule.status === 'OVERDUE';
+      schedule.executable = manual || hasExecutablePlan || calculatedDue;
+      schedule.executionStatus = schedule.executable
+        ? 'READY'
+        : schedule.latestRecord && schedule.status === 'UPCOMING'
+          ? 'PERIOD_COMPLETED'
+          : schedule.status === 'WAITING_FOR_READING'
+            ? 'WAITING_FOR_READING'
+            : 'NOT_DUE';
     }
     return {
       equipment: {
@@ -1566,24 +1663,7 @@ function createEquipmentRoutineService({
         }), session);
         if (!rule) throw notFound('Equipment routine rule');
         assertPermission(context, routinePermission(rule.routineType));
-        const abnormalSummary = submission.abnormalSummary;
-        const itemResult = normalizeItemResults(rule, submission.itemResults, abnormalSummary);
-        const photoFileIds = submission.photoFileIds;
-        if (
-          rule.photoPolicy === EQUIPMENT_ROUTINE_PHOTO_POLICIES.ALWAYS &&
-          photoFileIds.length === 0
-        ) {
-          throw inputInvalid('This routine rule requires at least one photo');
-        }
-        if (
-          rule.photoPolicy === EQUIPMENT_ROUTINE_PHOTO_POLICIES.ON_ABNORMAL &&
-          itemResult.abnormal &&
-          photoFileIds.length === 0
-        ) {
-          throw inputInvalid('An abnormal result requires at least one photo');
-        }
 
-        const schedule = await calculateRuleSchedule(rule, asset, { session });
         const runtimeRequired = [
           EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS,
           EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
@@ -1605,6 +1685,7 @@ function createEquipmentRoutineService({
           );
         }
 
+        const schedule = await calculateRuleSchedule(rule, asset, { session });
         const performedAt = clock();
         let plan = null;
         if (submission.planId) {
@@ -1613,8 +1694,8 @@ function createEquipmentRoutineService({
             teamId: context.activeTeamId,
             equipmentId: asset._id,
             ruleId: rule._id,
+            scheduledFor: { $lte: performedAt },
             status: { $in: [
-              EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
               EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
               EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
             ] }
@@ -1627,9 +1708,8 @@ function createEquipmentRoutineService({
             );
           }
         } else {
-          // A client may omit planId (the Web form does this for compatibility).
-          // Resolve deterministically so an older overdue cycle cannot be hidden
-          // by a newer calendar cycle for the same equipment and rule.
+          // Older clients may omit planId. Resolve an open requirement
+          // deterministically, but never turn a future cycle into an ad-hoc run.
           const openPlans = await execute(EquipmentRoutinePlanModel.find({
             teamId: context.activeTeamId,
             equipmentId: asset._id,
@@ -1644,6 +1724,48 @@ function createEquipmentRoutineService({
             status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
           )) || openPlans[0] || null;
         }
+        if (rule.schedule.mode !== EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL && !plan) {
+          const dueState = submissionDueState(rule, schedule, runtimeHours);
+          if (dueState === 'DUE' || dueState === 'OVERDUE') {
+            plan = await materializeSubmissionPlan({
+              rule,
+              asset,
+              schedule,
+              performedAt,
+              session
+            });
+          }
+        }
+        if (rule.schedule.mode !== EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL && !plan) {
+          const completedCurrentPeriod = Boolean(schedule.latestRecord) && schedule.status === 'UPCOMING';
+          throw routineError(
+            409,
+            completedCurrentPeriod
+              ? 'EQUIPMENT_ROUTINE_PERIOD_COMPLETED'
+              : 'EQUIPMENT_ROUTINE_NOT_DUE',
+            completedCurrentPeriod
+              ? 'This routine has already been completed for the current period'
+              : 'This routine is not currently due'
+          );
+        }
+
+        const abnormalSummary = submission.abnormalSummary;
+        const itemResult = normalizeItemResults(rule, submission.itemResults, abnormalSummary);
+        const photoFileIds = submission.photoFileIds;
+        if (
+          rule.photoPolicy === EQUIPMENT_ROUTINE_PHOTO_POLICIES.ALWAYS &&
+          photoFileIds.length === 0
+        ) {
+          throw inputInvalid('This routine rule requires at least one photo');
+        }
+        if (
+          rule.photoPolicy === EQUIPMENT_ROUTINE_PHOTO_POLICIES.ON_ABNORMAL &&
+          itemResult.abnormal &&
+          photoFileIds.length === 0
+        ) {
+          throw inputInvalid('An abnormal result requires at least one photo');
+        }
+
         const photoEvidence = finalizePhotoEvidence(submission.photoEvidence, rule, performedAt);
         const recordId = new mongoose.Types.ObjectId();
         const record = await createOne(EquipmentRoutineRecordModel, {
@@ -1721,6 +1843,16 @@ function createEquipmentRoutineService({
               'The selected routine plan was completed concurrently'
             );
           }
+          await execute(EquipmentRoutinePlanModel.updateMany({
+            teamId: context.activeTeamId,
+            equipmentId: asset._id,
+            ruleId: rule._id,
+            cycleKey: plan.cycleKey,
+            _id: { $ne: plan._id },
+            status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+          }, {
+            $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+          }), session);
         }
 
         if (

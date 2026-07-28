@@ -592,6 +592,53 @@ test('a 200-hour rule uses the activation reading, rejects rollback, and replays
   assert.equal(replayAfterDisable._id, first._id);
 });
 
+test('concurrent submissions without a pre-generated plan create only one record for the period', async () => {
+  const routineService = service();
+  const rule = await createRule(routineService, fixture.contextA, fixture.categoryA1._id, {
+    name: 'Concurrent daily inspection',
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: {
+        unit: 'DAY',
+        interval: 1,
+        firstDueAt: '2030-01-15T08:00:00.000Z'
+      }
+    }
+  });
+  const payload = (idempotencyKey) => ({
+    ruleId: rule._id,
+    idempotencyKey,
+    itemResults: [{
+      itemKey: rule.checklistItems[0].key,
+      result: 'NORMAL'
+    }]
+  });
+
+  const submissions = await Promise.allSettled([
+    routineService.createRecord({
+      authContext: fixture.contextA,
+      equipmentId: String(fixture.assetA1._id),
+      input: payload('concurrent-period-a')
+    }),
+    routineService.createRecord({
+      authContext: fixture.contextA,
+      equipmentId: String(fixture.assetA1._id),
+      input: payload('concurrent-period-b')
+    })
+  ]);
+
+  assert.equal(submissions.filter(({ status }) => status === 'fulfilled').length, 1);
+  assert.equal(submissions.filter(({ status }) => status === 'rejected').length, 1);
+  assert.ok([
+    'EQUIPMENT_ROUTINE_PERIOD_COMPLETED',
+    'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+  ].includes(submissions.find(({ status }) => status === 'rejected').reason.code));
+  assert.equal(await EquipmentRoutineRecord.countDocuments({
+    equipmentId: fixture.assetA1._id,
+    ruleId: rule._id
+  }), 1);
+});
+
 test('combined schedules distinguish ANY from ALL as runtime readings cross the threshold', async () => {
   const routineService = service();
   await routineService.createRuntimeReading({

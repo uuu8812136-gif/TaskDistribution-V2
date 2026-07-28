@@ -11,11 +11,13 @@ import {
   equipmentScanFailureMessage,
   effectiveRoutineDueState,
   groupRoutineSchedules,
+  isRoutineScheduleExecutable,
   lookupEquipmentFromQr,
   loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
   parseEquipmentQrPayload,
   resultOptionsFor,
+  routineExecutionStatusLabel,
   scheduleDescription,
   selectExecutableRoutinePlan
 } from '../utils/equipment.js'
@@ -303,6 +305,16 @@ test('open plans override calculated due state and execution selects the most ur
   assert.equal(selected?._id, '507f1f77bcf86cd799439202')
   assert.equal(selectExecutableRoutinePlan([{ status: 'PLANNED' }]), null)
   assert.match(executePageSource, /selectExecutableRoutinePlan\(entry\.plans\)/)
+  assert.equal(isRoutineScheduleExecutable({
+    executable: false,
+    executionStatus: 'PERIOD_COMPLETED',
+    rule: { schedule: { mode: 'CALENDAR' } }
+  }), false)
+  assert.equal(routineExecutionStatusLabel({ executionStatus: 'PERIOD_COMPLETED' }), '本周期已完成')
+  assert.equal(isRoutineScheduleExecutable({ rule: { schedule: { mode: 'MANUAL' } } }), true)
+  assert.match(executePageSource, /if \(!await load\(\)\)/)
+  assert.match(equipmentScanSource, /routineExecutionStatusLabel\(entry\)/)
+  assert.match(equipmentDetailSource, /routineExecutionStatusLabel\(entry\)/)
 })
 
 test('mini-program surfaces schedule periods and the authoritative runtime reading history', () => {
