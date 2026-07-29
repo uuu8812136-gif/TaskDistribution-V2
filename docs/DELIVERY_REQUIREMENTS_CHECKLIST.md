@@ -140,9 +140,10 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] Formal AppID `wxd8f18985dfd63b89` accepted the 2026-07-25 transport-selector development upload as version `0.9.20260725.1` (1,497,428 bytes), and a formal-AppID experience QR code was generated under ignored `.test-data`.
 - [x] The formal-AppID real-device run completed a transport submission with all five master-data selections and two camera photos on 2026-07-25. The saved record retained all five master ids and both private photo references.
 - [x] Formal AppID `wxd8f18985dfd63b89` accepted the album-enabled development upload as version `0.9.20260725.2` (1,497,457 bytes), and a fresh experience QR code was generated under ignored `.test-data`.
-- [ ] On a real device, verify that version `0.9.20260725.2` can select album photos, mix camera and album photos, retain the 2-10 photo limit, and submit successfully. Scanning the experience QR alone does not complete this workflow acceptance.
-- [ ] After real-device acceptance, submit version `0.9.20260725.2` for WeChat review and publish it. A development upload is not yet visible to all customer users.
-- [x] The current mini-program source passes `112/112`, 43 SFC checks, and environment isolation, including dynamic transport load types, five transport selectors, transport album photos, repair camera/album photos, message navigation, and repaired todo authorization. The current HBuilderX development output was generated at 2026-07-27 21:21, before the configurable load-type commit, so formal-AppID experience version `0.9.20260725.2` remains stale and must not be described as containing all current source changes.
+- [x] The current mini-program source passes `112/112`, 43 SFC checks, and environment isolation, including dynamic transport load types, five transport selectors, transport album photos, repair camera/album photos, message navigation, and repaired todo authorization.
+- [x] HBuilderX 5.15 recompiled the complete source on 2026-07-29 at 15:47. Formal AppID `wxd8f18985dfd63b89` accepted development version `0.9.20260729.1` (1,545,192 bytes), and a matching preview QR code was generated under ignored `.test-data`.
+- [ ] On a real device, verify that version `0.9.20260729.1` can select and mix camera/album photos, retain the 2-10 photo limit, scan equipment, capture location/watermark evidence, reject duplicate inspection/maintenance, and complete the relevant write workflows. Scanning the preview QR alone does not complete this workflow acceptance.
+- [ ] After real-device acceptance, submit version `0.9.20260729.1` for WeChat review and publish it. A development upload or preview is not yet visible to all customer users.
 
 ## Backup, Restore, And Operations
 
