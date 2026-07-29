@@ -179,7 +179,6 @@ const handleRememberLoginChange = async (enabled) => {
   const forgetResult = await forgetRememberedLogin()
   if (forgetResult.metadataCleared) {
     rememberState.value = 'cleared'
-    rememberStatusMessage.value = '已取消本系统自动读取密码；浏览器密码管理器中的副本需在浏览器设置中删除。'
   } else {
     rememberState.value = 'unavailable'
     rememberStatusMessage.value = '浏览器阻止清除记住状态，请在浏览器设置中清除本站数据和已保存密码。'
@@ -491,8 +490,9 @@ onMounted(async () => {
 
   .login-motto {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: max-content max-content;
     align-items: baseline;
+    justify-content: start;
     gap: 3px 12px;
     width: 100%;
     margin: 0 0 18px;
