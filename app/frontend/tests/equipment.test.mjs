@@ -146,18 +146,41 @@ test('category maintenance stops at the fixed four-level equipment hierarchy', (
   assert.match(view, /if \(parent && categoryDepth\(parent\) >= 4\) return/)
 })
 
-test('equipment list keeps the customer ledger column order instead of promoting the asset code', () => {
+test('equipment list avoids horizontal scrolling and expands the complete ledger fields', () => {
   const view = fs.readFileSync(
     path.join(root, 'src/views/equipment/EquipmentList.vue'),
     'utf8'
   )
-  assert.match(view, /:fixed="column\.key === 'sourceSequence' \? 'left' : undefined"/)
-  assert.doesNotMatch(view, /\['sourceSequence', 'assetCode'/)
+  assert.match(view, /<el-table-column type="expand" width="48">/)
+  assert.match(view, /v-for="group in EQUIPMENT_DETAIL_GROUPS"/)
+  assert.match(view, /class="asset-card-list"/)
+  assert.match(view, /@media \(max-width: 1180px\)/)
+  assert.doesNotMatch(view, /:style="\{ minWidth:/)
+  assert.doesNotMatch(view, /\.asset-table-shell \{ overflow-x: auto;/)
   const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
   assert.match(view, /@click="handleDelete\(row\)"/)
   assert.match(view, /ElMessageBox\.confirm/)
   assert.match(api, /method: 'delete'/)
   assert.match(api, /`\/equipment\/\$\{equipmentId\}`/)
+})
+
+test('category and routine rule deletion stays behind the disabled-state permanent endpoints', () => {
+  const categoryView = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentCategories.vue'),
+    'utf8'
+  )
+  const ruleView = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentRules.vue'),
+    'utf8'
+  )
+  const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
+
+  assert.match(categoryView, /<template v-else>[\s\S]*?@click="deleteCategory\(row\)"/)
+  assert.match(categoryView, /确定永久删除分类/)
+  assert.match(ruleView, /v-if="row\.status === 'DISABLED'" command="delete"/)
+  assert.match(ruleView, /deleteEquipmentRoutineRule\(row\._id/)
+  assert.match(api, /`\/equipment\/categories\/\$\{categoryId\}\/permanent`/)
+  assert.match(api, /`\/equipment\/routine-rules\/\$\{ruleId\}\/permanent`/)
 })
 
 test('checklist editor supports repeated additions, stable ordering and a one-item minimum', () => {

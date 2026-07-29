@@ -18,7 +18,7 @@
   --zl-radius: 18px;
   --zl-control-radius: 10px;
   --zl-control-height: 36px;
-  --zl-content-max: 1440px;
+  --zl-content-max: 1920px;
   --zl-easing: cubic-bezier(0.22, 1, 0.36, 1);
 
   --el-color-primary: var(--zl-primary);
@@ -293,6 +293,38 @@ body {
     max-height: calc(100vh - 24px);
     max-height: calc(100dvh - 24px);
     margin: 12px auto;
+  }
+}
+
+/* Desktop list pages use the available viewport and wrap cells instead of requiring side-scrolling. */
+@media (min-width: 1024px) and (max-width: 1600px) {
+  .main-content .el-table:not(.asset-table) .el-table__header,
+  .main-content .el-table:not(.asset-table) .el-table__body {
+    width: 100% !important;
+    table-layout: fixed !important;
+  }
+
+  .main-content .el-table:not(.asset-table) col {
+    width: auto !important;
+  }
+
+  .main-content .el-table:not(.asset-table) .el-table-fixed-column--left,
+  .main-content .el-table:not(.asset-table) .el-table-fixed-column--right {
+    position: static !important;
+    inset-inline: auto !important;
+  }
+
+  .main-content .el-table:not(.asset-table) .cell {
+    padding-inline: 6px;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    text-overflow: clip;
+    white-space: normal;
+  }
+
+  .main-content .table-actions {
+    flex-wrap: wrap;
+    white-space: normal;
   }
 }
 

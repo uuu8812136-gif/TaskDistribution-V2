@@ -1041,6 +1041,69 @@ function createEquipmentRoutineService({
     }
   }
 
+  async function deleteRule({ authContext, req, ruleId, input = {} }) {
+    assertNoClientTeamId(input);
+    assertOnlyKeys(input, ['reason']);
+    const context = assertTeamContext(authContext);
+    try {
+      return await runRoutineTransaction(async (session) => {
+        const filter = {
+          _id: normalizeDetailId(ruleId),
+          teamId: context.activeTeamId
+        };
+        const rule = await execute(EquipmentRoutineRuleModel.findOne(filter), session);
+        if (!rule) throw notFound('Equipment routine rule');
+        assertRuleManager(context, rule.routineType);
+        if (rule.status !== EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED) {
+          throw routineError(
+            409,
+            'EQUIPMENT_ROUTINE_RULE_DELETE_REQUIRES_DISABLED',
+            'Equipment routine rule must be disabled before deletion'
+          );
+        }
+
+        const dependencyFilter = {
+          teamId: context.activeTeamId,
+          ruleId: rule._id
+        };
+        const [record, completedPlan] = await Promise.all([
+          execute(EquipmentRoutineRecordModel.exists(dependencyFilter), session),
+          execute(EquipmentRoutinePlanModel.exists({
+            ...dependencyFilter,
+            status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
+          }), session)
+        ]);
+        if (record || completedPlan) {
+          throw routineError(
+            409,
+            'EQUIPMENT_ROUTINE_RULE_DELETE_HAS_HISTORY',
+            'Equipment routine rule with execution history cannot be deleted'
+          );
+        }
+
+        const before = serializeRule(rule);
+        await execute(EquipmentRoutinePlanModel.deleteMany(dependencyFilter), session);
+        const deleted = await execute(EquipmentRoutineRuleModel.deleteOne(filter), session);
+        if (deleted.deletedCount !== 1) throw notFound('Equipment routine rule');
+        await auditService.record({
+          req,
+          authContext: context,
+          action: AUDIT_ACTIONS.DELETE,
+          resourceType: ruleAuditResource(rule.routineType),
+          resourceId: rule._id,
+          before,
+          after: { deleted: true },
+          reason: optionalString(input.reason, 'reason', 2000, 'Deleted from routine rules'),
+          targetTeamId: context.activeTeamId,
+          session
+        });
+        return before;
+      });
+    } catch (error) {
+      throw normalizePersistenceError(error);
+    }
+  }
+
   async function latestRoutineRecord(rule, equipmentId, session) {
     return execute(EquipmentRoutineRecordModel.findOne({
       teamId: rule.teamId,
@@ -1980,6 +2043,7 @@ function createEquipmentRoutineService({
     createRecord,
     createRule,
     createRuntimeReading,
+    deleteRule,
     disableRule,
     getRule,
     getSchedule,

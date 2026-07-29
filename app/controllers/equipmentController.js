@@ -77,6 +77,20 @@ function createEquipmentController({
       }
     },
 
+    async deleteCategory(req, res, next) {
+      try {
+        const category = await service.deleteCategory({
+          authContext: req.authContext,
+          req,
+          categoryId: req.params.categoryId,
+          input: req.body || {}
+        });
+        return res.json({ message: 'Equipment category deleted', category });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async listAssets(req, res, next) {
       try {
         const result = await service.listAssets({

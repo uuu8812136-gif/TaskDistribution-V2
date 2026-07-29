@@ -73,35 +73,72 @@
       <el-table
         v-loading="loading"
         :data="assets"
-        :style="{ minWidth: `${tableMinWidth}px` }"
         class="asset-table"
         row-key="_id"
         stripe
         empty-text="暂无设备数据"
       >
-        <el-table-column
-          v-for="column in tableColumns"
-          :key="column.key"
-          :label="column.label"
-          :width="column.width"
-          :min-width="column.minWidth"
-          :align="column.align || 'left'"
-          :fixed="column.key === 'sourceSequence' ? 'left' : undefined"
-          show-overflow-tooltip
-        >
+        <el-table-column type="expand" width="48">
           <template #default="{ row }">
-            <el-tag
-              v-if="column.key === 'issueCount' && tableCellValue(row, column) > 0"
-              type="warning"
-              effect="plain"
-              size="small"
-            >
-              {{ tableCellValue(row, column) }}
-            </el-tag>
-            <span v-else>{{ tableCellValue(row, column) }}</span>
+            <div class="asset-expanded-content">
+              <section v-for="group in EQUIPMENT_DETAIL_GROUPS" :key="group.title" class="asset-field-group">
+                <h3>{{ group.title }}</h3>
+                <dl class="asset-field-grid">
+                  <div
+                    v-for="field in group.fields"
+                    :key="field.key"
+                    class="asset-field"
+                    :class="{ 'asset-field--wide': field.span }"
+                  >
+                    <dt>{{ field.label }}</dt>
+                    <dd>{{ tableCellValue(row, field) }}</dd>
+                  </div>
+                </dl>
+              </section>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="210" fixed="right" align="center">
+        <el-table-column label="序号" width="68" align="center">
+          <template #default="{ row }">{{ tableCellValue(row, { key: 'sourceSequence' }) }}</template>
+        </el-table-column>
+        <el-table-column label="固定资产编号" min-width="142" show-overflow-tooltip>
+          <template #default="{ row }"><strong>{{ row.assetCode || '-' }}</strong></template>
+        </el-table-column>
+        <el-table-column label="设备名称与分类" min-width="300">
+          <template #default="{ row }">
+            <div class="asset-name-cell">
+              <strong>{{ equipmentDisplayName(row) }}</strong>
+              <span>{{ equipmentCategorySummary(row) }}</span>
+              <div v-if="equipmentBadgeItems(row).length" class="asset-badges">
+                <el-tag
+                  v-for="badge in equipmentBadgeItems(row)"
+                  :key="badge.key"
+                  :type="badge.type"
+                  effect="plain"
+                  size="small"
+                >
+                  {{ badge.label }}
+                </el-tag>
+              </div>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="所在部室与使用人" min-width="170">
+          <template #default="{ row }">
+            <div class="asset-usage-cell">
+              <strong>{{ tableCellValue(row, { key: 'orgUnitNameSnapshot' }) }}</strong>
+              <span>{{ tableCellValue(row, { key: 'custodianDisplayName' }) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="statusOption(row.status).type" effect="plain" size="small">
+              {{ statusOption(row.status).label }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="194" align="center">
           <template #default="{ row }">
             <div class="table-actions">
               <el-button text type="primary" @click="goDetail(row)">详情</el-button>
@@ -121,6 +158,56 @@
       </el-table>
     </section>
 
+    <section v-loading="loading" class="asset-card-list">
+      <el-empty v-if="!loading && assets.length === 0" description="暂无设备数据" :image-size="72" />
+      <article v-for="row in assets" :key="row._id" class="asset-card">
+        <header class="asset-card-heading">
+          <div>
+            <span>固定资产编号</span>
+            <strong>{{ row.assetCode || '-' }}</strong>
+          </div>
+          <el-tag :type="statusOption(row.status).type" effect="plain" size="small">
+            {{ statusOption(row.status).label }}
+          </el-tag>
+        </header>
+        <div class="asset-card-summary">
+          <strong>{{ equipmentDisplayName(row) }}</strong>
+          <span>{{ equipmentCategorySummary(row) }}</span>
+          <span>{{ tableCellValue(row, { key: 'orgUnitNameSnapshot' }) }} · {{ tableCellValue(row, { key: 'custodianDisplayName' }) }}</span>
+        </div>
+        <div class="asset-card-actions">
+          <el-button text type="primary" @click="goDetail(row)">详情</el-button>
+          <el-button v-if="canEdit" text type="primary" @click="openEdit(row)">编辑</el-button>
+          <el-button
+            v-if="canEdit"
+            text
+            type="danger"
+            :loading="deletingId === row._id"
+            @click="handleDelete(row)"
+          >
+            删除
+          </el-button>
+        </div>
+        <details class="asset-card-details">
+          <summary>查看完整信息</summary>
+          <section v-for="group in EQUIPMENT_DETAIL_GROUPS" :key="group.title" class="asset-field-group">
+            <h3>{{ group.title }}</h3>
+            <dl class="asset-field-grid">
+              <div
+                v-for="field in group.fields"
+                :key="field.key"
+                class="asset-field"
+                :class="{ 'asset-field--wide': field.span }"
+              >
+                <dt>{{ field.label }}</dt>
+                <dd>{{ tableCellValue(row, field) }}</dd>
+              </div>
+            </dl>
+          </section>
+        </details>
+      </article>
+    </section>
+
     <footer class="pagination-row">
       <span>共 {{ total }} 条</span>
       <el-pagination
@@ -128,6 +215,7 @@
         v-model:page-size="filters.pageSize"
         :total="total"
         :page-sizes="[20, 50, 100]"
+        :pager-count="5"
         layout="sizes, prev, pager, next"
         @change="loadAssets"
       />
@@ -350,9 +438,8 @@ import {
 } from '@/utils/equipment'
 import {
   EQUIPMENT_ASSET_TYPE_OPTIONS,
-  equipmentAssetTableColumns,
+  EQUIPMENT_DETAIL_GROUPS,
   equipmentFieldValue,
-  equipmentTableMinWidth,
   normalizeEquipmentPhotoIds
 } from '@/utils/equipmentAssetDisplay'
 
@@ -411,8 +498,6 @@ const formStatusOption = computed(() => optionForValue(
   EQUIPMENT_STATUS_OPTIONS,
   form.status || 'IN_USE'
 ))
-const tableColumns = computed(() => equipmentAssetTableColumns(filters.assetType))
-const tableMinWidth = computed(() => equipmentTableMinWidth(tableColumns.value))
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
@@ -490,6 +575,29 @@ function tableCellValue(row, column) {
     return row.conditionText || statusOption(row.status).label
   }
   return equipmentFieldValue(row, column.key)
+}
+
+function equipmentDisplayName(row) {
+  return row.secondaryName || row.primaryName || row.name || '-'
+}
+
+function equipmentCategorySummary(row) {
+  const path = [
+    row.majorCategoryName,
+    row.equipmentTypeName,
+    row.primaryName,
+    row.secondaryName
+  ].map((value) => String(value || '').trim()).filter(Boolean)
+  return path.length ? path.join(' / ') : (row.categoryName || categoryName(row.categoryId))
+}
+
+function equipmentBadgeItems(row) {
+  const photoCount = Number(equipmentFieldValue(row, 'photoCount')) || 0
+  const issueCount = Number(equipmentFieldValue(row, 'issueCount')) || 0
+  return [
+    photoCount > 0 ? { key: 'photos', label: `${photoCount} 张照片`, type: 'info' } : null,
+    issueCount > 0 ? { key: 'issues', label: `${issueCount} 项异常`, type: 'warning' } : null
+  ].filter(Boolean)
 }
 
 async function loadReferenceData() {
@@ -769,9 +877,25 @@ onBeforeUnmount(clearPhotoPreview)
 .keyword-input { width: min(320px, 100%); }
 .toolbar-spacer { flex: 1; }
 .table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
-.asset-table-shell { overflow-x: auto; }
+.asset-table-shell { overflow: hidden; }
 .asset-table { width: 100%; }
 .table-actions { justify-content: center; }
+.asset-name-cell,
+.asset-usage-cell { min-width: 0; display: grid; gap: 5px; }
+.asset-name-cell > strong,
+.asset-usage-cell > strong { overflow-wrap: anywhere; color: var(--zl-text); }
+.asset-name-cell > span,
+.asset-usage-cell > span { color: var(--zl-muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.asset-badges { display: flex; flex-wrap: wrap; gap: 6px; }
+.asset-expanded-content { padding: 8px 24px 22px; background: #f8fbff; }
+.asset-field-group + .asset-field-group { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--zl-border-soft); }
+.asset-field-group h3 { margin: 0 0 10px; color: var(--zl-text); font-size: 14px; letter-spacing: 0; }
+.asset-field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 20px; margin: 0; }
+.asset-field { min-width: 0; padding: 9px 0; border-bottom: 1px solid #e8eef7; }
+.asset-field--wide { grid-column: 1 / -1; }
+.asset-field dt { margin: 0 0 4px; color: var(--zl-muted); font-size: 12px; }
+.asset-field dd { margin: 0; color: var(--zl-text); line-height: 1.55; overflow-wrap: anywhere; white-space: pre-wrap; }
+.asset-card-list { display: none; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .form-section + .form-section { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--zl-border-soft); }
@@ -780,13 +904,32 @@ onBeforeUnmount(clearPhotoPreview)
 .preview-image { display: block; max-width: 100%; max-height: 70vh; margin: 0 auto; object-fit: contain; }
 :global(.equipment-editor-dialog .el-dialog__body) { max-height: 72vh; overflow-y: auto; }
 .full-width { width: 100%; }
+@media (max-width: 1180px) {
+  .asset-table-shell { display: none; }
+  .asset-card-list { display: grid; gap: 12px; margin-top: 16px; }
+  .asset-card { min-width: 0; padding: 16px; background: var(--zl-surface-solid); border: 1px solid var(--zl-border-soft); border-radius: 8px; box-shadow: 0 4px 14px rgb(30 64 175 / 5%); }
+  .asset-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .asset-card-heading > div { min-width: 0; display: grid; gap: 4px; }
+  .asset-card-heading span { color: var(--zl-muted); font-size: 12px; }
+  .asset-card-heading strong { overflow-wrap: anywhere; }
+  .asset-card-summary { display: grid; gap: 5px; margin-top: 13px; }
+  .asset-card-summary span { color: var(--zl-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+  .asset-card-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .asset-card-actions .el-button { margin: 0; }
+  .asset-card-details { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--zl-border-soft); }
+  .asset-card-details summary { width: fit-content; color: var(--zl-primary-deep); cursor: pointer; font-size: 13px; font-weight: 600; list-style-position: inside; }
+  .asset-card-details[open] summary { margin-bottom: 12px; }
+  .asset-expanded-content { padding: 0; background: transparent; }
+}
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }
   .heading-actions { flex-wrap: wrap; justify-content: flex-start; }
   .toolbar > *, .toolbar .el-select, .toolbar .team-select, .keyword-input { width: 100%; }
   .toolbar > .el-button.is-circle { width: var(--zl-control-height); align-self: flex-end; }
   .toolbar-spacer { display: none; }
-  .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
+  .pagination-row { align-items: flex-start; flex-direction: column; overflow: visible; }
+  .pagination-row :deep(.el-pagination__sizes) { display: none; }
   .form-grid { grid-template-columns: 1fr; }
+  .asset-field-grid { grid-template-columns: 1fr; }
 }
 </style>

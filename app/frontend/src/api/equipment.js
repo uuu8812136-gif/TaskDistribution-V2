@@ -56,6 +56,12 @@ export const updateEquipmentCategory = (categoryId, data) => request({
 
 export const disableEquipmentCategory = (categoryId, data = {}) => request({
   url: `/equipment/categories/${categoryId}`,
+  method: 'patch',
+  data: { ...data, status: 'DISABLED' }
+})
+
+export const deleteEquipmentCategory = (categoryId, data = {}) => request({
+  url: `/equipment/categories/${categoryId}/permanent`,
   method: 'delete',
   data
 })
@@ -141,6 +147,12 @@ export const updateEquipmentRoutineRule = (ruleId, data) => request({
 
 export const disableEquipmentRoutineRule = (ruleId, data = {}) => request({
   url: `/equipment/routine-rules/${ruleId}`,
+  method: 'patch',
+  data: { ...data, status: 'DISABLED' }
+})
+
+export const deleteEquipmentRoutineRule = (ruleId, data = {}) => request({
+  url: `/equipment/routine-rules/${ruleId}/permanent`,
   method: 'delete',
   data
 })

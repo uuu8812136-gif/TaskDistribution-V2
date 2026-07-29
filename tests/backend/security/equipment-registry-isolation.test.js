@@ -15,6 +15,7 @@ const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
 const EquipmentChangeRecord = require('../../../app/models/EquipmentChangeRecord');
 const EquipmentRoutinePlan = require('../../../app/models/EquipmentRoutinePlan');
+const EquipmentRoutineRule = require('../../../app/models/EquipmentRoutineRule');
 const EquipmentRuntimeReading = require('../../../app/models/EquipmentRuntimeReading');
 const FileAsset = require('../../../app/models/FileAsset');
 const OrgUnit = require('../../../app/models/OrgUnit');
@@ -34,6 +35,7 @@ const MODELS = [
   EquipmentCategory,
   EquipmentChangeRecord,
   EquipmentRoutinePlan,
+  EquipmentRoutineRule,
   EquipmentRuntimeReading,
   FileAsset,
   OrgUnit,
@@ -1085,6 +1087,122 @@ test('global read-only mode requires an explicit active team and cannot write', 
     authContext: global,
     input: { orgUnitId: String(fixture.orgA1), name: 'Forbidden' }
   }), (error) => error.status === 403);
+});
+
+test('category deletion requires a disabled unused leaf and keeps audit evidence', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const parent = await service.createCategory({
+    authContext: context,
+    input: { name: 'Delete parent' }
+  });
+  const child = await service.createCategory({
+    authContext: context,
+    input: { name: 'Delete child', parentId: parent._id }
+  });
+
+  await assert.rejects(service.deleteCategory({
+    authContext: context,
+    categoryId: child._id,
+    input: {}
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_CATEGORY_DELETE_REQUIRES_DISABLED'
+  ));
+
+  await service.disableCategory({
+    authContext: context,
+    categoryId: child._id,
+    input: { reason: 'Prepare leaf deletion' }
+  });
+  await service.disableCategory({
+    authContext: context,
+    categoryId: parent._id,
+    input: { reason: 'Prepare parent deletion' }
+  });
+  await assert.rejects(service.deleteCategory({
+    authContext: context,
+    categoryId: parent._id,
+    input: {}
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_CATEGORY_DELETE_HAS_CHILDREN'
+  ));
+
+  const deletedChild = await service.deleteCategory({
+    authContext: context,
+    categoryId: child._id,
+    input: { reason: 'Unused child' }
+  });
+  const deletedParent = await service.deleteCategory({
+    authContext: context,
+    categoryId: parent._id,
+    input: { reason: 'Unused parent' }
+  });
+  assert.equal(deletedChild.name, 'Delete child');
+  assert.equal(deletedParent.name, 'Delete parent');
+  assert.equal(await EquipmentCategory.countDocuments({
+    _id: { $in: [child._id, parent._id] }
+  }), 0);
+  assert.equal(await AuditLog.countDocuments({
+    resourceId: { $in: [child._id, parent._id] },
+    action: permissions.AUDIT_ACTIONS.DELETE
+  }), 2);
+});
+
+test('category deletion rejects equipment and routine-rule references', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const equipmentCategory = await category(service, context, fixture.orgA1, 'Equipment reference');
+  await equipment(service, context, {
+    assetCode: 'CATEGORY-REFERENCE-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: equipmentCategory._id
+  });
+  await EquipmentCategory.updateOne(
+    { _id: equipmentCategory._id },
+    { $set: { status: 'DISABLED' } }
+  );
+  await assert.rejects(service.deleteCategory({
+    authContext: context,
+    categoryId: equipmentCategory._id,
+    input: {}
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_DELETE_HAS_EQUIPMENT');
+
+  const ruleCategory = await category(service, context, fixture.orgA1, 'Rule reference');
+  await EquipmentRoutineRule.collection.insertOne({
+    teamId: fixture.teamA,
+    categoryId: new mongoose.Types.ObjectId(ruleCategory._id),
+    routineType: 'INSPECTION',
+    name: 'Referenced rule',
+    description: '',
+    checklistItems: [{ key: 'item-1', name: '检查项', description: '', required: true, sortOrder: 0 }],
+    schedule: { mode: 'MANUAL' },
+    photoPolicy: 'NONE',
+    abnormalNoteRequired: true,
+    executionConfig: {},
+    status: 'DISABLED',
+    version: 1,
+    createdBy: fixture.userA1,
+    updatedBy: fixture.userA1,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  });
+  await EquipmentCategory.updateOne(
+    { _id: ruleCategory._id },
+    { $set: { status: 'DISABLED' } }
+  );
+  await assert.rejects(service.deleteCategory({
+    authContext: context,
+    categoryId: ruleCategory._id,
+    input: {}
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_DELETE_HAS_RULES');
 });
 
 test('equipment deletion removes an unused asset and generated plans while retaining audit evidence', async () => {

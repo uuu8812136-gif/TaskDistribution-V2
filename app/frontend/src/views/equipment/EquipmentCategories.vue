@@ -56,7 +56,17 @@
                 <el-button text type="primary" @click="openEdit(row)">编辑</el-button>
                 <el-button v-if="row.status === 'ACTIVE' && categoryDepth(row) < 4" text type="primary" @click="openCreate(row)">新增下级</el-button>
                 <el-button v-if="row.status === 'ACTIVE'" text type="danger" @click="disableCategory(row)">停用</el-button>
-                <el-button v-else text type="success" @click="enableCategory(row)">启用</el-button>
+                <template v-else>
+                  <el-button text type="success" @click="enableCategory(row)">启用</el-button>
+                  <el-button
+                    text
+                    type="danger"
+                    :loading="deletingId === row._id"
+                    @click="deleteCategory(row)"
+                  >
+                    删除
+                  </el-button>
+                </template>
               </template>
               <span v-else>-</span>
             </div>
@@ -110,6 +120,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createEquipmentCategory,
+  deleteEquipmentCategory,
   disableEquipmentCategory,
   getEquipmentCategories,
   updateEquipmentCategory
@@ -127,6 +138,7 @@ const router = useRouter()
 const session = useSessionStore()
 const loading = ref(false)
 const submitting = ref(false)
+const deletingId = ref('')
 const dialogVisible = ref(false)
 const editingId = ref('')
 const formRef = ref(null)
@@ -268,6 +280,32 @@ async function enableCategory(item) {
   })
   ElMessage.success('分类已启用')
   await loadCategories()
+}
+
+async function deleteCategory(item) {
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除分类“${item.name}”吗？删除后无法恢复。`,
+      '删除分类',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        confirmButtonClass: 'el-button--danger',
+        cancelButtonText: '取消'
+      }
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  deletingId.value = item._id
+  try {
+    await deleteEquipmentCategory(item._id, { reason: '后台分类管理永久删除' })
+    ElMessage.success('分类已删除')
+    await loadCategories()
+  } finally {
+    deletingId.value = ''
+  }
 }
 
 function goBack() {

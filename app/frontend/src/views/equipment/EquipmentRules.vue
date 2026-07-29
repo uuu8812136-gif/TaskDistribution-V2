@@ -155,6 +155,10 @@
                       <el-icon><CircleCheck /></el-icon>
                       启用规则
                     </el-dropdown-item>
+                    <el-dropdown-item v-if="row.status === 'DISABLED'" command="delete" divided>
+                      <el-icon><Delete /></el-icon>
+                      删除规则
+                    </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
               </el-dropdown>
@@ -200,6 +204,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import EquipmentRuleDialog from './components/EquipmentRuleDialog.vue'
 import {
   createEquipmentRoutineRule,
+  deleteEquipmentRoutineRule,
   disableEquipmentRoutineRule,
   getEquipmentCategories,
   getEquipmentRoutineRule,
@@ -222,6 +227,7 @@ const router = useRouter()
 const session = useSessionStore()
 const loading = ref(false)
 const submitting = ref(false)
+const deletingId = ref('')
 const dialogVisible = ref(false)
 const viewing = ref(false)
 const copying = ref(false)
@@ -444,10 +450,37 @@ async function enableRule(row) {
   await loadRules()
 }
 
+async function deleteRule(row) {
+  try {
+    await ElMessageBox.confirm(
+      `确定永久删除规则“${row.name}”吗？删除后无法恢复。`,
+      '删除规则',
+      {
+        type: 'warning',
+        confirmButtonText: '删除',
+        confirmButtonClass: 'el-button--danger',
+        cancelButtonText: '取消'
+      }
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  deletingId.value = row._id
+  try {
+    await deleteEquipmentRoutineRule(row._id, { reason: '后台规则管理永久删除' })
+    ElMessage.success('规则已删除')
+    await loadRules()
+  } finally {
+    deletingId.value = ''
+  }
+}
+
 async function handleRowCommand(command, row) {
   if (command === 'copy') await openCopy(row)
   if (command === 'disable') await disableRule(row)
   if (command === 'enable') await enableRule(row)
+  if (command === 'delete' && deletingId.value !== row._id) await deleteRule(row)
 }
 
 onMounted(initialize)

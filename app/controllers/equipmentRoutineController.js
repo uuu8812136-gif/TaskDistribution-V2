@@ -83,6 +83,20 @@ function createEquipmentRoutineController({
       }
     },
 
+    async deleteRule(req, res, next) {
+      try {
+        const rule = await service.deleteRule({
+          authContext: req.authContext,
+          req,
+          ruleId: req.params.ruleId,
+          input: req.body || {}
+        });
+        return res.json({ message: 'Equipment routine rule deleted', rule });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async getSchedule(req, res, next) {
       try {
         return res.json(await service.getSchedule({

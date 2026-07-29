@@ -795,6 +795,91 @@ test('rule update replaces open plans with a new version and disable closes them
   assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), planCountAfterDisable);
 });
 
+test('rule deletion requires disabled status, removes derived plans, and preserves audit evidence', async () => {
+  const now = new Date('2030-01-15T02:30:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  assert.ok(await EquipmentRoutinePlan.exists({ ruleId: rule._id }));
+
+  await assert.rejects(routineService.deleteRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: {}
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_RULE_DELETE_REQUIRES_DISABLED'
+  ));
+
+  await routineService.disableRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: { reason: 'Prepare deletion' }
+  });
+  const deleted = await routineService.deleteRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: { reason: 'Created by mistake' }
+  });
+  assert.equal(deleted.name, rule.name);
+  assert.equal(await EquipmentRoutineRule.countDocuments({ _id: rule._id }), 0);
+  assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), 0);
+  assert.equal(await AuditLog.countDocuments({
+    resourceId: rule._id,
+    action: permissions.AUDIT_ACTIONS.DELETE
+  }), 1);
+});
+
+test('rule deletion rejects rules with execution history', async () => {
+  const routineService = createEquipmentRoutineService();
+  const rule = await createRule(routineService, 'MAINTENANCE', {
+    schedule: { mode: 'MANUAL' }
+  });
+  await routineService.disableRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: { reason: 'Retired rule' }
+  });
+  await EquipmentRoutineRecord.collection.insertOne({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.subDepartment,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: new mongoose.Types.ObjectId(rule._id),
+    ruleVersion: 1,
+    ruleSnapshot: { name: rule.name },
+    planId: null,
+    routineType: 'MAINTENANCE',
+    scheduledFor: null,
+    dueRuntimeHours: null,
+    performedBy: fixture.ids.departmentManager,
+    performedAt: new Date('2030-01-14T00:00:00.000Z'),
+    performedRuntimeHours: null,
+    itemResults: [{ itemKey: 'item-1', result: 'COMPLETED', note: '' }],
+    overallResult: 'NORMAL',
+    abnormalSummary: '',
+    photoFileIds: [],
+    photoEvidence: [],
+    idempotencyKey: null,
+    createdAt: new Date('2030-01-14T00:00:00.000Z'),
+    updatedAt: new Date('2030-01-14T00:00:00.000Z')
+  });
+
+  await assert.rejects(routineService.deleteRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: {}
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_RULE_DELETE_HAS_HISTORY'
+  ));
+  assert.equal(await EquipmentRoutineRule.countDocuments({ _id: rule._id }), 1);
+});
+
 test('COMBINED ANY keeps only the first due dimension and advances idempotently after completion', async () => {
   const now = new Date('2030-01-15T02:30:00.000Z');
   const routineService = createEquipmentRoutineService({ clock: () => now });

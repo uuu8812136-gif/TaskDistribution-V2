@@ -2,10 +2,8 @@
   <view class="login-container">
     <view class="login-header">
       <!-- <image class="logo" src="/static/logo.png" mode="aspectFit"></image> -->
-      <text class="title">Horselink(马链)任务管理系统</text>
-      <text class="subtitle"
-        >Horselink Task Distribution Management System</text
-      >
+      <text class="title">Horselink（马链）管理系统</text>
+      <text class="subtitle">Horselink Management System</text>
     </view>
 
     <view class="login-form">
@@ -56,7 +54,7 @@
         />
       </view>
 
-      <view class="form-item">
+      <view class="form-item form-item--password">
         <view class="form-label">
           <text class="icon">🔒</text>
           <text>密码</text>
@@ -70,6 +68,13 @@
           @confirm="handleLogin"
         />
       </view>
+
+      <checkbox-group class="form-item-checkbox" @change="handleRememberChange">
+        <label>
+          <checkbox value="remember" :checked="rememberPassword" color="#667eea" />
+          <text>记住账号和密码</text>
+        </label>
+      </checkbox-group>
 
       <button
         class="login-btn"
@@ -97,6 +102,11 @@ import { useMessageStore } from "@/stores/message.js";
 import { clearLegacyCredentialCaches, readAuthToken } from "@/utils/sessionRuntime.js";
 import { getSessionEntryRoute } from "@/utils/sessionPolicy.js";
 import { defaultLoginTeamId } from "@/utils/loginTeams.js";
+import {
+  clearRememberedLogin,
+  readRememberedLogin,
+  writeRememberedLogin,
+} from "@/utils/rememberedLogin.js";
 
 export default {
   name: "Login",
@@ -111,6 +121,7 @@ export default {
     });
 
     const loading = ref(false);
+    const rememberPassword = ref(false);
     const teamsLoading = ref(true);
     const teamsError = ref("");
     const loginTeams = ref([]);
@@ -131,6 +142,11 @@ export default {
 
     onMounted(() => {
       clearLegacyCredentialCaches();
+      const remembered = readRememberedLogin();
+      if (remembered) {
+        Object.assign(form.value, remembered);
+        rememberPassword.value = true;
+      }
       loadLoginTeams();
       checkAutoLogin();
     });
@@ -158,6 +174,11 @@ export default {
     const handleTeamChange = (event) => {
       const index = Number(event.detail.value);
       form.value.teamId = loginTeams.value[index]?._id || "";
+    };
+
+    const handleRememberChange = (event) => {
+      rememberPassword.value = event.detail.value.includes("remember");
+      if (!rememberPassword.value) clearRememberedLogin();
     };
 
     // 检查自动登录
@@ -209,12 +230,17 @@ export default {
       loading.value = true;
 
       try {
-        await userStore.login({
+        const credentials = {
           username: form.value.username.trim(),
           password: form.value.password,
           teamId: form.value.teamId,
-        });
-        form.value.password = "";
+        };
+        await userStore.login(credentials);
+        if (rememberPassword.value) writeRememberedLogin(credentials);
+        else {
+          clearRememberedLogin();
+          form.value.password = "";
+        }
 
         if (userStore.canAccessBusiness) messageStore.fetchUnreadCount();
 
@@ -246,8 +272,10 @@ export default {
       selectedTeamIndex,
       selectedTeamName,
       canSubmit,
+      rememberPassword,
       loadLoginTeams,
       handleTeamChange,
+      handleRememberChange,
       handleLogin,
     };
   },
@@ -257,18 +285,19 @@ export default {
 <style scoped lang="scss">
 .login-container {
   min-height: 100vh;
+  min-height: 100dvh;
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 60rpx 40rpx;
+  justify-content: flex-start;
+  padding: calc(72rpx + env(safe-area-inset-top)) 40rpx max(44rpx, env(safe-area-inset-bottom));
   box-sizing: border-box;
 }
 
 .login-header {
   text-align: center;
-  margin-bottom: 80rpx;
+  margin-bottom: 48rpx;
 
   .logo {
     width: 160rpx;
@@ -403,8 +432,12 @@ export default {
     }
   }
 
+  .form-item--password {
+    margin-bottom: 24rpx;
+  }
+
   .form-item-checkbox {
-    margin-bottom: 40rpx;
+    margin-bottom: 32rpx;
 
     label {
       display: flex;
@@ -414,6 +447,7 @@ export default {
 
       checkbox {
         margin-right: 12rpx;
+        transform: scale(0.88);
       }
     }
   }
@@ -439,12 +473,15 @@ export default {
 }
 
 .login-footer {
-  margin-top: 60rpx;
+  margin-top: auto;
+  padding-top: 84rpx;
   text-align: center;
 
   .tips {
+    display: block;
     font-size: 24rpx;
     color: rgba(255, 255, 255, 0.8);
+    line-height: 1.55;
   }
 }
 </style>

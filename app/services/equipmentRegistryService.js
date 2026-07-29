@@ -9,6 +9,7 @@ const EquipmentRepairOrder = require('../models/EquipmentRepairOrder');
 const EquipmentRoutineException = require('../models/EquipmentRoutineException');
 const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
 const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
+const EquipmentRoutineRule = require('../models/EquipmentRoutineRule');
 const EquipmentRuntimeReading = require('../models/EquipmentRuntimeReading');
 const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
 const EquipmentStatusApproval = require('../models/EquipmentStatusApproval');
@@ -378,6 +379,7 @@ function createEquipmentRegistryService({
   EquipmentCategoryModel = EquipmentCategory,
   EquipmentChangeRecordModel = EquipmentChangeRecord,
   EquipmentRoutinePlanModel = EquipmentRoutinePlan,
+  EquipmentRoutineRuleModel = EquipmentRoutineRule,
   equipmentDependencyModels = [
     EquipmentRepairOrder,
     EquipmentRoutineException,
@@ -901,6 +903,94 @@ function createEquipmentRegistryService({
       ...input,
       input: { ...(input.input || {}), status: EQUIPMENT_CATEGORY_STATUSES.DISABLED }
     });
+  }
+
+  async function deleteCategory({ authContext, req, categoryId, input = {} }) {
+    const context = assertCanManageCategories(authContext, 'equipment.edit');
+    assertNoClientTeamId(input);
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      throw registryError(400, 'EQUIPMENT_CATEGORY_DELETE_INPUT_INVALID', 'input must be an object');
+    }
+    const unsupportedKey = Object.keys(input).find((key) => key !== 'reason');
+    if (unsupportedKey) {
+      throw registryError(
+        400,
+        'EQUIPMENT_CATEGORY_DELETE_INPUT_INVALID',
+        `input.${unsupportedKey} is not supported`
+      );
+    }
+    const reason = optionalString(input.reason, 'reason', 2000, 'Deleted from equipment categories');
+
+    try {
+      return await runWithOptionalTransaction(async (session) => {
+        const filter = {
+          _id: normalizeDetailId(categoryId),
+          teamId: context.activeTeamId
+        };
+        const category = await execute(EquipmentCategoryModel.findOne(filter), session);
+        if (!category) throw notFound('Equipment category');
+        if (category.status !== EQUIPMENT_CATEGORY_STATUSES.DISABLED) {
+          throw registryError(
+            409,
+            'EQUIPMENT_CATEGORY_DELETE_REQUIRES_DISABLED',
+            'Equipment category must be disabled before deletion'
+          );
+        }
+
+        const dependencyFilter = {
+          teamId: context.activeTeamId,
+          categoryId: category._id
+        };
+        const [child, asset, rule] = await Promise.all([
+          execute(EquipmentCategoryModel.exists({
+            teamId: context.activeTeamId,
+            parentId: category._id
+          }), session),
+          execute(EquipmentAssetModel.exists(dependencyFilter), session),
+          execute(EquipmentRoutineRuleModel.exists(dependencyFilter), session)
+        ]);
+        if (child) {
+          throw registryError(
+            409,
+            'EQUIPMENT_CATEGORY_DELETE_HAS_CHILDREN',
+            'Equipment category cannot be deleted while child categories exist'
+          );
+        }
+        if (asset) {
+          throw registryError(
+            409,
+            'EQUIPMENT_CATEGORY_DELETE_HAS_EQUIPMENT',
+            'Equipment category cannot be deleted while equipment references it'
+          );
+        }
+        if (rule) {
+          throw registryError(
+            409,
+            'EQUIPMENT_CATEGORY_DELETE_HAS_RULES',
+            'Equipment category cannot be deleted while routine rules reference it'
+          );
+        }
+
+        const before = serializeCategory(category);
+        const deleted = await execute(EquipmentCategoryModel.deleteOne(filter), session);
+        if (deleted.deletedCount !== 1) throw notFound('Equipment category');
+        await auditService.record({
+          req,
+          authContext: context,
+          action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.EQUIPMENT_CATEGORY,
+          resourceId: category._id,
+          before,
+          after: { deleted: true },
+          reason,
+          targetTeamId: context.activeTeamId,
+          session
+        });
+        return before;
+      }, connection);
+    } catch (error) {
+      throw normalizePersistenceError(error);
+    }
   }
 
   function assetPayload(input, existing = null) {
@@ -1506,6 +1596,7 @@ function createEquipmentRegistryService({
   return Object.freeze({
     createAsset,
     createCategory,
+    deleteCategory,
     disableCategory,
     deleteAsset,
     exportAssets,

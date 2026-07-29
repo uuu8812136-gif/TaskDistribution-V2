@@ -126,6 +126,13 @@ router.patch(
   equipmentRoutineController.updateRule
 );
 router.delete(
+  '/routine-rules/:ruleId/permanent',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentEdit,
+  equipmentRoutineController.deleteRule
+);
+router.delete(
   '/routine-rules/:ruleId',
   requireTeamContext,
   rejectRoutineWriteTeamId,
@@ -265,6 +272,12 @@ router.patch(
   requireTeamContext,
   equipmentEdit,
   equipmentController.updateCategory
+);
+router.delete(
+  '/categories/:categoryId/permanent',
+  requireTeamContext,
+  equipmentEdit,
+  equipmentController.deleteCategory
 );
 router.delete(
   '/categories/:categoryId',

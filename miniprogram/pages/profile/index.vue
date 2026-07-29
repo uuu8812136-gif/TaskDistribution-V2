@@ -74,7 +74,7 @@
 		
 		<!-- 版本信息 -->
 		<view class="version-info">
-			<text>Horselink（马链）任务管理系统</text>
+			<text>Horselink（马链）管理系统</text>
 		</view>
 		
 		<!-- 自定义 TabBar -->
