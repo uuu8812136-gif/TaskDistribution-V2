@@ -53,7 +53,7 @@ let replicaSet;
 let fixture;
 let now;
 
-test('unused all-zero shift has zero planned attendance and serialized records expose effective actuals', () => {
+test('planned attendance is calculated independently from each shift actual, leave, and absenteeism', () => {
   const emptyNightSummary = {
     registeredHeadcount: 123,
     nightShift: {
@@ -68,15 +68,37 @@ test('unused all-zero shift has zero planned attendance and serialized records e
     }
   };
   assert.equal(plannedAttendanceCount(emptyNightSummary, 'nightShift'), 0);
-  assert.equal(plannedAttendanceCount({
+  const customerMarkedSummary = {
     registeredHeadcount: 123,
     dayShift: {
-      actualAttendanceCount: 124,
+      actualAttendanceCount: 120,
       rest: { count: 1 },
+      leave: { count: 0 },
+      sickLeave: { count: 3 },
+      absenteeism: { count: 0 },
       notYetEmployed: { count: 2 },
       temporaryWorker: { count: 2 }
+    },
+    nightShift: {
+      actualAttendanceCount: 7,
+      rest: { count: 0 },
+      leave: { count: 0 },
+      sickLeave: { count: 0 },
+      absenteeism: { count: 0 },
+      notYetEmployed: { count: 1 },
+      temporaryWorker: { count: 0 }
     }
-  }, 'dayShift'), 126);
+  };
+  assert.equal(plannedAttendanceCount(customerMarkedSummary, 'dayShift'), 120);
+  assert.equal(plannedAttendanceCount(customerMarkedSummary, 'nightShift'), 7);
+  assert.equal(plannedAttendanceCount({
+    nightShift: {
+      actualAttendanceCount: 7,
+      leave: { count: 2 },
+      sickLeave: { count: 4 },
+      absenteeism: { count: 1 }
+    }
+  }, 'nightShift'), 10);
 
   const serialized = serializeAttendanceSubmission({
     _id: objectId(),
@@ -678,7 +700,7 @@ test('concurrent complete review locks all seven rows once, notifies manager, an
   assert.match(review.finalText, /到物流技术部帮产1人（王五）/);
   assert.match(review.finalText, /临时工2人（临时甲、临时乙）/);
   assert.match(review.finalText, /仓配一分部：客户月报验证/);
-  assert.match(review.finalText, /今日白班安排出勤66人，夜班安排出勤0人/);
+  assert.match(review.finalText, /今日白班安排出勤126人，夜班安排出勤0人/);
   assert.match(review.finalText, /今日实际出勤125人，请假2人/);
   assert.match(review.finalText, /提报人:部门考勤员/);
   const daily = await service.getDailySummary({

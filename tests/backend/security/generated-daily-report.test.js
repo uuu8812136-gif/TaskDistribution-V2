@@ -372,7 +372,7 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(result.dailyReport.version, 1);
   assert.equal(result.dailyReport.sourceSnapshot.rule.sourceRange, 'D4:D13');
   assert.equal(result.dailyReport.ruleVersion, REPORT_RULE_VERSION);
-  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v3-2026-07-27');
+  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v4-2026-07-29');
   assert.equal(result.dailyReport.sourceSnapshot.attendance.currentDate.submissions.length, 7);
   assert.ok(result.dailyReport.sourceSnapshot.production.schedules.length >= 12);
   assert.match(result.dailyReport.finalText, /^7月15日变速箱物流部 =HYPERLINK\("x"\)生产日报/m);
@@ -391,7 +391,7 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   );
   assert.match(
     result.dailyReport.finalText,
-    /5\.人员情况:在册人数70人，待离职2人。昨日白班安排出勤67人，实际出勤59人，昨日夜班安排出勤1人，实际出勤1人；今日白班安排出勤67人，夜班安排出勤2人。/
+    /5\.人员情况:在册人数70人，待离职2人。昨日白班安排出勤60人，实际出勤59人，昨日夜班安排出勤1人，实际出勤1人；今日白班安排出勤61人，夜班安排出勤2人。/
   );
   assert.match(result.dailyReport.finalText, /①、到物流技术部帮产1人（张三）；/);
   assert.match(result.dailyReport.finalText, /②、临时工2人（临时甲、临时乙）；/);
@@ -403,18 +403,24 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(events[0].resourceType, permissions.AUDIT_RESOURCE_TYPES.GENERATED_DAILY_REPORT);
 });
 
-test('planned attendance adds not-yet-employed and temporary workers after subtracting rest', () => {
+test('planned attendance follows each shift actual plus non-sick leave and absenteeism', () => {
   const source = summary('2026-07-15', {
     registeredHeadcount: 123,
+    dayActual: 120,
+    dayLeave: 0,
+    daySick: 3,
     dayRest: 1,
     dayNotYetEmployed: 2,
     dayTemporary: 2,
-    nightActual: 0,
+    nightActual: 7,
+    nightLeave: 0,
+    nightSick: 0,
     nightRest: 0,
+    nightNotYetEmployed: 1,
     nightTemporary: 0
   });
-  assert.equal(plannedAttendanceCount(source, 'nightShift'), 0);
-  assert.equal(plannedAttendanceCount(source, 'dayShift'), 126);
+  assert.equal(plannedAttendanceCount(source, 'dayShift'), 120);
+  assert.equal(plannedAttendanceCount(source, 'nightShift'), 7);
 });
 
 test('same sources are idempotent under concurrent generation', async () => {

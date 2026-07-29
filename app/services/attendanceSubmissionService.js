@@ -578,10 +578,9 @@ function plannedAttendanceCount(summary = {}, field) {
   if (!hasShiftData) return 0;
   return Math.max(
     0,
-    (summary.registeredHeadcount || 0) -
-      (shift.rest?.count || 0) +
-      (shift.notYetEmployed?.count || 0) +
-      (shift.temporaryWorker?.count || 0)
+    (shift.actualAttendanceCount || 0) +
+      (shift.leave?.count || 0) +
+      (shift.absenteeism?.count || 0)
   );
 }
 
