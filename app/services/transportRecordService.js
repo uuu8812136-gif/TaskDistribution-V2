@@ -873,35 +873,40 @@ function createTransportRecordService({
     let exportedGroupCount = 0;
     for (const document of documents) {
       const record = serializeTransportRecord(document);
-      const driverKey = JSON.stringify([
-        record.driverMasterId,
-        record.driverName,
-        record.routeMasterId,
-        record.route
-      ]);
+      const driverKey = record.driverName;
       if (!driverGroups.has(driverKey)) {
         driverGroups.set(driverKey, {
           driverName: record.driverName,
-          route: record.route,
-          vehicles: new Map(),
+          routes: new Map(),
           daily: new Map()
         });
       }
       const driverGroup = driverGroups.get(driverKey);
+      const routeKey = JSON.stringify([
+        record.routeMasterId,
+        record.route
+      ]);
+      if (!driverGroup.routes.has(routeKey)) {
+        driverGroup.routes.set(routeKey, {
+          route: record.route,
+          vehicles: new Map()
+        });
+      }
+      const routeGroup = driverGroup.routes.get(routeKey);
       const vehicleKey = JSON.stringify([
         record.vehiclePlateMasterId,
         record.vehiclePlate,
         record.vehicleTypeMasterId,
         record.vehicleType
       ]);
-      if (!driverGroup.vehicles.has(vehicleKey)) {
-        driverGroup.vehicles.set(vehicleKey, {
+      if (!routeGroup.vehicles.has(vehicleKey)) {
+        routeGroup.vehicles.set(vehicleKey, {
           vehiclePlate: record.vehiclePlate,
           vehicleType: record.vehicleType,
           dispatches: new Map()
         });
       }
-      const vehicleGroup = driverGroup.vehicles.get(vehicleKey);
+      const vehicleGroup = routeGroup.vehicles.get(vehicleKey);
       if (!vehicleGroup.dispatches.has(record.dispatchType)) {
         vehicleGroup.dispatches.set(record.dispatchType, {
           daily: new Map(),
@@ -975,31 +980,36 @@ function createTransportRecordService({
     for (const driverGroup of driverGroups.values()) {
       sequence += 1;
       const driverStartRow = worksheet.rowCount + 1;
-      for (const vehicleGroup of driverGroup.vehicles.values()) {
-        const vehicleStartRow = worksheet.rowCount + 1;
-        for (const dispatchType of TRANSPORT_SUMMARY_DISPATCH_ORDER) {
-          const dispatchGroup = vehicleGroup.dispatches.get(dispatchType);
-          const counts = dateColumns.map((day) => (
-            dispatchGroup?.daily.get(`${month}-${String(day).padStart(2, '0')}`) || 0
-          ));
-          worksheet.addRow([
-            sequence,
-            formulaSafe(driverGroup.driverName),
-            formulaSafe(driverGroup.route),
-            formulaSafe(vehicleGroup.vehiclePlate),
-            formulaSafe(vehicleGroup.vehicleType),
-            dispatchType,
-            ...counts.map((count) => count || null),
-            counts.reduce((total, value) => total + value, 0),
-            formulaSafe([...(dispatchGroup?.remarks || [])].join('；'))
-          ]);
+      for (const routeGroup of driverGroup.routes.values()) {
+        const routeStartRow = worksheet.rowCount + 1;
+        for (const vehicleGroup of routeGroup.vehicles.values()) {
+          const vehicleStartRow = worksheet.rowCount + 1;
+          for (const dispatchType of TRANSPORT_SUMMARY_DISPATCH_ORDER) {
+            const dispatchGroup = vehicleGroup.dispatches.get(dispatchType);
+            const counts = dateColumns.map((day) => (
+              dispatchGroup?.daily.get(`${month}-${String(day).padStart(2, '0')}`) || 0
+            ));
+            worksheet.addRow([
+              sequence,
+              formulaSafe(driverGroup.driverName),
+              formulaSafe(routeGroup.route),
+              formulaSafe(vehicleGroup.vehiclePlate),
+              formulaSafe(vehicleGroup.vehicleType),
+              dispatchType,
+              ...counts.map((count) => count || null),
+              counts.reduce((total, value) => total + value, 0),
+              formulaSafe([...(dispatchGroup?.remarks || [])].join('；'))
+            ]);
+          }
+          const vehicleEndRow = worksheet.rowCount;
+          worksheet.mergeCells(vehicleStartRow, 4, vehicleEndRow, 4);
+          worksheet.mergeCells(vehicleStartRow, 5, vehicleEndRow, 5);
         }
-        const vehicleEndRow = worksheet.rowCount;
-        worksheet.mergeCells(vehicleStartRow, 4, vehicleEndRow, 4);
-        worksheet.mergeCells(vehicleStartRow, 5, vehicleEndRow, 5);
+        const routeEndRow = worksheet.rowCount;
+        worksheet.mergeCells(routeStartRow, 3, routeEndRow, 3);
       }
       const driverEndRow = worksheet.rowCount;
-      for (const column of [1, 2, 3]) {
+      for (const column of [1, 2]) {
         worksheet.mergeCells(driverStartRow, column, driverEndRow, column);
       }
       const driverDailyTotals = dateColumns.map((day) => (

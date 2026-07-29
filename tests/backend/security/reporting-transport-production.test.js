@@ -409,6 +409,87 @@ test('transport records bind private photos and remain isolated by team and orga
   }
 });
 
+test('transport monthly export merges one driver across multiple routes into one subtotal group', async () => {
+  const secondRouteId = objectId();
+  await TransportMasterData.create({
+    _id: secondRouteId,
+    teamId: fixture.teamA,
+    kind: TransportMasterData.TRANSPORT_MASTER_KINDS.ROUTE,
+    name: '仓库-后市场',
+    normalizedKey: TransportMasterData.transportMasterNormalizedKey(
+      TransportMasterData.TRANSPORT_MASTER_KINDS.ROUTE,
+      '仓库-后市场'
+    ),
+    status: TransportMasterData.TRANSPORT_MASTER_STATUSES.ACTIVE,
+    sortOrder: 2,
+    createdBy: fixture.adminA,
+    updatedBy: fixture.adminA
+  });
+  const baseRecord = {
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    shift: '白班',
+    tripMasterId: fixture.transportMastersA.trip,
+    tripLabel: '第1车',
+    dispatchType: '配送',
+    vehiclePlateMasterId: fixture.transportMastersA.vehiclePlate,
+    vehiclePlate: 'TEST-PLATE-03',
+    vehicleTypeMasterId: fixture.transportMastersA.vehicleType,
+    vehicleType: '厢式货车',
+    driverMasterId: fixture.transportMastersA.driver,
+    driverName: '=DRIVER',
+    loadDetails: { standardPlasticPallet: 1 },
+    photoFileIds: [],
+    remark: '',
+    submittedAt: new Date('2026-07-16T01:00:00Z'),
+    createdBy: fixture.adminA,
+    updatedBy: fixture.adminA
+  };
+  await TransportRecord.create([
+    {
+      ...baseRecord,
+      reportDate: '2026-07-16',
+      routeMasterId: fixture.transportMastersA.route,
+      route: '仓库-总部'
+    },
+    {
+      ...baseRecord,
+      reportDate: '2026-07-17',
+      routeMasterId: secondRouteId,
+      route: '仓库-后市场'
+    }
+  ]);
+
+  const service = createTransportRecordService({
+    auditService,
+    connection: mongoose.connection
+  });
+  const exported = await service.exportMonthlySummary({
+    authContext: fixture.adminAContext,
+    query: { month: '2026-07' }
+  });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(exported.buffer);
+  const sheet = workbook.getWorksheet('运输月度汇总');
+
+  assert.equal(exported.count, 2);
+  assert.equal(exported.groupCount, 2);
+  assert.equal(sheet.rowCount, 9);
+  assert.equal(sheet.getCell('A5').value, 1);
+  assert.equal(sheet.getCell('A8').master.address, 'A5');
+  assert.equal(sheet.getCell('B8').master.address, 'B5');
+  assert.deepEqual(
+    [sheet.getCell('C5').value, sheet.getCell('C7').value].sort(),
+    ['仓库-总部', '仓库-后市场'].sort()
+  );
+  assert.equal(sheet.getCell('C6').master.address, 'C5');
+  assert.equal(sheet.getCell('C8').master.address, 'C7');
+  assert.equal(sheet.getCell('V9').value, 1);
+  assert.equal(sheet.getCell('W9').value, 1);
+  assert.equal(sheet.getCell('AL9').value, 2);
+  assert.equal(sheet.getCell('A9').value, '合计：');
+});
+
 test('transport creation rejects missing, foreign, or forged photo references', async () => {
   const service = createTransportRecordService({ auditService, connection: mongoose.connection });
   const teamBPhotos = await photos(fixture.teamB, fixture.adminB, 'foreign');
