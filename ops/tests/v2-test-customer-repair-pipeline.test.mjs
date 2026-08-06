@@ -197,18 +197,21 @@ test('release backup grants off-host read access only after the exact backup is 
   const directoryValidated = backup.indexOf('test "$backup_directory" = "${backup_root}/${backup_id}"')
   const backupVerified = backup.indexOf('"$candidate/ops/verify-backup.js"')
   const migrationEvidenceVerified = backup.indexOf('if (manifest.database?.name !== database || missing.length)')
+  const parentAccessGranted = backup.indexOf('setfacl -m u:serveradmin:--x "$backup_volume" "$backup_root"')
   const accessGranted = backup.indexOf('setfacl -R -m u:serveradmin:rX "$backup_directory"')
   const handoffWritten = backup.indexOf('handoff="$evidence_dir/backup-handoff.json"')
   for (const position of [
     directoryValidated,
     backupVerified,
     migrationEvidenceVerified,
+    parentAccessGranted,
     accessGranted,
     handoffWritten
   ]) assert.ok(position >= 0)
   assert.ok(directoryValidated < backupVerified)
   assert.ok(backupVerified < migrationEvidenceVerified)
-  assert.ok(migrationEvidenceVerified < accessGranted)
+  assert.ok(migrationEvidenceVerified < parentAccessGranted)
+  assert.ok(parentAccessGranted < accessGranted)
   assert.ok(accessGranted < handoffWritten)
   assert.doesNotMatch(backup, /setfacl -R -m u:serveradmin:rX "\$backup_root"/)
 })

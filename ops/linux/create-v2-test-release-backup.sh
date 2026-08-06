@@ -169,6 +169,7 @@ if (manifest.database?.name !== database || missing.length) {
 }
 NODE
 
+setfacl -m u:serveradmin:--x "$backup_volume" "$backup_root"
 setfacl -R -m u:serveradmin:rX "$backup_directory"
 
 handoff="$evidence_dir/backup-handoff.json"
