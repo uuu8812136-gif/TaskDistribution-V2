@@ -34,6 +34,7 @@ $releaseOpsPaths = @(
   'ops/linux/activate-v2-test-candidate.sh',
   'ops/linux/activate-v2-test-transport-repair.sh',
   'ops/linux/activate-v2-test-attendance-correction.sh',
+  'ops/linux/activate-v2-test-attendance-cumulative-correction.sh',
   'ops/linux/activate-v2-test-transport-load-types.sh',
   'ops/linux/resume-v2-test-candidate-activation.sh',
   'ops/linux/verify-v2-test-release.sh',
@@ -209,8 +210,10 @@ $requiredCommittedPaths = @(
   'app/script/repairAcceptanceJuly2026Data.js',
   'app/script/repairAcceptanceTransportJuly2026.js',
   'app/script/correctAttendancePlanned20260727.js',
+  'app/script/correctAttendanceProductionCumulative20260806.js',
   'app/services/acceptanceJuly2026DataRepairService.js',
   'app/services/attendancePlannedCorrectionService.js',
+  'app/services/attendanceProductionCumulativeCorrectionService.js',
   'ops/backup.js',
   'ops/verify-backup.js',
   'ops/restore.js',
@@ -430,8 +433,10 @@ try {
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\repairAcceptanceJuly2026Data.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\repairAcceptanceTransportJuly2026.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\correctAttendancePlanned20260727.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\correctAttendanceProductionCumulative20260806.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\acceptanceJuly2026DataRepairService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\attendancePlannedCorrectionService.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\attendanceProductionCumulativeCorrectionService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\v2MigrationPreviewInvariant.js'))
   Invoke-NativeChecked -FilePath $tar -Arguments @('-czf', $temporaryArchive, '-C', $packageRoot, '.')
 

@@ -59,6 +59,7 @@ const {
   sameId
 } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const { productionCumulativeEndMonth } = require('./productionReportPeriodService');
 const {
   isAcceptanceTimeRestrictionBypassed
 } = require('../config/acceptanceTesting');
@@ -847,15 +848,17 @@ function finalAttendanceReportText({
     .filter((schedule) => schedule.month === month)
     .reduce((total, schedule) => total + (Number(schedule.productionPlanForecast) || 0), 0);
   const previousYear = parsed.year - 1;
-  const previousYearHalf = productionMonthlyRangeTotal(
+  const cumulativeEndMonth = productionCumulativeEndMonth(parsed.month);
+  const cumulativeEndMonthCode = String(cumulativeEndMonth).padStart(2, '0');
+  const previousYearCumulative = productionMonthlyRangeTotal(
     productionSchedules,
     `${previousYear}-01`,
-    `${previousYear}-06`
+    `${previousYear}-${cumulativeEndMonthCode}`
   );
-  const currentYearHalf = productionMonthlyRangeTotal(
+  const currentYearCumulative = productionMonthlyRangeTotal(
     productionSchedules,
     `${parsed.year}-01`,
-    `${parsed.year}-06`
+    `${parsed.year}-${cumulativeEndMonthCode}`
   );
   const hasNightProduction = todayProduction.aLineNight > 0 || todayProduction.bLineNight > 0;
   const breakdown = hasNightProduction
@@ -923,7 +926,8 @@ function finalAttendanceReportText({
     `1.本月生产计划${forecast}台。`,
     `2.昨日排产计划${yesterdayProduction.total}台，实际完成${yesterdayProduction.total}台，本月累计完成${currentMonthCumulative}台，上月同期累计完成${previousMonthSamePeriod}台。`,
     `3.今日排产计划${todayProduction.total}台（${breakdown.join('、')}）。`,
-    `4.${previousYear}年1-6月实际生产${previousYearHalf}台，${parsed.year}年1-6月实际生产${currentYearHalf}台。`,
+    `4.${previousYear}年1-${cumulativeEndMonth}月实际生产${previousYearCumulative}台，` +
+      `${parsed.year}年1-${cumulativeEndMonth}月实际生产${currentYearCumulative}台。`,
     `5.人员情况:在册人数${summary.registeredHeadcount}人，待离职${summary.pendingDepartureCount}人。` +
       `昨日白班安排出勤${yesterdayDayPlanned}人，实际出勤${yesterdayDayActual}人，` +
       `昨日夜班安排出勤${yesterdayNightPlanned}人，实际出勤${yesterdayNightActual}人；` +

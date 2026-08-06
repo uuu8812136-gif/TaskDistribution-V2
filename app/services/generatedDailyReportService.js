@@ -32,11 +32,15 @@ const {
 } = require('./reportingServiceSupport');
 const { assertPermission, assertTeamContext } = require('./teamContextService');
 const { runWithOptionalTransaction } = require('./transactionService');
+const {
+  productionCumulativeEndMonth,
+  productionCumulativeMonths
+} = require('./productionReportPeriodService');
 
 const { ATTENDANCE_REVIEW_STATUSES } = AttendanceSubmission;
 const { MAX_REPORT_VERSIONS, MAX_SOURCE_SNAPSHOT_BYTES } = GeneratedDailyReport;
 
-const REPORT_RULE_VERSION = 'production-daily-text-v4-2026-07-29';
+const REPORT_RULE_VERSION = 'production-daily-text-v5-2026-08-06';
 const REPORT_TIME_ZONE = 'Asia/Shanghai';
 const EXPECTED_ATTENDANCE_UNIT_COUNT = 7;
 const PERSIST_RETRY_ATTEMPTS = 5;
@@ -365,16 +369,15 @@ async function productionSource({ teamId, reportDate, ProductionScheduleModel, s
     ...currentPeriodDates,
     ...previousPeriodDates
   ]);
-  const halfYearMonths = [];
+  const cumulativeEndMonth = productionCumulativeEndMonth(parsed.month);
+  const cumulativeMonths = [];
   for (const year of [parsed.year - 1, parsed.year]) {
-    for (let month = 1; month <= 6; month += 1) {
-      halfYearMonths.push(`${year}-${String(month).padStart(2, '0')}`);
-    }
+    cumulativeMonths.push(...productionCumulativeMonths(year, parsed.month));
   }
   const requiredMonths = [...new Set([
     currentMonth,
     previousMonth,
-    ...halfYearMonths
+    ...cumulativeMonths
   ])].sort();
   const schedules = await sessionQuery(
     ProductionScheduleModel.find({ teamId, month: { $in: requiredMonths } })
@@ -420,7 +423,7 @@ async function productionSource({ teamId, reportDate, ProductionScheduleModel, s
       }
     }
   }
-  for (const month of halfYearMonths) {
+  for (const month of cumulativeMonths) {
     for (const schedule of byMonth.get(month) || []) {
       if (!hasMaintainedValues(schedule.monthlyTotals, MONTHLY_FIELDS)) {
         throw productionSourceError(`${month} monthly production schedule is not maintained`, {
@@ -444,9 +447,10 @@ async function productionSource({ teamId, reportDate, ProductionScheduleModel, s
     return dates.reduce((total, date) => total + dayTotals(date).total, 0);
   }
 
-  function halfYearTotal(year) {
+  function cumulativeTotal(year) {
     return schedules.reduce((total, schedule) => (
-      schedule.month >= `${year}-01` && schedule.month <= `${year}-06`
+      schedule.month >= `${year}-01` &&
+      schedule.month <= `${year}-${String(cumulativeEndMonth).padStart(2, '0')}`
         ? total + sumFields(schedule.monthlyTotals, MONTHLY_FIELDS)
         : total
     ), 0);
@@ -463,8 +467,9 @@ async function productionSource({ teamId, reportDate, ProductionScheduleModel, s
     yesterday: previousDay,
     currentMonthCumulative: rangeTotal(currentPeriodDates),
     previousMonthSamePeriod: rangeTotal(previousPeriodDates),
-    previousYearHalf: halfYearTotal(parsed.year - 1),
-    currentYearHalf: halfYearTotal(parsed.year),
+    cumulativeEndMonth,
+    previousYearCumulative: cumulativeTotal(parsed.year - 1),
+    currentYearCumulative: cumulativeTotal(parsed.year),
     previousMonthSamePeriodEnd: previousPeriodEnd,
     actualCompletionSource: {
       sourceDate: yesterday,
@@ -574,7 +579,9 @@ function buildFinalText({ teamName, reportDate, todayAttendance, yesterdayAttend
     `1.本月生产计划${production.forecast}台。`,
     `2.昨日排产计划${production.yesterday.total}台，实际完成${production.yesterday.total}台，本月累计完成${production.currentMonthCumulative}台，上月同期累计完成${production.previousMonthSamePeriod}台。`,
     `3.今日排产计划${today.total}台（${breakdown.join('、')}）。`,
-    `4.${parsed.year - 1}年1-6月实际生产${production.previousYearHalf}台，${parsed.year}年1-6月实际生产${production.currentYearHalf}台。`,
+    `4.${parsed.year - 1}年1-${production.cumulativeEndMonth}月实际生产` +
+      `${production.previousYearCumulative}台，${parsed.year}年1-${production.cumulativeEndMonth}月实际生产` +
+      `${production.currentYearCumulative}台。`,
     `5.人员情况:在册人数${registered}人，待离职${pendingDeparture}人。` +
       `昨日白班安排出勤${yesterdayDayPlanned}人，实际出勤${summaryCount(yesterdayAttendance, 'dayShift.actualAttendanceCount')}人，` +
       `昨日夜班安排出勤${yesterdayNightPlanned}人，实际出勤${summaryCount(yesterdayAttendance, 'nightShift.actualAttendanceCount')}人；` +

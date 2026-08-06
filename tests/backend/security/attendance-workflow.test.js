@@ -22,6 +22,7 @@ const {
   ACCEPTANCE_TIME_BYPASS_AUDIT_REASON,
   createAttendanceSubmissionService,
   attendanceMonthlyExportRows,
+  finalAttendanceReportText,
   isAttendanceDeadlineReached,
   plannedAttendanceCount,
   serializeAttendanceSubmission
@@ -114,6 +115,65 @@ test('planned attendance is calculated independently from each shift actual, lea
   });
   assert.equal(serialized.dayShift.actualAttendanceCount, 122);
   assert.equal(serialized.dayShift.effectiveActualAttendanceCount, 125);
+});
+
+test('locked attendance text uses the same cumulative production period after July', () => {
+  const named = { count: 0, names: [] };
+  const shift = {
+    actualAttendanceCount: 0,
+    leave: named,
+    rest: named,
+    sickLeave: named,
+    absenteeism: named,
+    notYetEmployed: named,
+    pendingDeparture: named,
+    temporaryWorker: named,
+    leaveWithSickCount: 0
+  };
+  const summary = {
+    registeredHeadcount: 0,
+    pendingDepartureCount: 0,
+    dayShift: shift,
+    nightShift: shift,
+    support: [],
+    otherRemarks: []
+  };
+  const productionSchedules = [];
+  for (const year of [2025, 2026]) {
+    for (let month = 1; month <= 7; month += 1) {
+      productionSchedules.push({
+        month: `${year}-${String(month).padStart(2, '0')}`,
+        productionPlanForecast: 0,
+        dailyEntries: [],
+        monthlyTotals: {
+          aLine: 100,
+          northLine: 0,
+          transferCaseLine: 0,
+          bLineDay: 0,
+          bLineNight: 0
+        }
+      });
+    }
+  }
+  productionSchedules.push({
+    month: '2026-08',
+    productionPlanForecast: 10000,
+    dailyEntries: [],
+    monthlyTotals: {}
+  });
+
+  const finalText = finalAttendanceReportText({
+    teamName: '变速箱物流部',
+    reportDate: '2026-08-06',
+    summary,
+    yesterdaySummary: summary,
+    productionSchedules,
+    reviewerName: '审核员'
+  });
+  assert.match(
+    finalText,
+    /4\.2025年1-7月实际生产700台，2026年1-7月实际生产700台。/
+  );
 });
 
 function objectId() {

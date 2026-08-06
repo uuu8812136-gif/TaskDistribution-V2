@@ -26,6 +26,10 @@ const {
   parseNaturalDate,
   shiftNaturalMonth
 } = require('../../../app/services/reportCalendarService');
+const {
+  productionCumulativeEndMonth,
+  productionCumulativeMonths
+} = require('../../../app/services/productionReportPeriodService');
 
 const TEST_DATABASE_NAME = `generated_daily_${randomUUID().replaceAll('-', '')}_v2_test`;
 const MODELS = [
@@ -189,9 +193,7 @@ function requiredMonths(reportDate) {
   const currentMonth = naturalMonthFromDate(reportDate);
   const values = [currentMonth, shiftNaturalMonth(currentMonth, -1)];
   for (const year of [parsed.year - 1, parsed.year]) {
-    for (let month = 1; month <= 6; month += 1) {
-      values.push(`${year}-${String(month).padStart(2, '0')}`);
-    }
+    values.push(...productionCumulativeMonths(year, parsed.month));
   }
   return [...new Set(values)].sort();
 }
@@ -372,7 +374,7 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.equal(result.dailyReport.version, 1);
   assert.equal(result.dailyReport.sourceSnapshot.rule.sourceRange, 'D4:D13');
   assert.equal(result.dailyReport.ruleVersion, REPORT_RULE_VERSION);
-  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v4-2026-07-29');
+  assert.equal(REPORT_RULE_VERSION, 'production-daily-text-v5-2026-08-06');
   assert.equal(result.dailyReport.sourceSnapshot.attendance.currentDate.submissions.length, 7);
   assert.ok(result.dailyReport.sourceSnapshot.production.schedules.length >= 12);
   assert.match(result.dailyReport.finalText, /^7月15日变速箱物流部 =HYPERLINK\("x"\)生产日报/m);
@@ -401,6 +403,34 @@ test('fixed customer template generates traceable text and copy-safe lines', asy
   assert.ok(result.dailyReport.finalText.split('\n').every((line) => !/^[=+@-]/.test(line)));
   assert.equal(events.length, 1);
   assert.equal(events[0].resourceType, permissions.AUDIT_RESOURCE_TYPES.GENERATED_DAILY_REPORT);
+});
+
+test('cumulative production extends through the previous month after July', async () => {
+  assert.equal(productionCumulativeEndMonth(7), 6);
+  assert.equal(productionCumulativeEndMonth(8), 7);
+  assert.equal(productionCumulativeEndMonth(9), 8);
+  assert.equal(productionCumulativeEndMonth(10), 9);
+
+  for (const [reportDate, endMonth, total] of [
+    ['2026-08-06', 7, 700],
+    ['2026-09-06', 8, 800],
+    ['2026-10-06', 9, 900]
+  ]) {
+    const fixture = await seedScenario({ reportDate });
+    const result = await service().generateDailyReport({
+      authContext: fixture.context,
+      reportDate,
+      input: {}
+    });
+    assert.equal(result.dailyReport.sourceSnapshot.production.derived.cumulativeEndMonth, endMonth);
+    assert.match(
+      result.dailyReport.finalText,
+      new RegExp(
+        `4\\.2025年1-${endMonth}月实际生产${total}台，` +
+        `2026年1-${endMonth}月实际生产${total}台。`
+      )
+    );
+  }
 });
 
 test('planned attendance follows each shift actual plus non-sick leave and absenteeism', () => {
