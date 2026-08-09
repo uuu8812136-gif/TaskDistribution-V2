@@ -8,6 +8,13 @@ const { loadEnvironment } = require('./config/environment');
 const { createApp } = require('./app');
 const { startEquipmentRoutineScheduler } = require('./services/equipmentRoutineWorkerService');
 
+function listenForHttpRequests(app, config, logger = console) {
+  return app.listen(config.port, config.apiBindHost, () => {
+    logger.log(`API listening on http://${config.apiBindHost}:${config.port}`);
+    logger.log(`Instance: ${config.instanceName} (${config.appEnv})`);
+  });
+}
+
 async function startServer() {
   const config = loadEnvironment();
   await mongoose.connect(config.mongodbUri);
@@ -17,10 +24,7 @@ async function startServer() {
     enabled: config.equipmentRoutineWorkerEnabled,
     intervalMs: config.equipmentRoutineWorkerIntervalMs
   });
-  const server = app.listen(config.port, () => {
-    console.log(`API listening on port ${config.port}`);
-    console.log(`Instance: ${config.instanceName} (${config.appEnv})`);
-  });
+  const server = listenForHttpRequests(app, config);
 
   const shutdown = async (signal) => {
     console.log(`${signal} received, shutting down`);
@@ -44,4 +48,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { startServer };
+module.exports = { listenForHttpRequests, startServer };

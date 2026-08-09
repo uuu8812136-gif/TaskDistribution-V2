@@ -3,6 +3,7 @@ const path = require('path');
 const NON_PRODUCTION_DATABASE_SUFFIXES = ['_v2_dev', '_v2_test', '_v2_staging'];
 const FORBIDDEN_NON_PRODUCTION_PORTS = new Set([8099]);
 const PLACEHOLDER_SECRETS = ['replace-me', 'change-me', 'your-secret-key'];
+const LOOPBACK_API_HOST = '127.0.0.1';
 
 function parseInteger(value, fallback, name) {
   const parsed = Number.parseInt(value ?? fallback, 10);
@@ -26,6 +27,15 @@ function parseBoolean(value, fallback = false) {
   if (value === 'true') return true;
   if (value === 'false') return false;
   throw new Error(`Invalid boolean value: ${value}`);
+}
+
+function parseApiBindHost(value, appEnv) {
+  const host = String(value || LOOPBACK_API_HOST).trim();
+  if (!host) throw new Error('API_BIND_HOST is required');
+  if (appEnv === 'production' && host !== LOOPBACK_API_HOST) {
+    throw new Error(`Production API must bind exactly ${LOOPBACK_API_HOST}`);
+  }
+  return host;
 }
 
 function databaseNameFromUri(uri) {
@@ -87,6 +97,7 @@ function loadEnvironment(env = process.env) {
     nodeEnv: env.NODE_ENV || 'development',
     instanceName: env.APP_INSTANCE || 'task-distribution-v2-dev',
     port: parseInteger(env.PORT, 18099, 'PORT'),
+    apiBindHost: parseApiBindHost(env.API_BIND_HOST, appEnv),
     mongodbUri: env.MONGODB_URI,
     jwtSecret: env.JWT_SECRET,
     jwtExpire: env.JWT_EXPIRE || '8h',
