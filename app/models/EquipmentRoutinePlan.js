@@ -16,11 +16,43 @@ const EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES = Object.freeze(
   Object.values(EQUIPMENT_ROUTINE_PLAN_STATUSES)
 );
 const EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS = Object.freeze({
-  REST_DAY: 'REST_DAY'
+  REST_DAY: 'REST_DAY',
+  SCHEDULE_CHANGED: 'SCHEDULE_CHANGED',
+  RULE_UPDATED: 'RULE_UPDATED',
+  RULE_DEACTIVATED: 'RULE_DEACTIVATED',
+  EQUIPMENT_STATUS_CHANGED: 'EQUIPMENT_STATUS_CHANGED',
+  SIBLING_COMPLETED: 'SIBLING_COMPLETED',
+  SUPERSEDED: 'SUPERSEDED',
+  LEGACY_UNSPECIFIED: 'LEGACY_UNSPECIFIED'
 });
 const EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_VALUES = Object.freeze(
   Object.values(EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS)
 );
+const EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS = Object.freeze({
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY]: '本日休班，设备不需点检',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SCHEDULE_CHANGED]: '规则执行周期或时间已调整，原未执行计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_UPDATED]: '点检或保养规则已调整，原未执行计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED]: '点检或保养规则已停用，原未执行计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED]: '设备已不再处于在用状态，原未执行计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED]: '同一周期已有计划完成，其余计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED]: '系统已生成新的适用计划，原计划已作废',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.LEGACY_UNSPECIFIED]: '历史计划已取消，原系统未记录具体原因'
+});
+
+function routinePlanCancellationReason(plan) {
+  if (plan?.status !== EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED) return null;
+  return plan.cancellationReason || EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.LEGACY_UNSPECIFIED;
+}
+
+function routinePlanCancellationReasonLabel(plan) {
+  const reason = routinePlanCancellationReason(plan);
+  return reason
+    ? EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS[reason] ||
+      EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS[
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.LEGACY_UNSPECIFIED
+      ]
+    : null;
+}
 
 function validDate(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -264,8 +296,11 @@ module.exports.EQUIPMENT_ROUTINE_PLAN_STATUSES = EQUIPMENT_ROUTINE_PLAN_STATUSES
 module.exports.EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES = EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES;
 module.exports.EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS;
 module.exports.EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_VALUES = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_VALUES;
+module.exports.EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS;
 module.exports.effectiveRoutinePlanStatus = effectiveRoutinePlanStatus;
 module.exports.isRoutinePlanCurrentBusinessDate = isRoutinePlanCurrentBusinessDate;
 module.exports.isRoutinePlanRestDayEligible = isRoutinePlanRestDayEligible;
 module.exports.localDateKey = localDateKey;
+module.exports.routinePlanCancellationReason = routinePlanCancellationReason;
+module.exports.routinePlanCancellationReasonLabel = routinePlanCancellationReasonLabel;
 module.exports.routinePlanWindowName = routinePlanWindowName;

@@ -124,6 +124,21 @@ function createEquipmentRoutineController({
       }
     },
 
+    async getRecord(req, res, next) {
+      try {
+        const record = await service.getRecord({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          recordId: req.params.recordId,
+          query: req.query
+        });
+        return res.json({ record });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async exportRecords(req, res, next) {
       try {
         const exported = await workflowService.exportRecords({

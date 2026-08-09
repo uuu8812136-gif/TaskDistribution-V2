@@ -11,6 +11,16 @@
       </el-button>
     </header>
 
+    <div class="status-guidance">
+      <el-alert :title="accessNotice" type="info" :closable="false" show-icon />
+      <el-alert
+        title="申请不支持删除；填写有误时，由原发起设备管理员在详情中选择“作废申请”。"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+    </div>
+
     <div class="filter-band">
       <el-select
         v-if="session.isGlobalReadOnly"
@@ -20,16 +30,21 @@
       >
         <el-option v-for="team in session.teams" :key="team._id" :label="team.name" :value="team._id" />
       </el-select>
-      <el-select v-model="filters.applicationType" clearable placeholder="申请类型" @change="load">
+      <el-select v-model="filters.applicationType" clearable placeholder="申请类型" @change="handleFilterChange">
         <el-option v-for="item in STATUS_APPLICATION_TYPES" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
-      <el-select v-model="filters.workflowStatus" clearable placeholder="流程状态" @change="load">
+      <el-select v-model="filters.workflowStatus" clearable placeholder="流程状态" @change="handleFilterChange">
         <el-option v-for="item in workflowOptions" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
-      <el-checkbox v-model="filters.todo" border @change="load">只看我的待办</el-checkbox>
+      <el-checkbox v-model="filters.todo" border @change="handleFilterChange">只看我的待办</el-checkbox>
       <el-button circle :loading="loading" aria-label="刷新" @click="load">
         <el-icon><Refresh /></el-icon>
       </el-button>
+    </div>
+
+    <div v-if="loadError" class="load-error" role="alert">
+      <el-alert :title="loadError" type="error" :closable="false" show-icon />
+      <el-button :loading="loading" @click="retryLoad">重新加载</el-button>
     </div>
 
     <div class="table-shell">
@@ -59,6 +74,11 @@
             <el-button text type="primary" @click="openDetail(row)">详情</el-button>
           </template>
         </el-table-column>
+        <template #empty>
+          <el-empty :description="emptyDescription" :image-size="72">
+            <el-button v-if="canCreate && !filters.todo" type="primary" @click="openCreate()">发起申请</el-button>
+          </el-empty>
+        </template>
       </el-table>
       <el-pagination
         v-model:current-page="page"
@@ -66,7 +86,7 @@
         :total="total"
         :pager-count="5"
         layout="prev, pager, next, total"
-        @current-change="load"
+        @current-change="handlePageChange"
         class="pagination"
       />
     </div>
@@ -82,6 +102,7 @@
             :loading="equipmentLoading"
             placeholder="输入设备名称或编号检索"
             class="full-width"
+            @change="handleEquipmentChange"
           >
             <el-option
               v-for="item in equipmentOptions"
@@ -92,7 +113,10 @@
           </el-select>
         </el-form-item>
         <el-form-item label="申请类型" required>
-          <el-segmented v-model="createForm.applicationType" :options="STATUS_APPLICATION_TYPES" />
+          <el-segmented v-model="createForm.applicationType" :options="createStatusOptions" />
+          <p v-if="selectedSourceStatus" class="field-help">
+            当前状态为“{{ equipmentStatusLabel(selectedSourceStatus) }}”，请选择其他目标状态。
+          </p>
         </el-form-item>
         <el-form-item label="申请原因" required>
           <el-input v-model="createForm.reason" type="textarea" :rows="5" maxlength="5000" show-word-limit />
@@ -133,13 +157,17 @@ const router = useRouter()
 const session = useSessionStore()
 const rows = ref([])
 const loading = ref(false)
+const loadError = ref('')
 const page = ref(1)
+const lastLoadedPage = ref(1)
+const failedPage = ref(null)
 const pageSize = 20
 const total = ref(0)
 const createVisible = ref(false)
 const submitting = ref(false)
 const equipmentLoading = ref(false)
 const equipmentOptions = ref([])
+const selectedSourceStatus = ref('')
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const filters = reactive({ applicationType: '', workflowStatus: '', todo: false })
 const createForm = reactive(emptyCreateForm())
@@ -157,28 +185,80 @@ const canCreate = computed(() => (
   session.can('equipment.status.apply', { write: true, teamRequired: true }) &&
   session.context.membership?.functionalRoleKeys?.includes('ASSET_ADMIN')
 ))
+const accessNotice = computed(() => {
+  const requirement = '发起条件：进入具体团队，并同时配置“设备管理员”和“状态申请”权限。'
+  if (canCreate.value) return `当前账号可以发起申请。${requirement}`
+  if (session.isGlobalReadOnly) return `当前为跨团队只读查看。${requirement}`
+  if (session.hasPermission('equipment.status.approve')) {
+    return `当前账号不能发起申请，可在“我的待办”处理分配给您的审核。${requirement}`
+  }
+  return `当前账号仅可查看。${requirement}`
+})
+const emptyDescription = computed(() => {
+  if (loadError.value) return '状态申请加载失败，请重新加载'
+  if (filters.todo) return '暂无需要您处理的状态申请'
+  if (!canCreate.value) return '暂无状态申请，当前账号仅可查看'
+  return '暂无状态申请，可发起一条新申请'
+})
+const createStatusOptions = computed(() => STATUS_APPLICATION_TYPES.map((item) => ({
+  ...item,
+  disabled: item.value === selectedSourceStatus.value
+})))
 
 function emptyCreateForm() {
   return { equipmentId: '', applicationType: 'IDLE', reason: '', files: [] }
 }
 
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+const equipmentStatusLabel = (value) => ({
+  IN_USE: '在用',
+  IDLE: '闲置',
+  STOPPED: '停用',
+  SCRAPPED: '报废'
+}[value] || value || '-')
+
+function syncTargetStatus() {
+  if (createForm.applicationType !== selectedSourceStatus.value) return
+  createForm.applicationType = STATUS_APPLICATION_TYPES.find(
+    (item) => item.value !== selectedSourceStatus.value
+  )?.value || ''
+}
+
+function handleEquipmentChange(equipmentId) {
+  selectedSourceStatus.value = equipmentOptions.value.find(
+    (item) => String(item._id) === String(equipmentId || '')
+  )?.status || ''
+  syncTargetStatus()
+}
 
 async function load() {
   const requestId = ++listRequestId
+  const requestedPage = page.value
+  const requestedTeamId = session.isGlobalReadOnly ? String(selectedTeamId.value || '') : ''
+  loadError.value = ''
   loading.value = true
   try {
     const result = await getEquipmentStatusApplications({
       page: page.value,
       pageSize,
-      ...(session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}),
+      ...(requestedTeamId ? { teamId: requestedTeamId } : {}),
       ...(filters.applicationType ? { applicationType: filters.applicationType } : {}),
       ...(filters.workflowStatus ? { workflowStatus: filters.workflowStatus } : {}),
       ...(filters.todo ? { todo: true } : {})
     })
-    if (requestId !== listRequestId) return
+    if (
+      requestId !== listRequestId ||
+      requestedTeamId !== (session.isGlobalReadOnly ? String(selectedTeamId.value || '') : '')
+    ) return
     rows.value = result.applications || []
     total.value = Number(result.total || 0)
+    lastLoadedPage.value = requestedPage
+    failedPage.value = null
+  } catch (error) {
+    if (requestId !== listRequestId) return
+    failedPage.value = requestedPage
+    page.value = lastLoadedPage.value
+    loadError.value = requestErrorMessage(error, '状态申请加载失败，请稍后重试')
   } finally {
     if (requestId === listRequestId) loading.value = false
   }
@@ -199,9 +279,12 @@ async function loadEquipmentOptions(keyword = '') {
 async function openCreate(equipmentId = '') {
   Object.assign(createForm, emptyCreateForm(), { equipmentId })
   equipmentOptions.value = []
+  selectedSourceStatus.value = ''
   if (equipmentId) {
     const result = await getEquipmentDetail(equipmentId)
     equipmentOptions.value = [result.equipment]
+    selectedSourceStatus.value = result.equipment?.status || ''
+    syncTargetStatus()
   } else {
     await loadEquipmentOptions()
   }
@@ -211,6 +294,9 @@ async function openCreate(equipmentId = '') {
 async function submitCreate() {
   if (!createForm.equipmentId || !createForm.reason.trim()) {
     return ElMessage.warning('请选择设备并填写申请原因')
+  }
+  if (createForm.applicationType === selectedSourceStatus.value) {
+    return ElMessage.warning('目标状态不能与设备当前状态相同')
   }
   submitting.value = true
   let uploadedFileIds = []
@@ -243,9 +329,35 @@ const openDetail = (row) => router.push({
   query: session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 })
 
-async function handleTeamChange(teamId) {
+async function handleFilterChange() {
   page.value = 1
+  lastLoadedPage.value = 1
+  failedPage.value = null
+  rows.value = []
+  total.value = 0
+  await load()
+}
+
+async function handlePageChange() {
+  await load()
+}
+
+async function retryLoad() {
+  page.value = failedPage.value || page.value
+  await load()
+}
+
+async function handleTeamChange(teamId) {
+  ++listRequestId
+  loading.value = false
+  page.value = 1
+  lastLoadedPage.value = 1
+  failedPage.value = null
+  rows.value = []
+  total.value = 0
+  loadError.value = ''
   await router.replace({ query: { ...route.query, teamId: teamId || undefined } })
+  if (String(teamId || '') !== String(selectedTeamId.value || '')) return
   await load()
 }
 
@@ -268,16 +380,21 @@ onMounted(async () => {
 .page-heading, .filter-band { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .page-heading h1 { margin: 0; color: #1f2733; font-size: 25px; letter-spacing: 0; }
 .page-heading p { margin: 6px 0 0; color: #667085; }
+.status-guidance { display: grid; gap: 8px; }
 .filter-band { justify-content: flex-start; flex-wrap: wrap; padding-block: 14px; border-block: 1px solid #dce4ee; }
 .filter-band .el-select { width: 220px; }
+.load-error { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; }
 .table-shell { min-width: 0; }
 .equipment-name, .equipment-code { display: block; overflow-wrap: anywhere; }
 .equipment-code { margin-top: 4px; color: #667085; font-size: 12px; }
 .pagination { justify-content: flex-end; margin-top: 16px; }
 .full-width { width: 100%; }
+.field-help { margin: 8px 0 0; color: #667085; font-size: 12px; line-height: 1.5; }
 @media (max-width: 720px) {
   .page-heading { align-items: flex-start; }
   .filter-band .el-select { width: 100%; }
+  .load-error { grid-template-columns: minmax(0, 1fr); }
+  .load-error .el-button { justify-self: start; }
   .pagination { width: 100%; justify-content: flex-start; overflow-x: auto; padding-bottom: 4px; }
 }
 </style>

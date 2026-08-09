@@ -81,6 +81,8 @@
           <button class="detail-button" @click="openDetail">查看设备详情</button>
           <button v-if="canRepair" class="repair-button" @click="openRepair">发起维修</button>
           <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
+          <button class="inspection-record-button" @click="openRoutineRecords('INSPECTION')">点检记录</button>
+          <button class="maintenance-record-button" @click="openRoutineRecords('MAINTENANCE')">保养记录</button>
           <button
             v-if="canUseRestDay"
             class="rest-day-button"
@@ -431,6 +433,16 @@ export default {
       })
     }
 
+    const openRoutineRecords = (routineType) => {
+      const scopedTeamId = requestTeamId()
+      const query = [
+        `equipmentId=${encodeURIComponent(equipment.value._id)}`,
+        `routineType=${encodeURIComponent(routineType)}`,
+        scopedTeamId ? `teamId=${encodeURIComponent(scopedTeamId)}` : ''
+      ].filter(Boolean).join('&')
+      uni.navigateTo({ url: `/pages/equipment/routine-record-list?${query}` })
+    }
+
     const openExecute = (entry) => {
       if (!canExecute(entry)) {
         uni.showToast({ title: '当前账号仅可查看', icon: 'none' })
@@ -497,6 +509,7 @@ export default {
       openDetail,
       openRepair,
       openRuntimeReading,
+      openRoutineRecords,
       openExecute,
       onTeamChange,
       statusLabel,
@@ -555,10 +568,12 @@ export default {
 .equipment-grid text { color: #64748b; font-size: 21rpx; }
 .equipment-grid strong { margin-top: 5rpx; color: #1f2733; font-size: 24rpx; }
 .result-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 22rpx; }
-.detail-button, .repair-button, .hours-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
+.detail-button, .repair-button, .hours-button, .inspection-record-button, .maintenance-record-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
 .detail-button { color: #1d5fa7; background: #eaf3ff; }
 .repair-button { color: #fff; background: #245d3f; }
 .hours-button { color: #8a4b08; background: #fff5e6; }
+.inspection-record-button { color: #1d5fa7; background: #eaf3ff; }
+.maintenance-record-button { color: #245d3f; background: #eaf7ef; }
 .rest-day-button { grid-column: 1 / -1; width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; color: #7a4b00; background: #fff4d6; font-size: 24rpx; }
 .routine-title { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .routine-hint { margin-top: 5rpx; color: #64748b; font-size: 21rpx; }

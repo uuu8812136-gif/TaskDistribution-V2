@@ -2,7 +2,16 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
-import { buildRoutineRulePayload } from '../src/utils/equipment.js'
+import {
+  buildRoutineRulePayload,
+  createRoutineRecordPhotoRequestGuard,
+  loadRoutineRecordPhotoPreview,
+  routinePlanCancellationReasonLabel,
+  routineRecordChecklistItems,
+  routineRecordPerformerName,
+  routineRecordPlanWindow,
+  routineRecordPlateNumber
+} from '../src/utils/equipment.js'
 
 const workbenchSource = readFileSync(
   new URL('../src/views/equipment/EquipmentRoutineWorkbench.vue', import.meta.url),
@@ -81,6 +90,264 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
 })
 
+test('authorized routine managers can run an immediate plan catch-up without restarting the server', () => {
+  assert.match(workbenchSource, /v-if="canRunRoutineWorker"/)
+  assert.match(workbenchSource, /<VideoPlay \/>/)
+  assert.match(workbenchSource, /立即补跑计划/)
+  assert.match(workbenchSource, /runEquipmentRoutineWorker\(\)/)
+  assert.match(workbenchSource, /membership\.positionKey === 'DEPARTMENT_MANAGER'/)
+  assert.match(workbenchSource, /membership\.functionalRoleKeys\?\.includes\('ASSET_ADMIN'\)/)
+  assert.match(workbenchSource, /session\.moduleDataScopes\.equipment === 'TEAM'/)
+  assert.match(workbenchSource, /session\.can\('equipment\.edit', \{ write: true, teamRequired: true \}\)/)
+  assert.match(workbenchSource, /扫描 \$\{rulesProcessed\} 条规则，处理 \$\{plansProcessed\} 条计划/)
+  assert.match(workbenchSource, /workerCompleted \? '补跑已完成，但计划列表刷新失败，请手动刷新' : '计划补跑失败，请稍后重试'/)
+  assert.match(workbenchSource, /activeTab\.value = 'plans'[\s\S]*await changeTab\(\)/)
+})
+
+test('routine workbench makes cancelled plan reasons and record-to-plan details explicit', () => {
+  for (const label of [
+    '计划开始：',
+    '计划截止：',
+    '车牌号',
+    '对应计划',
+    '查看详情',
+    '点检/保养执行详情',
+    '执行人',
+    '逐项执行结果',
+    '照片信息'
+  ]) assert.ok(workbenchSource.includes(label), `missing routine record field: ${label}`)
+  assert.match(workbenchSource, /planCancellationReason\(row\)/)
+  assert.match(workbenchSource, /routineRecordPlanWindow/)
+  assert.match(workbenchSource, /routineRecordChecklistItems/)
+})
+
+test('routine record layout fits a 1366px desktop and keeps a compact narrow-screen view', () => {
+  const recordsSection = workbenchSource.slice(
+    workbenchSource.indexOf('<section v-else-if="activeTab === \'records\'"'),
+    workbenchSource.indexOf('<section v-else class="table-shell">')
+  )
+  const desktopTable = recordsSection.slice(
+    recordsSection.indexOf('<el-table'),
+    recordsSection.indexOf('</el-table>') + '</el-table>'.length
+  )
+  const columns = [...desktopTable.matchAll(/<el-table-column\b([^>]*)>/g)]
+  const totalWidth = columns.reduce((sum, [, attributes]) => {
+    const width = attributes.match(/(?:min-width|width)="(\d+)"/)
+    return sum + Number(width?.[1] || 0)
+  }, 0)
+
+  assert.equal(columns.length, 7)
+  assert.equal(totalWidth, 1088)
+  assert.match(recordsSection, /class="record-table-view"/)
+  assert.match(recordsSection, /class="record-compact-view"/)
+  assert.match(workbenchSource, /@media \(max-width: 1180px\) \{[\s\S]*?\.record-table-view \{ display: none; \}[\s\S]*?\.record-compact-view \{ display: block; \}/)
+  assert.match(workbenchSource, /@media \(max-width: 760px\) \{[\s\S]*?\.record-compact-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/)
+
+  for (const visibleField of [
+    '车牌号：',
+    'routineLabel(row.routineType)',
+    '计划开始：',
+    '计划截止：',
+    'displayTime(row.performedAt)',
+    'recordPerformerName(row)',
+    "row.performedRuntimeHours ?? '-'",
+    "row.abnormalSummary || '无'",
+    'recordPhotoSummary(row)',
+    '查看详情'
+  ]) assert.ok(recordsSection.includes(visibleField), `missing compact record information: ${visibleField}`)
+})
+
+test('routine plan cancellation labels explain known causes and do not guess missing history', () => {
+  assert.equal(
+    routinePlanCancellationReasonLabel({ status: 'CANCELLED', cancellationReason: 'REST_DAY' }),
+    '本日休班，设备不需点检'
+  )
+  assert.equal(
+    routinePlanCancellationReasonLabel({ status: 'CANCELLED', cancelReason: 'RULE_UPDATED' }),
+    '点检或保养规则已调整，原未执行计划已作废'
+  )
+  assert.equal(
+    routinePlanCancellationReasonLabel({ status: 'CANCELLED', cancellationReason: 'SIBLING_COMPLETED' }),
+    '同一周期已有计划完成，其余计划已作废'
+  )
+  assert.equal(
+    routinePlanCancellationReasonLabel({
+      status: 'CANCELLED',
+      cancellationReason: 'SCHEDULE_CHANGED',
+      cancellationReasonLabel: '规则执行周期或时间已调整，原未执行计划已作废'
+    }),
+    '规则执行周期或时间已调整，原未执行计划已作废'
+  )
+  assert.equal(
+    routinePlanCancellationReasonLabel({ status: 'CANCELLED' }),
+    '历史计划未记录取消原因'
+  )
+  assert.equal(routinePlanCancellationReasonLabel({ status: 'COMPLETED' }), '')
+})
+
+test('routine record presentation accepts enriched plan fields and maps snapshot checklist order', () => {
+  const record = {
+    planId: 'plan-12345678',
+    planScheduledFor: '2026-08-09T06:25:00.000Z',
+    planDueAt: '2026-08-09T06:50:00.000Z',
+    planWindowName: '白班',
+    planCycleKey: 'cycle-1',
+    equipment: { plateNumber: '鲁A12345' },
+    ruleSnapshot: {
+      checklistItems: [
+        { key: 'oil', name: '检查油位', description: '油位正常', required: true },
+        { key: 'brake', name: '检查制动', required: true }
+      ]
+    },
+    itemResults: [
+      { itemKey: 'brake', result: 'ABNORMAL', note: '制动偏软' },
+      { itemKey: 'oil', result: 'NORMAL', note: '' }
+    ]
+  }
+  assert.deepEqual(routineRecordPlanWindow(record), {
+    planId: 'plan-12345678',
+    scheduledFor: '2026-08-09T06:25:00.000Z',
+    dueAt: '2026-08-09T06:50:00.000Z',
+    windowName: '白班',
+    cycleKey: 'cycle-1'
+  })
+  assert.equal(routineRecordPlateNumber(record), '鲁A12345')
+  assert.equal(routineRecordPerformerName({
+    performedByName: '  主记录姓名  ',
+    performedByUser: { name: '用户回退姓名', username: 'fallback-user' }
+  }), '主记录姓名')
+  assert.equal(routineRecordPerformerName({
+    performedByUser: { name: '用户回退姓名', username: 'fallback-user' }
+  }), '用户回退姓名')
+  assert.equal(routineRecordPerformerName({
+    performedByUser: { name: '', username: 'fallback-user' }
+  }), 'fallback-user')
+  assert.equal(routineRecordPerformerName({}), '-')
+  assert.deepEqual(
+    routineRecordChecklistItems(record).map(({ itemKey, name, result, note }) => ({ itemKey, name, result, note })),
+    [
+      { itemKey: 'oil', name: '检查油位', result: 'NORMAL', note: '' },
+      { itemKey: 'brake', name: '检查制动', result: 'ABNORMAL', note: '制动偏软' }
+    ]
+  )
+  assert.deepEqual(
+    routineRecordChecklistItems({
+      ruleSnapshot: record.ruleSnapshot,
+      itemResults: [{ itemKey: 'brake', result: 'NORMAL', note: '' }]
+    }).map(({ itemKey, result }) => ({ itemKey, result })),
+    [{ itemKey: 'oil', result: '' }, { itemKey: 'brake', result: 'NORMAL' }]
+  )
+})
+
+test('routine record details preview private photos in the selected team context', () => {
+  assert.match(workbenchSource, /import \{ downloadFileBlob \} from '@\/api\/file'/)
+  assert.match(workbenchSource, /const selectedRecordPhotos = computed\(\(\) => recordPhotos\(selectedRecord\.value \|\| \{\}\)\)/)
+  assert.match(workbenchSource, /for \(const value of Array\.isArray\(row\.photoFileIds\) \? row\.photoFileIds : \[\]\)/)
+  assert.match(workbenchSource, /loadBlob: \(\) => downloadFileBlob\(fileId, requestedTeamId\)/)
+  assert.match(workbenchSource, /@click="previewRecordPhoto\(photo, index\)"/)
+  assert.match(workbenchSource, /URL\.revokeObjectURL\(recordPhotoPreviewUrl\.value\)/)
+  assert.match(workbenchSource, /<el-button @click="closeRecordDetail">关闭<\/el-button>/)
+  assert.match(workbenchSource, /function closeRecordDetail\(\) \{\s*invalidateRecordPhotoRequest\(\)/)
+  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*closeRecordDetail\(\)/)
+  assert.match(workbenchSource, /onBeforeUnmount\(\(\) => \{\s*recordPhotoRequestGuard\.destroy\(\)/)
+})
+
+test('routine photo preview rejects stale record, team, close, and unmount responses', async () => {
+  const deferred = () => {
+    let resolve
+    const promise = new Promise((done) => { resolve = done })
+    return { promise, resolve }
+  }
+  const baseContext = { recordId: 'record-a', teamId: 'team-a', userId: 'user-a' }
+
+  for (const staleContext of [
+    { ...baseContext, recordId: 'record-b' },
+    { ...baseContext, teamId: 'team-b' },
+    { ...baseContext, userId: 'user-b' }
+  ]) {
+    const guard = createRoutineRecordPhotoRequestGuard()
+    const pending = deferred()
+    const request = guard.begin(baseContext)
+    let currentContext = baseContext
+    let createCount = 0
+    const previewPromise = loadRoutineRecordPhotoPreview({
+      guard,
+      request,
+      currentContext: () => currentContext,
+      loadBlob: () => pending.promise,
+      createObjectUrl: () => {
+        createCount += 1
+        return 'blob:unexpected'
+      },
+      revokeObjectUrl: () => {}
+    })
+    currentContext = staleContext
+    pending.resolve({ type: 'image/jpeg' })
+    assert.deepEqual(await previewPromise, { stale: true, url: '' })
+    assert.equal(createCount, 0)
+  }
+
+  for (const invalidate of [
+    (guard) => guard.invalidate(),
+    (guard) => guard.destroy()
+  ]) {
+    const guard = createRoutineRecordPhotoRequestGuard()
+    const pending = deferred()
+    const request = guard.begin(baseContext)
+    let createCount = 0
+    const previewPromise = loadRoutineRecordPhotoPreview({
+      guard,
+      request,
+      currentContext: () => baseContext,
+      loadBlob: () => pending.promise,
+      createObjectUrl: () => {
+        createCount += 1
+        return 'blob:unexpected'
+      },
+      revokeObjectUrl: () => {}
+    })
+    invalidate(guard)
+    pending.resolve({ type: 'image/jpeg' })
+    assert.deepEqual(await previewPromise, { stale: true, url: '' })
+    assert.equal(createCount, 0)
+  }
+})
+
+test('routine photo preview revokes an object URL if it becomes stale during URL creation', async () => {
+  const context = { recordId: 'record-a', teamId: 'team-a', userId: 'user-a' }
+  const liveGuard = createRoutineRecordPhotoRequestGuard()
+  const liveRequest = liveGuard.begin(context)
+  const liveRevoked = []
+  const liveResult = await loadRoutineRecordPhotoPreview({
+    guard: liveGuard,
+    request: liveRequest,
+    currentContext: () => context,
+    loadBlob: async () => ({ type: 'image/jpeg' }),
+    createObjectUrl: () => 'blob:current-photo',
+    revokeObjectUrl: (url) => liveRevoked.push(url)
+  })
+  assert.deepEqual(liveResult, { stale: false, url: 'blob:current-photo' })
+  assert.deepEqual(liveRevoked, [])
+
+  const guard = createRoutineRecordPhotoRequestGuard()
+  const request = guard.begin(context)
+  const revoked = []
+  const result = await loadRoutineRecordPhotoPreview({
+    guard,
+    request,
+    currentContext: () => context,
+    loadBlob: async () => ({ type: 'image/jpeg' }),
+    createObjectUrl: () => {
+      guard.invalidate()
+      return 'blob:late-photo'
+    },
+    revokeObjectUrl: (url) => revoked.push(url)
+  })
+
+  assert.deepEqual(result, { stale: true, url: '' })
+  assert.deepEqual(revoked, ['blob:late-photo'])
+})
+
 test('routine rule terms include short customer-facing explanations without changing the payload', () => {
   for (const text of [
     '点检用于检查设备状态，保养用于记录维护工作。',
@@ -108,10 +375,19 @@ test('routine record export is permission gated and protected from repeated clic
 test('routine workbench discards stale team and tab responses', () => {
   assert.match(workbenchSource, /let referenceRequestId = 0/)
   assert.match(workbenchSource, /let activeTabRequestId = 0/)
-  assert.match(workbenchSource, /const requestId = \+\+referenceRequestId[\s\S]*if \(requestId !== referenceRequestId\) return/)
-  assert.match(workbenchSource, /const requestId = \+\+activeTabRequestId[\s\S]*if \(requestId !== activeTabRequestId\) return/)
+  assert.match(workbenchSource, /const requestId = \+\+referenceRequestId[\s\S]*requestId !== referenceRequestId \|\|[\s\S]*requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)[\s\S]*\) return/)
+  assert.match(workbenchSource, /const requestId = \+\+activeTabRequestId[\s\S]*requestId !== activeTabRequestId \|\|[\s\S]*requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)[\s\S]*\) return/)
   assert.match(workbenchSource, /if \(requestId === activeTabRequestId\) loading\.value = false/)
   assert.match(workbenchSource, /plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
+  assert.match(workbenchSource, /requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)/)
+  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*closeRecordDetail\(\)\s*\+\+activeTabRequestId\s*\+\+referenceRequestId/)
+  assert.match(workbenchSource, /changeTeam\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\]/)
+  assert.match(workbenchSource, /async function changeTab\(\) \{\s*\+\+activeTabRequestId\s*loading\.value = false/)
+  assert.match(workbenchSource, /changeTab\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
+})
+
+test('routine date filters include the complete selected end date', () => {
+  assert.match(workbenchSource, /to: to \? `\$\{to\}T23:59:59\.999\+08:00` : undefined/)
 })
 
 test('message focus is removed before routine filters or pagination are applied', () => {

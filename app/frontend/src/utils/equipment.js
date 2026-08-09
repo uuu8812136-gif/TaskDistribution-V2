@@ -113,6 +113,231 @@ export function routineExecutionStatusLabel(entry = {}) {
   return isRoutineScheduleExecutable(entry) ? '' : '当前不可执行'
 }
 
+const ROUTINE_PLAN_CANCELLATION_REASON_LABELS = Object.freeze({
+  REST_DAY: '本日休班，设备不需点检',
+  OFF_DUTY_TODAY: '本日休班，设备不需点检',
+  RULE_CHANGED: '点检或保养规则已调整，原未执行计划已作废',
+  RULE_UPDATED: '点检或保养规则已调整，原未执行计划已作废',
+  RULE_VERSION_CHANGED: '点检或保养规则已调整，原未执行计划已作废',
+  SCHEDULE_CHANGED: '规则执行周期或时间已调整，原未执行计划已作废',
+  RULE_REGENERATED: '系统已生成新的适用计划，原计划已作废',
+  PLAN_REGENERATED: '系统已生成新的适用计划，原计划已作废',
+  SUPERSEDED: '系统已生成新的适用计划，原计划已作废',
+  RULE_DEACTIVATED: '点检或保养规则已停用，原未执行计划已作废',
+  EQUIPMENT_STATUS_CHANGED: '设备已不再处于在用状态，原未执行计划已作废',
+  RULE_DISABLED: '点检或保养规则已停用，原未执行计划已作废',
+  SIBLING_COMPLETED: '同一周期已有计划完成，其余计划已作废',
+  CYCLE_COMPLETED: '同一周期已有计划完成，其余计划已作废',
+  ALTERNATIVE_PLAN_COMPLETED: '同一周期已有计划完成，其余计划已作废',
+  COMBINED_ANY_COMPLETED: '同一周期已有计划完成，其余计划已作废',
+  EQUIPMENT_INACTIVE: '设备已停用，原计划作废',
+  LEGACY_UNSPECIFIED: '历史计划已取消，原系统未记录具体原因'
+})
+
+function firstPresentValue(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== '') ?? null
+}
+
+function routineRecordPlan(record = {}) {
+  if (record.plan && typeof record.plan === 'object') return record.plan
+  if (record.routinePlan && typeof record.routinePlan === 'object') return record.routinePlan
+  if (record.planSnapshot && typeof record.planSnapshot === 'object') return record.planSnapshot
+  if (record.planId && typeof record.planId === 'object') return record.planId
+  return {}
+}
+
+export function routinePlanCancellationReasonLabel(plan = {}) {
+  if (String(plan.status || '').toUpperCase() !== 'CANCELLED') return ''
+  const directLabel = String(firstPresentValue(
+    plan.cancellationReasonLabel,
+    plan.cancelReasonLabel,
+    plan.cancellation?.label
+  ) || '').trim()
+  if (directLabel) return directLabel
+  const supplied = firstPresentValue(
+    plan.cancellationReason,
+    plan.cancelReason,
+    plan.cancelledReason,
+    plan.cancellation?.reason
+  )
+  const suppliedIsObject = Boolean(supplied && typeof supplied === 'object')
+  const code = suppliedIsObject
+    ? String(supplied.code || supplied.value || '').trim()
+    : String(supplied || '').trim()
+  const suppliedLabel = suppliedIsObject
+    ? String(supplied.label || supplied.message || '').trim()
+    : ''
+  if (suppliedLabel) return suppliedLabel
+  if (!code) return '历史计划未记录取消原因'
+  const normalized = code.toUpperCase()
+  if (ROUTINE_PLAN_CANCELLATION_REASON_LABELS[normalized]) {
+    return ROUTINE_PLAN_CANCELLATION_REASON_LABELS[normalized]
+  }
+  return /[\u3400-\u9fff]/u.test(code) ? code : `取消原因：${code}`
+}
+
+export function routineRecordPlanWindow(record = {}) {
+  const plan = routineRecordPlan(record)
+  const planIdValue = firstPresentValue(record.planId, plan._id, plan.id)
+  const planId = typeof planIdValue === 'object'
+    ? String(planIdValue._id || planIdValue.id || '')
+    : String(planIdValue || '')
+  return {
+    planId,
+    scheduledFor: firstPresentValue(
+      record.planScheduledFor,
+      record.planStartAt,
+      plan.scheduledFor,
+      record.planWindow?.scheduledFor,
+      record.scheduledFor
+    ),
+    dueAt: firstPresentValue(
+      record.planDueAt,
+      record.planDeadline,
+      plan.dueAt,
+      record.planWindow?.dueAt,
+      record.dueAt
+    ),
+    windowName: String(firstPresentValue(
+      record.planWindowName,
+      plan.windowName,
+      record.planWindow?.name,
+      record.windowName
+    ) || ''),
+    cycleKey: String(firstPresentValue(record.planCycleKey, plan.cycleKey, record.cycleKey) || '')
+  }
+}
+
+export function routineRecordPlateNumber(record = {}) {
+  return String(firstPresentValue(
+    record.plateNumber,
+    record.equipment?.plateNumber,
+    record.equipmentSnapshot?.plateNumber,
+    record.asset?.plateNumber
+  ) || '')
+}
+
+export function routineRecordPerformerName(record = {}) {
+  const performer = record.performedByUser && typeof record.performedByUser === 'object'
+    ? record.performedByUser
+    : {}
+  const legacyPerformer = record.performedBy && typeof record.performedBy === 'object'
+    ? record.performedBy
+    : {}
+  const candidates = [
+    record.performedByName,
+    performer.name,
+    performer.displayName,
+    performer.realName,
+    performer.username,
+    legacyPerformer.name,
+    legacyPerformer.displayName,
+    legacyPerformer.realName,
+    legacyPerformer.username
+  ]
+  for (const value of candidates) {
+    const normalized = String(value || '').trim()
+    if (normalized) return normalized
+  }
+  return '-'
+}
+
+function normalizeRoutineRecordPhotoContext(context = {}) {
+  return {
+    recordId: String(context.recordId || ''),
+    teamId: String(context.teamId || ''),
+    userId: String(context.userId || '')
+  }
+}
+
+export function createRoutineRecordPhotoRequestGuard() {
+  let requestId = 0
+  let alive = true
+  return {
+    begin(context = {}) {
+      if (!alive) throw new Error('照片预览组件已卸载')
+      requestId += 1
+      return Object.freeze({ requestId, ...normalizeRoutineRecordPhotoContext(context) })
+    },
+    invalidate() {
+      requestId += 1
+    },
+    destroy() {
+      alive = false
+      requestId += 1
+    },
+    isCurrent(request, context = {}) {
+      if (!alive || !request || request.requestId !== requestId) return false
+      const current = normalizeRoutineRecordPhotoContext(context)
+      return request.recordId === current.recordId &&
+        request.teamId === current.teamId &&
+        request.userId === current.userId
+    }
+  }
+}
+
+export async function loadRoutineRecordPhotoPreview({
+  guard,
+  request,
+  currentContext,
+  loadBlob,
+  createObjectUrl,
+  revokeObjectUrl
+} = {}) {
+  if (!guard || typeof guard.isCurrent !== 'function') throw new TypeError('缺少照片请求守卫')
+  if (typeof currentContext !== 'function') throw new TypeError('缺少照片请求上下文')
+  if (typeof loadBlob !== 'function') throw new TypeError('缺少照片下载函数')
+  if (typeof createObjectUrl !== 'function') throw new TypeError('缺少照片 URL 创建函数')
+  if (typeof revokeObjectUrl !== 'function') throw new TypeError('缺少照片 URL 释放函数')
+
+  if (!guard.isCurrent(request, currentContext())) return { stale: true, url: '' }
+  const blob = await loadBlob()
+  if (!guard.isCurrent(request, currentContext())) return { stale: true, url: '' }
+
+  const url = createObjectUrl(blob)
+  if (!guard.isCurrent(request, currentContext())) {
+    revokeObjectUrl(url)
+    return { stale: true, url: '' }
+  }
+  return { stale: false, url }
+}
+
+export function routineRecordChecklistItems(record = {}) {
+  const rule = record.ruleSnapshot || record.rule || record.routineRule || {}
+  const configuredItems = Array.isArray(rule.checklistItems) ? rule.checklistItems : []
+  const itemResults = Array.isArray(record.itemResults) ? record.itemResults : []
+  const resultByKey = new Map(itemResults
+    .filter((item) => item?.itemKey)
+    .map((item) => [String(item.itemKey), item]))
+  const consumed = new Set()
+  const rows = configuredItems.map((configured, index) => {
+    const itemKey = String(configured?.key || configured?.itemKey || '')
+    const result = itemKey ? (resultByKey.get(itemKey) || {}) : (itemResults[index] || {})
+    if (result?.itemKey) consumed.add(String(result.itemKey))
+    return {
+      itemKey: itemKey || String(result?.itemKey || `item-${index + 1}`),
+      name: String(configured?.name || result?.name || `项目 ${index + 1}`),
+      description: String(configured?.description || result?.description || ''),
+      required: configured?.required !== false,
+      result: String(result?.result || ''),
+      note: String(result?.note || '')
+    }
+  })
+  for (const [index, result] of itemResults.entries()) {
+    const itemKey = String(result?.itemKey || '')
+    if ((itemKey && consumed.has(itemKey)) || (!itemKey && index < configuredItems.length)) continue
+    rows.push({
+      itemKey: itemKey || `legacy-item-${index + 1}`,
+      name: String(result?.name || `历史项目 ${index + 1}`),
+      description: String(result?.description || ''),
+      required: true,
+      result: String(result?.result || ''),
+      note: String(result?.note || '')
+    })
+  }
+  return rows
+}
+
 export const IMPORT_DECISION_ACTIONS = Object.freeze({
   ACCEPT_AS_IS: 'ACCEPT_AS_IS',
   ACCEPT_SUGGESTION: 'ACCEPT_SUGGESTION',

@@ -7,6 +7,17 @@
       </div>
       <div class="heading-actions">
         <el-button
+          v-if="canRunRoutineWorker"
+          type="primary"
+          plain
+          :loading="workerRunning"
+          :disabled="loading"
+          @click="runRoutineWorkerNow"
+        >
+          <el-icon><VideoPlay /></el-icon>
+          立即补跑计划
+        </el-button>
+        <el-button
           v-if="activeTab === 'plans' && canMarkRestDay"
           type="warning"
           plain
@@ -131,39 +142,119 @@
         <el-table-column label="窗口" min-width="120" prop="windowName" />
         <el-table-column label="开始时间" width="170"><template #default="{ row }">{{ displayTime(row.scheduledFor) }}</template></el-table-column>
         <el-table-column label="截止时间" width="170"><template #default="{ row }">{{ displayTime(row.dueAt) }}</template></el-table-column>
-        <el-table-column label="计划状态" width="110" align="center">
-          <template #default="{ row }"><el-tag :type="planStatus(row.status).type" effect="plain">{{ planStatus(row.status).label }}</el-tag></template>
+        <el-table-column label="计划状态" min-width="230">
+          <template #default="{ row }">
+            <div class="plan-status-cell">
+              <el-tag :type="planStatus(row.status).type" effect="plain">{{ planStatus(row.status).label }}</el-tag>
+              <span v-if="planCancellationReason(row)" :title="planCancellationReason(row)">
+                {{ planCancellationReason(row) }}
+              </span>
+            </div>
+          </template>
         </el-table-column>
       </el-table>
     </section>
 
     <section v-else-if="activeTab === 'records'" class="table-shell">
-      <el-table v-loading="loading" :data="records" row-key="_id" stripe empty-text="暂无执行记录">
-        <el-table-column label="设备" min-width="190" fixed="left">
+      <el-table
+        v-loading="loading"
+        :data="records"
+        class="record-table-view"
+        row-key="_id"
+        stripe
+        empty-text="暂无执行记录"
+      >
+        <el-table-column label="设备" min-width="160">
           <template #default="{ row }">
-            <div class="primary-cell"><strong>{{ row.equipment?.name || '-' }}</strong><span>{{ row.equipment?.assetCode || '-' }}</span></div>
-          </template>
-        </el-table-column>
-        <el-table-column label="组织" min-width="130"><template #default="{ row }">{{ row.orgUnit?.name || '-' }}</template></el-table-column>
-        <el-table-column label="规则" min-width="180"><template #default="{ row }">{{ row.ruleSnapshot?.name || '-' }} v{{ row.ruleVersion }}</template></el-table-column>
-        <el-table-column label="类型" width="90"><template #default="{ row }">{{ routineLabel(row.routineType) }}</template></el-table-column>
-        <el-table-column label="运行小时" width="110" align="right">
-          <template #default="{ row }">{{ row.performedRuntimeHours ?? '-' }}</template>
-        </el-table-column>
-        <el-table-column label="结果" width="100" align="center">
-          <template #default="{ row }"><el-tag :type="row.overallResult === 'ABNORMAL' ? 'danger' : 'success'" effect="plain">{{ resultLabel(row.overallResult) }}</el-tag></template>
-        </el-table-column>
-        <el-table-column label="执行时间" width="170"><template #default="{ row }">{{ displayTime(row.performedAt) }}</template></el-table-column>
-        <el-table-column label="异常说明" min-width="220" show-overflow-tooltip prop="abnormalSummary" />
-        <el-table-column label="照片/水印" min-width="240">
-          <template #default="{ row }">
-            <span v-if="!row.photoEvidence?.length">无</span>
-            <div v-else class="watermark-list">
-              <span v-for="photo in row.photoEvidence" :key="photo.fileId">{{ displayWatermark(row, photo) }}</span>
+            <div class="record-cell-stack">
+              <strong>{{ row.equipment?.name || '-' }}</strong>
+              <span>{{ row.equipment?.assetCode || '-' }}</span>
+              <span>车牌号：{{ recordPlateNumber(row) || '-' }}</span>
             </div>
           </template>
         </el-table-column>
+        <el-table-column label="组织" min-width="100">
+          <template #default="{ row }">{{ row.orgUnit?.name || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="规则" min-width="145">
+          <template #default="{ row }">
+            <div class="record-cell-stack">
+              <strong>{{ recordRuleLabel(row) }}</strong>
+              <span>{{ routineLabel(row.routineType) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="对应计划" min-width="220">
+          <template #default="{ row }">
+            <div class="record-cell-stack record-plan-cell">
+              <strong>{{ recordPlanReference(row) }}</strong>
+              <span v-if="recordPlanSecondary(row)" :title="recordPlanSecondary(row)">{{ recordPlanSecondary(row) }}</span>
+              <span>计划开始：{{ displayTime(recordPlanWindow(row).scheduledFor) }}</span>
+              <span>计划截止：{{ displayTime(recordPlanWindow(row).dueAt) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="执行情况" min-width="155">
+          <template #default="{ row }">
+            <div class="record-cell-stack">
+              <strong>{{ displayTime(row.performedAt) }}</strong>
+              <span>执行人：{{ recordPerformerName(row) }}</span>
+              <span>运行小时：{{ row.performedRuntimeHours ?? '-' }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="结果与证据" min-width="220">
+          <template #default="{ row }">
+            <div class="record-evidence-cell">
+              <el-tag :type="resultTagType(row.overallResult)" effect="plain">{{ resultLabel(row.overallResult) }}</el-tag>
+              <span :title="row.abnormalSummary || '无异常说明'">异常：{{ row.abnormalSummary || '无' }}</span>
+              <span :title="recordPhotoEvidenceText(row)">照片：{{ recordPhotoSummary(row) }}</span>
+            </div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="88" align="center">
+          <template #default="{ row }"><el-button text type="primary" @click="openRecordDetail(row)">查看详情</el-button></template>
+        </el-table-column>
       </el-table>
+
+      <div v-loading="loading" class="record-compact-view">
+        <el-empty v-if="!records.length && !loading" description="暂无执行记录" :image-size="72" />
+        <div v-for="row in records" :key="row._id" class="record-compact-row">
+          <div class="record-compact-heading">
+            <div class="record-cell-stack">
+              <strong>{{ row.equipment?.name || '-' }}</strong>
+              <span>{{ row.equipment?.assetCode || '-' }} · 车牌号：{{ recordPlateNumber(row) || '-' }} · {{ row.orgUnit?.name || '-' }}</span>
+            </div>
+            <el-tag :type="resultTagType(row.overallResult)" effect="plain">{{ resultLabel(row.overallResult) }}</el-tag>
+            <el-button text type="primary" @click="openRecordDetail(row)">查看详情</el-button>
+          </div>
+          <div class="record-compact-grid">
+            <div>
+              <span>规则</span>
+              <strong>{{ recordRuleLabel(row) }}</strong>
+              <small>{{ routineLabel(row.routineType) }}</small>
+            </div>
+            <div>
+              <span>对应计划</span>
+              <strong>{{ recordPlanReference(row) }}</strong>
+              <small v-if="recordPlanSecondary(row)">{{ recordPlanSecondary(row) }}</small>
+              <small>计划开始：{{ displayTime(recordPlanWindow(row).scheduledFor) }}</small>
+              <small>计划截止：{{ displayTime(recordPlanWindow(row).dueAt) }}</small>
+            </div>
+            <div>
+              <span>执行情况</span>
+              <strong>{{ displayTime(row.performedAt) }}</strong>
+              <small>执行人：{{ recordPerformerName(row) }}</small>
+              <small>运行小时：{{ row.performedRuntimeHours ?? '-' }}</small>
+            </div>
+            <div>
+              <span>结果与证据</span>
+              <strong>异常：{{ row.abnormalSummary || '无' }}</strong>
+              <small :title="recordPhotoEvidenceText(row)">照片：{{ recordPhotoSummary(row) }}</small>
+            </div>
+          </div>
+        </div>
+      </div>
     </section>
 
     <section v-else class="table-shell">
@@ -205,6 +296,88 @@
       />
     </footer>
 
+    <el-dialog
+      v-model="recordDetailVisible"
+      title="点检/保养执行详情"
+      class="routine-record-detail-dialog"
+      width="min(980px, 96vw)"
+      append-to-body
+      @close="closeRecordDetail"
+    >
+      <template v-if="selectedRecord">
+        <el-descriptions :column="2" border class="record-detail-summary">
+          <el-descriptions-item label="设备">
+            {{ selectedRecord.equipment?.name || '-' }}（{{ selectedRecord.equipment?.assetCode || '-' }}）
+          </el-descriptions-item>
+          <el-descriptions-item label="车牌号">{{ recordPlateNumber(selectedRecord) || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="规则">{{ recordRuleLabel(selectedRecord) }}</el-descriptions-item>
+          <el-descriptions-item label="类型">{{ routineLabel(selectedRecord.routineType) }}</el-descriptions-item>
+          <el-descriptions-item label="关联计划">{{ recordPlanReference(selectedRecord, true) }}</el-descriptions-item>
+          <el-descriptions-item label="计划窗口">{{ recordPlanWindowLabel(selectedRecord) }}</el-descriptions-item>
+          <el-descriptions-item label="执行时间">{{ displayTime(selectedRecord.performedAt) }}</el-descriptions-item>
+          <el-descriptions-item label="执行人">{{ recordPerformerName(selectedRecord) }}</el-descriptions-item>
+          <el-descriptions-item label="总体结果">
+            <el-tag :type="resultTagType(selectedRecord.overallResult)" effect="plain">
+              {{ resultLabel(selectedRecord.overallResult) }}
+            </el-tag>
+          </el-descriptions-item>
+          <el-descriptions-item label="异常说明" :span="2">{{ selectedRecord.abnormalSummary || '无' }}</el-descriptions-item>
+          <el-descriptions-item label="照片信息" :span="2">
+            <span v-if="!selectedRecordPhotos.length">无现场照片</span>
+            <div v-else class="record-photo-list">
+              <div v-for="(photo, index) in selectedRecordPhotos" :key="photo.fileId">
+                <div class="record-photo-copy">
+                  <strong>照片 {{ index + 1 }}</strong>
+                  <span>{{ displayWatermark(selectedRecord, photo) }}</span>
+                </div>
+                <el-button
+                  text
+                  type="primary"
+                  :loading="recordPhotoLoadingId === photo.fileId"
+                  :aria-label="`预览照片 ${index + 1}`"
+                  @click="previewRecordPhoto(photo, index)"
+                >
+                  <el-icon><View /></el-icon>
+                  预览
+                </el-button>
+              </div>
+            </div>
+          </el-descriptions-item>
+        </el-descriptions>
+
+        <section class="record-detail-section">
+          <h3>逐项执行结果</h3>
+          <div v-if="selectedRecordItems.length" class="record-result-list">
+            <div v-for="(item, index) in selectedRecordItems" :key="item.itemKey || index" class="record-result-row">
+              <div class="record-result-copy">
+                <strong>{{ index + 1 }}. {{ item.name }}</strong>
+                <span>{{ item.description || (item.required ? '必检项目' : '选检项目') }}</span>
+              </div>
+              <el-tag :type="resultTagType(item.result)" effect="plain">{{ itemResultLabel(item.result) }}</el-tag>
+              <span class="record-result-note">{{ item.note || '无备注' }}</span>
+            </div>
+          </div>
+          <el-empty v-else description="该历史记录没有逐项结果" :image-size="72" />
+        </section>
+      </template>
+      <template #footer><el-button @click="closeRecordDetail">关闭</el-button></template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="recordPhotoPreviewVisible"
+      :title="recordPhotoPreviewName || '现场照片'"
+      width="min(760px, 94vw)"
+      append-to-body
+      @closed="clearRecordPhotoPreview"
+    >
+      <img
+        v-if="recordPhotoPreviewUrl"
+        :src="recordPhotoPreviewUrl"
+        :alt="recordPhotoPreviewName || '现场照片'"
+        class="record-photo-preview"
+      />
+    </el-dialog>
+
     <el-dialog v-model="handleVisible" title="处理设备异常" width="min(560px, 94vw)" append-to-body>
       <el-alert :title="selectedException?.summary || ''" type="warning" :closable="false" />
       <el-form label-position="top" class="handle-form">
@@ -224,7 +397,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -238,9 +411,22 @@ import {
   getEquipmentRoutinePlans,
   getEquipmentRoutineRecords,
   markEquipmentRoutinePlansRestDay,
+  runEquipmentRoutineWorker,
   transitionEquipmentRoutineException
 } from '@/api/equipment'
-import { routineScheduleLabel, saveBlob } from '@/utils/equipment'
+import { downloadFileBlob } from '@/api/file'
+import {
+  createRoutineRecordPhotoRequestGuard,
+  loadRoutineRecordPhotoPreview,
+  routinePlanCancellationReasonLabel,
+  routineRecordChecklistItems,
+  routineRecordPerformerName,
+  routineRecordPlanWindow,
+  routineRecordPlateNumber,
+  routineScheduleLabel,
+  saveBlob
+} from '@/utils/equipment'
+import { requestErrorMessage } from '@/utils/request'
 import { useSessionStore } from '@/stores/session'
 
 const session = useSessionStore()
@@ -252,6 +438,7 @@ const loading = ref(false)
 const exporting = ref(false)
 const submitting = ref(false)
 const restDaySubmitting = ref(false)
+const workerRunning = ref(false)
 const activeTab = ref(ROUTINE_TABS.has(requestedTab) ? requestedTab : 'plans')
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const focusedExceptionId = ref(String(route.query.exceptionId || ''))
@@ -268,6 +455,13 @@ let referenceRequestId = 0
 let activeTabRequestId = 0
 const handleVisible = ref(false)
 const selectedException = ref(null)
+const recordDetailVisible = ref(false)
+const selectedRecord = ref(null)
+const recordPhotoPreviewVisible = ref(false)
+const recordPhotoPreviewUrl = ref('')
+const recordPhotoPreviewName = ref('')
+const recordPhotoLoadingId = ref('')
+const recordPhotoRequestGuard = createRoutineRecordPhotoRequestGuard()
 const filters = reactive({
   routineType: '',
   dateRange: [],
@@ -315,16 +509,41 @@ const canExport = computed(() => session.hasPermission('equipment.export'))
 const canMarkRestDay = computed(() => (
   session.isTeamMode && session.hasPermission('equipment.inspect')
 ))
+const canRunRoutineWorker = computed(() => {
+  const membership = session.context.membership || {}
+  const managerIdentityAllowed = (
+    session.isSuperAdmin ||
+    membership.positionKey === 'DEPARTMENT_MANAGER' ||
+    membership.functionalRoleKeys?.includes('ASSET_ADMIN')
+  )
+  return managerIdentityAllowed &&
+    session.isTeamMode &&
+    session.moduleDataScopes.equipment === 'TEAM' &&
+    session.can('equipment.edit', { write: true, teamRequired: true })
+})
 const handleActions = computed(() => (
   selectedException.value?.currentStage === 'ASSET_ADMIN'
     ? [{ label: '解决异常', value: 'RESOLVE' }]
     : [{ label: '本级解决', value: 'RESOLVE' }, { label: '无法解决，升级', value: 'ESCALATE' }]
 ))
+const selectedRecordItems = computed(() => routineRecordChecklistItems(selectedRecord.value || {}))
+const selectedRecordPhotos = computed(() => recordPhotos(selectedRecord.value || {}))
 
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 const routineLabel = (value) => value === 'MAINTENANCE' ? '保养' : '点检'
 const resultLabel = (value) => ({ NORMAL: '正常', COMPLETED: '完成', ABNORMAL: '异常' }[value] || value || '-')
+const itemResultLabel = (value) => ({
+  NORMAL: '正常',
+  COMPLETED: '完成',
+  ABNORMAL: '异常',
+  SKIPPED: '跳过'
+}[value] || (value ? String(value) : '未记录'))
+const resultTagType = (value) => ({ ABNORMAL: 'danger', SKIPPED: 'info' }[value] || (value ? 'success' : 'info'))
 const planStatus = (value) => planStatuses[value] || { label: value || '-', type: 'info' }
+const planCancellationReason = (row) => routinePlanCancellationReasonLabel(row)
+const recordPlanWindow = (row) => routineRecordPlanWindow(row)
+const recordPlateNumber = (row) => routineRecordPlateNumber(row)
+const recordPerformerName = (row) => routineRecordPerformerName(row)
 const stageLabel = (value) => stages[value] || value || '-'
 const canSelectRestDayPlan = (row) => canMarkRestDay.value && row?.restDayEligible === true
 const displayWatermark = (row, photo) => {
@@ -343,6 +562,42 @@ const displayWatermark = (row, photo) => {
   if (coordinateText && !existing.includes(coordinateText)) parts.push(`GPS：${coordinateText}`)
   return parts.filter(Boolean).join(' | ')
 }
+
+function recordPhotoEvidenceText(row = {}) {
+  const photos = recordPhotos(row)
+  if (!photos.length) return '无现场照片'
+  return photos
+    .map((photo, index) => `照片 ${index + 1}：${displayWatermark(row, photo)}`)
+    .join('；')
+}
+
+function recordPhotoSummary(row = {}) {
+  const photos = recordPhotos(row)
+  if (!photos.length) return '无'
+  const first = displayWatermark(row, photos[0])
+  const firstSummary = first && first !== '-' ? ` · ${first}` : ''
+  const remainingSummary = photos.length > 1 ? ` · 其余 ${photos.length - 1} 张见详情` : ''
+  return `${photos.length} 张${firstSummary}${remainingSummary}`
+}
+
+function recordPhotos(row = {}) {
+  const photos = []
+  const seen = new Set()
+  for (const evidence of Array.isArray(row.photoEvidence) ? row.photoEvidence : []) {
+    const fileId = String(evidence?.fileId || '').trim()
+    if (!fileId || seen.has(fileId)) continue
+    seen.add(fileId)
+    photos.push({ ...evidence, fileId })
+  }
+  for (const value of Array.isArray(row.photoFileIds) ? row.photoFileIds : []) {
+    const fileId = String(value || '').trim()
+    if (!fileId || seen.has(fileId)) continue
+    seen.add(fileId)
+    photos.push({ fileId })
+  }
+  return photos
+}
+
 const planRowClass = ({ row }) => (
   focusedPlanId.value && String(row?._id || '') === focusedPlanId.value
     ? 'focused-message-row'
@@ -354,6 +609,33 @@ const exceptionRowClass = ({ row }) => (
     : ''
 )
 
+function recordRule(row = {}) {
+  return row.ruleSnapshot || row.rule || row.routineRule || {}
+}
+
+function recordRuleLabel(row = {}) {
+  const name = recordRule(row).name || row.ruleName || '-'
+  return row.ruleVersion ? `${name} v${row.ruleVersion}` : name
+}
+
+function recordPlanReference(row = {}, full = false) {
+  const { planId } = recordPlanWindow(row)
+  if (!planId) return '未关联计划（历史/手动记录）'
+  return full ? `计划编号 ${planId}` : `计划 ${planId.slice(-8)}`
+}
+
+function recordPlanSecondary(row = {}) {
+  const { windowName, cycleKey } = recordPlanWindow(row)
+  const visibleCycleKey = cycleKey.length > 14 ? `…${cycleKey.slice(-12)}` : cycleKey
+  return [windowName, visibleCycleKey ? `周期：${visibleCycleKey}` : ''].filter(Boolean).join(' · ')
+}
+
+function recordPlanWindowLabel(row = {}) {
+  const { scheduledFor, dueAt } = recordPlanWindow(row)
+  if (!scheduledFor && !dueAt) return '未记录计划时间'
+  return `${displayTime(scheduledFor)} 至 ${displayTime(dueAt)}`
+}
+
 function queryParams() {
   const [from, to] = filters.dateRange || []
   const params = {
@@ -362,7 +644,7 @@ function queryParams() {
     equipmentId: filters.equipmentId || undefined,
     orgUnitId: filters.orgUnitId || undefined,
     from: from ? `${from}T00:00:00+08:00` : undefined,
-    to: to ? `${to}T23:59:59+08:00` : undefined,
+    to: to ? `${to}T23:59:59.999+08:00` : undefined,
     page: filters.page,
     pageSize: filters.pageSize
   }
@@ -380,11 +662,15 @@ async function loadReferenceData() {
     return
   }
   const teamParams = { ...requestTeam.value }
+  const requestedTeamId = String(teamParams.teamId || '')
   const [equipmentResult, optionResult] = await Promise.all([
     getEquipmentList({ ...teamParams, page: 1, pageSize: 200 }),
     getEquipmentOptions(teamParams)
   ])
-  if (requestId !== referenceRequestId) return
+  if (
+    requestId !== referenceRequestId ||
+    requestedTeamId !== String(requestTeam.value.teamId || '')
+  ) return
   equipmentOptions.value = equipmentResult.equipment || []
   orgUnitOptions.value = optionResult.orgUnits || []
 }
@@ -402,6 +688,7 @@ async function loadActiveTab() {
   const tab = activeTab.value
   const params = queryParams()
   const teamParams = { ...requestTeam.value }
+  const requestedTeamId = String(teamParams.teamId || '')
   const requestedPlanId = focusedPlanId.value
   const requestedExceptionId = focusedExceptionId.value
   loading.value = true
@@ -411,7 +698,10 @@ async function loadActiveTab() {
       : tab === 'records'
         ? await getEquipmentRoutineRecords(params)
         : await getEquipmentRoutineExceptions(params)
-    if (requestId !== activeTabRequestId) return
+    if (
+      requestId !== activeTabRequestId ||
+      requestedTeamId !== String(requestTeam.value.teamId || '')
+    ) return
     const listedPlans = result.plans || []
     plans.value = listedPlans
     selectedRestDayPlanIds.value = []
@@ -502,6 +792,34 @@ async function markSelectedPlansRestDay() {
   }
 }
 
+async function runRoutineWorkerNow() {
+  if (!canRunRoutineWorker.value || workerRunning.value) return
+  workerRunning.value = true
+  let workerCompleted = false
+  try {
+    const response = await runEquipmentRoutineWorker()
+    workerCompleted = true
+    const result = response?.result || response || {}
+    const rulesProcessed = Number(result.rulesProcessed || 0)
+    const plansProcessed = Number(result.plansProcessed || 0)
+    ElMessage.success(`补跑完成：扫描 ${rulesProcessed} 条规则，处理 ${plansProcessed} 条计划`)
+    filters.page = 1
+    if (activeTab.value !== 'plans') {
+      activeTab.value = 'plans'
+      await changeTab()
+    } else {
+      await loadActiveTab()
+    }
+  } catch (error) {
+    ElMessage.error(requestErrorMessage(
+      error,
+      workerCompleted ? '补跑已完成，但计划列表刷新失败，请手动刷新' : '计划补跑失败，请稍后重试'
+    ))
+  } finally {
+    workerRunning.value = false
+  }
+}
+
 async function clearMessageFocus() {
   if (!focusedPlanId.value && !focusedExceptionId.value) return
   focusedPlanId.value = ''
@@ -542,6 +860,12 @@ async function changePage() {
 }
 
 async function changeTab() {
+  ++activeTabRequestId
+  loading.value = false
+  plans.value = []
+  records.value = []
+  exceptions.value = []
+  total.value = 0
   filters.page = 1
   focusedExceptionId.value = activeTab.value === 'exceptions' ? focusedExceptionId.value : ''
   focusedPlanId.value = activeTab.value === 'plans' ? focusedPlanId.value : ''
@@ -557,6 +881,16 @@ async function changeTab() {
 }
 
 async function changeTeam() {
+  closeRecordDetail()
+  ++activeTabRequestId
+  ++referenceRequestId
+  loading.value = false
+  plans.value = []
+  records.value = []
+  exceptions.value = []
+  equipmentOptions.value = []
+  orgUnitOptions.value = []
+  total.value = 0
   filters.equipmentId = ''
   filters.orgUnitId = ''
   filters.page = 1
@@ -576,6 +910,73 @@ async function changeTeam() {
 
 function canHandle(row) {
   return session.isTeamMode && row.status === 'OPEN' && row.accessPolicy?.canHandle === true
+}
+
+function openRecordDetail(row) {
+  invalidateRecordPhotoRequest()
+  recordPhotoPreviewVisible.value = false
+  clearRecordPhotoPreview()
+  selectedRecord.value = row
+  recordDetailVisible.value = true
+}
+
+function recordPhotoRequestContext() {
+  return {
+    recordId: String(selectedRecord.value?._id || selectedRecord.value?.id || ''),
+    teamId: String(requestTeam.value.teamId || session.activeTeamId || ''),
+    userId: String(session.user?._id || session.user?.id || '')
+  }
+}
+
+function invalidateRecordPhotoRequest() {
+  recordPhotoRequestGuard.invalidate()
+  recordPhotoLoadingId.value = ''
+}
+
+function clearRecordPhotoPreview() {
+  if (recordPhotoPreviewUrl.value) URL.revokeObjectURL(recordPhotoPreviewUrl.value)
+  recordPhotoPreviewUrl.value = ''
+  recordPhotoPreviewName.value = ''
+}
+
+function closeRecordDetail() {
+  invalidateRecordPhotoRequest()
+  recordDetailVisible.value = false
+  recordPhotoPreviewVisible.value = false
+  clearRecordPhotoPreview()
+  selectedRecord.value = null
+}
+
+async function previewRecordPhoto(photo, index) {
+  const fileId = String(photo?.fileId || '').trim()
+  const context = recordPhotoRequestContext()
+  if (!fileId || !context.recordId || recordPhotoLoadingId.value) return
+  const requestedTeamId = requestTeam.value.teamId
+  const request = recordPhotoRequestGuard.begin(context)
+  recordPhotoLoadingId.value = fileId
+  try {
+    const preview = await loadRoutineRecordPhotoPreview({
+      guard: recordPhotoRequestGuard,
+      request,
+      currentContext: recordPhotoRequestContext,
+      loadBlob: () => downloadFileBlob(fileId, requestedTeamId),
+      createObjectUrl: (blob) => URL.createObjectURL(blob),
+      revokeObjectUrl: (url) => URL.revokeObjectURL(url)
+    })
+    if (preview.stale) return
+    clearRecordPhotoPreview()
+    recordPhotoPreviewUrl.value = preview.url
+    recordPhotoPreviewName.value = `现场照片 ${index + 1}`
+    recordPhotoPreviewVisible.value = true
+  } catch (error) {
+    if (recordPhotoRequestGuard.isCurrent(request, recordPhotoRequestContext())) {
+      ElMessage.error(requestErrorMessage(error, '现场照片加载失败，请稍后重试'))
+    }
+  } finally {
+    if (recordPhotoRequestGuard.isCurrent(request, recordPhotoRequestContext())) {
+      recordPhotoLoadingId.value = ''
+    }
+  }
 }
 
 function openHandle(row) {
@@ -622,6 +1023,11 @@ onMounted(async () => {
   }
   await Promise.all([loadReferenceData(), loadActiveTab()])
 })
+onBeforeUnmount(() => {
+  recordPhotoRequestGuard.destroy()
+  recordPhotoLoadingId.value = ''
+  clearRecordPhotoPreview()
+})
 </script>
 
 <style scoped lang="scss">
@@ -639,12 +1045,49 @@ onMounted(async () => {
 .primary-cell, .watermark-list { display: grid; gap: 3px; }
 .primary-cell span, .watermark-list { color: var(--zl-muted); font-size: 12px; }
 .watermark-list span { overflow-wrap: anywhere; }
+.plan-status-cell { display: grid; justify-items: start; gap: 6px; }
+.plan-status-cell span { color: var(--zl-muted); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.record-cell-stack, .record-evidence-cell { min-width: 0; display: grid; align-content: start; gap: 4px; line-height: 1.4; }
+.record-cell-stack strong, .record-cell-stack span, .record-evidence-cell span { min-width: 0; overflow-wrap: anywhere; }
+.record-cell-stack span, .record-evidence-cell span { color: var(--zl-muted); font-size: 12px; }
+.record-plan-cell span, .record-evidence-cell span { white-space: normal; }
+.record-evidence-cell { justify-items: start; }
+.record-compact-view { display: none; }
+.record-compact-row { padding: 14px 12px; border-bottom: 1px solid var(--zl-border-soft); }
+.record-compact-row:last-child { border-bottom: 0; }
+.record-compact-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: start; gap: 10px; }
+.record-compact-heading > .el-button { margin-left: 0; }
+.record-compact-grid { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.4fr) minmax(145px, 0.8fr) minmax(190px, 1.2fr); gap: 12px; margin-top: 10px; }
+.record-compact-grid > div { min-width: 0; display: grid; align-content: start; gap: 4px; padding-top: 9px; border-top: 1px solid var(--zl-border-soft); }
+.record-compact-grid span, .record-compact-grid small, .record-compact-grid strong { min-width: 0; overflow-wrap: anywhere; }
+.record-compact-grid span { color: var(--zl-muted); font-size: 12px; }
+.record-compact-grid small { color: var(--zl-muted); line-height: 1.4; }
+.record-detail-section { margin-top: 20px; }
+.record-detail-section h3 { margin: 0 0 10px; font-size: 16px; letter-spacing: 0; }
+.record-photo-list, .record-result-list { display: grid; }
+.record-photo-list > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 5px 0; }
+.record-photo-copy { min-width: 0; display: grid; gap: 4px; }
+.record-photo-copy span { min-width: 0; overflow-wrap: anywhere; }
+.record-photo-preview { display: block; max-width: 100%; max-height: 72vh; margin: 0 auto; object-fit: contain; }
+.record-result-row { display: grid; grid-template-columns: minmax(220px, 1.2fr) 84px minmax(180px, 1fr); align-items: center; gap: 14px; min-height: 58px; padding: 10px 4px; border-top: 1px solid var(--zl-border-soft); }
+.record-result-row:last-child { border-bottom: 1px solid var(--zl-border-soft); }
+.record-result-copy { min-width: 0; display: grid; gap: 4px; }
+.record-result-copy span, .record-result-note { color: var(--zl-muted); font-size: 13px; overflow-wrap: anywhere; }
 :deep(.focused-message-row > td.el-table__cell) { background: var(--el-color-primary-light-9) !important; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .handle-form { margin-top: 18px; }
+@media (max-width: 1180px) {
+  .record-table-view { display: none; }
+  .record-compact-view { display: block; }
+}
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; flex-direction: column; }
   .heading-actions, .toolbar > *, .team-select { width: 100%; }
   .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
+  .record-compact-heading { grid-template-columns: minmax(0, 1fr) auto; }
+  .record-compact-heading > .el-button { grid-column: 1 / -1; justify-self: start; }
+  .record-compact-grid { grid-template-columns: minmax(0, 1fr); }
+  .record-result-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; }
+  .record-result-note { grid-column: 1 / -1; }
 }
 </style>

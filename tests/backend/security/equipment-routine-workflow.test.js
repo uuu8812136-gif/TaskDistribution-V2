@@ -249,6 +249,7 @@ async function seed() {
     orgUnitId: ids.group,
     categoryId: category._id,
     assetCode: 'EQ-001',
+    plateNumber: 'PLATE-EQ-001',
     name: '=现场设备',
     status: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE,
     createdBy: ids.departmentManager,
@@ -440,6 +441,335 @@ test('worker time progression sends branch-scoped inspection and maintenance rem
   }));
 });
 
+test('worker reconciles missing current calendar plans in and after the window without reviving closed plans', async () => {
+  const withinWindow = new Date('2030-01-15T00:00:00.000Z');
+  const afterWindow = new Date('2030-01-15T02:30:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => withinWindow });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => withinWindow });
+
+  await worker.runOnce({ now: withinWindow, teamId: fixture.ids.team });
+  const initialPlans = await EquipmentRoutinePlan.find({ ruleId: rule._id })
+    .sort({ scheduledFor: 1, windowKey: 1 })
+    .lean();
+  assert.equal(initialPlans.length, 4, 'current and next daily cycles must cover both enabled windows');
+  const currentDayPlan = initialPlans.find(({ windowKey, scheduledFor }) => (
+    windowKey === 'DAY_SHIFT' && scheduledFor <= withinWindow
+  ));
+  assert.equal(currentDayPlan.status, 'IN_WINDOW');
+
+  await EquipmentRoutinePlan.collection.deleteOne({ _id: currentDayPlan._id });
+  await worker.runOnce({ now: withinWindow, teamId: fixture.ids.team });
+  const restoredInWindow = await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    cycleKey: currentDayPlan.cycleKey,
+    windowKey: currentDayPlan.windowKey
+  }).lean();
+  assert.ok(restoredInWindow);
+  assert.equal(restoredInWindow.status, 'IN_WINDOW');
+
+  await EquipmentRoutinePlan.collection.deleteOne({ _id: restoredInWindow._id });
+  await worker.runOnce({ now: afterWindow, teamId: fixture.ids.team });
+  const restoredOverdue = await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    cycleKey: currentDayPlan.cycleKey,
+    windowKey: currentDayPlan.windowKey
+  }).lean();
+  assert.ok(restoredOverdue);
+  assert.equal(restoredOverdue.status, 'OVERDUE');
+  assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), 4);
+
+  const currentNightPlan = await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    cycleKey: currentDayPlan.cycleKey,
+    windowKey: 'NIGHT_SHIFT'
+  }).lean();
+  await EquipmentRoutinePlan.collection.updateOne({ _id: restoredOverdue._id }, {
+    $set: {
+      status: 'COMPLETED',
+      completedRecordId: objectId(),
+      completedAt: afterWindow,
+      completedBy: fixture.ids.employee
+    }
+  });
+  await EquipmentRoutinePlan.collection.updateOne({ _id: currentNightPlan._id }, {
+    $set: {
+      status: 'CANCELLED',
+      cancellationReason: 'REST_DAY',
+      cancelledAt: afterWindow,
+      cancelledBy: fixture.ids.employee
+    }
+  });
+
+  await worker.runOnce({ now: afterWindow, teamId: fixture.ids.team });
+  await worker.runOnce({ now: afterWindow, teamId: fixture.ids.team });
+  assert.equal((await EquipmentRoutinePlan.findById(restoredOverdue._id).lean()).status, 'COMPLETED');
+  const stillCancelled = await EquipmentRoutinePlan.findById(currentNightPlan._id).lean();
+  assert.equal(stillCancelled.status, 'CANCELLED');
+  assert.equal(stillCancelled.cancellationReason, 'REST_DAY');
+  assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), 4);
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    cycleKey: currentDayPlan.cycleKey,
+    windowKey: currentDayPlan.windowKey
+  }), 1);
+});
+
+test('worker reconciles a missing cross-midnight maintenance window and advances only after completion', async () => {
+  let currentTime = new Date('2030-01-15T16:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(currentTime) });
+  const rule = await createRule(routineService, 'MAINTENANCE', {
+    windows: [{
+      key: 'CROSS_MIDNIGHT',
+      name: 'Cross-midnight maintenance',
+      startTime: '22:00',
+      endTime: '02:00',
+      enabled: true
+    }],
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({
+    routineService,
+    clock: () => new Date(currentTime)
+  });
+
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  let plan = await EquipmentRoutinePlan.findOne({ ruleId: rule._id }).lean();
+  assert.ok(plan);
+  assert.equal(plan.status, 'IN_WINDOW');
+  assert.equal(plan.scheduledFor.toISOString(), '2030-01-15T14:00:00.000Z');
+  assert.equal(plan.dueAt.toISOString(), '2030-01-15T18:00:00.000Z');
+
+  await EquipmentRoutinePlan.collection.deleteOne({ _id: plan._id });
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  plan = await EquipmentRoutinePlan.findOne({ ruleId: rule._id }).lean();
+  assert.equal(plan.status, 'IN_WINDOW');
+
+  await EquipmentRoutinePlan.collection.deleteOne({ _id: plan._id });
+  currentTime = new Date('2030-01-15T19:00:00.000Z');
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  plan = await EquipmentRoutinePlan.findOne({ ruleId: rule._id }).lean();
+  assert.equal(plan.status, 'OVERDUE');
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: rule._id,
+    cycleKey: plan.cycleKey,
+    windowKey: plan.windowKey
+  }), 1);
+
+  await routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: fixture.asset._id,
+    input: {
+      ruleId: rule._id,
+      planId: plan._id,
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'COMPLETED' }],
+      idempotencyKey: 'cross-midnight-maintenance-completed'
+    }
+  });
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  assert.equal((await EquipmentRoutinePlan.findById(plan._id).lean()).status, 'COMPLETED');
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: rule._id,
+    cycleKey: plan.cycleKey,
+    windowKey: plan.windowKey
+  }), 1);
+  assert.ok(await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    cycleKey: { $ne: plan.cycleKey },
+    status: { $in: ['PLANNED', 'IN_WINDOW', 'OVERDUE'] }
+  }));
+});
+
+test('worker reconciliation keeps team, equipment status, and asset identities isolated', async () => {
+  const now = new Date('2030-01-15T00:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const secondActiveAsset = await EquipmentAsset.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    categoryId: fixture.category._id,
+    assetCode: 'EQ-002',
+    name: 'Second active equipment',
+    status: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE,
+    createdBy: fixture.ids.departmentManager,
+    updatedBy: fixture.ids.departmentManager
+  });
+  const stoppedAsset = await EquipmentAsset.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    categoryId: fixture.category._id,
+    assetCode: 'EQ-STOPPED',
+    name: 'Stopped equipment',
+    status: EquipmentAsset.EQUIPMENT_STATUSES.STOPPED,
+    createdBy: fixture.ids.departmentManager,
+    updatedBy: fixture.ids.departmentManager
+  });
+  const otherOrgUnit = await OrgUnit.create({
+    teamId: fixture.ids.otherTeam,
+    parentId: null,
+    type: permissions.ORG_UNIT_TYPES.DEPARTMENT,
+    code: 'OTHER_DEPT',
+    name: 'Other department',
+    status: permissions.ORG_UNIT_STATUSES.ACTIVE,
+    sortOrder: 0,
+    level: 1,
+    path: '/'
+  });
+  const otherCategory = await EquipmentCategory.create({
+    teamId: fixture.ids.otherTeam,
+    name: 'Other team equipment',
+    createdBy: fixture.ids.otherUser,
+    updatedBy: fixture.ids.otherUser
+  });
+  const otherAsset = await EquipmentAsset.create({
+    teamId: fixture.ids.otherTeam,
+    orgUnitId: otherOrgUnit._id,
+    categoryId: otherCategory._id,
+    assetCode: 'OTHER-EQ-001',
+    name: 'Other team equipment',
+    status: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE,
+    createdBy: fixture.ids.otherUser,
+    updatedBy: fixture.ids.otherUser
+  });
+  const otherRule = await EquipmentRoutineRule.create({
+    teamId: fixture.ids.otherTeam,
+    categoryId: otherCategory._id,
+    routineType: rule.routineType,
+    name: 'Other team daily inspection',
+    checklistItems: rule.checklistItems,
+    schedule: rule.schedule,
+    status: 'ACTIVE',
+    version: 1,
+    photoPolicy: rule.photoPolicy,
+    abnormalNoteRequired: rule.abnormalNoteRequired,
+    executionConfig: rule.executionConfig,
+    createdBy: fixture.ids.otherUser,
+    updatedBy: fixture.ids.otherUser
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
+
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  const currentTeamPlans = await EquipmentRoutinePlan.find({ ruleId: rule._id }).lean();
+  assert.deepEqual(
+    new Set(currentTeamPlans.map(({ equipmentId }) => String(equipmentId))),
+    new Set([String(fixture.asset._id), String(secondActiveAsset._id)])
+  );
+  assert.equal(currentTeamPlans.some(({ equipmentId }) => String(equipmentId) === String(stoppedAsset._id)), false);
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    teamId: fixture.ids.otherTeam,
+    ruleId: otherRule._id,
+    equipmentId: otherAsset._id
+  }), 0);
+
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), currentTeamPlans.length);
+});
+
+test('worker waits for a concurrent rule update and never materializes the stale rule version', async () => {
+  const now = new Date('2030-01-15T00:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
+  const updateSession = await mongoose.startSession();
+  let workerRun;
+  try {
+    updateSession.startTransaction();
+    const update = await EquipmentRoutineRule.updateOne({
+      _id: rule._id,
+      version: 1
+    }, {
+      $set: { version: 2, updatedBy: fixture.ids.departmentManager }
+    }, { session: updateSession });
+    assert.equal(update.modifiedCount, 1);
+
+    workerRun = worker.runOnce({ now, teamId: fixture.ids.team });
+    assert.equal(await promiseStateAfterDelay(workerRun), 'pending');
+    await updateSession.commitTransaction();
+  } catch (error) {
+    if (updateSession.inTransaction()) await updateSession.abortTransaction();
+    throw error;
+  } finally {
+    await updateSession.endSession();
+  }
+
+  const staleRun = await workerRun;
+  assert.equal(staleRun.plansProcessed, 0);
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: rule._id,
+    ruleVersion: 1
+  }), 0);
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  const currentPlans = await EquipmentRoutinePlan.find({ ruleId: rule._id }).lean();
+  assert.ok(currentPlans.length > 0);
+  assert.ok(currentPlans.every(({ ruleVersion, cycleKey }) => (
+    ruleVersion === 2 && cycleKey.startsWith('calendar:v2:')
+  )));
+});
+
+test('worker waits for a concurrent STOPPED transition and does not create plans for the equipment', async () => {
+  const now = new Date('2030-01-15T00:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'MAINTENANCE', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
+  const statusSession = await mongoose.startSession();
+  let workerRun;
+  try {
+    statusSession.startTransaction();
+    const update = await EquipmentAsset.collection.updateOne({
+      _id: fixture.asset._id,
+      status: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE
+    }, {
+      $set: {
+        status: EquipmentAsset.EQUIPMENT_STATUSES.STOPPED,
+        updatedBy: fixture.ids.departmentManager
+      }
+    }, { session: statusSession });
+    assert.equal(update.modifiedCount, 1);
+
+    workerRun = worker.runOnce({ now, teamId: fixture.ids.team });
+    assert.equal(await promiseStateAfterDelay(workerRun), 'pending');
+    await statusSession.commitTransaction();
+  } catch (error) {
+    if (statusSession.inTransaction()) await statusSession.abortTransaction();
+    throw error;
+  } finally {
+    await statusSession.endSession();
+  }
+
+  const completedRun = await workerRun;
+  assert.equal(completedRun.plansProcessed, 0);
+  assert.equal((await EquipmentAsset.findById(fixture.asset._id).lean()).status, 'STOPPED');
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: rule._id,
+    equipmentId: fixture.asset._id
+  }), 0);
+});
+
 test('one equipment materializes independent inspection and maintenance plans for every schedule dimension', async () => {
   const now = new Date('2030-01-15T02:30:00.000Z');
   const routineService = createEquipmentRoutineService({ clock: () => now });
@@ -608,8 +938,218 @@ test('record submission without planId completes the oldest overdue plan first',
   });
 
   assert.equal(String(record.planId), String(oldPlan._id));
+  assert.equal(new Date(record.scheduledFor).toISOString(), oldPlan.scheduledFor.toISOString());
+  assert.equal(new Date(record.planScheduledFor).toISOString(), oldPlan.scheduledFor.toISOString());
+  assert.equal(new Date(record.planDueAt).toISOString(), oldPlan.dueAt.toISOString());
+  assert.equal(record.planWindowName, oldPlan.windowName);
+  assert.equal(record.planCycleKey, oldPlan.cycleKey);
   assert.equal((await EquipmentRoutinePlan.findById(oldPlan._id).lean()).status, 'COMPLETED');
   assert.equal((await EquipmentRoutinePlan.findById(newerPlan._id).lean()).status, 'OVERDUE');
+
+  const listed = await routineService.listRecords({ authContext: fixture.contexts.manager });
+  const listedRecord = listed.records.find(({ _id }) => _id === record._id);
+  assert.equal(listedRecord.equipment.plateNumber, 'PLATE-EQ-001');
+  assert.equal(new Date(listedRecord.planScheduledFor).toISOString(), oldPlan.scheduledFor.toISOString());
+  assert.equal(new Date(listedRecord.planDueAt).toISOString(), oldPlan.dueAt.toISOString());
+  assert.equal(listedRecord.plan._id, String(oldPlan._id));
+
+  const detail = await routineService.getRecord({
+    authContext: fixture.contexts.employee,
+    recordId: record._id
+  });
+  assert.equal(detail.equipment.plateNumber, 'PLATE-EQ-001');
+  assert.equal(detail.planId, String(oldPlan._id));
+  assert.equal(detail.performedByUser._id, String(fixture.ids.departmentManager));
+  assert.equal(detail.performedByName, 'department-manager');
+  assert.equal(detail.itemResults[0].itemKey, rule.checklistItems[0].key);
+  assert.equal(detail.ruleSnapshot.name, rule.name);
+});
+
+test('record submission rejects non-IN_USE equipment and stale rule-version plans', async () => {
+  const now = new Date('2030-01-15T01:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'INSPECTION', { schedule: { mode: 'MANUAL' } });
+  const submission = {
+    ruleId: String(rule._id),
+    itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }]
+  };
+
+  await EquipmentAsset.updateOne({ _id: fixture.asset._id }, {
+    $set: { status: EquipmentAsset.EQUIPMENT_STATUSES.STOPPED }
+  });
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: { ...submission, idempotencyKey: 'stopped-equipment-submission' }
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_EQUIPMENT_NOT_IN_USE'
+  ));
+  assert.equal(await EquipmentRoutineRecord.countDocuments({ ruleId: rule._id }), 0);
+
+  await EquipmentAsset.updateOne({ _id: fixture.asset._id }, {
+    $set: { status: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE }
+  });
+  await EquipmentRoutineRule.updateOne({ _id: rule._id }, { $set: { version: 2 } });
+  const stalePlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: 1,
+    ruleSnapshot: rule,
+    routineType: rule.routineType,
+    cycleKey: 'forged-stale-rule-version-plan',
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2030-01-15T00:00:00.000Z'),
+    dueAt: new Date('2030-01-15T02:00:00.000Z'),
+    status: 'IN_WINDOW'
+  });
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ...submission,
+      planId: String(stalePlan._id),
+      idempotencyKey: 'stale-rule-version-plan-submission'
+    }
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+  ));
+  assert.equal((await EquipmentRoutinePlan.findById(stalePlan._id).lean()).status, 'IN_WINDOW');
+  assert.equal(await EquipmentRoutineRecord.countDocuments({ ruleId: rule._id }), 0);
+});
+
+test('record submission replays the same idempotency key without duplicating history', async () => {
+  const now = new Date('2030-01-15T01:00:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'MAINTENANCE', { schedule: { mode: 'MANUAL' } });
+  const plan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    routineType: rule.routineType,
+    cycleKey: 'idempotent-record-replay',
+    windowKey: 'MAINTENANCE',
+    windowName: '保养窗口',
+    scheduledFor: new Date('2030-01-15T00:00:00.000Z'),
+    dueAt: new Date('2030-01-15T02:00:00.000Z'),
+    status: 'IN_WINDOW'
+  });
+  const input = {
+    ruleId: String(rule._id),
+    planId: String(plan._id),
+    itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'COMPLETED' }],
+    idempotencyKey: 'same-record-submission'
+  };
+
+  const first = await routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input
+  });
+  const replay = await routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input
+  });
+
+  assert.equal(replay._id, first._id);
+  assert.equal(replay.planId, first.planId);
+  assert.equal(await EquipmentRoutineRecord.countDocuments({
+    teamId: fixture.ids.team,
+    idempotencyKey: input.idempotencyKey
+  }), 1);
+  const completedPlan = await EquipmentRoutinePlan.findById(plan._id).lean();
+  assert.equal(completedPlan.status, 'COMPLETED');
+  assert.equal(String(completedPlan.completedRecordId), first._id);
+});
+
+test('record detail resolves legacy plan windows without mutating append-only history and hides other teams', async () => {
+  const routineService = createEquipmentRoutineService();
+  const rule = await createRule(routineService, 'INSPECTION', { schedule: { mode: 'MANUAL' } });
+  const plan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    routineType: rule.routineType,
+    cycleKey: 'legacy-record-plan-window',
+    windowKey: 'DAY_SHIFT',
+    windowName: 'Day shift',
+    scheduledFor: new Date('2030-01-15T00:00:00.000Z'),
+    dueAt: new Date('2030-01-15T02:00:00.000Z'),
+    status: 'OVERDUE'
+  });
+  const recordId = objectId();
+  await EquipmentRoutineRecord.collection.insertOne({
+    _id: recordId,
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: new mongoose.Types.ObjectId(rule._id),
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    planId: plan._id,
+    routineType: rule.routineType,
+    scheduledFor: plan.dueAt,
+    performedBy: fixture.ids.employee,
+    performedAt: new Date('2030-01-15T01:00:00.000Z'),
+    itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL', note: '' }],
+    overallResult: 'NORMAL',
+    abnormalSummary: '',
+    photoFileIds: [],
+    photoEvidence: [],
+    createdAt: new Date('2030-01-15T01:00:00.000Z'),
+    updatedAt: new Date('2030-01-15T01:00:00.000Z')
+  });
+
+  const detail = await routineService.getRecord({
+    authContext: fixture.contexts.manager,
+    recordId
+  });
+  assert.equal(new Date(detail.scheduledFor).toISOString(), plan.scheduledFor.toISOString());
+  assert.equal(new Date(detail.planScheduledFor).toISOString(), plan.scheduledFor.toISOString());
+  assert.equal(new Date(detail.planDueAt).toISOString(), plan.dueAt.toISOString());
+  assert.equal(detail.planWindowName, plan.windowName);
+  assert.equal(detail.planCycleKey, plan.cycleKey);
+  const persisted = await EquipmentRoutineRecord.collection.findOne({ _id: recordId });
+  assert.equal(persisted.scheduledFor.toISOString(), plan.dueAt.toISOString());
+  assert.equal(Object.prototype.hasOwnProperty.call(persisted, 'planScheduledFor'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(persisted, 'planDueAt'), false);
+
+  const otherTeamRecordId = objectId();
+  await EquipmentRoutineRecord.collection.insertOne({
+    ...persisted,
+    _id: otherTeamRecordId,
+    teamId: fixture.ids.otherTeam,
+    orgUnitId: objectId(),
+    equipmentId: objectId(),
+    categoryId: objectId(),
+    ruleId: objectId(),
+    planId: null
+  });
+  await assert.rejects(routineService.getRecord({
+    authContext: fixture.contexts.manager,
+    recordId: otherTeamRecordId
+  }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_NOT_FOUND');
+
+  const global = globalContext(fixture.ids.departmentManager);
+  await assert.rejects(routineService.getRecord({
+    authContext: global,
+    requestedTeamId: String(fixture.ids.team),
+    query: { teamId: String(fixture.ids.team) },
+    recordId: otherTeamRecordId
+  }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_NOT_FOUND');
 });
 
 test('completing a daily inspection leaves weekly and monthly plans unchanged', async () => {
@@ -760,15 +1300,65 @@ test('rule update replaces open plans with a new version and disable closes them
   assert.ok(versionOnePlans.length > 0);
   assert.ok(versionOnePlans.every(({ ruleVersion }) => ruleVersion === 1));
 
+  const completedPlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    routineType: rule.routineType,
+    cycleKey: 'historical-completed-before-rule-update',
+    windowKey: 'HISTORICAL',
+    windowName: 'Historical completed window',
+    scheduledFor: new Date('2029-12-15T00:00:00.000Z'),
+    dueAt: new Date('2029-12-15T02:00:00.000Z'),
+    status: 'COMPLETED',
+    completedRecordId: objectId(),
+    completedAt: new Date('2029-12-15T01:00:00.000Z'),
+    completedBy: fixture.ids.employee
+  });
+  const openBeforeUpdate = versionOnePlans;
+  assert.ok(openBeforeUpdate.length > 0);
+
   const updatedRule = await routineService.updateRule({
     authContext: fixture.contexts.manager,
     ruleId: String(rule._id),
-    input: { name: `${rule.name} version 2` }
+    input: {
+      executionConfig: {
+        ...rule.executionConfig,
+        windows: rule.executionConfig.windows.map((window) => ({
+          ...window,
+          startTime: '07:30',
+          endTime: '09:30'
+        }))
+      }
+    }
   });
   assert.equal(updatedRule.version, 2);
+  assert.equal((await EquipmentRoutinePlan.findById(completedPlan._id).lean()).status, 'COMPLETED');
   assert.ok((await EquipmentRoutinePlan.find({
-    _id: { $in: versionOnePlans.map(({ _id }) => _id) }
-  }).lean()).every(({ status }) => status === 'CANCELLED'));
+    _id: { $in: openBeforeUpdate.map(({ _id }) => _id) }
+  }).lean()).every(({ status, cancellationReason, cancelledAt, cancelledBy }) => (
+    status === 'CANCELLED' &&
+    cancellationReason === 'SCHEDULE_CHANGED' &&
+    cancelledAt?.toISOString() === now.toISOString() &&
+    String(cancelledBy) === String(fixture.ids.departmentManager)
+  )));
+
+  const cancelledListing = await createEquipmentRoutineWorkflowService({ clock: () => now }).listPlans({
+    authContext: fixture.contexts.manager,
+    query: { status: 'CANCELLED' }
+  });
+  const scheduleChanged = cancelledListing.plans.find(({ _id }) => (
+    openBeforeUpdate.some((plan) => String(plan._id) === _id)
+  ));
+  assert.equal(scheduleChanged.cancellationReason, 'SCHEDULE_CHANGED');
+  assert.equal(
+    scheduleChanged.cancellationReasonLabel,
+    '规则执行周期或时间已调整，原未执行计划已作废'
+  );
 
   await worker.runOnce({ now, teamId: fixture.ids.team });
   const versionTwoPlans = await EquipmentRoutinePlan.find({
@@ -779,6 +1369,7 @@ test('rule update replaces open plans with a new version and disable closes them
   assert.ok(versionTwoPlans.every(({ ruleVersion, cycleKey }) => (
     ruleVersion === 2 && cycleKey.startsWith('calendar:v2:')
   )));
+  const versionTwoPlanIds = versionTwoPlans.map(({ _id }) => _id);
 
   const disabledRule = await routineService.disableRule({
     authContext: fixture.contexts.manager,
@@ -790,9 +1381,52 @@ test('rule update replaces open plans with a new version and disable closes them
     ruleId: rule._id,
     status: { $in: ['PLANNED', 'IN_WINDOW', 'OVERDUE'] }
   }), 0);
+  assert.ok((await EquipmentRoutinePlan.find({ _id: { $in: versionTwoPlanIds } }).lean())
+    .every(({ status, cancellationReason }) => (
+      status === 'CANCELLED' && cancellationReason === 'RULE_DEACTIVATED'
+    )));
   const planCountAfterDisable = await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id });
   await worker.runOnce({ now, teamId: fixture.ids.team });
   assert.equal(await EquipmentRoutinePlan.countDocuments({ ruleId: rule._id }), planCountAfterDisable);
+});
+
+test('non-schedule rule edits persist a distinct cancellation reason for old open plans', async () => {
+  const now = new Date('2030-01-15T02:30:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => now });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  const openPlans = await EquipmentRoutinePlan.find({
+    ruleId: rule._id,
+    status: { $in: ['PLANNED', 'IN_WINDOW', 'OVERDUE'] }
+  }).lean();
+  assert.ok(openPlans.length > 0);
+
+  await routineService.updateRule({
+    authContext: fixture.contexts.manager,
+    ruleId: rule._id,
+    input: {
+      description: 'Updated checklist guidance only',
+      schedule: rule.schedule,
+      executionConfig: {
+        ...rule.executionConfig,
+        inspectionEscalationMinutes: 90,
+        locationPolicy: 'REQUIRED',
+        locationPrecisionMeters: 25
+      }
+    }
+  });
+  const cancelled = await EquipmentRoutinePlan.find({
+    _id: { $in: openPlans.map(({ _id }) => _id) }
+  }).lean();
+  assert.ok(cancelled.every(({ status, cancellationReason }) => (
+    status === 'CANCELLED' && cancellationReason === 'RULE_UPDATED'
+  )));
 });
 
 test('rule deletion requires disabled status, removes derived plans, and preserves audit evidence', async () => {
@@ -998,6 +1632,13 @@ test('COMBINED ANY keeps only the first due dimension and advances idempotently 
     ['CANCELLED', 'CANCELLED'],
     'runtime-first materialization must close the pre-generated calendar requirements'
   );
+  assert.ok((await EquipmentRoutinePlan.find({
+    _id: { $in: initialRuntimeCalendarIds }
+  }).lean()).every(({ cancellationReason, cancelledAt, cancelledBy }) => (
+    cancellationReason === 'SUPERSEDED' &&
+    cancelledAt?.toISOString() === now.toISOString() &&
+    cancelledBy === null
+  )));
   assert.equal(await EquipmentRoutinePlan.countDocuments({
     ruleId: calendarFirstRule._id,
     windowKey: 'RUNTIME'
@@ -1044,7 +1685,9 @@ test('COMBINED ANY keeps only the first due dimension and advances idempotently 
     }
   });
   assert.ok(calendarCompletion);
-  assert.equal((await EquipmentRoutinePlan.findById(sameCalendarCycleSibling._id).lean()).status, 'CANCELLED');
+  const cancelledSameCycleSibling = await EquipmentRoutinePlan.findById(sameCalendarCycleSibling._id).lean();
+  assert.equal(cancelledSameCycleSibling.status, 'CANCELLED');
+  assert.equal(cancelledSameCycleSibling.cancellationReason, 'SIBLING_COMPLETED');
   assert.deepEqual(
     (await EquipmentRoutinePlan.find({
       _id: { $in: laterCalendarCyclePlans.map(({ _id }) => _id) }
@@ -1133,12 +1776,30 @@ test('routine plan detail preserves team, organization, and global read-only iso
       cycleKey: 'other-team-plan'
     }
   ]);
+  const legacyCancelledPlan = await EquipmentRoutinePlan.create({
+    ...planBase,
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    equipmentId: fixture.asset._id,
+    ruleId: objectId(),
+    cycleKey: 'legacy-cancelled-plan',
+    status: 'CANCELLED'
+  });
 
   const visible = await workflow.getPlan({
     authContext: fixture.contexts.employee,
     planId: visiblePlan._id
   });
   assert.equal(visible._id, String(visiblePlan._id));
+  const legacyCancelled = await workflow.getPlan({
+    authContext: fixture.contexts.manager,
+    planId: legacyCancelledPlan._id
+  });
+  assert.equal(legacyCancelled.cancellationReason, 'LEGACY_UNSPECIFIED');
+  assert.equal(
+    legacyCancelled.cancellationReasonLabel,
+    '历史计划已取消，原系统未记录具体原因'
+  );
   assert.equal(visible.equipment.name, '=现场设备');
   assert.equal(visible.orgUnit.name, '一班组');
 
@@ -1358,6 +2019,7 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
   assert.equal(cancelled.plans[0].windowName, '休班');
   assert.equal(cancelled.plans[0].originalWindowName, '白班');
   assert.equal(cancelled.plans[0].cancellationReason, 'REST_DAY');
+  assert.equal(cancelled.plans[0].cancellationReasonLabel, '本日休班，设备不需点检');
   assert.equal(cancelled.plans[0].cancelledBy, String(fixture.ids.employee));
   const persisted = await EquipmentRoutinePlan.findById(inspectionPlan._id).lean();
   assert.equal(persisted.windowName, '白班');
@@ -1703,6 +2365,9 @@ test('abnormal evidence records a server watermark and follows the fixed three-s
   const workbook = XLSX.read(exported.buffer, { type: 'buffer', cellDates: true });
   const [row] = XLSX.utils.sheet_to_json(workbook.Sheets['点检保养记录'], { defval: '' });
   assert.equal(row['设备名称'], "'=现场设备");
+  assert.equal(row['车牌号'], 'PLATE-EQ-001');
+  assert.equal(row['执行人'], 'employee');
+  assert.equal(Object.prototype.hasOwnProperty.call(row, '计划时间'), false);
   assert.equal(row['异常摘要'], "'=需要停机检查");
   const exportAudit = await AuditLog.findOne({
     action: permissions.AUDIT_ACTIONS.EXPORT,
@@ -1738,11 +2403,35 @@ test('routine record exports classify maintenance and mixed audit resources accu
     itemResults: [{ itemKey: 'check-1', result: 'COMPLETED', note: '' }],
     overallResult: 'COMPLETED'
   };
+  const maintenanceRuleId = objectId();
+  const maintenanceRecordId = objectId();
+  const maintenancePlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: maintenanceRuleId,
+    ruleVersion: 1,
+    ruleSnapshot: { name: 'Monthly maintenance' },
+    routineType: 'MAINTENANCE',
+    cycleKey: 'maintenance-export-cycle',
+    windowKey: 'MAINTENANCE',
+    windowName: 'Maintenance window',
+    scheduledFor: new Date('2030-01-15T00:00:00.000Z'),
+    dueAt: new Date('2030-01-15T02:00:00.000Z'),
+    status: 'COMPLETED',
+    completedRecordId: maintenanceRecordId,
+    completedAt: recordBase.performedAt,
+    completedBy: fixture.ids.employee
+  });
   await EquipmentRoutineRecord.create({
+    _id: maintenanceRecordId,
     ...recordBase,
-    ruleId: objectId(),
+    ruleId: maintenanceRuleId,
     ruleSnapshot: { name: '月度保养' },
-    routineType: 'MAINTENANCE'
+    planId: maintenancePlan._id,
+    routineType: 'MAINTENANCE',
+    scheduledFor: maintenancePlan.dueAt
   });
 
   const workflow = createEquipmentRoutineWorkflowService();
@@ -1755,6 +2444,23 @@ test('routine record exports classify maintenance and mixed audit resources accu
     query: { routineType: 'MAINTENANCE' }
   });
   assert.equal(maintenanceExport.count, 1);
+  const maintenanceWorkbook = XLSX.read(maintenanceExport.buffer, { type: 'buffer', cellDates: true });
+  const [maintenanceRow] = XLSX.utils.sheet_to_json(
+    maintenanceWorkbook.Sheets['点检保养记录'],
+    { defval: '' }
+  );
+  assert.equal(maintenanceRow['关联计划编号'], String(maintenancePlan._id));
+  assert.equal(
+    new Date(maintenanceRow['计划开始时间']).toISOString(),
+    maintenancePlan.scheduledFor.toISOString()
+  );
+  assert.equal(
+    new Date(maintenanceRow['计划截止时间']).toISOString(),
+    maintenancePlan.dueAt.toISOString()
+  );
+  assert.equal(maintenanceRow['车牌号'], 'PLATE-EQ-001');
+  assert.equal(maintenanceRow['执行人'], 'employee');
+  assert.equal(Object.prototype.hasOwnProperty.call(maintenanceRow, '计划时间'), false);
   const maintenanceAudit = await AuditLog.findOne({
     action: permissions.AUDIT_ACTIONS.EXPORT,
     resourceType: permissions.AUDIT_RESOURCE_TYPES.MAINTENANCE_RECORD
@@ -1788,6 +2494,44 @@ test('routine record exports classify maintenance and mixed audit resources accu
     action: permissions.AUDIT_ACTIONS.EXPORT,
     resourceType: permissions.AUDIT_RESOURCE_TYPES.INSPECTION_RECORD
   }), 0);
+});
+
+test('empty routine record exports preserve the complete fixed workbook header', async () => {
+  const workflow = createEquipmentRoutineWorkflowService();
+  const exported = await workflow.exportRecords({
+    authContext: fixture.contexts.manager,
+    query: {
+      routineType: 'INSPECTION',
+      equipmentId: String(fixture.asset._id)
+    }
+  });
+  assert.equal(exported.count, 0);
+
+  const workbook = XLSX.read(exported.buffer, { type: 'buffer', cellDates: true });
+  const worksheet = workbook.Sheets['点检保养记录'];
+  const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
+  assert.deepEqual(rows, [[
+    '设备编号',
+    '设备名称',
+    '车牌号',
+    '所属组织',
+    '业务类型',
+    '规则名称',
+    '规则版本',
+    '关联计划编号',
+    '计划窗口',
+    '计划开始时间',
+    '计划截止时间',
+    '执行人',
+    '执行时间',
+    '执行结果',
+    '异常摘要',
+    '异常状态',
+    '当前处理阶段',
+    '现场照片数',
+    '现场水印',
+    '记录ID'
+  ]]);
 });
 
 test('required location rejects denial and scoped reads cannot cross organization or team', async () => {

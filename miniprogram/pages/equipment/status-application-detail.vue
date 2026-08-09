@@ -1,5 +1,11 @@
 <template>
   <view class="page">
+    <view v-if="loading && !application" class="loading-state">状态申请加载中...</view>
+    <view v-if="loadError" class="error-state">
+      <text>{{ loadError }}</text>
+      <button :loading="loading" @click="retryLoad">重新加载</button>
+    </view>
+
     <view v-if="application" class="asset-band">
       <view class="asset-heading">
         <view class="asset-copy"><text class="name">{{ application.equipmentSnapshot?.name }}</text><text class="code">{{ application.equipmentSnapshot?.assetCode }}</text></view>
@@ -13,6 +19,8 @@
       </view>
       <view class="reason"><text>申请原因</text><strong>{{ application.reason }}</strong></view>
     </view>
+
+    <view v-if="application" class="retention-note">{{ STATUS_APPLICATION_RETENTION_NOTICE }}</view>
 
     <view v-if="application?.attachments?.length" class="section">
       <text class="section-title">申请附件（{{ application.attachments.length }}）</text>
@@ -43,7 +51,7 @@
       </view>
     </view>
 
-    <view class="section">
+    <view v-if="application" class="section">
       <text class="section-title">审批历史</text>
       <view class="timeline">
         <view v-for="item in [...approvals].reverse()" :key="item._id" class="timeline-row">
@@ -59,7 +67,14 @@
 import { reactive, ref } from 'vue'
 import { onLoad, onPullDownRefresh } from '@dcloudio/uni-app'
 import { deleteTemporaryPrivateFile, downloadPrivateFile, getEquipmentStatusApplication, transitionEquipmentStatusApplication, uploadEquipmentStatusAttachment } from '@/api/index.js'
-import { actionLabel, statusTone, typeLabel, workflowLabel } from '@/utils/equipmentStatusApplication.js'
+import {
+  STATUS_APPLICATION_RETENTION_NOTICE,
+  actionLabel,
+  statusTone,
+  typeLabel,
+  workflowLabel
+} from '@/utils/equipmentStatusApplication.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 
 export default {
   name: 'EquipmentStatusApplicationDetail',
@@ -68,6 +83,8 @@ export default {
     const teamId = ref('')
     const application = ref(null)
     const approvals = ref([])
+    const loading = ref(false)
+    const loadError = ref('')
     const selectedAction = ref('')
     const submitting = ref(false)
     const existingAttachments = ref([])
@@ -77,12 +94,36 @@ export default {
     const formatTime = (value) => value ? String(value).replace('T', ' ').slice(0, 16) : '-'
 
     const load = async () => {
+      if (loading.value) return
+      if (!applicationId.value) {
+        loadError.value = '缺少状态申请编号，请返回列表后重新进入。'
+        return
+      }
+      loading.value = true
+      loadError.value = ''
       try {
         const result = await getEquipmentStatusApplication(applicationId.value, teamId.value ? { teamId: teamId.value } : {})
         application.value = result.application
         approvals.value = result.approvals || []
-      } finally { uni.stopPullDownRefresh() }
+        if (selectedAction.value && !application.value?.availableActions?.includes(selectedAction.value)) {
+          selectedAction.value = ''
+        }
+      } catch (error) {
+        const notFound = error?.code === 'EQUIPMENT_STATUS_APPLICATION_NOT_FOUND' ||
+          Number(error?.statusCode || error?.status || error?.response?.status) === 404
+        if (notFound) {
+          application.value = null
+          approvals.value = []
+          loadError.value = '状态申请不存在或当前账号无权查看，请返回列表核对。'
+        } else {
+          loadError.value = requestErrorMessage(error, '状态申请详情暂时无法加载，请重试')
+        }
+      } finally {
+        loading.value = false
+        uni.stopPullDownRefresh()
+      }
     }
+    const retryLoad = () => load()
     const openAction = (action) => {
       selectedAction.value = action
       actionForm.opinion = ''
@@ -131,13 +172,38 @@ export default {
 
     onLoad((options) => { applicationId.value = options.applicationId || ''; teamId.value = options.teamId || ''; load() })
     onPullDownRefresh(load)
-    return { application, approvals, selectedAction, existingAttachments, newPhotos, actionForm, submitting, equipmentStatusLabel, formatTime, actionLabel, statusTone, typeLabel, workflowLabel, openAction, choosePhotos, previewAttachment, submitAction }
+    return {
+      STATUS_APPLICATION_RETENTION_NOTICE,
+      application,
+      approvals,
+      loading,
+      loadError,
+      selectedAction,
+      existingAttachments,
+      newPhotos,
+      actionForm,
+      submitting,
+      equipmentStatusLabel,
+      formatTime,
+      actionLabel,
+      statusTone,
+      typeLabel,
+      workflowLabel,
+      retryLoad,
+      openAction,
+      choosePhotos,
+      previewAttachment,
+      submitAction
+    }
   }
 }
 </script>
 
 <style scoped lang="scss">
 .page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #eef3fb; }.asset-band, .section { margin-bottom: 18rpx; padding: 24rpx; border: 1px solid #dce4ee; border-radius: 8rpx; background: #fff; }
+.loading-state { padding: 160rpx 0; color: #667085; font-size: 24rpx; text-align: center; }
+.error-state { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-bottom: 18rpx; padding: 20rpx; border-left: 6rpx solid #d14343; color: #8f2626; background: #fff0f0; font-size: 22rpx; line-height: 1.5; }.error-state text { min-width: 0; flex: 1; overflow-wrap: anywhere; }.error-state button { width: 150rpx; height: 60rpx; margin: 0; color: #b42318; background: #fff; font-size: 21rpx; line-height: 60rpx; }
+.retention-note { margin-bottom: 18rpx; padding: 18rpx 20rpx; border-left: 6rpx solid #d0a02f; color: #5f4b17; background: #fff8df; font-size: 22rpx; line-height: 1.55; overflow-wrap: anywhere; }
 .asset-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16rpx; }.asset-copy { min-width: 0; flex: 1; }.name, .code, .reason text, .reason strong { display: block; overflow-wrap: anywhere; }.name { color: #1f2733; font-size: 31rpx; font-weight: 700; }.code { margin-top: 5rpx; color: #667085; font-size: 22rpx; }
 .status { max-width: 260rpx; padding: 7rpx 11rpx; border-radius: 7rpx; font-size: 20rpx; text-align: center; overflow-wrap: anywhere; }.tone-info { color: #1d5fa7; background: #edf5ff; }.tone-success { color: #245d3f; background: #eaf7ef; }.tone-warning { color: #8a4b08; background: #fff5e6; }.tone-danger { color: #b42318; background: #feeceb; }
 .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18rpx; margin-top: 22rpx; padding-top: 18rpx; border-top: 1px solid #e8edf3; }.grid text, .grid strong { display: block; overflow-wrap: anywhere; }.grid text, .reason text { color: #667085; font-size: 21rpx; }.grid strong, .reason strong { margin-top: 5rpx; color: #1f2733; font-size: 24rpx; }.reason { margin-top: 18rpx; padding-top: 18rpx; border-top: 1px solid #e8edf3; }

@@ -370,6 +370,12 @@ const equipmentAssetSchema = new mongoose.Schema({
     maxlength: 2000,
     default: ''
   },
+  routineMaterializationRevision: {
+    type: Number,
+    min: 0,
+    required: true,
+    default: 0
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

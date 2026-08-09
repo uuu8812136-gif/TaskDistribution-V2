@@ -78,6 +78,47 @@ test('routine worker defaults on in production and can be explicitly disabled', 
   assert.equal(calls, 0);
 });
 
+test('routine scheduler runs immediately and retries a failed run on the next tick', async () => {
+  let calls = 0;
+  let loggedErrors = 0;
+  let resolveRetry;
+  const retried = new Promise((resolve) => {
+    resolveRetry = resolve;
+  });
+  const scheduler = startEquipmentRoutineScheduler({
+    enabled: true,
+    intervalMs: 1000,
+    worker: {
+      runOnce: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('simulated first-tick failure');
+        resolveRetry();
+      }
+    },
+    logger: {
+      error() { loggedErrors += 1; }
+    }
+  });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(calls, 1, 'the first run must start immediately instead of waiting for the interval');
+    assert.equal(loggedErrors, 1);
+
+    let timeout;
+    await Promise.race([
+      retried,
+      new Promise((resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('scheduler did not retry')), 2500);
+      })
+    ]);
+    clearTimeout(timeout);
+    assert.equal(calls, 2);
+    assert.equal(loggedErrors, 1);
+  } finally {
+    scheduler.stop();
+  }
+});
+
 test('rejects the existing production database name outside production', () => {
   assert.throws(
     () =>

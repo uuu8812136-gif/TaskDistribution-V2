@@ -80,7 +80,10 @@ function importUploadMiddleware(req, res, next) {
 }
 
 function rejectRoutineWriteTeamId(req, res, next) {
-  if (Object.prototype.hasOwnProperty.call(req.query || {}, 'teamId')) {
+  if (
+    Object.prototype.hasOwnProperty.call(req.query || {}, 'teamId') ||
+    Object.prototype.hasOwnProperty.call(req.body || {}, 'teamId')
+  ) {
     return next(new EquipmentRegistryError(
       400,
       'EQUIPMENT_TEAM_ID_IMMUTABLE',
@@ -142,6 +145,7 @@ router.delete(
 );
 router.get('/routine-records', equipmentView, equipmentRoutineController.listRecords);
 router.get('/routine-records/export', equipmentExport, equipmentRoutineController.exportRecords);
+router.get('/routine-records/:recordId', equipmentView, equipmentRoutineController.getRecord);
 router.get('/routine-plans', equipmentView, equipmentRoutineController.listPlans);
 router.post(
   '/routine-plans/rest-day',

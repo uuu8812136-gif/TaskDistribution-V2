@@ -11,6 +11,7 @@ const { MongoMemoryReplSet } = appRequire('mongodb-memory-server');
 const AuditLog = require('../../../app/models/AuditLog');
 const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
+const EquipmentRoutinePlan = require('../../../app/models/EquipmentRoutinePlan');
 const EquipmentStatusApplication = require('../../../app/models/EquipmentStatusApplication');
 const EquipmentStatusApproval = require('../../../app/models/EquipmentStatusApproval');
 const FileAsset = require('../../../app/models/FileAsset');
@@ -32,6 +33,7 @@ const MODELS = [
   AuditLog,
   EquipmentAsset,
   EquipmentCategory,
+  EquipmentRoutinePlan,
   EquipmentStatusApplication,
   EquipmentStatusApproval,
   FileAsset,
@@ -206,6 +208,41 @@ async function action(application, actor, actionName, extra = {}, customService 
       ...extra
     }
   });
+}
+
+async function createOpenRoutinePlans(asset) {
+  const prefix = randomUUID();
+  const planBase = {
+    teamId: asset.teamId,
+    orgUnitId: asset.orgUnitId,
+    equipmentId: asset._id,
+    categoryId: asset.categoryId,
+    ruleVersion: 1,
+    scheduledFor: new Date('2026-07-17T00:00:00.000Z'),
+    dueAt: new Date('2026-07-17T02:00:00.000Z')
+  };
+  return EquipmentRoutinePlan.create([
+    {
+      ...planBase,
+      ruleId: objectId(),
+      ruleSnapshot: { name: '状态变更前点检规则' },
+      routineType: 'INSPECTION',
+      cycleKey: `${prefix}:inspection`,
+      windowKey: 'DAY_SHIFT',
+      windowName: '白班',
+      status: 'IN_WINDOW'
+    },
+    {
+      ...planBase,
+      ruleId: objectId(),
+      ruleSnapshot: { name: '状态变更前保养规则' },
+      routineType: 'MAINTENANCE',
+      cycleKey: `${prefix}:maintenance`,
+      windowKey: 'MAINTENANCE',
+      windowName: '保养窗口',
+      status: 'OVERDUE'
+    }
+  ]);
 }
 
 before(async () => {
@@ -391,10 +428,53 @@ test('status application attachments are isolated by team and organization', asy
   );
 });
 
+test('final approval cancels every open inspection and maintenance plan with the status-change reason', async () => {
+  let current = await createApplication(fixture.assets.a1, 'STOPPED');
+  current = await action(current, 'deputy', 'DEPUTY_APPROVE');
+  const openPlans = await createOpenRoutinePlans(fixture.assets.a1);
+  const completedPlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.teamA._id,
+    orgUnitId: fixture.orgA1._id,
+    equipmentId: fixture.assets.a1._id,
+    categoryId: fixture.assets.a1.categoryId,
+    ruleId: objectId(),
+    ruleVersion: 1,
+    ruleSnapshot: { name: '已完成历史规则' },
+    routineType: 'INSPECTION',
+    cycleKey: `${randomUUID()}:completed`,
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2026-07-16T00:00:00.000Z'),
+    dueAt: new Date('2026-07-16T02:00:00.000Z'),
+    status: 'COMPLETED',
+    completedRecordId: objectId(),
+    completedAt: new Date('2026-07-16T01:00:00.000Z'),
+    completedBy: fixture.users.assetAdmin._id
+  });
+
+  const approved = await action(current, 'manager', 'MANAGER_APPROVE');
+  assert.equal(approved.workflowStatus, 'APPROVED');
+  assert.equal((await EquipmentAsset.findById(fixture.assets.a1._id).lean()).status, 'STOPPED');
+
+  const cancelledPlans = await EquipmentRoutinePlan.find({
+    _id: { $in: openPlans.map(({ _id }) => _id) }
+  }).lean();
+  assert.equal(cancelledPlans.length, 2);
+  assert.ok(cancelledPlans.every(({ status, cancellationReason, cancelledAt, cancelledBy }) => (
+    status === 'CANCELLED' &&
+    cancellationReason === 'EQUIPMENT_STATUS_CHANGED' &&
+    cancelledAt instanceof Date &&
+    String(cancelledBy) === String(fixture.users.manager._id)
+  )));
+  assert.equal((await EquipmentRoutinePlan.findById(completedPlan._id).lean()).status, 'COMPLETED');
+});
+
 test('final approval atomically updates asset and audit failure rolls back application, history, and status', async () => {
   let current = await createApplication(fixture.assets.a1, 'SCRAPPED');
   current = await action(current, 'deputy', 'DEPUTY_APPROVE');
+  const openPlans = await createOpenRoutinePlans(fixture.assets.a1);
   const baselineApprovals = await EquipmentStatusApproval.countDocuments({ applicationId: current._id });
+  const baselineAudits = await AuditLog.countDocuments({});
   const realAudit = createAuditService();
   const failingAudit = {
     async record(input) {
@@ -414,6 +494,16 @@ test('final approval atomically updates asset and audit failure rolls back appli
   assert.equal(persistedApplication.revision, current.revision);
   assert.equal(persistedAsset.status, 'IN_USE');
   assert.equal(await EquipmentStatusApproval.countDocuments({ applicationId: current._id }), baselineApprovals);
+  assert.equal(await AuditLog.countDocuments({}), baselineAudits);
+  const persistedPlans = await EquipmentRoutinePlan.find({
+    _id: { $in: openPlans.map(({ _id }) => _id) }
+  }).lean();
+  assert.ok(persistedPlans.every(({ status, cancellationReason, cancelledAt, cancelledBy }) => (
+    ['IN_WINDOW', 'OVERDUE'].includes(status) &&
+    cancellationReason === null &&
+    cancelledAt === null &&
+    cancelledBy === null
+  )));
   assert.equal(await AuditLog.countDocuments({ resourceType: 'EQUIPMENT_ASSET', resourceId: String(persistedAsset._id) }), 0);
 });
 

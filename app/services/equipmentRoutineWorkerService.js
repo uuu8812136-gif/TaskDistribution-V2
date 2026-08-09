@@ -19,6 +19,7 @@ const {
   upsertRoutineMessage
 } = require('./equipmentRoutineWorkflowService');
 const { normalizeId } = require('./authSessionService');
+const { runWithRequiredTransaction } = require('./transactionService');
 
 const { EQUIPMENT_STATUSES } = EquipmentAsset;
 const {
@@ -27,9 +28,17 @@ const {
   EQUIPMENT_ROUTINE_TYPES,
   defaultExecutionWindows
 } = EquipmentRoutineRule;
-const { EQUIPMENT_ROUTINE_PLAN_STATUSES } = EquipmentRoutinePlan;
+const {
+  EQUIPMENT_ROUTINE_PLAN_STATUSES,
+  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS
+} = EquipmentRoutinePlan;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+function modelQuery(query, session) {
+  if (session && typeof query.session === 'function') query.session(session);
+  return query;
+}
 
 function validDate(value, field = 'date') {
   const date = value instanceof Date ? new Date(value.getTime()) : new Date(value);
@@ -253,9 +262,10 @@ function createEquipmentRoutineWorkerService({
   TeamMembershipModel = TeamMembership,
   UserModel = User,
   routineService = createEquipmentRoutineService(),
+  connection = mongoose.connection,
   clock = () => new Date()
 } = {}) {
-  async function materializePlan({ rule, asset, anchor, unit, window, now, cycleKey }) {
+  async function materializePlan({ rule, asset, anchor, unit, window, now, cycleKey }, session) {
     const config = executionConfig(rule);
     const bounds = windowBounds(anchor, unit, window, config);
     const desiredStatus = statusAt(bounds, now);
@@ -283,7 +293,7 @@ function createEquipmentRoutineWorkerService({
         dueAt: bounds.dueAt,
         status: desiredStatus
       }
-    }, { upsert: true, setDefaultsOnInsert: true });
+    }, { upsert: true, setDefaultsOnInsert: true, session });
     await EquipmentRoutinePlanModel.updateOne({
       ...filter,
       status: { $in: [
@@ -291,11 +301,11 @@ function createEquipmentRoutineWorkerService({
         EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
         EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
       ] }
-    }, { $set: { status: desiredStatus } });
-    return EquipmentRoutinePlanModel.findOne(filter).lean();
+    }, { $set: { status: desiredStatus } }, { session });
+    return modelQuery(EquipmentRoutinePlanModel.findOne(filter).lean(), session);
   }
 
-  async function notifyPlan(plan, asset, now) {
+  async function notifyPlan(plan, asset, now, session) {
     if (plan.status !== EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE) return 0;
     const config = executionConfig(plan.ruleSnapshot || {});
     const elapsed = validDate(now).getTime() - new Date(plan.dueAt).getTime();
@@ -326,28 +336,32 @@ function createEquipmentRoutineWorkerService({
         UserModel,
         teamId: plan.teamId,
         orgUnitId: plan.orgUnitId,
-        group: level.group
+        group: level.group,
+        session
       });
       const details = messageDetails({ plan, asset, level: level.key });
-      await Promise.all(recipients.map((recipient) => upsertRoutineMessage({
-        MessageModel,
-        payload: {
-          teamId: plan.teamId,
-          type: 'system',
-          title: details.title,
-          content: details.content,
-          recipient,
-          deduplicationKey: `routine-plan:${plan._id}:level:${level.key}`,
-          extraData: {
-            resourceType: 'EQUIPMENT_ROUTINE_PLAN',
-            planId: normalizeId(plan._id),
-            equipmentId: normalizeId(plan.equipmentId),
-            routineType: plan.routineType,
-            level: level.key,
-            page: '/pages/equipment/routine-workbench'
-          }
-        }
-      })));
+      for (const recipient of recipients) {
+        await upsertRoutineMessage({
+          MessageModel,
+          payload: {
+            teamId: plan.teamId,
+            type: 'system',
+            title: details.title,
+            content: details.content,
+            recipient,
+            deduplicationKey: `routine-plan:${plan._id}:level:${level.key}`,
+            extraData: {
+              resourceType: 'EQUIPMENT_ROUTINE_PLAN',
+              planId: normalizeId(plan._id),
+              equipmentId: normalizeId(plan.equipmentId),
+              routineType: plan.routineType,
+              level: level.key,
+              page: '/pages/equipment/routine-workbench'
+            }
+          },
+          session
+        });
+      }
       attempted += recipients.length;
     }
     return attempted;
@@ -388,9 +402,9 @@ function createEquipmentRoutineWorkerService({
     return current.getTime() === next.getTime() ? [current] : [current, next];
   }
 
-  async function materializeRuntimePlan(rule, asset, now, calculatedSchedule = null) {
+  async function materializeRuntimePlan(rule, asset, now, calculatedSchedule = null, session = null) {
     const schedule = calculatedSchedule ||
-      await routineService.calculateRuleSchedule(rule, asset, { now });
+      await routineService.calculateRuleSchedule(rule, asset, { now, session });
     if (schedule.nextDueRuntimeHours === null) return null;
     if (isCombinedAnyRule(rule)) {
       if (
@@ -433,18 +447,18 @@ function createEquipmentRoutineWorkerService({
         dueAt: now,
         status: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
       }
-    }, { upsert: true, setDefaultsOnInsert: true });
-    return EquipmentRoutinePlanModel.findOne(filter).lean();
+    }, { upsert: true, setDefaultsOnInsert: true, session });
+    return modelQuery(EquipmentRoutinePlanModel.findOne(filter).lean(), session);
   }
 
-  async function findOpenCombinedAnyRuntimePlan(rule, asset, schedule) {
+  async function findOpenCombinedAnyRuntimePlan(rule, asset, schedule, session = null) {
     if (!isCombinedAnyRule(rule) || schedule.nextDueRuntimeHours === null) return null;
     const cycleKey = combinedAnyCycleKey(
       schedule,
       `trigger:runtime:${Number(schedule.nextDueRuntimeHours).toFixed(6)}`,
       rule.version
     );
-    return EquipmentRoutinePlanModel.findOne({
+    return modelQuery(EquipmentRoutinePlanModel.findOne({
       teamId: rule.teamId,
       ruleId: rule._id,
       equipmentId: asset._id,
@@ -455,10 +469,10 @@ function createEquipmentRoutineWorkerService({
         EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
         EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
       ] }
-    }).lean();
+    }).lean(), session);
   }
 
-  async function cancelOtherCombinedAnyPlans(rule, asset, keepPlans) {
+  async function cancelOtherCombinedAnyPlans(rule, asset, keepPlans, now, session = null) {
     if (!isCombinedAnyRule(rule)) return;
     const filter = {
       teamId: rule.teamId,
@@ -473,7 +487,121 @@ function createEquipmentRoutineWorkerService({
     const keepIds = keepPlans.map(({ _id }) => _id).filter(Boolean);
     if (keepIds.length > 0) filter._id = { $nin: keepIds };
     await EquipmentRoutinePlanModel.updateMany(filter, {
-      $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+      $set: {
+        status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+        cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED,
+        cancelledAt: now,
+        cancelledBy: null
+      }
+    }, { session });
+  }
+
+  async function materializeRuleForAsset(staleRule, assetId, instant) {
+    return runWithRequiredTransaction(async (session) => {
+      const rule = await EquipmentRoutineRuleModel.findOneAndUpdate({
+        _id: staleRule._id,
+        teamId: staleRule.teamId,
+        status: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE,
+        version: staleRule.version
+      }, {
+        $inc: { materializationRevision: 1 }
+      }, {
+        new: true,
+        session,
+        timestamps: false
+      }).lean();
+      if (!rule) {
+        return { staleRule: true, plansProcessed: 0, notificationWritesAttempted: 0 };
+      }
+
+      const asset = await EquipmentAssetModel.findOneAndUpdate({
+        _id: assetId,
+        teamId: rule.teamId,
+        categoryId: rule.categoryId,
+        status: EQUIPMENT_STATUSES.IN_USE
+      }, {
+        $inc: { routineMaterializationRevision: 1 }
+      }, {
+        new: true,
+        session,
+        timestamps: false
+      }).lean();
+      if (!asset) {
+        return { staleRule: false, plansProcessed: 0, notificationWritesAttempted: 0 };
+      }
+
+      const scheduleMode = rule.schedule?.mode;
+      const calculatedSchedule = [
+        EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
+        EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS,
+        EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
+      ].includes(scheduleMode)
+        ? await routineService.calculateRuleSchedule(rule, asset, { now: instant, session })
+        : null;
+      const plans = [];
+      const existingRuntimePlan = isCombinedAnyRule(rule)
+        ? await findOpenCombinedAnyRuntimePlan(rule, asset, calculatedSchedule, session)
+        : null;
+      const runtimeOwnsCombinedCycle = Boolean(existingRuntimePlan) || (
+        isCombinedAnyRule(rule) &&
+        dueStateTriggered(calculatedSchedule.runtimeStatus) &&
+        !dueStateTriggered(calculatedSchedule.calendarStatus)
+      );
+      if ([
+        EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
+        EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
+      ].includes(scheduleMode) && !runtimeOwnsCombinedCycle) {
+        const anchors = await anchorsForRule(rule, asset, instant, calculatedSchedule);
+        const config = executionConfig(rule);
+        const windows = rule.routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE
+          ? config.windows.slice(0, 1)
+          : config.windows;
+        for (const anchor of anchors) {
+          for (const window of windows) {
+            plans.push(await materializePlan({
+              rule,
+              asset,
+              anchor,
+              unit: rule.schedule.calendar.unit,
+              window,
+              now: instant,
+              cycleKey: isCombinedAnyRule(rule)
+                ? combinedAnyCycleKey(
+                    calculatedSchedule,
+                    `trigger:calendar:${validDate(anchor).toISOString()}`,
+                    rule.version
+                  )
+                : cycleKeyForCalendar(anchor, rule.version)
+            }, session));
+          }
+        }
+      }
+      if (
+        scheduleMode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS ||
+        runtimeOwnsCombinedCycle
+      ) {
+        const runtimePlan = existingRuntimePlan || await materializeRuntimePlan(
+          rule,
+          asset,
+          instant,
+          calculatedSchedule,
+          session
+        );
+        if (runtimePlan) plans.push(runtimePlan);
+      }
+      await cancelOtherCombinedAnyPlans(rule, asset, plans, instant, session);
+      let notificationWritesAttempted = 0;
+      for (const plan of plans) {
+        notificationWritesAttempted += await notifyPlan(plan, asset, instant, session);
+      }
+      return {
+        staleRule: false,
+        plansProcessed: plans.length,
+        notificationWritesAttempted
+      };
+    }, connection, {
+      code: 'EQUIPMENT_ROUTINE_TRANSACTIONS_REQUIRED',
+      message: 'Equipment routine plan materialization requires MongoDB replica-set transactions'
     });
   }
 
@@ -494,69 +622,10 @@ function createEquipmentRoutineWorkerService({
         status: EQUIPMENT_STATUSES.IN_USE
       }).lean();
       for (const asset of assets) {
-        const scheduleMode = rule.schedule?.mode;
-        const calculatedSchedule = [
-          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
-          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS,
-          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
-        ].includes(scheduleMode)
-          ? await routineService.calculateRuleSchedule(rule, asset, { now: instant })
-          : null;
-        const plans = [];
-        const existingRuntimePlan = isCombinedAnyRule(rule)
-          ? await findOpenCombinedAnyRuntimePlan(rule, asset, calculatedSchedule)
-          : null;
-        const runtimeOwnsCombinedCycle = Boolean(existingRuntimePlan) || (
-          isCombinedAnyRule(rule) &&
-          dueStateTriggered(calculatedSchedule.runtimeStatus) &&
-          !dueStateTriggered(calculatedSchedule.calendarStatus)
-        );
-        if ([
-          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.CALENDAR,
-          EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED
-        ].includes(scheduleMode) && !runtimeOwnsCombinedCycle) {
-          const anchors = await anchorsForRule(rule, asset, instant, calculatedSchedule);
-          const config = executionConfig(rule);
-          const windows = rule.routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE
-            ? config.windows.slice(0, 1)
-            : config.windows;
-          for (const anchor of anchors) {
-            for (const window of windows) {
-              plans.push(await materializePlan({
-                rule,
-                asset,
-                anchor,
-                unit: rule.schedule.calendar.unit,
-                window,
-                now: instant,
-                cycleKey: isCombinedAnyRule(rule)
-                  ? combinedAnyCycleKey(
-                      calculatedSchedule,
-                      `trigger:calendar:${validDate(anchor).toISOString()}`,
-                      rule.version
-                    )
-                  : cycleKeyForCalendar(anchor, rule.version)
-              }));
-            }
-          }
-        }
-        if (
-          scheduleMode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS ||
-          runtimeOwnsCombinedCycle
-        ) {
-          const runtimePlan = existingRuntimePlan || await materializeRuntimePlan(
-            rule,
-            asset,
-            instant,
-            calculatedSchedule
-          );
-          if (runtimePlan) plans.push(runtimePlan);
-        }
-        await cancelOtherCombinedAnyPlans(rule, asset, plans);
-        plansProcessed += plans.length;
-        for (const plan of plans) {
-          notificationWritesAttempted += await notifyPlan(plan, asset, instant);
-        }
+        const materialized = await materializeRuleForAsset(rule, asset._id, instant);
+        plansProcessed += materialized.plansProcessed;
+        notificationWritesAttempted += materialized.notificationWritesAttempted;
+        if (materialized.staleRule) break;
       }
     }
     return {

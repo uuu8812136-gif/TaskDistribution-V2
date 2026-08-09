@@ -110,10 +110,12 @@ test('equipment routine APIs are mounted behind authentication', async () => {
   const app = createTestApp();
   const equipmentId = '507f1f77bcf86cd799439011';
   const planId = '507f1f77bcf86cd799439012';
+  const recordId = '507f1f77bcf86cd799439013';
   for (const route of [
     '/api/equipment/routine-rules',
     '/api/equipment/routine-records',
     '/api/equipment/routine-records/export',
+    `/api/equipment/routine-records/${recordId}`,
     '/api/equipment/routine-plans',
     `/api/equipment/routine-plans/${planId}`,
     '/api/equipment/routine-exceptions',

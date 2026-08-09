@@ -286,8 +286,12 @@ export const createEquipmentRoutineRecord = (equipmentId, data) => {
   return post(`/equipment/${equipmentId}/routine-records`, data)
 }
 
-export const getEquipmentRoutineRecords = (params = {}) => {
-  return get('/equipment/routine-records', params)
+export const getEquipmentRoutineRecords = (params = {}, options = {}) => {
+  return get('/equipment/routine-records', params, options)
+}
+
+export const getEquipmentRoutineRecord = (recordId, params = {}, options = {}) => {
+  return get(`/equipment/routine-records/${encodeURIComponent(recordId)}`, params, options)
 }
 
 export const getEquipmentRoutinePlans = (params = {}) => {
@@ -463,12 +467,12 @@ export const deleteTemporaryPrivateFile = (fileId, reason = 'Client upload clean
   return del(`/files/${normalized}`, { reason }, { showLoading: false, silentError: true })
 }
 
-export const downloadPrivateFile = (fileId, params = {}) => {
+export const downloadPrivateFile = (fileId, params = {}, options = {}) => {
   const normalized = managedFileId({ fileId })
   if (!normalized) throw new TypeError('文件编号无效')
   const teamId = typeof params.teamId === 'string' ? params.teamId : ''
   const query = teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''
-  return download(`/files/${normalized}/download${query}`)
+  return download(`/files/${normalized}/download${query}`, options)
 }
 
 export const getDailyProductionSchedules = (slot, params = {}) => {

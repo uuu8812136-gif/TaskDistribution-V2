@@ -30,6 +30,14 @@
           </el-descriptions>
         </section>
 
+        <el-alert
+          class="retention-notice"
+          title="申请不支持删除；填写有误时，原发起设备管理员可在申请结束前选择“作废申请”。"
+          type="info"
+          :closable="false"
+          show-icon
+        />
+
         <section v-if="application.attachments.length" class="info-band">
           <h2>申请附件（{{ application.attachments.length }}）</h2>
           <AuthenticatedAttachments :attachments="application.attachments" :team-id="teamId" />
@@ -69,6 +77,17 @@
           </el-timeline>
         </section>
       </template>
+      <el-result
+        v-else-if="loadError"
+        icon="error"
+        title="状态申请加载失败"
+        :sub-title="loadError"
+      >
+        <template #extra><el-button type="primary" @click="load">重新加载</el-button></template>
+      </el-result>
+      <el-empty v-else-if="!loading" description="状态申请不存在或当前账号无权查看" :image-size="88">
+        <el-button @click="router.back()">返回申请列表</el-button>
+      </el-empty>
     </div>
 
     <el-dialog v-model="actionVisible" :title="statusApplicationActionLabel(selectedAction)" width="min(680px, 94vw)" destroy-on-close>
@@ -118,6 +137,7 @@ const router = useRouter()
 const application = ref(null)
 const approvals = ref([])
 const loading = ref(false)
+const loadError = ref('')
 const submitting = ref(false)
 const actionVisible = ref(false)
 const selectedAction = ref('')
@@ -134,6 +154,7 @@ const positionLabel = (value) => ({
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 
 async function load() {
+  loadError.value = ''
   loading.value = true
   try {
     const result = await getEquipmentStatusApplication(
@@ -142,6 +163,10 @@ async function load() {
     )
     application.value = result.application
     approvals.value = result.approvals || []
+  } catch (error) {
+    application.value = null
+    approvals.value = []
+    loadError.value = requestErrorMessage(error, '状态申请加载失败，请稍后重试')
   } finally {
     loading.value = false
   }
@@ -205,6 +230,7 @@ onMounted(load)
 .heading-copy h1 { margin: 0; color: #1f2733; font-size: 24px; letter-spacing: 0; overflow-wrap: anywhere; }
 .heading-copy p { margin: 5px 0 0; color: #667085; }
 .detail-body { display: grid; gap: 22px; min-height: 240px; }
+.retention-notice { margin-top: 14px; }
 .info-band, .action-band { padding-top: 18px; border-top: 1px solid #dce4ee; }
 .info-band h2, .action-band h2 { margin: 0 0 12px; color: #1f2733; font-size: 17px; letter-spacing: 0; }
 .action-band { border-top-color: #9cc7ad; }

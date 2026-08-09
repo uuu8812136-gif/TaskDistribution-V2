@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
 const EquipmentStatusApproval = require('../models/EquipmentStatusApproval');
+const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
 const FileAsset = require('../models/FileAsset');
 const Message = require('../models/Message');
 const OrgUnit = require('../models/OrgUnit');
@@ -49,6 +50,15 @@ const {
   EQUIPMENT_STATUS_APPLICATION_ACTION_VALUES
 } = EquipmentStatusApplication;
 const { FILE_OWNER_TYPES } = FileAsset;
+const {
+  EQUIPMENT_ROUTINE_PLAN_STATUSES,
+  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS
+} = EquipmentRoutinePlan;
+const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+]);
 
 const DEPUTY_POSITION_KEYS = Object.freeze([
   POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER,
@@ -397,6 +407,7 @@ function createEquipmentStatusApplicationService({
   EquipmentAssetModel = EquipmentAsset,
   EquipmentStatusApplicationModel = EquipmentStatusApplication,
   EquipmentStatusApprovalModel = EquipmentStatusApproval,
+  EquipmentRoutinePlanModel = EquipmentRoutinePlan,
   MessageModel = Message,
   OrgUnitModel = OrgUnit,
   ProjectTeamModel = ProjectTeam,
@@ -842,6 +853,19 @@ function createEquipmentStatusApplicationService({
           if (!updatedAsset) {
             throw conflict('Equipment status changed after the application was submitted');
           }
+          await EquipmentRoutinePlanModel.updateMany({
+            teamId: context.activeTeamId,
+            equipmentId: current.equipmentId,
+            status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+          }, {
+            $set: {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+              cancellationReason:
+                EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
+              cancelledAt: now,
+              cancelledBy: context.userId
+            }
+          }, { session });
         }
 
         const after = serializeApplication(updated, availableActions(context, updated));

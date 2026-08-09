@@ -26,6 +26,10 @@
           @click="markRestDay"
         >本日休班，设备不需点检</button>
       </view>
+      <view class="record-actions">
+        <button class="inspection-record-button" @click="openRoutineRecords('INSPECTION')">点检记录</button>
+        <button class="maintenance-record-button" @click="openRoutineRecords('MAINTENANCE')">保养记录</button>
+      </view>
     </view>
 
     <view class="section-heading">
@@ -243,6 +247,15 @@ export default {
     const openStatusApplication = () => uni.navigateTo({
       url: `/pages/equipment/status-application-form?equipmentId=${equipmentId.value}`
     })
+    const openRoutineRecords = (routineType) => {
+      const scopedTeamId = requestParams().teamId || ''
+      const query = [
+        `equipmentId=${encodeURIComponent(equipmentId.value)}`,
+        `routineType=${encodeURIComponent(routineType)}`,
+        scopedTeamId ? `teamId=${encodeURIComponent(scopedTeamId)}` : ''
+      ].filter(Boolean).join('&')
+      uni.navigateTo({ url: `/pages/equipment/routine-record-list?${query}` })
+    }
     const statusLabel = (value) => ({
       IN_USE: '在用', IDLE: '闲置', STOPPED: '停用', SCRAPPED: '报废'
     }[value] || value || '-')
@@ -256,7 +269,7 @@ export default {
     return {
       userStore, equipment, schedules, scheduleTasks, scheduleGroups, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
       canUseRestDay, selectedRestDayPlanIds, restDaySubmitting, canExecute, hasExecutionPermission, canMarkRestDay, isRestDaySelected, toggleRestDay, markRestDay,
-      openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
+      openExecute, openRuntimeReading, openRepair, openStatusApplication, openRoutineRecords, statusLabel, formatDate,
       resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, routineExecutionStatusLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
     }
   }
@@ -284,6 +297,10 @@ export default {
 .repair-button { color: #fff; background: #4096ff; }
 .status-button { color: #8a4b08; background: #fff5e6; }
 .rest-day-button { flex: 0 0 100%; height: 72rpx; line-height: 72rpx; margin: 0; border-radius: 8rpx; color: #7a4b00; background: #fff4d6; font-size: 24rpx; }
+.record-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 14rpx; padding-top: 18rpx; border-top: 1px solid #e8edf3; }
+.inspection-record-button, .maintenance-record-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 24rpx; }
+.inspection-record-button { color: #1d5fa7; background: #eaf3ff; }
+.maintenance-record-button { color: #245d3f; background: #eaf7ef; }
 .section-heading { display: flex; justify-content: space-between; margin: 30rpx 0 14rpx; color: #1f2733; font-size: 29rpx; font-weight: 600; }
 .section-count { color: #64748b; font-size: 23rpx; font-weight: 400; }
 .schedule-list { overflow: hidden; }

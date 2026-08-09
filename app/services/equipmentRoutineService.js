@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const mongoose = require('mongoose');
 const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentCategory = require('../models/EquipmentCategory');
@@ -11,6 +12,7 @@ const EquipmentRoutineException = require('../models/EquipmentRoutineException')
 const EquipmentRuntimeReading = require('../models/EquipmentRuntimeReading');
 const ProjectTeam = require('../models/ProjectTeam');
 const OrgUnit = require('../models/OrgUnit');
+const User = require('../models/User');
 const FileAsset = require('../models/FileAsset');
 const {
   AUDIT_ACTIONS,
@@ -78,8 +80,11 @@ const {
   effectiveRoutinePlanStatus,
   isRoutinePlanCurrentBusinessDate,
   isRoutinePlanRestDayEligible,
+  routinePlanCancellationReason,
+  routinePlanCancellationReasonLabel,
   routinePlanWindowName
 } = EquipmentRoutinePlan;
+const { EQUIPMENT_STATUSES } = EquipmentAsset;
 
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
@@ -284,6 +289,21 @@ function serializeRule(document) {
 
 function serializeRecord(document) {
   const value = plain(document);
+  const linkedPlan = value.plan ? plain(value.plan) : null;
+  const planScheduledFor = linkedPlan?.scheduledFor || value.planScheduledFor || value.scheduledFor || null;
+  const planDueAt = linkedPlan?.dueAt || value.planDueAt || null;
+  const plan = linkedPlan ? {
+    _id: normalizeId(linkedPlan._id),
+    cycleKey: linkedPlan.cycleKey,
+    windowKey: linkedPlan.windowKey,
+    windowName: routinePlanWindowName(linkedPlan),
+    originalWindowName: linkedPlan.windowName,
+    scheduledFor: linkedPlan.scheduledFor,
+    dueAt: linkedPlan.dueAt,
+    status: linkedPlan.status,
+    cancellationReason: routinePlanCancellationReason(linkedPlan),
+    cancellationReasonLabel: routinePlanCancellationReasonLabel(linkedPlan)
+  } : null;
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -294,7 +314,12 @@ function serializeRecord(document) {
     ruleVersion: value.ruleVersion,
     planId: normalizeId(value.planId),
     routineType: value.routineType,
-    scheduledFor: value.scheduledFor || null,
+    scheduledFor: planScheduledFor,
+    planScheduledFor,
+    planDueAt,
+    planWindowName: plan?.windowName || null,
+    planCycleKey: plan?.cycleKey || null,
+    plan,
     dueRuntimeHours: value.dueRuntimeHours ?? null,
     performedBy: normalizeId(value.performedBy),
     performedAt: value.performedAt,
@@ -342,6 +367,19 @@ function serializeExecutionConfig(value = {}) {
     inspectionEscalationMinutes: value?.inspectionEscalationMinutes ?? 60,
     locationPolicy: value?.locationPolicy || EQUIPMENT_ROUTINE_LOCATION_POLICIES.PENDING_CONFIRMATION,
     locationPrecisionMeters: value?.locationPrecisionMeters ?? null
+  };
+}
+
+function planMaterializationConfiguration(rule) {
+  const executionConfig = serializeExecutionConfig(rule?.executionConfig);
+  return {
+    schedule: rule?.schedule || null,
+    executionConfig: {
+      timeZone: executionConfig.timeZone,
+      windows: executionConfig.windows,
+      weeklyDay: executionConfig.weeklyDay,
+      monthlyDay: executionConfig.monthlyDay
+    }
   };
 }
 
@@ -601,6 +639,7 @@ function createEquipmentRoutineService({
   EquipmentRuntimeReadingModel = EquipmentRuntimeReading,
   ProjectTeamModel = ProjectTeam,
   OrgUnitModel = OrgUnit,
+  UserModel = User,
   auditService = createAuditService(),
   fileAssetService = createFileAssetService(),
   workflowService = null,
@@ -626,13 +665,18 @@ function createEquipmentRoutineService({
     return runWithOptionalTransaction(work, connection);
   }
 
-  async function cancelOpenPlansForRule(rule, session) {
+  async function cancelOpenPlansForRule({ rule, cancellationReason, cancelledBy }, session) {
     return execute(EquipmentRoutinePlanModel.updateMany({
       teamId: rule.teamId,
       ruleId: rule._id,
       status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
     }, {
-      $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+      $set: {
+        status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+        cancellationReason,
+        cancelledAt: clock(),
+        cancelledBy: cancelledBy || null
+      }
     }), session);
   }
 
@@ -983,8 +1027,22 @@ function createEquipmentRoutineService({
         rule.version += 1;
         rule.updatedBy = context.userId;
         await rule.save({ session: session || undefined });
-        await cancelOpenPlansForRule(rule, session);
         const after = serializeRule(rule);
+        const scheduleChanged = !isDeepStrictEqual(
+          planMaterializationConfiguration(before),
+          planMaterializationConfiguration(after)
+        );
+        let cancellationReason = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_UPDATED;
+        if (rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED) {
+          cancellationReason = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED;
+        } else if (scheduleChanged) {
+          cancellationReason = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SCHEDULE_CHANGED;
+        }
+        await cancelOpenPlansForRule({
+          rule,
+          cancellationReason,
+          cancelledBy: context.userId
+        }, session);
         await auditService.record({
           req,
           authContext: context,
@@ -1017,7 +1075,11 @@ function createEquipmentRoutineService({
         if (!rule) throw notFound('Equipment routine rule');
         assertRuleManager(context, rule.routineType);
         if (rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.DISABLED) {
-          await cancelOpenPlansForRule(rule, session);
+          await cancelOpenPlansForRule({
+            rule,
+            cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED,
+            cancelledBy: context.userId
+          }, session);
           return serializeRule(rule);
         }
         const before = serializeRule(rule);
@@ -1025,7 +1087,11 @@ function createEquipmentRoutineService({
         rule.version += 1;
         rule.updatedBy = context.userId;
         await rule.save({ session: session || undefined });
-        await cancelOpenPlansForRule(rule, session);
+        await cancelOpenPlansForRule({
+          rule,
+          cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED,
+          cancelledBy: context.userId
+        }, session);
         const after = serializeRule(rule);
         await auditService.record({
           req,
@@ -1071,13 +1137,11 @@ function createEquipmentRoutineService({
           teamId: context.activeTeamId,
           ruleId: rule._id
         };
-        const [record, completedPlan] = await Promise.all([
-          execute(EquipmentRoutineRecordModel.exists(dependencyFilter), session),
-          execute(EquipmentRoutinePlanModel.exists({
-            ...dependencyFilter,
-            status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
-          }), session)
-        ]);
+        const record = await execute(EquipmentRoutineRecordModel.exists(dependencyFilter), session);
+        const completedPlan = await execute(EquipmentRoutinePlanModel.exists({
+          ...dependencyFilter,
+          status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
+        }), session);
         if (record || completedPlan) {
           throw routineError(
             409,
@@ -1257,6 +1321,7 @@ function createEquipmentRoutineService({
       const key = normalizeId(plan.ruleId);
       if (!plansByRule.has(key)) plansByRule.set(key, []);
       const status = effectiveRoutinePlanStatus(plan, now);
+      const cancellationReason = routinePlanCancellationReason(plan);
       plansByRule.get(key).push({
         _id: normalizeId(plan._id),
         windowKey: plan.windowKey,
@@ -1266,7 +1331,8 @@ function createEquipmentRoutineService({
         dueAt: plan.dueAt,
         status,
         cycleKey: plan.cycleKey,
-        cancellationReason: plan.cancellationReason || null,
+        cancellationReason,
+        cancellationReasonLabel: routinePlanCancellationReasonLabel(plan),
         cancelledAt: plan.cancelledAt || null,
         cancelledBy: normalizeId(plan.cancelledBy),
         restDayEligible: isRoutinePlanRestDayEligible(plan, now)
@@ -1360,6 +1426,62 @@ function createEquipmentRoutineService({
     return filters.length > 0 ? { $and: filters } : {};
   }
 
+  async function enrichRecords(documents, teamId, session = null) {
+    const values = documents.map(plain);
+    const equipmentIds = [...new Set(values.map(({ equipmentId }) => normalizeId(equipmentId)).filter(Boolean))];
+    const orgUnitIds = [...new Set(values.map(({ orgUnitId }) => normalizeId(orgUnitId)).filter(Boolean))];
+    const planIds = [...new Set(values.map(({ planId }) => normalizeId(planId)).filter(Boolean))];
+    const performerIds = [...new Set(values.map(({ performedBy }) => normalizeId(performedBy)).filter(Boolean))];
+    const recordIds = values.map(({ _id }) => _id);
+    const [assets, orgUnits, plans, performers, exceptions] = await Promise.all([
+      execute(EquipmentAssetModel.find({ _id: { $in: equipmentIds }, teamId })
+        .select('_id assetCode name location plateNumber')
+        .lean(), session),
+      execute(OrgUnitModel.find({ _id: { $in: orgUnitIds }, teamId }).select('_id name').lean(), session),
+      execute(EquipmentRoutinePlanModel.find({ _id: { $in: planIds }, teamId })
+        .select([
+          '_id',
+          'cycleKey',
+          'windowKey',
+          'windowName',
+          'scheduledFor',
+          'dueAt',
+          'status',
+          'cancellationReason'
+        ].join(' '))
+        .lean(), session),
+      execute(UserModel.find({ _id: { $in: performerIds } })
+        .select('_id name username')
+        .lean(), session),
+      execute(EquipmentRoutineExceptionModel.find({ teamId, recordId: { $in: recordIds } })
+        .select('recordId status currentStage revision')
+        .lean(), session)
+    ]);
+    const assetById = new Map(assets.map((asset) => [normalizeId(asset._id), asset]));
+    const orgById = new Map(orgUnits.map((unit) => [normalizeId(unit._id), unit]));
+    const planById = new Map(plans.map((plan) => [normalizeId(plan._id), plan]));
+    const performerById = new Map(performers.map((user) => [normalizeId(user._id), user]));
+    const exceptionByRecord = new Map(exceptions.map((item) => [normalizeId(item.recordId), item]));
+    return values.map((value) => {
+      const performer = performerById.get(normalizeId(value.performedBy)) || null;
+      return {
+        ...serializeRecord({
+          ...value,
+          plan: planById.get(normalizeId(value.planId)) || null
+        }),
+        equipment: assetById.get(normalizeId(value.equipmentId)) || null,
+        orgUnit: orgById.get(normalizeId(value.orgUnitId)) || null,
+        performedByUser: performer ? {
+          _id: normalizeId(performer._id),
+          name: performer.name || '',
+          username: performer.username || ''
+        } : null,
+        performedByName: performer?.name || '',
+        exception: exceptionByRecord.get(normalizeId(value._id)) || null
+      };
+    });
+  }
+
   async function listRecords({ authContext, requestedTeamId, method = 'GET', query = {} }) {
     assertOnlyKeys(query, [
       'teamId',
@@ -1392,26 +1514,31 @@ function createEquipmentRoutineService({
         .lean(),
       EquipmentRoutineRecordModel.countDocuments(filter)
     ]);
-    const equipmentIds = [...new Set(documents.map(({ equipmentId }) => normalizeId(equipmentId)))];
-    const orgUnitIds = [...new Set(documents.map(({ orgUnitId }) => normalizeId(orgUnitId)))];
-    const [assets, orgUnits, exceptions] = await Promise.all([
-      EquipmentAssetModel.find({ _id: { $in: equipmentIds }, teamId }).select('_id assetCode name location').lean(),
-      OrgUnitModel.find({ _id: { $in: orgUnitIds }, teamId }).select('_id name').lean(),
-      EquipmentRoutineExceptionModel.find({
-        teamId,
-        recordId: { $in: documents.map(({ _id }) => _id) }
-      }).select('recordId status currentStage revision').lean()
-    ]);
-    const assetById = new Map(assets.map((asset) => [normalizeId(asset._id), asset]));
-    const orgById = new Map(orgUnits.map((unit) => [normalizeId(unit._id), unit]));
-    const exceptionByRecord = new Map(exceptions.map((item) => [normalizeId(item.recordId), item]));
-    const records = documents.map((document) => ({
-      ...serializeRecord(document),
-      equipment: assetById.get(normalizeId(document.equipmentId)) || null,
-      orgUnit: orgById.get(normalizeId(document.orgUnitId)) || null,
-      exception: exceptionByRecord.get(normalizeId(document._id)) || null
-    }));
+    const records = await enrichRecords(documents, teamId);
     return { records, total, page, pageSize };
+  }
+
+  async function getRecord({
+    authContext,
+    requestedTeamId,
+    method = 'GET',
+    recordId,
+    query = {}
+  }) {
+    assertOnlyKeys(query, ['teamId'], 'query');
+    assertPermission(authContext, 'equipment.view');
+    const teamId = await resolveReadTeamId(authContext, requestedTeamId);
+    const filter = buildScopedDetailFilter({
+      authContext,
+      moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+      id: normalizeDetailId(recordId),
+      globalTeamId: teamId,
+      method
+    });
+    const document = await EquipmentRoutineRecordModel.findOne(filter).lean();
+    if (!document) throw notFound('Equipment routine record');
+    const [record] = await enrichRecords([document], teamId);
+    return record;
   }
 
   function normalizePhotoFileIds(value) {
@@ -1728,7 +1855,7 @@ function createEquipmentRoutineService({
     const submission = normalizeRecordSubmission(input);
     try {
       return await runRoutineTransaction(async (session) => {
-        const asset = await loadScopedAsset({
+        let asset = await loadScopedAsset({
           authContext: context,
           method: 'POST',
           equipmentId,
@@ -1754,8 +1881,32 @@ function createEquipmentRoutineService({
               );
             }
             assertPermission(context, routinePermission(existing.routineType));
-            return serializeRecord(existing);
+            const linkedPlan = existing.planId
+              ? await execute(EquipmentRoutinePlanModel.findOne({
+                  _id: existing.planId,
+                  teamId: context.activeTeamId
+                }), session)
+              : null;
+            return serializeRecord({ ...plain(existing), plan: linkedPlan });
           }
+        }
+
+        asset = await execute(EquipmentAssetModel.findOneAndUpdate({
+          _id: asset._id,
+          teamId: context.activeTeamId,
+          status: EQUIPMENT_STATUSES.IN_USE
+        }, {
+          $inc: { routineMaterializationRevision: 1 }
+        }, {
+          new: true,
+          timestamps: false
+        }), session);
+        if (!asset) {
+          throw routineError(
+            409,
+            'EQUIPMENT_ROUTINE_EQUIPMENT_NOT_IN_USE',
+            'Inspection and maintenance can only be submitted for equipment that is in use'
+          );
         }
 
         const rule = await execute(EquipmentRoutineRuleModel.findOne({
@@ -1797,7 +1948,8 @@ function createEquipmentRoutineService({
             teamId: context.activeTeamId,
             orgUnitId: asset.orgUnitId,
             equipmentId: asset._id,
-            ruleId: rule._id
+            ruleId: rule._id,
+            ruleVersion: rule.version
           }), session);
           if (!selectedPlan || !OPEN_ROUTINE_PLAN_STATUSES.includes(selectedPlan.status)) {
             throw routineError(
@@ -1822,6 +1974,7 @@ function createEquipmentRoutineService({
             orgUnitId: asset.orgUnitId,
             equipmentId: asset._id,
             ruleId: rule._id,
+            ruleVersion: rule.version,
             $or: [
               { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
               {
@@ -1935,7 +2088,9 @@ function createEquipmentRoutineService({
           ruleVersion: rule.version,
           planId: plan?._id || null,
           routineType: rule.routineType,
-          scheduledFor: plan?.dueAt || schedule.nextDueAt,
+          scheduledFor: plan?.scheduledFor || schedule.nextDueAt,
+          planScheduledFor: plan?.scheduledFor || null,
+          planDueAt: plan?.dueAt || null,
           dueRuntimeHours: schedule.nextDueRuntimeHours,
           performedBy: context.userId,
           performedAt,
@@ -2008,7 +2163,12 @@ function createEquipmentRoutineService({
             _id: { $ne: plan._id },
             status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
           }, {
-            $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+            $set: {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+              cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED,
+              cancelledAt: performedAt,
+              cancelledBy: context.userId
+            }
           }), session);
         }
 
@@ -2036,7 +2196,12 @@ function createEquipmentRoutineService({
             siblingPlanFilter.cycleKey = { $ne: plan.cycleKey };
           }
           await execute(EquipmentRoutinePlanModel.updateMany(siblingPlanFilter, {
-            $set: { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED }
+            $set: {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+              cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED,
+              cancelledAt: performedAt,
+              cancelledBy: context.userId
+            }
           }), session);
         }
 
@@ -2055,7 +2220,11 @@ function createEquipmentRoutineService({
           });
         }
 
-        const after = serializeRecord(record);
+        const serializedPlan = plan ? {
+          ...plain(plan),
+          status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
+        } : null;
+        const after = serializeRecord({ ...plain(record), plan: serializedPlan });
         await auditService.record({
           req,
           authContext: context,
@@ -2139,6 +2308,7 @@ function createEquipmentRoutineService({
     createRuntimeReading,
     deleteRule,
     disableRule,
+    getRecord,
     getRule,
     getSchedule,
     listRecords,

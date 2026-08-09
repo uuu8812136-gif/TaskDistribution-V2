@@ -191,6 +191,16 @@ const equipmentRoutineRecordSchema = new mongoose.Schema({
     default: null,
     immutable: true
   },
+  planScheduledFor: {
+    type: Date,
+    default: null,
+    immutable: true
+  },
+  planDueAt: {
+    type: Date,
+    default: null,
+    immutable: true
+  },
   dueRuntimeHours: {
     type: Number,
     min: 0,
@@ -320,6 +330,13 @@ function rejectMutation(next) {
 equipmentRoutineRecordSchema.pre('save', function rejectExistingSave(next) {
   if (!this.isNew) return rejectMutation(next);
   return next();
+});
+
+equipmentRoutineRecordSchema.pre('validate', function validatePlanWindow(next) {
+  if (this.planScheduledFor && this.planDueAt && this.planScheduledFor > this.planDueAt) {
+    this.invalidate('planDueAt', 'planDueAt must be on or after planScheduledFor');
+  }
+  next();
 });
 
 for (const operation of [

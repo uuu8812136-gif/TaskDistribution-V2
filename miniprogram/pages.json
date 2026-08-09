@@ -92,6 +92,23 @@
 			}
 		},
 		{
+			"path": "pages/equipment/routine-record-list",
+			"style": {
+				"navigationBarTitleText": "点检保养记录",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white",
+				"enablePullDownRefresh": true
+			}
+		},
+		{
+			"path": "pages/equipment/routine-record-detail",
+			"style": {
+				"navigationBarTitleText": "执行记录详情",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/equipment/execute",
 			"style": {
 				"navigationBarTitleText": "现场执行",

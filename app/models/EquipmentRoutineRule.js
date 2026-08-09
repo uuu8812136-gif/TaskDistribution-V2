@@ -424,6 +424,12 @@ const equipmentRoutineRuleSchema = new mongoose.Schema({
     required: true,
     default: () => ({})
   },
+  materializationRevision: {
+    type: Number,
+    min: 0,
+    required: true,
+    default: 0
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

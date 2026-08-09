@@ -62,6 +62,8 @@ const {
   effectiveRoutinePlanStatus,
   isRoutinePlanCurrentBusinessDate,
   isRoutinePlanRestDayEligible,
+  routinePlanCancellationReason,
+  routinePlanCancellationReasonLabel,
   routinePlanWindowName
 } = EquipmentRoutinePlan;
 
@@ -155,6 +157,7 @@ function normalizeRelatedId(value) {
 
 function serializePlan(document, now = new Date()) {
   const value = plain(document);
+  const cancellationReason = routinePlanCancellationReason(value);
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -174,7 +177,8 @@ function serializePlan(document, now = new Date()) {
     completedRecordId: normalizeId(value.completedRecordId),
     completedAt: value.completedAt || null,
     completedBy: normalizeId(value.completedBy),
-    cancellationReason: value.cancellationReason || null,
+    cancellationReason,
+    cancellationReasonLabel: routinePlanCancellationReasonLabel(value),
     cancelledAt: value.cancelledAt || null,
     cancelledBy: normalizeId(value.cancelledBy),
     restDayEligible: isRoutinePlanRestDayEligible(value, now),
@@ -500,25 +504,27 @@ function createEquipmentRoutineWorkflowService({
       group,
       session
     });
-    await Promise.all(recipients.map((recipient) => upsertRoutineMessage({
-      MessageModel,
-      session,
-      payload: {
-        teamId: exception.teamId,
-        type: 'system',
-        title: '设备例行异常待处理',
-        content: exception.summary,
-        recipient,
-        deduplicationKey: `routine-exception:${exception._id}:revision:${exception.revision}:stage:${exception.currentStage}`,
-        extraData: {
-          resourceType: 'EQUIPMENT_ROUTINE_EXCEPTION',
-          exceptionId: normalizeId(exception._id),
-          equipmentId: normalizeId(exception.equipmentId),
-          currentStage: exception.currentStage,
-          page: '/pages/equipment/routine-exception'
+    for (const recipient of recipients) {
+      await upsertRoutineMessage({
+        MessageModel,
+        session,
+        payload: {
+          teamId: exception.teamId,
+          type: 'system',
+          title: '设备例行异常待处理',
+          content: exception.summary,
+          recipient,
+          deduplicationKey: `routine-exception:${exception._id}:revision:${exception.revision}:stage:${exception.currentStage}`,
+          extraData: {
+            resourceType: 'EQUIPMENT_ROUTINE_EXCEPTION',
+            exceptionId: normalizeId(exception._id),
+            equipmentId: normalizeId(exception.equipmentId),
+            currentStage: exception.currentStage,
+            page: '/pages/equipment/routine-exception'
+          }
         }
-      }
-    })));
+      });
+    }
     return recipients;
   }
 
@@ -636,18 +642,47 @@ function createEquipmentRoutineWorkflowService({
     return { [field]: { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) } };
   }
 
-  async function enrichRows(documents, { includeException = false } = {}) {
+  async function enrichRows(documents, {
+    includeException = false,
+    includePlan = false,
+    includePerformer = false
+  } = {}) {
+    const teamIds = [...new Set(documents.map(({ teamId }) => normalizeId(teamId)).filter(Boolean))];
     const equipmentIds = [...new Set(documents.map(({ equipmentId }) => normalizeId(equipmentId)).filter(Boolean))];
     const orgUnitIds = [...new Set(documents.map(({ orgUnitId }) => normalizeId(orgUnitId)).filter(Boolean))];
-    const [assets, orgUnits, exceptions] = await Promise.all([
-      EquipmentAssetModel.find({ _id: { $in: equipmentIds } }).select('_id assetCode name location').lean(),
-      OrgUnitModel.find({ _id: { $in: orgUnitIds } }).select('_id name').lean(),
+    const planIds = [...new Set(documents.map(({ planId }) => normalizeId(planId)).filter(Boolean))];
+    const performerIds = [...new Set(documents.map(({ performedBy }) => normalizeId(performedBy)).filter(Boolean))];
+    const [assets, orgUnits, plans, performers, exceptions] = await Promise.all([
+      EquipmentAssetModel.find({
+        _id: { $in: equipmentIds },
+        teamId: { $in: teamIds }
+      }).select('_id assetCode name location plateNumber').lean(),
+      OrgUnitModel.find({
+        _id: { $in: orgUnitIds },
+        teamId: { $in: teamIds }
+      }).select('_id name').lean(),
+      includePlan
+        ? EquipmentRoutinePlanModel.find({
+          _id: { $in: planIds },
+          teamId: { $in: teamIds }
+        })
+          .select('_id cycleKey windowKey windowName scheduledFor dueAt status')
+          .lean()
+        : [],
+      includePerformer
+        ? UserModel.find({ _id: { $in: performerIds } }).select('_id name username').lean()
+        : [],
       includeException
-        ? EquipmentRoutineExceptionModel.find({ recordId: { $in: documents.map(({ _id }) => _id) } }).lean()
+        ? EquipmentRoutineExceptionModel.find({
+          recordId: { $in: documents.map(({ _id }) => _id) },
+          teamId: { $in: teamIds }
+        }).lean()
         : []
     ]);
     const assetById = new Map(assets.map((item) => [normalizeId(item._id), item]));
     const orgById = new Map(orgUnits.map((item) => [normalizeId(item._id), item]));
+    const planById = new Map(plans.map((item) => [normalizeId(item._id), item]));
+    const performerById = new Map(performers.map((item) => [normalizeId(item._id), item]));
     const exceptionByRecord = new Map(exceptions.map((item) => [normalizeId(item.recordId), item]));
     return documents.map((document) => {
       const value = plain(document);
@@ -655,6 +690,8 @@ function createEquipmentRoutineWorkflowService({
         ...value,
         equipment: assetById.get(normalizeId(value.equipmentId)) || null,
         orgUnit: orgById.get(normalizeId(value.orgUnitId)) || null,
+        plan: planById.get(normalizeId(value.planId)) || null,
+        performedByUser: performerById.get(normalizeId(value.performedBy)) || null,
         exception: exceptionByRecord.get(normalizeId(value._id)) || null
       };
     });
@@ -1069,26 +1106,66 @@ function createEquipmentRoutineWorkflowService({
     if (query.overallResult) userFilter.overallResult = requiredString(query.overallResult, 'overallResult', 50);
     const filter = await readFilter({ authContext, teamId, method, userFilter });
     const records = await EquipmentRoutineRecordModel.find(filter).sort({ performedAt: -1, _id: -1 }).lean();
-    const enriched = await enrichRows(records, { includeException: true });
-    const rows = enriched.map((record) => ({
-      '设备编号': formulaSafe(record.equipment?.assetCode || ''),
-      '设备名称': formulaSafe(record.equipment?.name || ''),
-      '所属组织': formulaSafe(record.orgUnit?.name || ''),
-      '业务类型': record.routineType === 'INSPECTION' ? '点检' : '保养',
-      '规则名称': formulaSafe(record.ruleSnapshot?.name || ''),
-      '规则版本': record.ruleVersion,
-      '计划时间': record.scheduledFor || '',
-      '执行时间': record.performedAt,
-      '执行结果': record.overallResult,
-      '异常摘要': formulaSafe(record.abnormalSummary || ''),
-      '异常状态': record.exception?.status || '',
-      '当前处理阶段': record.exception?.currentStage || '',
-      '现场照片数': Array.isArray(record.photoFileIds) ? record.photoFileIds.length : 0,
-      '现场水印': formulaSafe((record.photoEvidence || []).map(({ watermarkText }) => watermarkText).join('；')),
-      '记录ID': normalizeId(record._id)
-    }));
+    const enriched = await enrichRows(records, {
+      includeException: true,
+      includePlan: true,
+      includePerformer: true
+    });
+    const rows = enriched.map((record) => {
+      const planScheduledFor = record.plan?.scheduledFor || record.planScheduledFor || (
+        record.planId ? null : record.scheduledFor
+      );
+      const planDueAt = record.plan?.dueAt || record.planDueAt || null;
+      const performer = record.performedByUser;
+      return {
+        '设备编号': formulaSafe(record.equipment?.assetCode || ''),
+        '设备名称': formulaSafe(record.equipment?.name || ''),
+        '车牌号': formulaSafe(record.equipment?.plateNumber || ''),
+        '所属组织': formulaSafe(record.orgUnit?.name || ''),
+        '业务类型': record.routineType === 'INSPECTION' ? '点检' : '保养',
+        '规则名称': formulaSafe(record.ruleSnapshot?.name || ''),
+        '规则版本': record.ruleVersion,
+        '关联计划编号': normalizeId(record.planId) || '',
+        '计划窗口': formulaSafe(record.plan?.windowName || ''),
+        '计划开始时间': planScheduledFor || '',
+        '计划截止时间': planDueAt || '',
+        '执行人': formulaSafe(performer?.name || performer?.username || normalizeId(record.performedBy) || ''),
+        '执行时间': record.performedAt,
+        '执行结果': record.overallResult,
+        '异常摘要': formulaSafe(record.abnormalSummary || ''),
+        '异常状态': record.exception?.status || '',
+        '当前处理阶段': record.exception?.currentStage || '',
+        '现场照片数': Array.isArray(record.photoFileIds) ? record.photoFileIds.length : 0,
+        '现场水印': formulaSafe((record.photoEvidence || []).map(({ watermarkText }) => watermarkText).join('；')),
+        '记录ID': normalizeId(record._id)
+      };
+    });
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '设备编号': '' }], { cellDates: true });
+    const worksheet = XLSX.utils.json_to_sheet(rows, {
+      cellDates: true,
+      header: [
+        '设备编号',
+        '设备名称',
+        '车牌号',
+        '所属组织',
+        '业务类型',
+        '规则名称',
+        '规则版本',
+        '关联计划编号',
+        '计划窗口',
+        '计划开始时间',
+        '计划截止时间',
+        '执行人',
+        '执行时间',
+        '执行结果',
+        '异常摘要',
+        '异常状态',
+        '当前处理阶段',
+        '现场照片数',
+        '现场水印',
+        '记录ID'
+      ]
+    });
     XLSX.utils.book_append_sheet(workbook, worksheet, '点检保养记录');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx', cellDates: true });
     const routineTypes = [...new Set(records.map(({ routineType }) => routineType).filter(Boolean))].sort();
