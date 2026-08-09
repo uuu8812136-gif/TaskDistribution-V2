@@ -3,7 +3,8 @@ param(
   [string]$CopyScript = 'C:\ProgramData\LinuxBackup\Copy-V2TestBackupOffHost.ps1',
   [string]$IdentityFile = 'C:\ProgramData\LinuxBackup\linux-backup-key-system',
   [string]$KnownHostsFile = 'C:\ProgramData\LinuxBackup\known_hosts',
-  [string]$DestinationRoot = 'D:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$DestinationRoot = 'C:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$SourceVmRoot = 'E:\ServerVM',
   [ValidateRange(1, 65535)][int]$LinuxPort = 22022,
   [ValidateRange(1, 365)][int]$DailyKeep = 7,
   [ValidateRange(0, 104)][int]$WeeklyKeep = 4,
@@ -52,6 +53,29 @@ function Write-JsonAtomic {
   }
 }
 
+function Get-LocalVolumeIdentity {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Label must be an absolute local path" }
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+  if ($pathRoot -notmatch '^([A-Za-z]):\\$') { throw "$Label must use a local drive letter" }
+  $driveLetter = $Matches[1].ToUpperInvariant()
+  $drive = Get-PSDrive -Name $driveLetter -PSProvider FileSystem -ErrorAction Stop
+  if (-not $drive.Root.Equals("${driveLetter}:\", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must resolve to a local filesystem drive"
+  }
+  $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+  return [pscustomobject]@{
+    FullPath = $fullPath
+    DriveLetter = $driveLetter
+    Volume = "${driveLetter}:"
+    DiskNumber = [int]$partition.DiskNumber
+  }
+}
+
 function Get-VerifiedOffHostRecord {
   param([IO.DirectoryInfo]$Directory)
   if ($Directory.Name -notmatch '^backup-\d{8}T\d{6}Z-[a-f0-9]{8}$') { return $null }
@@ -77,7 +101,18 @@ function Get-VerifiedOffHostRecord {
         $receipt.instance -ne $ExpectedInstance -or
         $receipt.database -ne $ExpectedDatabase -or
         $receipt.backupId -ne $Directory.Name -or
-        [string]$receipt.manifestSha256 -cne $actualSha) { return $null }
+        [string]$receipt.manifestSha256 -cne $actualSha -or
+        $receipt.destinationVolume -ne ([IO.Path]::GetPathRoot($Directory.FullName).TrimEnd('\')) -or
+        -not ([IO.Path]::GetFullPath([string]$receipt.destinationDirectory)).Equals(
+          [IO.Path]::GetFullPath($Directory.FullName),
+          [StringComparison]::OrdinalIgnoreCase
+        ) -or
+        [string]$receipt.sourceVmVolume -notmatch '^[A-Z]:$' -or
+        $receipt.sourceVmVolume -eq $receipt.destinationVolume -or
+        $null -eq $receipt.destinationDiskNumber -or
+        $null -eq $receipt.sourceVmDiskNumber -or
+        [int]$receipt.destinationDiskNumber -eq [int]$receipt.sourceVmDiskNumber -or
+        $receipt.physicalDiskSeparated -ne $true) { return $null }
     return [pscustomobject]@{
       BackupId = $Directory.Name
       Directory = $Directory.FullName
@@ -134,15 +169,22 @@ foreach ($path in @($CopyScript, $IdentityFile, $KnownHostsFile)) {
     throw "Required absolute file is missing: $path"
   }
 }
-$destinationFull = [IO.Path]::GetFullPath($DestinationRoot)
-if (-not $destinationFull.StartsWith('D:\', [StringComparison]::OrdinalIgnoreCase)) {
-  throw 'DestinationRoot must be on the physical-host D: backup disk'
+$destinationIdentity = Get-LocalVolumeIdentity -Path $DestinationRoot -Label 'DestinationRoot'
+$sourceVmIdentity = Get-LocalVolumeIdentity -Path $SourceVmRoot -Label 'SourceVmRoot'
+$destinationFull = $destinationIdentity.FullPath
+if ($destinationIdentity.DiskNumber -eq $sourceVmIdentity.DiskNumber) {
+  throw 'DestinationRoot must be on a different physical disk from SourceVmRoot'
 }
 
 $plan = [ordered]@{
   Status = 'DRY_RUN_READY'
   Action = 'discover-copy-verify-retain-v2-test-backup'
   DestinationRoot = $destinationFull
+  DestinationVolume = $destinationIdentity.Volume
+  DestinationDiskNumber = $destinationIdentity.DiskNumber
+  SourceVmVolume = $sourceVmIdentity.Volume
+  SourceVmDiskNumber = $sourceVmIdentity.DiskNumber
+  PhysicalDiskSeparated = $true
   DailyKeep = $DailyKeep
   WeeklyKeep = $WeeklyKeep
   MaximumAgeHours = $MaximumAgeHours
@@ -225,6 +267,7 @@ else {
     -IdentityFile $IdentityFile `
     -KnownHostsFile $KnownHostsFile `
     -DestinationRoot $destinationFull `
+    -SourceVmRoot $sourceVmIdentity.FullPath `
     -RemoteReceiptPath "/tmp/v2-test-offhost-$($handoff.backupId).json" `
     -Apply `
     -ConfirmInstance $ExpectedInstance `

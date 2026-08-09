@@ -314,10 +314,31 @@ exit /b 91
 }
 
 Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
+  It 'rejects a destination on the same physical disk as the Linux VM' {
+    $identityFile = Join-Path $TestDrive 'same-disk-identity'
+    $knownHostsFile = Join-Path $TestDrive 'same-disk-known-hosts'
+    Write-TestFile -Path $identityFile -Value "fixture`n"
+    Write-TestFile -Path $knownHostsFile -Value "fixture`n"
+    Mock Get-PSDrive { [pscustomobject]@{ Root = "${Name}:\" } } `
+      -ParameterFilter { $Name -in @('C', 'E') }
+    Mock Get-Partition { [pscustomobject]@{ DiskNumber = 0 } }
+
+    {
+      & $copyScript `
+        -BackupId 'backup-20260724T120000Z-a1b2c3d4' `
+        -ExpectedManifestSha256 ('a' * 64) `
+        -SourceReleaseId 'release-test-001' `
+        -IdentityFile $identityFile `
+        -KnownHostsFile $knownHostsFile `
+        -DestinationRoot 'C:\ServerBackups\TaskDistribution-V2-Test' `
+        -SourceVmRoot 'E:\ServerVM'
+    } | Should Throw
+  }
+
   It 'reverifies an existing final backup and retries only its receipt upload' {
     $backupId = 'backup-20260724T120000Z-a1b2c3d4'
     $releaseId = 'release-test-001'
-    $destinationRoot = "D:\V2OffHostRecoveryTest-$([guid]::NewGuid().ToString('N'))"
+    $destinationRoot = "C:\V2OffHostRecoveryTest-$([guid]::NewGuid().ToString('N'))"
     $finalDirectory = Join-Path $destinationRoot $backupId
     $identityFile = Join-Path $TestDrive 'identity'
     $knownHostsFile = Join-Path $TestDrive 'known_hosts'
@@ -328,9 +349,10 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
     $receiptPath = Join-Path $destinationRoot "receipts/$backupId.json"
     Write-TestFile -Path $receiptPath -Value "{ invalid receipt }`n"
 
-    Mock Get-PSDrive { [pscustomobject]@{ Root = 'D:\' } } -ParameterFilter { $Name -eq 'D' }
+    Mock Get-PSDrive { [pscustomobject]@{ Root = "${Name}:\" } } `
+      -ParameterFilter { $Name -in @('C', 'E') }
     Mock Get-Partition {
-      if ([string]$DriveLetter -eq 'D') { return [pscustomobject]@{ DiskNumber = 7 } }
+      if ([string]$DriveLetter -eq 'C') { return [pscustomobject]@{ DiskNumber = 1 } }
       return [pscustomobject]@{ DiskNumber = 0 }
     }
     Mock Get-Command { [pscustomobject]@{ Source = 'C:\fixture\scp.exe' } } `
@@ -355,12 +377,19 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
       IdentityFile = $identityFile
       KnownHostsFile = $knownHostsFile
       DestinationRoot = $destinationRoot
+      SourceVmRoot = 'E:\ServerVM'
       ConfirmInstance = 'task-distribution-v2-customer-test'
     }
     try {
       { & $copyScript @parameters -Apply -Confirm:$false } | Should Throw
       Test-Path -LiteralPath $receiptPath -PathType Leaf | Should Be $true
       { [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json } | Should Not Throw
+      $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
+      $receipt.destinationVolume | Should Be 'C:'
+      $receipt.sourceVmVolume | Should Be 'E:'
+      $receipt.destinationDiskNumber | Should Be 1
+      $receipt.sourceVmDiskNumber | Should Be 0
+      $receipt.physicalDiskSeparated | Should Be $true
       $receiptShaAfterFailure = (Get-FileHash -LiteralPath $receiptPath -Algorithm SHA256).Hash
 
       $resultText = & $copyScript @parameters -Apply -Confirm:$false

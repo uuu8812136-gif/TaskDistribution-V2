@@ -1,7 +1,9 @@
 [CmdletBinding()]
 param(
   [string]$SyncScript = 'C:\ProgramData\LinuxBackup\Sync-V2TestBackupOffHost.ps1',
-  [string]$LogRoot = 'C:\ProgramData\LinuxBackup\logs'
+  [string]$LogRoot = 'C:\ProgramData\LinuxBackup\logs',
+  [string]$DestinationRoot = 'C:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$SourceVmRoot = 'E:\ServerVM'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,6 +20,8 @@ $arguments = @(
   '-NonInteractive',
   '-ExecutionPolicy', 'Bypass',
   '-File', $SyncScript,
+  '-DestinationRoot', $DestinationRoot,
+  '-SourceVmRoot', $SourceVmRoot,
   '-Apply'
 )
 $process = Start-Process -FilePath $powerShell -ArgumentList $arguments -Wait -PassThru -NoNewWindow `

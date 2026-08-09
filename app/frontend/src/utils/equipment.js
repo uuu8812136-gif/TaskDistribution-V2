@@ -74,9 +74,16 @@ export function effectiveRoutineDueState(entry = {}) {
   return ROUTINE_PLAN_DUE_STATE_MAP[raw] || raw
 }
 
-export function selectExecutableRoutinePlan(plans = []) {
+export function selectExecutableRoutinePlan(plans = [], now = new Date()) {
+  const nowTimestamp = now instanceof Date ? now.getTime() : new Date(now).getTime()
   const candidates = Array.isArray(plans)
-    ? plans.filter((plan) => ['OVERDUE', 'IN_WINDOW'].includes(plan?.status))
+    ? plans.filter((plan) => {
+        const scheduledFor = Date.parse(plan?.scheduledFor || '')
+        return (
+          ['OVERDUE', 'IN_WINDOW'].includes(plan?.status) &&
+          (!Number.isFinite(scheduledFor) || scheduledFor <= nowTimestamp)
+        )
+      })
     : []
   const statusRank = { OVERDUE: 0, IN_WINDOW: 1 }
   const timestamp = (value) => {
@@ -98,6 +105,8 @@ export function isRoutineScheduleExecutable(entry = {}) {
 }
 
 export function routineExecutionStatusLabel(entry = {}) {
+  if (entry?.executionStatus === 'REST_DAY') return '本日休班'
+  if (entry?.executionStatus === 'NOT_STARTED') return '未到开始时间'
   if (entry?.executionStatus === 'PERIOD_COMPLETED') return '本周期已完成'
   if (entry?.executionStatus === 'WAITING_FOR_READING') return '待录入运行小时'
   if (entry?.executionStatus === 'NOT_DUE') return '未到执行周期'

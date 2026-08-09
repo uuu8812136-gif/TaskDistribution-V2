@@ -39,6 +39,34 @@ import {
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
+test('routine rule dialog exposes detailed and accessible contextual help', () => {
+  const dialog = fs.readFileSync(
+    path.join(root, 'src/views/equipment/components/EquipmentRuleDialog.vue'),
+    'utf8'
+  )
+
+  assert.match(dialog, /#header="\{ titleId, titleClass \}"/)
+  assert.match(dialog, /<QuestionFilled \/>/)
+  assert.match(dialog, /aria-label="查看规则功能说明"/)
+  assert.match(dialog, /aria-haspopup="dialog"/)
+  assert.match(dialog, /:aria-expanded="helpVisible"/)
+  assert.match(dialog, /title="点检\/保养规则功能说明"/)
+  assert.match(dialog, /helpVisible\.value = false/)
+  for (const phrase of [
+    '精确匹配',
+    '选择父级分类不会自动覆盖其下级设备',
+    '二维码通过隐藏令牌定位唯一设备记录',
+    '默认每 5 分钟扫描一次',
+    '计划生成逻辑',
+    '任一条件到期',
+    '全部条件到期',
+    '同一计划或同一周期完成后不能重复提交',
+    '已有执行记录或已完成计划的规则不能删除'
+  ]) {
+    assert.match(dialog, new RegExp(phrase))
+  }
+})
+
 test('equipment import UI exposes progress, isolated timeout, cancellation, and local job recovery', () => {
   const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
   const dialog = fs.readFileSync(

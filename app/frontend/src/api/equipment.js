@@ -188,6 +188,12 @@ export const getEquipmentRoutinePlan = (planId, params) => request({
   params
 })
 
+export const markEquipmentRoutinePlansRestDay = (data) => request({
+  url: '/equipment/routine-plans/rest-day',
+  method: 'post',
+  data
+})
+
 export const getEquipmentRoutineExceptions = (params) => request({
   url: '/equipment/routine-exceptions',
   method: 'get',

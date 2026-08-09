@@ -7,6 +7,16 @@
       </div>
       <div class="heading-actions">
         <el-button
+          v-if="activeTab === 'plans' && canMarkRestDay"
+          type="warning"
+          plain
+          :loading="restDaySubmitting"
+          :disabled="selectedRestDayPlanIds.length === 0"
+          @click="markSelectedPlansRestDay"
+        >
+          本日休班，设备不需点检
+        </el-button>
+        <el-button
           v-if="activeTab === 'records' && canExport"
           :loading="exporting"
           @click="exportRows"
@@ -89,13 +99,22 @@
 
     <section v-if="activeTab === 'plans'" class="table-shell">
       <el-table
+        ref="planTableRef"
         v-loading="loading"
         :data="plans"
         :row-class-name="planRowClass"
         row-key="_id"
         stripe
         empty-text="暂无执行计划"
+        @selection-change="handlePlanSelectionChange"
       >
+        <el-table-column
+          v-if="canMarkRestDay"
+          type="selection"
+          width="48"
+          fixed="left"
+          :selectable="canSelectRestDayPlan"
+        />
         <el-table-column label="设备" min-width="190" fixed="left">
           <template #default="{ row }">
             <div class="primary-cell"><strong>{{ row.equipment?.name || '-' }}</strong><span>{{ row.equipment?.assetCode || '-' }}</span></div>
@@ -140,7 +159,7 @@
           <template #default="{ row }">
             <span v-if="!row.photoEvidence?.length">无</span>
             <div v-else class="watermark-list">
-              <span v-for="photo in row.photoEvidence" :key="photo.fileId">{{ photo.watermarkText }}</span>
+              <span v-for="photo in row.photoEvidence" :key="photo.fileId">{{ displayWatermark(row, photo) }}</span>
             </div>
           </template>
         </el-table-column>
@@ -205,10 +224,10 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   exportEquipmentRoutineRecords,
   getEquipmentList,
@@ -218,6 +237,7 @@ import {
   getEquipmentRoutinePlan,
   getEquipmentRoutinePlans,
   getEquipmentRoutineRecords,
+  markEquipmentRoutinePlansRestDay,
   transitionEquipmentRoutineException
 } from '@/api/equipment'
 import { routineScheduleLabel, saveBlob } from '@/utils/equipment'
@@ -231,11 +251,14 @@ const requestedTab = String(route.query.tab || '')
 const loading = ref(false)
 const exporting = ref(false)
 const submitting = ref(false)
+const restDaySubmitting = ref(false)
 const activeTab = ref(ROUTINE_TABS.has(requestedTab) ? requestedTab : 'plans')
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const focusedExceptionId = ref(String(route.query.exceptionId || ''))
 const focusedPlanId = ref(String(route.query.planId || ''))
 const plans = ref([])
+const planTableRef = ref(null)
+const selectedRestDayPlanIds = ref([])
 const records = ref([])
 const exceptions = ref([])
 const equipmentOptions = ref([])
@@ -289,6 +312,9 @@ const requestTeam = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
 const canExport = computed(() => session.hasPermission('equipment.export'))
+const canMarkRestDay = computed(() => (
+  session.isTeamMode && session.hasPermission('equipment.inspect')
+))
 const handleActions = computed(() => (
   selectedException.value?.currentStage === 'ASSET_ADMIN'
     ? [{ label: '解决异常', value: 'RESOLVE' }]
@@ -300,6 +326,23 @@ const routineLabel = (value) => value === 'MAINTENANCE' ? '保养' : '点检'
 const resultLabel = (value) => ({ NORMAL: '正常', COMPLETED: '完成', ABNORMAL: '异常' }[value] || value || '-')
 const planStatus = (value) => planStatuses[value] || { label: value || '-', type: 'info' }
 const stageLabel = (value) => stages[value] || value || '-'
+const canSelectRestDayPlan = (row) => canMarkRestDay.value && row?.restDayEligible === true
+const displayWatermark = (row, photo) => {
+  const existing = String(photo?.watermarkText || '').trim()
+  const location = String(photo?.address || row?.equipment?.location || '').trim()
+  const hasCoordinates = (
+    photo?.locationStatus === 'GRANTED' &&
+    Number.isFinite(Number(photo?.latitude)) &&
+    Number.isFinite(Number(photo?.longitude))
+  )
+  const coordinateText = hasCoordinates
+    ? `${Number(photo.latitude).toFixed(6)}, ${Number(photo.longitude).toFixed(6)}`
+    : ''
+  const parts = existing ? [existing] : [displayTime(photo?.capturedAt)]
+  if (location && !existing.includes(location)) parts.push(`设备地点：${location}`)
+  if (coordinateText && !existing.includes(coordinateText)) parts.push(`GPS：${coordinateText}`)
+  return parts.filter(Boolean).join(' | ')
+}
 const planRowClass = ({ row }) => (
   focusedPlanId.value && String(row?._id || '') === focusedPlanId.value
     ? 'focused-message-row'
@@ -371,6 +414,9 @@ async function loadActiveTab() {
     if (requestId !== activeTabRequestId) return
     const listedPlans = result.plans || []
     plans.value = listedPlans
+    selectedRestDayPlanIds.value = []
+    await nextTick()
+    planTableRef.value?.clearSelection?.()
     records.value = result.records || []
     const listedExceptions = result.exceptions || []
     exceptions.value = listedExceptions
@@ -418,6 +464,41 @@ async function loadActiveTab() {
     total.value = Number(result.total || 0)
   } finally {
     if (requestId === activeTabRequestId) loading.value = false
+  }
+}
+
+function handlePlanSelectionChange(rows) {
+  selectedRestDayPlanIds.value = (rows || [])
+    .filter(canSelectRestDayPlan)
+    .map(({ _id }) => String(_id))
+}
+
+async function markSelectedPlansRestDay() {
+  if (!selectedRestDayPlanIds.value.length || restDaySubmitting.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划设为“休班”吗？`,
+      '本日休班，设备不需点检',
+      {
+        confirmButtonText: '确认休班',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+  restDaySubmitting.value = true
+  try {
+    const result = await markEquipmentRoutinePlansRestDay({
+      planIds: [...selectedRestDayPlanIds.value]
+    })
+    const count = Number(result.cancelledCount || 0)
+    ElMessage.success(count > 0 ? `已将 ${count} 条点检计划设为休班` : '所选计划已是休班状态')
+    selectedRestDayPlanIds.value = []
+    await loadActiveTab()
+  } finally {
+    restDaySubmitting.value = false
   }
 }
 

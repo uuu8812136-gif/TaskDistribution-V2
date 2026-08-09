@@ -9,6 +9,32 @@
     @update:model-value="emit('update:modelValue', $event)"
     @closed="resetForm"
   >
+    <template #header="{ titleId, titleClass }">
+      <div class="routine-rule-dialog__header">
+        <span
+          :id="titleId"
+          :class="[titleClass, 'routine-rule-dialog__title']"
+          role="heading"
+          aria-level="2"
+        >
+          {{ dialogTitle }}
+        </span>
+        <el-tooltip content="功能说明" placement="bottom">
+          <el-button
+            text
+            circle
+            class="routine-rule-help-button"
+            aria-label="查看规则功能说明"
+            aria-haspopup="dialog"
+            :aria-expanded="helpVisible"
+            @click="helpVisible = true"
+          >
+            <el-icon :size="18"><QuestionFilled /></el-icon>
+          </el-button>
+        </el-tooltip>
+      </div>
+    </template>
+
     <el-form ref="formRef" :model="form" :rules="rules" :disabled="readOnly" label-position="top" status-icon>
       <section class="form-section first-section">
         <h3>基本信息</h3>
@@ -321,6 +347,125 @@
       <el-button v-if="!readOnly" type="primary" :loading="submitting" @click="submitForm">保存规则</el-button>
     </template>
   </el-dialog>
+
+  <el-drawer
+    v-model="helpVisible"
+    title="点检/保养规则功能说明"
+    size="min(560px, 94vw)"
+    append-to-body
+    destroy-on-close
+    class="routine-rule-help-drawer"
+  >
+    <div class="routine-rule-help-content">
+      <p class="routine-rule-help-intro">
+        本页用于为一个具体设备类型建立点检或保养规则，统一设置适用设备、现场项目、执行周期、计划窗口和提交证据。
+      </p>
+
+      <section class="routine-rule-help-section">
+        <h3>1. 权限与作用范围</h3>
+        <ul>
+          <li>维护规则时必须先进入具体团队，并具备设备编辑及对应的点检或保养权限。</li>
+          <li>部门经理、设备管理员，以及切入具体团队后的超级管理员，可按实际授权新增、编辑、复制、停用或删除规则。</li>
+          <li>全局只读状态或查看模式只允许查看内容，不能保存修改。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>2. 基本信息、设备类型与二维码</h3>
+        <ul>
+          <li><strong>业务类型：</strong>点检用于确认设备状态，保养用于记录维护工作；规则创建后不能直接更换业务类型。</li>
+          <li><strong>设备类型：</strong>规则只与所选分类精确匹配，规则创建后不能直接更换设备类型。</li>
+          <li><strong>规则名称和说明：</strong>用于在规则列表、计划、消息和现场执行页中识别规则及查看注意事项。</li>
+          <li><strong>二维码关系：</strong>每台设备的二维码通过隐藏令牌定位唯一设备记录，标签同时显示固定资产编号；扫码后，系统再按该设备的类型查询适用规则，规则内容不会写入二维码。</li>
+        </ul>
+        <div class="routine-rule-help-callout" role="note">
+          当前设备类型按所选分类精确匹配。选择父级分类不会自动覆盖其下级设备；不同下级分类需要分别建立规则。
+        </div>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>3. 执行窗口与提醒</h3>
+        <ul>
+          <li>窗口用于设置允许执行的班次和时间，结束时间早于或等于开始时间时按跨天窗口处理。</li>
+          <li>停用的窗口不生成对应计划，但整条规则至少要保留一个启用窗口。</li>
+          <li>日历点检会使用全部启用窗口，日历保养只使用第一个启用窗口；运行小时达到阈值后会立即生成到期计划，并使用第一个启用窗口的名称作为任务标识。</li>
+          <li>日历计划在窗口开始前为“计划中”，进入窗口后为“执行中”，超过结束时间未完成则为“已逾期”。</li>
+          <li>“二次升级等待”只用于点检异常，超过设置时间仍未处理时继续通知上一级负责人。</li>
+          <li>国内团队时区保持 <code>Asia/Shanghai</code>，否则执行窗口和到期时间可能发生偏移。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>4. 点检或保养项目</h3>
+        <ul>
+          <li>每一行代表现场要完成的一项工作，可填写项目名称、执行标准或注意事项，并调整顺序。</li>
+          <li>所有项目都必须选择结果；必检项目不能跳过，非必检项目可按实际情况选择跳过。</li>
+          <li>同一规则内的全部项目共用同一个执行周期。项目频率不同，例如每日检查和每月检查，应拆成两条规则。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>5. 执行周期</h3>
+        <dl class="routine-rule-help-definitions">
+          <div>
+            <dt>手动发起</dt>
+            <dd>系统不自动生成周期计划，由有权限的人员按需发起。</dd>
+          </div>
+          <div>
+            <dt>按日历周期</dt>
+            <dd>按每 N 天、每 N 周或每 N 月执行。首次未执行前以“首次到期时间”为基准，完成后按最近一次实际执行时间继续计算下一周期。</dd>
+          </div>
+          <div>
+            <dt>按运行小时</dt>
+            <dd>设备累计运行小时达到阈值后到期；没有有效运行小时读数时不会虚构到期时间。</dd>
+          </div>
+          <div>
+            <dt>日历与运行小时组合</dt>
+            <dd>“任一条件到期”表示日期或运行小时任意一项先到即可执行；“全部条件到期”表示两项都满足后才可执行。未来的日历计划仍可能提前以“计划中”状态建立。</dd>
+          </div>
+        </dl>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>6. 计划生成逻辑</h3>
+        <ul>
+          <li>只有状态为“启用”的规则，才会为同一团队、设备类型精确匹配且状态为“在用”的设备生成计划。</li>
+          <li>后台计划生成服务启用后，服务启动时先扫描一次，之后默认每 5 分钟扫描一次；它不是为每条规则在某个秒点单独注册的定时任务，计划会在下一次扫描时生成。</li>
+          <li>日历点检通常预生成当前周期和下一周期；保养只生成下一到期周期。运行小时计划在累计读数达到条件后生成。</li>
+          <li>自动周期模式下，同一计划或同一周期完成后不能重复提交；下一周期到来后才会再次允许执行。手动发起模式仍允许按需多次执行。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>7. 提交要求与现场证据</h3>
+        <ul>
+          <li><strong>照片要求：</strong>可设置为不要求、异常时必填或始终必填，现场提交时按当前规则校验。</li>
+          <li><strong>异常说明：</strong>设置为必填后，只要存在异常项目，就必须填写项目说明或统一异常说明。</li>
+          <li><strong>可选定位：</strong>允许已上传的现场照片不带定位；“必须取得定位”会校验已上传照片的定位，并可限制最大误差。若规则不要求照片且本次没有上传照片，当前不会单独因无定位拦截提交。</li>
+          <li><strong>待客户确认：</strong>当前会记录授权状态、定位信息和水印文本，但定位被拒绝或失败时暂不阻止提交。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>8. 编辑、停用与删除的影响</h3>
+        <ul>
+          <li>保存编辑会生成新的规则版本，并取消旧版本尚未完成的开放计划；已完成记录和历史审计继续保留。</li>
+          <li>停用规则后不再生成新计划，并取消该规则当前尚未完成的开放计划；以后可以重新启用。</li>
+          <li>永久删除前必须先停用规则；已有执行记录或已完成计划的规则不能删除，只能继续保留为停用状态。</li>
+          <li>业务类型或设备类型需要改变时，应复制或新建正确规则，再停用旧规则。</li>
+        </ul>
+      </section>
+
+      <section class="routine-rule-help-section">
+        <h3>9. 配置示例</h3>
+        <ol>
+          <li>叉车每日点检：选择具体叉车分类，使用“按日历周期 / 每 1 天”，再启用白班和夜班窗口。</li>
+          <li>车辆每 500 小时保养：选择车辆的具体分类，使用“按运行小时 / 500 小时”，并持续录入累计运行小时。</li>
+          <li>同一设备既要每日检查又要每月检查：分别建立两条规则，不能把不同频率的项目放在同一条规则中。</li>
+        </ol>
+      </section>
+    </div>
+  </el-drawer>
 </template>
 
 <script setup>
@@ -355,6 +500,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'submit'])
 const formRef = ref(null)
+const helpVisible = ref(false)
 let localKeySequence = 0
 const form = reactive(emptyForm())
 
@@ -486,6 +632,7 @@ function emptyForm() {
 }
 
 function resetForm() {
+  helpVisible.value = false
   const source = props.rule
   if (!source) {
     Object.assign(form, emptyForm(), { routineType: props.routineType })
@@ -580,6 +727,7 @@ async function submitForm() {
 
 watch(() => props.modelValue, (visible) => {
   if (visible) resetForm()
+  else helpVisible.value = false
 })
 </script>
 
@@ -587,9 +735,40 @@ watch(() => props.modelValue, (visible) => {
 .routine-rule-dialog.el-dialog {
   border-radius: 8px;
 }
+
+.routine-rule-help-drawer .el-drawer__header {
+  margin-bottom: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--zl-border-soft);
+}
+
+.routine-rule-help-drawer .el-drawer__body {
+  padding: 0 24px 28px;
+}
 </style>
 
 <style scoped lang="scss">
+.routine-rule-dialog__header { display: flex; align-items: center; gap: 12px; width: 100%; padding-right: 38px; }
+.routine-rule-dialog__title { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: 18px; font-weight: 600; line-height: 32px; }
+.routine-rule-help-button { flex: 0 0 32px; width: 32px; height: 32px; margin-right: 4px; margin-left: auto; color: var(--el-color-primary); }
+.routine-rule-help-button:hover,
+.routine-rule-help-button:focus-visible { background: var(--el-color-primary-light-9); }
+.routine-rule-help-content { color: var(--zl-text, #1f2937); font-size: 14px; line-height: 1.75; }
+.routine-rule-help-intro { margin: 0 -24px; padding: 18px 24px; color: #334155; background: #f5f8fc; }
+.routine-rule-help-section { padding: 20px 0; border-bottom: 1px solid var(--zl-border-soft); }
+.routine-rule-help-section:last-child { border-bottom: 0; }
+.routine-rule-help-section h3 { margin: 0 0 10px; color: #172033; font-size: 16px; line-height: 1.5; }
+.routine-rule-help-section ul,
+.routine-rule-help-section ol { display: grid; gap: 7px; margin: 0; padding-left: 22px; }
+.routine-rule-help-section li { padding-left: 2px; }
+.routine-rule-help-section strong,
+.routine-rule-help-definitions dt { color: #172033; font-weight: 600; }
+.routine-rule-help-section code { padding: 1px 5px; border-radius: 4px; color: #0f4c81; background: #edf5ff; font-family: inherit; }
+.routine-rule-help-callout { margin-top: 14px; padding: 11px 12px; border-left: 3px solid #e6a23c; color: #7c4a03; background: #fff8e8; }
+.routine-rule-help-definitions { display: grid; gap: 12px; margin: 0; }
+.routine-rule-help-definitions > div { display: grid; grid-template-columns: 118px minmax(0, 1fr); gap: 14px; }
+.routine-rule-help-definitions dt,
+.routine-rule-help-definitions dd { margin: 0; }
 .form-section { padding-top: 20px; margin-top: 20px; border-top: 1px solid var(--zl-border-soft); }
 .first-section { padding-top: 0; margin-top: 0; border-top: 0; }
 .form-section h3 { margin: 0 0 14px; font-size: 16px; letter-spacing: 0; }
@@ -631,6 +810,10 @@ watch(() => props.modelValue, (visible) => {
 }
 .execution-grid { align-items: end; }
 @media (max-width: 760px) {
+  .routine-rule-dialog__header { align-items: flex-start; gap: 8px; padding-right: 34px; }
+  .routine-rule-dialog__title { font-size: 16px; line-height: 24px; }
+  .routine-rule-help-button { margin-top: -4px; }
+  .routine-rule-help-definitions > div { grid-template-columns: 1fr; gap: 2px; }
   .form-grid { grid-template-columns: 1fr; }
   .span-full { grid-column: auto; }
   .section-heading { align-items: stretch; flex-direction: column; }

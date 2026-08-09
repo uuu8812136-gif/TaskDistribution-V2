@@ -298,6 +298,10 @@ export const getEquipmentRoutinePlan = (planId, params = {}) => {
   return get(`/equipment/routine-plans/${encodeURIComponent(planId)}`, params)
 }
 
+export const markEquipmentRoutinePlansRestDay = (data) => {
+  return post('/equipment/routine-plans/rest-day', data)
+}
+
 export const getEquipmentRoutineExceptions = (params = {}) => {
   return get('/equipment/routine-exceptions', params)
 }

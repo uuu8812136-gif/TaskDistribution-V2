@@ -56,5 +56,10 @@ test "$(stat -c '%d' "$volume_root")" != "$(stat -c '%d' /)" || {
 install -d -o "$service_user" -g "$service_user" -m 0750 \
   "$volume_root/backups" "$volume_root/handoffs" "$volume_root/logs"
 
+# The Windows off-host reader must traverse the isolated tmpfs after every
+# reboot/remount; backup files receive their read ACL in the handoff hook.
+setfacl -m u:serveradmin:--x "$volume_root"
+setfacl -m u:serveradmin:rX "$volume_root/backups" "$volume_root/handoffs"
+
 printf 'VOLUME_READY=%s\n' "$volume_root"
 findmnt -no TARGET,SOURCE,FSTYPE,OPTIONS --target "$volume_root"

@@ -56,7 +56,13 @@ const {
   EQUIPMENT_ROUTINE_EXCEPTION_STATUS_VALUES
 } = EquipmentRoutineException;
 const {
-  EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES
+  EQUIPMENT_ROUTINE_PLAN_STATUSES,
+  EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES,
+  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS,
+  effectiveRoutinePlanStatus,
+  isRoutinePlanCurrentBusinessDate,
+  isRoutinePlanRestDayEligible,
+  routinePlanWindowName
 } = EquipmentRoutinePlan;
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -147,7 +153,7 @@ function normalizeRelatedId(value) {
   }
 }
 
-function serializePlan(document) {
+function serializePlan(document, now = new Date()) {
   const value = plain(document);
   return {
     _id: normalizeId(value._id),
@@ -160,13 +166,18 @@ function serializePlan(document) {
     routineType: value.routineType,
     cycleKey: value.cycleKey,
     windowKey: value.windowKey,
-    windowName: value.windowName,
+    windowName: routinePlanWindowName(value),
+    originalWindowName: value.windowName,
     scheduledFor: value.scheduledFor,
     dueAt: value.dueAt,
-    status: value.status,
+    status: effectiveRoutinePlanStatus(value, now),
     completedRecordId: normalizeId(value.completedRecordId),
     completedAt: value.completedAt || null,
     completedBy: normalizeId(value.completedBy),
+    cancellationReason: value.cancellationReason || null,
+    cancelledAt: value.cancelledAt || null,
+    cancelledBy: normalizeId(value.cancelledBy),
+    restDayEligible: isRoutinePlanRestDayEligible(value, now),
     ruleSnapshot: value.ruleSnapshot,
     createdAt: value.createdAt,
     updatedAt: value.updatedAt
@@ -629,7 +640,7 @@ function createEquipmentRoutineWorkflowService({
     const equipmentIds = [...new Set(documents.map(({ equipmentId }) => normalizeId(equipmentId)).filter(Boolean))];
     const orgUnitIds = [...new Set(documents.map(({ orgUnitId }) => normalizeId(orgUnitId)).filter(Boolean))];
     const [assets, orgUnits, exceptions] = await Promise.all([
-      EquipmentAssetModel.find({ _id: { $in: equipmentIds } }).select('_id assetCode name').lean(),
+      EquipmentAssetModel.find({ _id: { $in: equipmentIds } }).select('_id assetCode name location').lean(),
       OrgUnitModel.find({ _id: { $in: orgUnitIds } }).select('_id name').lean(),
       includeException
         ? EquipmentRoutineExceptionModel.find({ recordId: { $in: documents.map(({ _id }) => _id) } }).lean()
@@ -655,11 +666,42 @@ function createEquipmentRoutineWorkflowService({
     ], 'query');
     assertPermission(authContext, 'equipment.view');
     const teamId = await resolveReadTeamId(authContext, requestedTeamId);
+    const now = clock();
     const userFilter = { ...rangeFilter(query, 'dueAt') };
     if (query.routineType) userFilter.routineType = requiredString(query.routineType, 'routineType', 50);
     if (query.status) {
       if (!EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES.includes(query.status)) throw inputInvalid('status is invalid');
-      userFilter.status = query.status;
+      if (query.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED) {
+        userFilter.$and = [
+          { status: { $in: [
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+          ] } },
+          { scheduledFor: { $gt: now } }
+        ];
+      } else if (query.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW) {
+        userFilter.$and = [
+          { status: { $in: [
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+          ] } },
+          { scheduledFor: { $lte: now } },
+          { dueAt: { $gte: now } }
+        ];
+      } else if (query.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE) {
+        userFilter.$and = [
+          { status: { $in: [
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+            EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+          ] } },
+          { dueAt: { $lt: now } }
+        ];
+      } else {
+        userFilter.status = query.status;
+      }
     }
     if (query.equipmentId) userFilter.equipmentId = normalizeRelatedId(query.equipmentId);
     if (query.orgUnitId) userFilter.orgUnitId = normalizeRelatedId(query.orgUnitId);
@@ -671,7 +713,7 @@ function createEquipmentRoutineWorkflowService({
     ]);
     const enriched = await enrichRows(documents);
     return { plans: enriched.map((value) => ({
-      ...serializePlan(value),
+      ...serializePlan(value, now),
       equipment: value.equipment,
       orgUnit: value.orgUnit
     })), total, page, pageSize };
@@ -691,10 +733,123 @@ function createEquipmentRoutineWorkflowService({
     if (!document) throw notFound();
     const [enriched] = await enrichRows([document]);
     return {
-      ...serializePlan(enriched),
+      ...serializePlan(enriched, clock()),
       equipment: enriched.equipment,
       orgUnit: enriched.orgUnit
     };
+  }
+
+  async function markPlansRestDay({ authContext, req, input = {} }) {
+    assertOnlyKeys(input, ['planIds', 'reason']);
+    const context = assertTeamContext(authContext);
+    assertPermission(context, 'equipment.inspect');
+    if (!Array.isArray(input.planIds) || input.planIds.length < 1 || input.planIds.length > 200) {
+      throw inputInvalid('planIds must contain between 1 and 200 plan ids');
+    }
+    const planIds = input.planIds.map((planId, index) => {
+      try {
+        return normalizeObjectId(planId, `planIds[${index}]`);
+      } catch {
+        throw inputInvalid(`planIds[${index}] must be a valid ObjectId`);
+      }
+    });
+    const uniqueIds = [...new Map(planIds.map((planId) => [String(planId), planId])).values()];
+    if (uniqueIds.length !== planIds.length) throw inputInvalid('planIds must be unique');
+    const reason = optionalString(input.reason, 'reason', 500) || '本日休班，设备不需点检';
+
+    try {
+      return await runWorkflowTransaction(async (session) => {
+        const now = clock();
+        const filter = await readFilter({
+          authContext: context,
+          teamId: normalizeObjectId(context.activeTeamId, 'activeTeamId'),
+          method: 'POST',
+          userFilter: { _id: { $in: uniqueIds } }
+        });
+        const plans = await modelQuery(
+          EquipmentRoutinePlanModel.find(filter).sort({ scheduledFor: 1, dueAt: 1, _id: 1 }),
+          session
+        );
+        if (plans.length !== uniqueIds.length) throw notFound();
+
+        for (const plan of plans) {
+          if (plan.routineType !== 'INSPECTION') {
+            throw workflowError(
+              409,
+              'EQUIPMENT_ROUTINE_REST_DAY_INSPECTION_ONLY',
+              'Only inspection plans can be marked as an equipment rest day'
+            );
+          }
+          if (!isRoutinePlanCurrentBusinessDate(plan, now)) {
+            throw workflowError(
+              409,
+              'EQUIPMENT_ROUTINE_REST_DAY_CURRENT_DATE_ONLY',
+              'Only inspection plans for the current business date can be marked as a rest day'
+            );
+          }
+          const alreadyCancelled = (
+            plan.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+            plan.cancellationReason === EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY
+          );
+          if (!alreadyCancelled && !isRoutinePlanRestDayEligible(plan, now)) {
+            throw workflowError(
+              409,
+              'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN',
+              'Only open inspection plans can be marked as a rest day'
+            );
+          }
+        }
+
+        let cancelledCount = 0;
+        let alreadyCancelledCount = 0;
+        const responseById = new Map();
+        for (const plan of plans) {
+          if (
+            plan.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+            plan.cancellationReason === EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY
+          ) {
+            alreadyCancelledCount += 1;
+            responseById.set(String(plan._id), serializePlan(plan, now));
+            continue;
+          }
+          const before = serializePlan(plan, now);
+          plan.status = EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED;
+          plan.cancellationReason = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY;
+          plan.cancelledAt = now;
+          plan.cancelledBy = context.userId;
+          await plan.save({ session });
+          const after = serializePlan(plan, now);
+          await auditService.record({
+            req,
+            authContext: context,
+            action: AUDIT_ACTIONS.STATUS_CHANGE,
+            resourceType: AUDIT_RESOURCE_TYPES.INSPECTION_PLAN,
+            resourceId: plan._id,
+            before,
+            after,
+            reason,
+            targetTeamId: context.activeTeamId,
+            session
+          });
+          cancelledCount += 1;
+          responseById.set(String(plan._id), after);
+        }
+        return {
+          plans: uniqueIds.map((planId) => responseById.get(String(planId))),
+          cancelledCount,
+          alreadyCancelledCount
+        };
+      });
+    } catch (error) {
+      if (error?.name === 'VersionError') {
+        throw workflowError(
+          409,
+          'EQUIPMENT_ROUTINE_PLAN_CONFLICT',
+          'An inspection plan changed while it was being marked as a rest day; refresh and retry'
+        );
+      }
+      throw error;
+    }
   }
 
   async function listExceptions({ authContext, requestedTeamId, method = 'GET', query = {} }) {
@@ -970,6 +1125,7 @@ function createEquipmentRoutineWorkflowService({
     getPlan,
     listExceptions,
     listPlans,
+    markPlansRestDay,
     notifyExceptionStage,
     transitionException
   });

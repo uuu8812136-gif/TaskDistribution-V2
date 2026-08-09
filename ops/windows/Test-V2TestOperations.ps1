@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-  [string]$DestinationRoot = 'D:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$DestinationRoot = 'C:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$SourceVmRoot = 'E:\ServerVM',
   [string]$PublicHealthUrl = 'https://v2-test.horselink.cn/health',
   [ValidateRange(1, 720)][int]$MaximumBackupAgeHours = 26,
   [ValidateRange(1, 1048576)][int]$MinimumFreeGb = 10,
@@ -11,17 +12,46 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $ExpectedInstance = 'task-distribution-v2-customer-test'
+$AcceptedInstances = @(
+  'task-distribution-v2-customer-test',
+  'task-distribution-v2-customer-test-recovery'
+)
 $ExpectedDatabase = 'customer_acceptance_v2_test'
 $checks = [ordered]@{}
+
+function Get-LocalVolumeIdentity {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Label must be an absolute local path" }
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+  if ($pathRoot -notmatch '^([A-Za-z]):\\$') { throw "$Label must use a local drive letter" }
+  $driveLetter = $Matches[1].ToUpperInvariant()
+  $drive = Get-PSDrive -Name $driveLetter -PSProvider FileSystem -ErrorAction Stop
+  if (-not $drive.Root.Equals("${driveLetter}:\", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must resolve to a local filesystem drive"
+  }
+  $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+  return [pscustomobject]@{
+    FullPath = $fullPath
+    DriveLetter = $driveLetter
+    Volume = "${driveLetter}:"
+    DiskNumber = [int]$partition.DiskNumber
+  }
+}
 
 try {
   $response = Invoke-WebRequest -UseBasicParsing -Uri $PublicHealthUrl -TimeoutSec 15
   $body = $response.Content | ConvertFrom-Json
   $checks.publicHealth = [ordered]@{
-    ok = $response.StatusCode -eq 200 -and $body.status -eq 'ok' -and $body.instance -eq $ExpectedInstance
+    ok = $response.StatusCode -eq 200 -and $body.status -eq 'ok' -and
+      $AcceptedInstances -contains [string]$body.instance
     statusCode = $response.StatusCode
     status = [string]$body.status
     instance = [string]$body.instance
+    acceptedInstances = @($AcceptedInstances)
   }
 }
 catch {
@@ -29,6 +59,11 @@ catch {
 }
 
 try {
+  $destinationIdentity = Get-LocalVolumeIdentity -Path $DestinationRoot -Label 'DestinationRoot'
+  $sourceVmIdentity = Get-LocalVolumeIdentity -Path $SourceVmRoot -Label 'SourceVmRoot'
+  if ($destinationIdentity.DiskNumber -eq $sourceVmIdentity.DiskNumber) {
+    throw 'Backup destination is on the same physical disk as the Linux VM'
+  }
   $latestDirectory = Get-ChildItem -LiteralPath $DestinationRoot -Directory -Filter 'backup-*' |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
   if (-not $latestDirectory) { throw 'No off-host backup directory exists' }
@@ -51,6 +86,15 @@ try {
     $receipt.instance -eq $ExpectedInstance -and
     $receipt.backupId -eq $latestDirectory.Name -and
     [string]$receipt.manifestSha256 -ceq $actualSha -and
+    $receipt.destinationVolume -eq $destinationIdentity.Volume -and
+    ([IO.Path]::GetFullPath([string]$receipt.destinationDirectory)).Equals(
+      [IO.Path]::GetFullPath($latestDirectory.FullName),
+      [StringComparison]::OrdinalIgnoreCase
+    ) -and
+    $receipt.sourceVmVolume -eq $sourceVmIdentity.Volume -and
+    [int]$receipt.destinationDiskNumber -eq $destinationIdentity.DiskNumber -and
+    [int]$receipt.sourceVmDiskNumber -eq $sourceVmIdentity.DiskNumber -and
+    $receipt.physicalDiskSeparated -eq $true -and
     $ageHours -ge 0 -and $ageHours -le $MaximumBackupAgeHours -and $todaySatisfied
   $checks.offHostBackup = [ordered]@{
     ok = $backupOk
@@ -58,6 +102,11 @@ try {
     completedAt = $completedAt.ToUniversalTime().ToString('o')
     ageHours = [math]::Round($ageHours, 2)
     manifestSha256 = $actualSha
+    destinationVolume = $destinationIdentity.Volume
+    sourceVmVolume = $sourceVmIdentity.Volume
+    destinationDiskNumber = $destinationIdentity.DiskNumber
+    sourceVmDiskNumber = $sourceVmIdentity.DiskNumber
+    physicalDiskSeparated = ($destinationIdentity.DiskNumber -ne $sourceVmIdentity.DiskNumber)
     currentLocalDatePresent = $todaySatisfied
   }
 }
@@ -66,9 +115,25 @@ catch {
 }
 
 try {
-  $volume = Get-Volume -DriveLetter D -ErrorAction Stop
+  $destinationIdentity = if ($destinationIdentity) { $destinationIdentity } else {
+    Get-LocalVolumeIdentity -Path $DestinationRoot -Label 'DestinationRoot'
+  }
+  $volume = Get-Volume -DriveLetter $destinationIdentity.DriveLetter -ErrorAction Stop
   $freeGb = [math]::Round($volume.SizeRemaining / 1GB, 2)
-  $checks.disk = [ordered]@{ ok = $freeGb -ge $MinimumFreeGb; freeGb = $freeGb; minimumFreeGb = $MinimumFreeGb }
+  $sourceVmIdentity = if ($sourceVmIdentity) { $sourceVmIdentity } else {
+    Get-LocalVolumeIdentity -Path $SourceVmRoot -Label 'SourceVmRoot'
+  }
+  $separated = $destinationIdentity.DiskNumber -ne $sourceVmIdentity.DiskNumber
+  $checks.disk = [ordered]@{
+    ok = $freeGb -ge $MinimumFreeGb -and $separated
+    freeGb = $freeGb
+    minimumFreeGb = $MinimumFreeGb
+    destinationVolume = $destinationIdentity.Volume
+    sourceVmVolume = $sourceVmIdentity.Volume
+    destinationDiskNumber = $destinationIdentity.DiskNumber
+    sourceVmDiskNumber = $sourceVmIdentity.DiskNumber
+    physicalDiskSeparated = $separated
+  }
 }
 catch {
   $checks.disk = [ordered]@{ ok = $false; error = $_.Exception.Message; minimumFreeGb = $MinimumFreeGb }

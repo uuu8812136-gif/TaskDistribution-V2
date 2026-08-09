@@ -65,17 +65,61 @@ A production mini-program build without `VITE_API_BASE_URL` fails during startup
 
 ## Remote V2 test access
 
-The following topology was live-verified on 2026-07-27 (Asia/Shanghai). Passwords and private-key contents must stay in the approved local credential store or task record and must never be committed to this repository.
+Passwords and private-key contents must stay in the approved local credential store or task record and must never be committed to this repository.
 
-### SSH topology
+### Current Windows recovery topology (2026-08-08)
+
+The customer Linux VM/E-drive runtime is currently unavailable. The public V2 test site has been restored to an isolated Windows C-drive runtime without modifying the legacy site, legacy tunnel, or production database:
+
+```text
+https://v2-test.horselink.cn
+  -> edge Nginx
+  -> edge loopback 127.0.0.1:38130
+  -> recovery reverse SSH tunnel
+  -> customer Windows Web 127.0.0.1:18130
+  -> customer Windows API 127.0.0.1:18120
+  -> customer Windows MongoDB 127.0.0.1:27150/customer_acceptance_v2_test
+```
+
+The recovery root is `C:\TaskDistribution-V2\Recovery`. The persistent tasks are:
+
+```text
+TaskDistribution-V2-Recovery-MongoDB
+TaskDistribution-V2-Recovery-API
+TaskDistribution-V2-Recovery-Web
+TaskDistribution-V2-Recovery-Tunnel
+TaskDistribution-V2-Recovery-Management-Tunnel
+```
+
+The management task is independent from the `38130` business tunnel. It runs as `SYSTEM`, starts at boot, retries every minute after failure, and uses `C:\TaskDistribution-V2\Recovery\ops\run-management-tunnel.ps1`. Its private key stays under the recovery `config` directory with access limited to `SYSTEM` and `Administrators`.
+
+Use the Windows SSH hop below for read-only diagnostics. The API, Web, and MongoDB ports must remain bound to `127.0.0.1`; public access is only through the dedicated reverse tunnel. The old VM's local `22022` TCP port accepting then closing an SSH handshake is not proof that its filesystem or database is readable.
+
+Current recovery data boundary:
+
+- Snapshot cutoff: `2026-08-06 11:11:51 CST`.
+- Restored: 34 collections, 8,736 documents, and 426 upload files.
+- Missing after the cutoff: 8 transport submissions and 16 uploaded files; recover from the failed VM/E drive or re-enter them.
+- Recovery backup: `C:\ServerBackups\TaskDistribution-V2-Test\backup-20260806T031145Z-4929dc62`.
+- Independent workstation ZIP: `C:\Users\uu\Documents\Codex\2026-07-24\management-system-recovered\outputs\offhost-recovery\backup-20260806T031145Z-4929dc62.zip`, 214,425,493 bytes, SHA256 `8454e317eca7b918ecc40b8b8de2d1481da58b7fffa8f2a25bd2a8fd6b1c54ed`.
+- Current one-time workstation recovery point: `C:\Users\uu\Documents\Codex\2026-07-24\management-system-recovered\outputs\offhost-recovery-current\backup-20260808T105046Z-3f525c7d.zip`, 249,556,161 bytes, SHA256 `22d5b8547c446d98567c5417312658029ad30e2b36314d5dfcb133e12c3e5878`. Its signed manifest contains 34 collections, 8,793 documents, 483 upload files, and 552 declared files; all declared hashes and all 246 active FileAsset references were independently revalidated after download. This is a best-effort online `mongodump` plus stable upload copy, not an atomic or recurring backup.
+- The equipment routine worker is enabled with the application-default `300000ms` interval. Its 2026-08-08 startup catch-up created four plans and four deduplicated messages; a subsequent 330-second run and the final `19:21 CST` read-only check both remained at 64 plans and 578 routine messages with zero duplicate groups.
+- The 2026-08-08 V2 `502` window ended at `15:07:27 CST`; the first recovered 200 was recorded at `15:15:24 CST`. Edge Nginx could not connect to loopback upstream `127.0.0.1:38130` while the customer-host business reverse tunnel was absent. No post-recovery 502 was found in the captured edge logs; this incident was not a Web application exception.
+- Customer D/E visibility is intermittent. Both reside on the same Micron NVMe (`PhysicalDrive0`) that recorded controller resets, more than 2,000 paging-I/O errors after boot, and one unexpected removal. The hourly task at `2026-08-08 19:13 CST` still could not resolve the `E:` partition, so neither drive is an acceptable off-host target.
+- `TaskDistribution-V2-Daily-Offhost-Backup` is enabled hourly but still returns `1` because the legacy E-drive/Linux-VM source chain is unavailable. `TaskDistribution-V2-Health-Alert` runs every 15 minutes and correctly returned `2` at `19:15 CST`; public health is 200, while off-host backup, disk, and sync-task checks remain false. Operations health therefore remains `DEGRADED`.
+
+### SSH topology and historical VM route
+
+The dedicated Windows recovery hop was installed and live-verified on 2026-08-08. The Linux VM row records the 2026-07-27 path for recovery work only; it is currently unavailable and must not be treated as a live deployment path.
 
 | Hop | Address visible from that hop | User | Purpose |
 | --- | --- | --- | --- |
 | Public edge host | `82.156.67.62:22` | `Administrator` | SSH jump host and public reverse-proxy host |
-| Customer Windows host | edge loopback `127.0.0.1:23222` | `codexops` | Reverse SSH tunnel to `DKY-20260713SLA:22` |
-| Linux VM | edge loopback `127.0.0.1:23223` | `serveradmin` | Reverse SSH path to `linux-server:22` through Windows loopback `127.0.0.1:22022` |
+| Customer Windows recovery route | edge loopback `127.0.0.1:23224` | `codexops` | Preferred C-drive management tunnel to `DKY-20260713SLA:22` |
+| Customer Windows legacy route | edge loopback `127.0.0.1:23222` | `codexops` | Fallback route carried by the legacy multi-forward tunnel; do not restart it during normal V2 work |
+| Linux VM (currently unavailable) | historical edge loopback `127.0.0.1:23223` | `serveradmin` | Historical reverse SSH path to `linux-server:22` through Windows loopback `127.0.0.1:22022`; do not use as current-state evidence |
 
-Ports `23222` and `23223` are bound only to loopback on the edge host. They are not reachable directly from a developer workstation; connect through the public edge host as a jump host.
+The Windows `23224` and `23222` routes are bound only to loopback on the edge host and require the public edge host as a jump host. Prefer `23224`: it has a separate key whose edge authorization is restricted to `permitlisten="127.0.0.1:23224"`. The legacy `23222` connection shares one SSH process with `38080`, `23223`, and `38443`, so stopping it can also interrupt the legacy site or historical VM routes. The customer-side `127.0.0.1:22022` port and the visible `Website Live Logs` window belong to the unavailable Linux VM and are not the Windows management route.
 
 Current workstation key locations (local and untracked):
 
@@ -87,16 +131,21 @@ C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\new-host-lo
 PowerShell/OpenSSH connection forms:
 
 ```powershell
-# Customer Windows host
+# Customer Windows host, preferred C-drive recovery route
+ssh -J Administrator@82.156.67.62:22 -i "C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\codexops_ed25519" -p 23224 codexops@127.0.0.1
+
+# Customer Windows host, legacy fallback only
 ssh -J Administrator@82.156.67.62:22 -i "C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\codexops_ed25519" -p 23222 codexops@127.0.0.1
 
-# Linux VM
+# Linux VM recovery attempt only; currently unavailable
 ssh -J Administrator@82.156.67.62:22 -i "C:\Users\uu\Documents\Codex\2026-07-14\new-chat-2\work\remote-access\new-host-local-backup_ed25519" -p 23223 serveradmin@127.0.0.1
 ```
 
+The customer Windows SSH host key was the same on `23222` and `23224` during acceptance: `SHA256:lWV9+NliZCpNIP/Yzs8TR29yUa+jXD7lW1tECeleOKQ`. The dedicated tunnel identity fingerprint is `SHA256:i6iWVaz+qAwEcgdE5MDxvx5+GGD5aRvmEAFxqrXWaUQ`. Verify these fingerprints through the existing trusted route before updating a pinned `known_hosts` file.
+
 Pin the verified host keys in a dedicated `known_hosts` file before routine automation. Do not use `StrictHostKeyChecking=no`, place a password in a command line, or copy either private key into the repository. Local helper scripts belong under the ignored `work/` directory and must read the edge password interactively or from the approved credential store.
 
-### V2 application path
+### Historical Linux VM application path (currently unavailable)
 
 ```text
 https://v2-test.horselink.cn

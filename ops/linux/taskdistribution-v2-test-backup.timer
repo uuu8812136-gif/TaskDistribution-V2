@@ -3,6 +3,9 @@ Description=Run TaskDistribution V2 test backup daily
 
 [Timer]
 OnCalendar=*-*-* 02:00:00 Asia/Shanghai
+# tmpfs is intentionally empty after a host reboot; create a fresh recovery
+# point before the first Windows off-host synchronization window.
+OnBootSec=10m
 Persistent=true
 RandomizedDelaySec=5m
 AccuracySec=1m

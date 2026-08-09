@@ -1172,6 +1172,227 @@ test('routine plan detail preserves team, organization, and global read-only iso
   }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_WORKFLOW_NOT_FOUND');
 });
 
+test('future plans stay blocked and a stale PLANNED status becomes executable only after start time', async () => {
+  const beforeStart = new Date('2030-01-15T00:00:00.000Z');
+  const rule = await createRule(
+    createEquipmentRoutineService({ clock: () => new Date(beforeStart) }),
+    'INSPECTION',
+    {
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T01:00:00.000Z' }
+      }
+    }
+  );
+  await EquipmentAsset.updateOne(
+    { _id: fixture.asset._id },
+    { $set: { location: '仓配二分部叉车区' } }
+  );
+  const plan = await EquipmentRoutinePlan.create({
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    routineType: 'INSPECTION',
+    cycleKey: 'future-plan-hard-gate',
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2030-01-15T01:00:00.000Z'),
+    dueAt: new Date('2030-01-15T03:00:00.000Z'),
+    status: 'PLANNED'
+  });
+  const submission = {
+    ruleId: rule._id,
+    itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL', note: '' }],
+    abnormalSummary: '',
+    photoFileIds: []
+  };
+  const beforeService = createEquipmentRoutineService({ clock: () => new Date(beforeStart) });
+  const beforeSchedule = await beforeService.getSchedule({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id
+  });
+  assert.equal(beforeSchedule.equipment.location, '仓配二分部叉车区');
+  assert.equal(beforeSchedule.schedules[0].plans[0].status, 'PLANNED');
+  assert.equal(beforeSchedule.schedules[0].executable, false);
+  assert.equal(beforeSchedule.schedules[0].executionStatus, 'NOT_STARTED');
+  await assert.rejects(beforeService.createRecord({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id,
+    input: { ...submission, planId: String(plan._id) }
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_STARTED');
+  await assert.rejects(beforeService.createRecord({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id,
+    input: submission
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_STARTED');
+  assert.equal(await EquipmentRoutineRecord.countDocuments({ ruleId: rule._id }), 0);
+
+  const insideWindow = new Date('2030-01-15T01:30:00.000Z');
+  const insideService = createEquipmentRoutineService({ clock: () => new Date(insideWindow) });
+  const insideSchedule = await insideService.getSchedule({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id
+  });
+  assert.equal(insideSchedule.schedules[0].plans[0].status, 'IN_WINDOW');
+  assert.equal(insideSchedule.schedules[0].executable, true);
+  const record = await insideService.createRecord({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id,
+    input: { ...submission, planId: String(plan._id) }
+  });
+  assert.equal(record.planId, String(plan._id));
+  assert.equal((await EquipmentRoutinePlan.findById(plan._id).lean()).status, 'COMPLETED');
+});
+
+test('rest day cancellation is current-day inspection only, scoped, idempotent, and audited', async () => {
+  const now = new Date('2030-01-15T02:00:00.000Z');
+  const inspectionRule = await createRule(
+    createEquipmentRoutineService({ clock: () => new Date(now) }),
+    'INSPECTION',
+    {
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+      }
+    }
+  );
+  const maintenanceRule = await createRule(
+    createEquipmentRoutineService({ clock: () => new Date(now) }),
+    'MAINTENANCE',
+    {
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: { unit: 'DAY', interval: 1, firstDueAt: '2030-01-15T00:00:00.000Z' }
+      }
+    }
+  );
+  const planBase = {
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.ids.group,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleVersion: 1,
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2030-01-15T00:00:00.000Z'),
+    dueAt: new Date('2030-01-15T04:00:00.000Z'),
+    status: 'PLANNED'
+  };
+  const [inspectionPlan, maintenancePlan, futurePlan, hiddenPlan, otherTeamPlan] = await EquipmentRoutinePlan.create([
+    {
+      ...planBase,
+      ruleId: inspectionRule._id,
+      ruleSnapshot: inspectionRule,
+      routineType: 'INSPECTION',
+      cycleKey: 'rest-day-current'
+    },
+    {
+      ...planBase,
+      ruleId: maintenanceRule._id,
+      ruleSnapshot: maintenanceRule,
+      routineType: 'MAINTENANCE',
+      cycleKey: 'rest-day-maintenance'
+    },
+    {
+      ...planBase,
+      ruleId: inspectionRule._id,
+      ruleSnapshot: inspectionRule,
+      routineType: 'INSPECTION',
+      cycleKey: 'rest-day-future',
+      scheduledFor: new Date('2030-01-16T00:00:00.000Z'),
+      dueAt: new Date('2030-01-16T04:00:00.000Z')
+    },
+    {
+      ...planBase,
+      orgUnitId: fixture.ids.subDepartment,
+      ruleId: inspectionRule._id,
+      ruleSnapshot: inspectionRule,
+      routineType: 'INSPECTION',
+      cycleKey: 'rest-day-hidden-org'
+    },
+    {
+      ...planBase,
+      teamId: fixture.ids.otherTeam,
+      orgUnitId: objectId(),
+      equipmentId: objectId(),
+      categoryId: objectId(),
+      ruleId: objectId(),
+      ruleSnapshot: inspectionRule,
+      routineType: 'INSPECTION',
+      cycleKey: 'rest-day-other-team'
+    }
+  ]);
+  const workflow = createEquipmentRoutineWorkflowService({ clock: () => new Date(now) });
+  await assert.rejects(workflow.markPlansRestDay({
+    authContext: fixture.contexts.manager,
+    input: { planIds: [String(maintenancePlan._id)] }
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_REST_DAY_INSPECTION_ONLY');
+  await assert.rejects(workflow.markPlansRestDay({
+    authContext: fixture.contexts.manager,
+    input: { planIds: [String(futurePlan._id)] }
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_REST_DAY_CURRENT_DATE_ONLY');
+  await assert.rejects(workflow.markPlansRestDay({
+    authContext: fixture.contexts.employee,
+    input: { planIds: [String(hiddenPlan._id)] }
+  }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_WORKFLOW_NOT_FOUND');
+  await assert.rejects(workflow.markPlansRestDay({
+    authContext: fixture.contexts.manager,
+    input: { planIds: [String(otherTeamPlan._id)] }
+  }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_WORKFLOW_NOT_FOUND');
+  await assert.rejects(workflow.markPlansRestDay({
+    authContext: globalContext(fixture.ids.departmentManager),
+    input: { planIds: [String(inspectionPlan._id)] }
+  }), (error) => error.status === 403);
+
+  const cancelled = await workflow.markPlansRestDay({
+    authContext: fixture.contexts.employee,
+    input: { planIds: [String(inspectionPlan._id)] }
+  });
+  assert.equal(cancelled.cancelledCount, 1);
+  assert.equal(cancelled.alreadyCancelledCount, 0);
+  assert.equal(cancelled.plans[0].status, 'CANCELLED');
+  assert.equal(cancelled.plans[0].windowName, '休班');
+  assert.equal(cancelled.plans[0].originalWindowName, '白班');
+  assert.equal(cancelled.plans[0].cancellationReason, 'REST_DAY');
+  assert.equal(cancelled.plans[0].cancelledBy, String(fixture.ids.employee));
+  const persisted = await EquipmentRoutinePlan.findById(inspectionPlan._id).lean();
+  assert.equal(persisted.windowName, '白班');
+  assert.equal(persisted.status, 'CANCELLED');
+  assert.equal(persisted.cancellationReason, 'REST_DAY');
+  assert.equal(await AuditLog.countDocuments({
+    action: permissions.AUDIT_ACTIONS.STATUS_CHANGE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.INSPECTION_PLAN,
+    resourceId: String(inspectionPlan._id)
+  }), 1);
+  const replay = await workflow.markPlansRestDay({
+    authContext: fixture.contexts.employee,
+    input: { planIds: [String(inspectionPlan._id)] }
+  });
+  assert.equal(replay.cancelledCount, 0);
+  assert.equal(replay.alreadyCancelledCount, 1);
+  assert.equal(await AuditLog.countDocuments({ resourceId: String(inspectionPlan._id) }), 1);
+
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(now) });
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.employee,
+    equipmentId: fixture.asset._id,
+    input: {
+      ruleId: inspectionRule._id,
+      itemResults: [{
+        itemKey: inspectionRule.checklistItems[0].key,
+        result: 'NORMAL',
+        note: ''
+      }],
+      abnormalSummary: '',
+      photoFileIds: []
+    }
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_REST_DAY_CANCELLED');
+});
+
 test('sub-department deputy is primary and supervisor acts only when that exact branch has no primary leader', async () => {
   const otherSubDepartment = objectId();
   const otherSubManager = objectId();
@@ -1641,6 +1862,34 @@ test('required location rejects denial and scoped reads cannot cross organizatio
     }
   }), (error) => ['FILE_NOT_FOUND', 'FILE_ACCESS_DENIED'].includes(error.code));
   assert.equal(await EquipmentRoutineRecord.countDocuments({}), 0);
+
+  await EquipmentAsset.updateOne(
+    { _id: fixture.asset._id },
+    { $set: { location: '仓配二分部叉车区' } }
+  );
+  const locatedRecord = await routineService.createRecord({
+    authContext: fixture.contexts.employee,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: rule._id,
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'COMPLETED' }],
+      photoFileIds: [String(photo._id)],
+      photoEvidence: [{
+        fileId: String(photo._id),
+        sourceType: 'CAMERA',
+        capturedAt: '2030-01-15T02:29:00.000Z',
+        locationStatus: 'GRANTED',
+        longitude: 117.382989,
+        latitude: 36.683908,
+        accuracyMeters: 10,
+        address: '客户端不得覆盖的地址'
+      }]
+    }
+  });
+  assert.equal(locatedRecord.photoEvidence[0].address, '仓配二分部叉车区');
+  assert.match(locatedRecord.photoEvidence[0].watermarkText, /设备地点：仓配二分部叉车区/);
+  assert.match(locatedRecord.photoEvidence[0].watermarkText, /GPS：36\.683908, 117\.382989/);
+  assert.doesNotMatch(locatedRecord.photoEvidence[0].watermarkText, /客户端不得覆盖的地址/);
 
   await EquipmentRoutineException.create({
     teamId: fixture.ids.team,

@@ -117,8 +117,16 @@ if (value.database !== 'customer_acceptance_v2_test') failures.push('database');
 if (value.releaseId !== releaseId) failures.push('releaseId');
 if (value.backupId !== backupId) failures.push('backupId');
 if (value.manifestSha256 !== manifestSha256) failures.push('manifestSha256');
-if (value.destinationVolume !== 'D:') failures.push('destinationVolume');
-if (typeof value.destinationDirectory !== 'string' || !value.destinationDirectory.startsWith('D:\\')) {
+if (!/^[A-Z]:$/.test(value.destinationVolume)) failures.push('destinationVolume');
+if (!/^[A-Z]:$/.test(value.sourceVmVolume) || value.sourceVmVolume === value.destinationVolume) {
+  failures.push('sourceVmVolume');
+}
+if (!Number.isInteger(value.destinationDiskNumber) || !Number.isInteger(value.sourceVmDiskNumber) ||
+    value.destinationDiskNumber === value.sourceVmDiskNumber || value.physicalDiskSeparated !== true) {
+  failures.push('physicalDiskSeparated');
+}
+const destinationPrefix = `${value.destinationVolume}\\`;
+if (typeof value.destinationDirectory !== 'string' || !value.destinationDirectory.toUpperCase().startsWith(destinationPrefix)) {
   failures.push('destinationDirectory');
 }
 if (!Number.isInteger(value.fileCount) || value.fileCount < 1) failures.push('fileCount');

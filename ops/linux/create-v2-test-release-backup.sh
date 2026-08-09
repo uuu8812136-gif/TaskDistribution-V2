@@ -15,7 +15,8 @@ execute=0
 usage() {
   cat <<'EOF'
 Stop only the isolated V2 API/tunnel, create a fresh verified backup, and leave V2 stopped.
-The next phase is blocked until the backup is copied to physical-host D: and verified there.
+The next phase is blocked until the backup is copied to a physical-host disk
+that is separate from the Linux VM storage disk and verified there.
 
 Dry-run (default):
   create-v2-test-release-backup.sh --release-id <id> [--operations-env <absolute-file>] \

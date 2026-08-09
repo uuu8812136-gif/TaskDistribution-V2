@@ -2,6 +2,8 @@
 param(
   [Parameter(Mandatory = $true)][string]$SourceDirectory,
   [string]$InstallDirectory = 'C:\ProgramData\LinuxBackup',
+  [string]$DestinationRoot = 'C:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$SourceVmRoot = 'E:\ServerVM',
   [switch]$Apply
 )
 
@@ -29,6 +31,8 @@ foreach ($required in @(
 $plan = [ordered]@{
   Status = 'DRY_RUN_READY'
   InstallDirectory = $installFull
+  DestinationRoot = $DestinationRoot
+  SourceVmRoot = $SourceVmRoot
   Tasks = @('TaskDistribution-V2-Daily-Offhost-Backup', 'TaskDistribution-V2-Health-Alert')
   SyncIntervalMinutes = 60
   HealthIntervalMinutes = 15
@@ -53,11 +57,11 @@ $taskPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceA
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
   -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -RestartCount 2 -RestartInterval (New-TimeSpan -Minutes 5)
 $syncAction = New-ScheduledTaskAction -Execute $powerShell `
-  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$syncRunner`""
+  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$syncRunner`" -DestinationRoot `"$DestinationRoot`" -SourceVmRoot `"$SourceVmRoot`""
 $syncTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Hours 1)
 $healthAction = New-ScheduledTaskAction -Execute $powerShell `
-  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$healthScript`""
+  -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$healthScript`" -DestinationRoot `"$DestinationRoot`" -SourceVmRoot `"$SourceVmRoot`""
 $healthTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(3) `
   -RepetitionInterval (New-TimeSpan -Minutes 15)
 

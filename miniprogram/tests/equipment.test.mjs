@@ -10,6 +10,7 @@ import {
   equipmentLookupFailureMessage,
   equipmentScanFailureMessage,
   effectiveRoutineDueState,
+  expandRoutineScheduleTasks,
   groupRoutineSchedules,
   isRoutineScheduleExecutable,
   lookupEquipmentFromQr,
@@ -304,6 +305,14 @@ test('open plans override calculated due state and execution selects the most ur
   ])
   assert.equal(selected?._id, '507f1f77bcf86cd799439202')
   assert.equal(selectExecutableRoutinePlan([{ status: 'PLANNED' }]), null)
+  const futurePlan = {
+    _id: '507f1f77bcf86cd799439206',
+    status: 'IN_WINDOW',
+    scheduledFor: '2030-01-15T02:00:00.000Z',
+    dueAt: '2030-01-15T04:00:00.000Z'
+  }
+  assert.equal(selectExecutableRoutinePlan([futurePlan], '2030-01-15T01:59:59.000Z'), null)
+  assert.equal(selectExecutableRoutinePlan([futurePlan], '2030-01-15T02:00:00.000Z')?._id, futurePlan._id)
   assert.match(executePageSource, /selectExecutableRoutinePlan\(entry\.plans\)/)
   assert.equal(isRoutineScheduleExecutable({
     executable: false,
@@ -317,12 +326,56 @@ test('open plans override calculated due state and execution selects the most ur
   assert.match(equipmentDetailSource, /routineExecutionStatusLabel\(entry\)/)
 })
 
+test('mobile routine lists expand every plan into one dated task and keep rest-day rows non-executable', () => {
+  const rule = {
+    _id: '507f1f77bcf86cd799439301',
+    routineType: 'INSPECTION',
+    name: '叉车点检',
+    schedule: { mode: 'CALENDAR', calendar: { unit: 'DAY', interval: 1 } }
+  }
+  const tasks = expandRoutineScheduleTasks([{
+    rule,
+    ruleId: rule._id,
+    routineType: 'INSPECTION',
+    plans: [
+      {
+        _id: '507f1f77bcf86cd799439302',
+        status: 'PLANNED',
+        scheduledFor: '2030-01-15T03:00:00.000Z',
+        dueAt: '2030-01-15T05:00:00.000Z',
+        restDayEligible: true
+      },
+      {
+        _id: '507f1f77bcf86cd799439303',
+        status: 'CANCELLED',
+        cancellationReason: 'REST_DAY',
+        windowName: '休班',
+        scheduledFor: '2030-01-15T00:00:00.000Z',
+        dueAt: '2030-01-15T02:00:00.000Z'
+      }
+    ]
+  }], '2030-01-15T01:00:00.000Z')
+  assert.equal(tasks.length, 2)
+  assert.equal(tasks[0].planId, '507f1f77bcf86cd799439302')
+  assert.equal(tasks[0].executionStatus, 'NOT_STARTED')
+  assert.equal(tasks[0].executable, false)
+  assert.equal(tasks[0].restDayEligible, true)
+  assert.equal(tasks[1].dueState, 'REST_DAY')
+  assert.equal(tasks[1].executionStatus, 'REST_DAY')
+  assert.equal(tasks[1].executable, false)
+})
+
 test('mini-program surfaces schedule periods and the authoritative runtime reading history', () => {
   assert.match(equipmentScanSource, /scheduleDescription\(entry\.rule\.schedule\)/)
-  assert.match(equipmentScanSource, /groupRoutineSchedules\(schedules\.value\)/)
+  assert.match(equipmentScanSource, /expandRoutineScheduleTasks\(schedules\.value\)/)
+  assert.match(equipmentScanSource, /groupRoutineSchedules\(scheduleTasks\.value\)/)
+  assert.match(equipmentScanSource, /entry\.plan\.scheduledFor/)
+  assert.match(equipmentScanSource, /entry\.plan\.dueAt/)
   assert.match(equipmentScanSource, /currentRuntimeHours == null \? '待录入'/)
   assert.match(equipmentScanSource, /openRuntimeReading/)
-  assert.match(equipmentDetailSource, /groupRoutineSchedules\(schedules\.value\)/)
+  assert.match(equipmentDetailSource, /expandRoutineScheduleTasks\(schedules\.value\)/)
+  assert.match(equipmentDetailSource, /groupRoutineSchedules\(scheduleTasks\.value\)/)
+  assert.match(equipmentDetailSource, /&planId=\$\{entry\.planId\}/)
   assert.match(equipmentDetailSource, /currentHours=\$\{encodeURIComponent\(currentRuntimeHours\.value\)\}/)
   assert.match(runtimeReadingSource, /getEquipmentRuntimeReadings/)
   assert.match(runtimeReadingSource, /buildRuntimeReadingPayload\(\{[\s\S]*currentHours: currentHours\.value/)
@@ -493,10 +546,16 @@ test('routine camera photos are burned into a canvas file before upload without 
   assert.match(executePageSource, /canvas-id="routineWatermarkCanvas"/)
   assert.match(executePageSource, /uni\.canvasToTempFilePath\(/)
   assert.match(executePageSource, /const watermarkedPath = await burnWatermark\(file\.tempFilePath/)
+  assert.match(executePageSource, /设备地点：\$\{equipmentLocationText\}/)
+  assert.match(executePageSource, /GPS：\$\{coordinateText\}/)
+  assert.match(executePageSource, /requestedPlanId\.value = options\.planId/)
   assert.match(executePageSource, /path:\s*watermarkedPath/)
   assert.doesNotMatch(executePageSource, /path:\s*file\.tempFilePath/)
   assert.match(executePageSource, /title:\s*'水印照片生成失败'/)
   assert.match(executePageSource, /if \(!photo\.fileId\) photo\.fileId = await uploadEquipmentRoutinePhoto\(photo\)/)
+  assert.match(equipmentScanSource, /本日休班，设备不需点检/)
+  assert.match(equipmentDetailSource, /本日休班，设备不需点检/)
+  assert.match(equipmentScanSource, /markEquipmentRoutinePlansRestDay/)
 })
 
 test('routine exception actions trust the backend access policy', () => {

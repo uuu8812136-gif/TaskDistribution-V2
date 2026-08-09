@@ -73,7 +73,12 @@ const {
   EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES
 } = EquipmentRoutineRecord;
 const {
-  EQUIPMENT_ROUTINE_PLAN_STATUSES
+  EQUIPMENT_ROUTINE_PLAN_STATUSES,
+  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS,
+  effectiveRoutinePlanStatus,
+  isRoutinePlanCurrentBusinessDate,
+  isRoutinePlanRestDayEligible,
+  routinePlanWindowName
 } = EquipmentRoutinePlan;
 
 const DEFAULT_PAGE_SIZE = 20;
@@ -1223,48 +1228,80 @@ function createEquipmentRoutineService({
     const schedules = await Promise.all(
       rules.map((rule) => calculateRuleSchedule(rule, asset))
     );
+    const now = clock();
     const plans = await EquipmentRoutinePlanModel.find({
       teamId: asset.teamId,
+      orgUnitId: asset.orgUnitId,
       equipmentId: asset._id,
       ruleId: { $in: rules.map(({ _id }) => _id) },
-      status: { $in: [
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-      ] }
+      $or: [
+        { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
+        {
+          status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+          cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY,
+          scheduledFor: {
+            $gte: new Date(now.getTime() - (48 * 60 * 60 * 1000)),
+            $lte: new Date(now.getTime() + (48 * 60 * 60 * 1000))
+          }
+        }
+      ]
     }).sort({ scheduledFor: 1, dueAt: 1, _id: 1 }).lean();
     const plansByRule = new Map();
     for (const plan of plans) {
+      if (
+        plan.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+        !isRoutinePlanCurrentBusinessDate(plan, now)
+      ) {
+        continue;
+      }
       const key = normalizeId(plan.ruleId);
       if (!plansByRule.has(key)) plansByRule.set(key, []);
+      const status = effectiveRoutinePlanStatus(plan, now);
       plansByRule.get(key).push({
         _id: normalizeId(plan._id),
         windowKey: plan.windowKey,
-        windowName: plan.windowName,
+        windowName: routinePlanWindowName(plan),
+        originalWindowName: plan.windowName,
         scheduledFor: plan.scheduledFor,
         dueAt: plan.dueAt,
-        status: plan.status,
-        cycleKey: plan.cycleKey
+        status,
+        cycleKey: plan.cycleKey,
+        cancellationReason: plan.cancellationReason || null,
+        cancelledAt: plan.cancelledAt || null,
+        cancelledBy: normalizeId(plan.cancelledBy),
+        restDayEligible: isRoutinePlanRestDayEligible(plan, now)
       });
     }
     for (const schedule of schedules) {
       schedule.plans = plansByRule.get(schedule.rule._id) || [];
+      const restDayCancelled = schedule.plans.some(({ status, cancellationReason }) => (
+        status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+        cancellationReason === EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY
+      ));
       schedule.planStatus = schedule.plans.some(({ status }) => status === 'OVERDUE')
         ? 'OVERDUE'
         : schedule.plans.some(({ status }) => status === 'IN_WINDOW')
           ? 'IN_WINDOW'
-          : schedule.plans.length > 0 ? 'PLANNED' : schedule.status;
+          : schedule.plans.some(({ status }) => status === 'PLANNED')
+            ? 'PLANNED'
+            : restDayCancelled ? 'CANCELLED' : schedule.status;
       const manual = schedule.rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL;
       const hasExecutablePlan = schedule.plans.some(({ status }) => (
         status === EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW ||
         status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
       ));
-      const calculatedDue = schedule.status === 'DUE' || schedule.status === 'OVERDUE';
+      const calculatedDue = schedule.plans.length === 0 && (
+        schedule.status === 'DUE' || schedule.status === 'OVERDUE'
+      );
       schedule.executable = manual || hasExecutablePlan || calculatedDue;
-      schedule.executionStatus = schedule.executable
+      schedule.executionStatus = restDayCancelled
+        ? 'REST_DAY'
+        : schedule.executable
         ? 'READY'
         : schedule.latestRecord && schedule.status === 'UPCOMING'
           ? 'PERIOD_COMPLETED'
+          : schedule.plans.some(({ status }) => status === EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED)
+            ? 'NOT_STARTED'
           : schedule.status === 'WAITING_FOR_READING'
             ? 'WAITING_FOR_READING'
             : 'NOT_DUE';
@@ -1277,6 +1314,7 @@ function createEquipmentRoutineService({
         categoryId: normalizeId(asset.categoryId),
         assetCode: asset.assetCode,
         name: asset.name,
+        location: asset.location || '',
         currentRuntimeHours: asset.currentRuntimeHours ?? null,
         runtimeHoursUpdatedAt: asset.runtimeHoursUpdatedAt || null
       },
@@ -1357,7 +1395,7 @@ function createEquipmentRoutineService({
     const equipmentIds = [...new Set(documents.map(({ equipmentId }) => normalizeId(equipmentId)))];
     const orgUnitIds = [...new Set(documents.map(({ orgUnitId }) => normalizeId(orgUnitId)))];
     const [assets, orgUnits, exceptions] = await Promise.all([
-      EquipmentAssetModel.find({ _id: { $in: equipmentIds }, teamId }).select('_id assetCode name').lean(),
+      EquipmentAssetModel.find({ _id: { $in: equipmentIds }, teamId }).select('_id assetCode name location').lean(),
       OrgUnitModel.find({ _id: { $in: orgUnitIds }, teamId }).select('_id name').lean(),
       EquipmentRoutineExceptionModel.find({
         teamId,
@@ -1488,8 +1526,9 @@ function createEquipmentRoutineService({
     }).format(date).replace(/\//g, '-');
   }
 
-  function finalizePhotoEvidence(values, rule, performedAt) {
+  function finalizePhotoEvidence(values, rule, performedAt, equipmentLocation = '') {
     const config = serializeExecutionConfig(rule.executionConfig);
+    const locationName = String(equipmentLocation || '').trim() || '设备地点未维护';
     return values.map((evidence) => {
       const capturedAt = evidence.capturedAt || performedAt;
       if (capturedAt > new Date(performedAt.getTime() + 5 * 60 * 1000)) {
@@ -1506,13 +1545,14 @@ function createEquipmentRoutineService({
       ) {
         throw inputInvalid('This rule requires an available location within the configured precision');
       }
-      const locationText = evidence.locationStatus === EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED
-        ? evidence.address || `${evidence.latitude.toFixed(6)}, ${evidence.longitude.toFixed(6)}`
+      const coordinateText = evidence.locationStatus === EQUIPMENT_ROUTINE_LOCATION_STATUSES.GRANTED
+        ? `${evidence.latitude.toFixed(6)}, ${evidence.longitude.toFixed(6)}`
         : `定位状态：${evidence.locationStatus}`;
       return {
         ...evidence,
         capturedAt,
-        watermarkText: `${watermarkTime(capturedAt, config.timeZone)} | ${locationText}`
+        address: locationName,
+        watermarkText: `${watermarkTime(capturedAt, config.timeZone)} | 设备地点：${locationName} | GPS：${coordinateText}`
       };
     });
   }
@@ -1752,40 +1792,89 @@ function createEquipmentRoutineService({
         const performedAt = clock();
         let plan = null;
         if (submission.planId) {
-          plan = await execute(EquipmentRoutinePlanModel.findOne({
+          const selectedPlan = await execute(EquipmentRoutinePlanModel.findOne({
             _id: submission.planId,
             teamId: context.activeTeamId,
+            orgUnitId: asset.orgUnitId,
             equipmentId: asset._id,
-            ruleId: rule._id,
-            scheduledFor: { $lte: performedAt },
-            status: { $in: [
-              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
-              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-            ] }
+            ruleId: rule._id
           }), session);
-          if (!plan) {
+          if (!selectedPlan || !OPEN_ROUTINE_PLAN_STATUSES.includes(selectedPlan.status)) {
             throw routineError(
               409,
               'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN',
               'The selected routine plan is no longer open'
             );
           }
+          if (new Date(selectedPlan.scheduledFor) > performedAt) {
+            throw routineError(
+              409,
+              'EQUIPMENT_ROUTINE_PLAN_NOT_STARTED',
+              'The selected routine plan cannot be executed before its start time'
+            );
+          }
+          plan = selectedPlan;
         } else {
           // Older clients may omit planId. Resolve an open requirement
           // deterministically, but never turn a future cycle into an ad-hoc run.
-          const openPlans = await execute(EquipmentRoutinePlanModel.find({
+          const candidatePlans = await execute(EquipmentRoutinePlanModel.find({
             teamId: context.activeTeamId,
+            orgUnitId: asset.orgUnitId,
             equipmentId: asset._id,
             ruleId: rule._id,
-            scheduledFor: { $lte: performedAt },
-            status: { $in: [
-              EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
-              EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-            ] }
+            $or: [
+              { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
+              {
+                status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+                cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY,
+                scheduledFor: {
+                  $gte: new Date(performedAt.getTime() - (48 * 60 * 60 * 1000)),
+                  $lte: new Date(performedAt.getTime() + (48 * 60 * 60 * 1000))
+                }
+              }
+            ]
           }).sort({ dueAt: 1, _id: 1 }), session);
-          plan = openPlans.find(({ status }) => (
-            status === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-          )) || openPlans[0] || null;
+          const restDayCancelled = candidatePlans.some((candidate) => (
+            candidate.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+            candidate.cancellationReason === EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY &&
+            isRoutinePlanCurrentBusinessDate(candidate, performedAt)
+          ));
+          const executablePlans = candidatePlans
+            .filter((candidate) => (
+              OPEN_ROUTINE_PLAN_STATUSES.includes(candidate.status) &&
+              new Date(candidate.scheduledFor) <= performedAt
+            ))
+            .sort((left, right) => {
+              const statusRank = { OVERDUE: 0, IN_WINDOW: 1, PLANNED: 2 };
+              return (
+                statusRank[effectiveRoutinePlanStatus(left, performedAt)] -
+                  statusRank[effectiveRoutinePlanStatus(right, performedAt)] ||
+                new Date(left.dueAt) - new Date(right.dueAt) ||
+                String(left._id).localeCompare(String(right._id))
+              );
+            });
+          plan = executablePlans[0] || null;
+          if (!plan && restDayCancelled) {
+            throw routineError(
+              409,
+              'EQUIPMENT_ROUTINE_REST_DAY_CANCELLED',
+              'This inspection plan was cancelled because the equipment is off duty today'
+            );
+          }
+          if (
+            !plan &&
+            !(schedule.latestRecord && schedule.status === 'UPCOMING') &&
+            candidatePlans.some((candidate) => (
+              OPEN_ROUTINE_PLAN_STATUSES.includes(candidate.status) &&
+              new Date(candidate.scheduledFor) > performedAt
+            ))
+          ) {
+            throw routineError(
+              409,
+              'EQUIPMENT_ROUTINE_PLAN_NOT_STARTED',
+              'The routine plan cannot be executed before its start time'
+            );
+          }
         }
         if (rule.schedule.mode !== EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL && !plan) {
           const dueState = submissionDueState(rule, schedule, runtimeHours);
@@ -1829,7 +1918,12 @@ function createEquipmentRoutineService({
           throw inputInvalid('An abnormal result requires at least one photo');
         }
 
-        const photoEvidence = finalizePhotoEvidence(submission.photoEvidence, rule, performedAt);
+        const photoEvidence = finalizePhotoEvidence(
+          submission.photoEvidence,
+          rule,
+          performedAt,
+          asset.location
+        );
         const recordId = new mongoose.Types.ObjectId();
         const record = await createOne(EquipmentRoutineRecordModel, {
           _id: recordId,

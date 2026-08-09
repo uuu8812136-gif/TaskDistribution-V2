@@ -75,7 +75,8 @@ test('release package and candidate preparation require and syntax-check both pr
 test('cumulative-production correction has a dedicated backup-gated activation path', () => {
   assert.ok(packageBuilder.includes("'ops/linux/activate-v2-test-attendance-cumulative-correction.sh'"))
   assert.match(activateAttendanceCumulativeCorrection, /v2_require_inactive "\$V2_API_UNIT"/)
-  assert.match(activateAttendanceCumulativeCorrection, /value\.destinationVolume !== 'D:'/)
+  assert.match(activateAttendanceCumulativeCorrection, /physicalDiskSeparated !== true/)
+  assert.match(activateAttendanceCumulativeCorrection, /value\.sourceVmVolume === value\.destinationVolume/)
   assert.match(activateAttendanceCumulativeCorrection, /v2_migration_input_digest/)
   assert.match(activateAttendanceCumulativeCorrection, /correctAttendanceProductionCumulative20260806\.js/)
   assert.match(activateAttendanceCumulativeCorrection, /report\.dataWrites !== 1/)
@@ -93,7 +94,8 @@ test('cumulative-production correction has a dedicated backup-gated activation p
 test('planned-attendance correction has a dedicated backup-gated activation path', () => {
   assert.ok(packageBuilder.includes("'ops/linux/activate-v2-test-attendance-correction.sh'"))
   assert.match(activateAttendanceCorrection, /v2_require_inactive "\$V2_API_UNIT"/)
-  assert.match(activateAttendanceCorrection, /value\.destinationVolume !== 'D:'/)
+  assert.match(activateAttendanceCorrection, /physicalDiskSeparated !== true/)
+  assert.match(activateAttendanceCorrection, /value\.sourceVmVolume === value\.destinationVolume/)
   assert.match(activateAttendanceCorrection, /v2_migration_input_digest/)
   assert.match(activateAttendanceCorrection, /correctAttendancePlanned20260727\.js/)
   assert.match(activateAttendanceCorrection, /report\.dataWrites !== 1/)
@@ -119,7 +121,8 @@ test('the packaged staging launcher starts only the isolated API behind the exis
 test('transport history repair has a dedicated backup-gated activation path', () => {
   assert.ok(packageBuilder.includes("'ops/linux/activate-v2-test-transport-repair.sh'"))
   assert.match(activateTransportRepair, /v2_require_inactive "\$V2_API_UNIT"/)
-  assert.match(activateTransportRepair, /value\.destinationVolume !== 'D:'/)
+  assert.match(activateTransportRepair, /physicalDiskSeparated !== true/)
+  assert.match(activateTransportRepair, /value\.sourceVmVolume === value\.destinationVolume/)
   assert.match(activateTransportRepair, /v2_migration_input_digest/)
   assert.match(activateTransportRepair, /repairAcceptanceTransportJuly2026\.js/)
   assert.match(activateTransportRepair, /report\.dataWrites !== 36/)

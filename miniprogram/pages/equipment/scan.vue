@@ -81,6 +81,13 @@
           <button class="detail-button" @click="openDetail">查看设备详情</button>
           <button v-if="canRepair" class="repair-button" @click="openRepair">发起维修</button>
           <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
+          <button
+            v-if="canUseRestDay"
+            class="rest-day-button"
+            :loading="restDaySubmitting"
+            :disabled="restDaySubmitting || selectedRestDayPlanIds.length === 0"
+            @click="markRestDay"
+          >本日休班，设备不需点检</button>
         </view>
       </view>
 
@@ -90,17 +97,26 @@
             <text class="routine-title">现场作业</text>
             <text class="routine-hint">{{ routineHint }}</text>
           </view>
-          <text class="routine-count">{{ schedules.length }} 项</text>
+          <text class="routine-count">{{ scheduleTasks.length }} 项</text>
         </view>
         <view v-for="group in scheduleGroups" :key="group.routineType" class="routine-group">
           <view class="routine-group-heading">
             <text>{{ group.label }}</text>
             <text>{{ group.entries.length }} 项</text>
           </view>
-          <view v-for="entry in group.entries" :key="entry.ruleId" class="routine-row">
+          <view v-for="entry in group.entries" :key="entry.taskKey" class="routine-row">
+            <checkbox
+              v-if="canMarkRestDay(entry)"
+              class="rest-day-checkbox"
+              color="#1677ff"
+              :checked="isRestDaySelected(entry)"
+              @click.stop="toggleRestDay(entry)"
+            />
             <view class="routine-copy">
               <text class="routine-name">{{ entry.rule.name }}</text>
               <text class="routine-meta">{{ scheduleDescription(entry.rule.schedule) }}</text>
+              <text v-if="entry.plan" class="routine-meta">开始：{{ formatDate(entry.plan.scheduledFor, 'YYYY-MM-DD HH:mm') || '-' }}</text>
+              <text v-if="entry.plan" class="routine-meta">截止：{{ formatDate(entry.plan.dueAt, 'YYYY-MM-DD HH:mm') || '-' }}</text>
               <text class="routine-state">{{ dueStateLabel(entry.dueState) }}</text>
             </view>
             <button v-if="canExecute(entry)" class="execute-button" @click="openExecute(entry)">
@@ -111,7 +127,7 @@
             </text>
           </view>
         </view>
-        <view v-if="schedules.length === 0" class="routine-empty">该设备尚未配置点检或保养规则</view>
+        <view v-if="scheduleTasks.length === 0" class="routine-empty">该设备尚未配置点检或保养规则</view>
       </view>
 
       <view v-if="equipment" class="activity-band">
@@ -153,22 +169,26 @@ import {
   getEquipmentByQrToken,
   getEquipmentRepairs,
   getEquipmentRoutineRecords,
-  getEquipmentRoutineSchedule
+  getEquipmentRoutineSchedule,
+  markEquipmentRoutinePlansRestDay
 } from '@/api/index.js'
 import { formatDate } from '@/utils/format.js'
 import {
   dueStateLabel,
   classifyEquipmentScanFailure,
   equipmentLookupFailureMessage,
+  expandRoutineScheduleTasks,
   groupRoutineSchedules,
   isRoutineScheduleExecutable,
   loadEquipmentMonthlyActivity,
   lookupEquipmentFromQr,
+  normalizeRoutineSchedules,
   routineExecutionStatusLabel,
   routineTypeLabel,
   scheduleDescription
 } from '@/utils/equipment.js'
 import { repairStatusLabel, repairTypeLabel } from '@/utils/equipmentRepair.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 import { useUserStore } from '@/stores/user.js'
 
 export default {
@@ -179,6 +199,8 @@ export default {
     const manualCode = ref('')
     const equipment = ref(null)
     const schedules = ref([])
+    const selectedRestDayPlanIds = ref([])
+    const restDaySubmitting = ref(false)
     const monthlyActivity = ref({ month: '', routineRecords: [], routineTotal: 0, repairs: [], repairTotal: 0 })
     const activityLoading = ref(false)
     const activityError = ref('')
@@ -205,9 +227,14 @@ export default {
     const selectedTeamName = computed(() => (
       teamOptions.value.find((team) => team._id === selectedTeamId.value)?.name || ''
     ))
-    const scheduleGroups = computed(() => groupRoutineSchedules(schedules.value))
-    const hasExecutableRoutine = computed(() => schedules.value.some((entry) => canExecute(entry)))
-    const hasRoutinePermission = computed(() => schedules.value.some((entry) => hasExecutionPermission(entry)))
+    const scheduleTasks = computed(() => expandRoutineScheduleTasks(schedules.value))
+    const scheduleGroups = computed(() => groupRoutineSchedules(scheduleTasks.value))
+    const hasExecutableRoutine = computed(() => scheduleTasks.value.some((entry) => canExecute(entry)))
+    const hasRoutinePermission = computed(() => scheduleTasks.value.some((entry) => hasExecutionPermission(entry)))
+    const canUseRestDay = computed(() => userStore.isTeamMode && userStore.can(
+      'equipment.inspect',
+      { write: true, teamRequired: true }
+    ))
     const routineHint = computed(() => {
       if (hasExecutableRoutine.value) return '选择要执行的点检或保养项'
       if (hasRoutinePermission.value) return '当前没有到期的点检或保养项'
@@ -230,6 +257,7 @@ export default {
     const resetResult = () => {
       equipment.value = null
       schedules.value = []
+      selectedRestDayPlanIds.value = []
       monthlyActivity.value = { month: '', routineRecords: [], routineTotal: 0, repairs: [], repairTotal: 0 }
       activityLoading.value = false
       activityError.value = ''
@@ -337,6 +365,51 @@ export default {
       { write: true, teamRequired: true }
     )
     const canExecute = (entry) => hasExecutionPermission(entry) && isRoutineScheduleExecutable(entry)
+    const canMarkRestDay = (entry) => (
+      canUseRestDay.value &&
+      entry?.routineType === 'INSPECTION' &&
+      entry?.restDayEligible === true &&
+      Boolean(entry?.planId)
+    )
+    const isRestDaySelected = (entry) => selectedRestDayPlanIds.value.includes(entry?.planId)
+    const toggleRestDay = (entry) => {
+      if (!canMarkRestDay(entry) || restDaySubmitting.value) return
+      const planId = entry.planId
+      selectedRestDayPlanIds.value = isRestDaySelected(entry)
+        ? selectedRestDayPlanIds.value.filter((value) => value !== planId)
+        : [...selectedRestDayPlanIds.value, planId]
+    }
+
+    const confirmRestDay = () => new Promise((resolve) => {
+      uni.showModal({
+        title: '本日休班，设备不需点检',
+        content: `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划设为休班吗？`,
+        confirmText: '确认休班',
+        success: ({ confirm }) => resolve(confirm),
+        fail: () => resolve(false)
+      })
+    })
+
+    const markRestDay = async () => {
+      if (!selectedRestDayPlanIds.value.length || restDaySubmitting.value) return
+      if (!await confirmRestDay()) return
+      restDaySubmitting.value = true
+      try {
+        const result = await markEquipmentRoutinePlansRestDay({
+          planIds: [...selectedRestDayPlanIds.value]
+        })
+        const response = await getEquipmentRoutineSchedule(equipment.value._id)
+        schedules.value = normalizeRoutineSchedules(response)
+        equipment.value = { ...equipment.value, ...(response.equipment || {}) }
+        selectedRestDayPlanIds.value = []
+        const count = Number(result?.cancelledCount || 0)
+        uni.showToast({ title: count > 0 ? `已设为休班 ${count} 项` : '所选计划已是休班', icon: 'success' })
+      } catch (error) {
+        uni.showToast({ title: requestErrorMessage(error, '休班设置失败'), icon: 'none' })
+      } finally {
+        restDaySubmitting.value = false
+      }
+    }
 
     const openDetail = () => {
       const teamId = requestTeamId()
@@ -364,7 +437,7 @@ export default {
         return
       }
       uni.navigateTo({
-        url: `/pages/equipment/execute?equipmentId=${equipment.value._id}&ruleId=${entry.ruleId}`
+        url: `/pages/equipment/execute?equipmentId=${equipment.value._id}&ruleId=${entry.ruleId}${entry.planId ? `&planId=${entry.planId}` : ''}`
       })
     }
 
@@ -397,6 +470,7 @@ export default {
       manualCode,
       equipment,
       schedules,
+      scheduleTasks,
       scheduleGroups,
       monthlyActivity,
       activityLoading,
@@ -407,11 +481,18 @@ export default {
       statusMessage,
       scanPermissionDenied,
       hasExecutableRoutine,
+      canUseRestDay,
+      selectedRestDayPlanIds,
+      restDaySubmitting,
       routineHint,
       startScan,
       openCameraSettings,
       lookupManualCode,
       canExecute,
+      canMarkRestDay,
+      isRestDaySelected,
+      toggleRestDay,
+      markRestDay,
       hasExecutionPermission,
       openDetail,
       openRepair,
@@ -478,12 +559,14 @@ export default {
 .detail-button { color: #1d5fa7; background: #eaf3ff; }
 .repair-button { color: #fff; background: #245d3f; }
 .hours-button { color: #8a4b08; background: #fff5e6; }
+.rest-day-button { grid-column: 1 / -1; width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; color: #7a4b00; background: #fff4d6; font-size: 24rpx; }
 .routine-title { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .routine-hint { margin-top: 5rpx; color: #64748b; font-size: 21rpx; }
 .routine-count { color: #64748b; font-size: 22rpx; }
 .routine-group { margin: 18rpx -24rpx 0; border-top: 1px solid #e8edf3; }
 .routine-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 14rpx 24rpx; color: #52606d; background: #f7f9fc; font-size: 22rpx; font-weight: 600; }
 .routine-row { align-items: center; min-height: 94rpx; padding: 18rpx 24rpx; border-top: 1px solid #e8edf3; }
+.rest-day-checkbox { flex: 0 0 44rpx; width: 44rpx; }
 .activity-row { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; min-height: 78rpx; margin: 14rpx -24rpx 0; padding: 14rpx 24rpx 0; border-top: 1px solid #e8edf3; }
 .routine-name { color: #1f2733; font-size: 26rpx; font-weight: 600; }
 .routine-meta { margin-top: 5rpx; color: #64748b; font-size: 22rpx; }

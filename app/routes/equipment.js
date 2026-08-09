@@ -40,6 +40,7 @@ const equipmentInventory = requirePermission('equipment.inventory');
 const equipmentQrCode = requirePermission('equipment.qrcode');
 const equipmentRepair = requirePermission('equipment.repair');
 const equipmentStatusApply = requirePermission('equipment.status.apply');
+const equipmentInspect = requirePermission('equipment.inspect');
 
 const importUpload = multer({
   storage: multer.memoryStorage(),
@@ -142,6 +143,13 @@ router.delete(
 router.get('/routine-records', equipmentView, equipmentRoutineController.listRecords);
 router.get('/routine-records/export', equipmentExport, equipmentRoutineController.exportRecords);
 router.get('/routine-plans', equipmentView, equipmentRoutineController.listPlans);
+router.post(
+  '/routine-plans/rest-day',
+  requireTeamContext,
+  rejectRoutineWriteTeamId,
+  equipmentInspect,
+  equipmentRoutineController.markPlansRestDay
+);
 router.get('/routine-plans/:planId', equipmentView, equipmentRoutineController.getPlan);
 router.get('/routine-exceptions', equipmentView, equipmentRoutineController.listExceptions);
 router.get('/routine-exceptions/:exceptionId', equipmentView, equipmentRoutineController.getException);

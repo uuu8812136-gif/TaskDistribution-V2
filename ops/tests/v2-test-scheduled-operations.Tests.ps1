@@ -31,12 +31,20 @@ Describe 'V2 test off-host scheduled retention' {
       Write-Utf8NoBom -Path $manifestPath -Value "$(($manifest | ConvertTo-Json -Depth 5))`n"
       $sha = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
       Write-Utf8NoBom -Path (Join-Path $directory 'manifest.sha256') -Value "$sha  manifest.json`n"
+      $destinationVolume = [IO.Path]::GetPathRoot($directory).TrimEnd('\')
+      $sourceVolume = if ($destinationVolume -eq 'C:') { 'E:' } else { 'C:' }
       $receipt = [ordered]@{
         format = 'task-distribution-v2-offhost-backup-receipt/v1'
         instance = 'task-distribution-v2-customer-test'
         database = 'customer_acceptance_v2_test'
         backupId = $backupId
         manifestSha256 = $sha
+        destinationVolume = $destinationVolume
+        destinationDirectory = $directory
+        destinationDiskNumber = 1
+        sourceVmVolume = $sourceVolume
+        sourceVmDiskNumber = 0
+        physicalDiskSeparated = $true
       }
       Write-Utf8NoBom -Path (Join-Path (Join-Path $root 'receipts') "$backupId.json") `
         -Value "$(($receipt | ConvertTo-Json -Depth 4))`n"
@@ -51,5 +59,20 @@ Describe 'V2 test off-host scheduled retention' {
     foreach ($backupId in @($records[0..6] + $records[8..11])) {
       ($remaining -contains $backupId) | Should Be $true
     }
+  }
+}
+
+Describe 'V2 test backup reboot recovery' {
+  It 'restores off-host traversal ACLs and creates a fresh backup after boot' {
+    $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
+    $volumeScript = [IO.File]::ReadAllText(
+      (Join-Path $repositoryRoot 'ops\linux\ensure-v2-test-backup-volume.sh')
+    )
+    $timer = [IO.File]::ReadAllText(
+      (Join-Path $repositoryRoot 'ops\linux\taskdistribution-v2-test-backup.timer')
+    )
+    $volumeScript | Should Match 'setfacl -m u:serveradmin:--x "\$volume_root"'
+    $volumeScript | Should Match 'setfacl -m u:serveradmin:rX "\$volume_root/backups" "\$volume_root/handoffs"'
+    $timer | Should Match 'OnBootSec=10m'
   }
 }

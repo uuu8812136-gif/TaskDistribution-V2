@@ -18,12 +18,19 @@
         <button v-if="canApplyStatus && equipment.status !== 'SCRAPPED'" class="status-button" @click="openStatusApplication">状态申请</button>
         <button v-if="canRepair" class="repair-button" @click="openRepair">发起维修</button>
         <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
+        <button
+          v-if="canUseRestDay"
+          class="rest-day-button"
+          :loading="restDaySubmitting"
+          :disabled="restDaySubmitting || selectedRestDayPlanIds.length === 0"
+          @click="markRestDay"
+        >本日休班，设备不需点检</button>
       </view>
     </view>
 
     <view class="section-heading">
       <text>点检与保养</text>
-      <text class="section-count">{{ schedules.length }} 项</text>
+      <text class="section-count">{{ scheduleTasks.length }} 项</text>
     </view>
     <view class="schedule-list">
       <view v-for="group in scheduleGroups" :key="group.routineType" class="schedule-group">
@@ -31,7 +38,14 @@
           <text>{{ group.label }}</text>
           <text>{{ group.entries.length }} 项</text>
         </view>
-        <view v-for="entry in group.entries" :key="entry.ruleId" class="schedule-row">
+        <view v-for="entry in group.entries" :key="entry.taskKey" class="schedule-row">
+          <checkbox
+            v-if="canMarkRestDay(entry)"
+            class="rest-day-checkbox"
+            color="#1677ff"
+            :checked="isRestDaySelected(entry)"
+            @click.stop="toggleRestDay(entry)"
+          />
           <view class="schedule-top">
             <view class="schedule-copy">
               <text class="schedule-name">{{ entry.rule.name }}</text>
@@ -40,6 +54,8 @@
             <text class="due-tag" :class="`tone-${dueStateTone(entry.dueState)}`">{{ dueStateLabel(entry.dueState) }}</text>
           </view>
           <view class="due-grid">
+            <text v-if="entry.plan">开始：{{ formatDate(entry.plan.scheduledFor, 'YYYY-MM-DD HH:mm') || '-' }}</text>
+            <text v-if="entry.plan">截止：{{ formatDate(entry.plan.dueAt, 'YYYY-MM-DD HH:mm') || '-' }}</text>
             <text v-if="entry.nextDueAt">日期：{{ formatDate(entry.nextDueAt, 'YYYY-MM-DD HH:mm') }}</text>
             <text v-if="entry.runtimeStatus === 'WAITING_FOR_READING'">运行小时：待录入读数</text>
             <text v-else-if="entry.nextDueRuntimeHours != null">小时：{{ entry.nextDueRuntimeHours }} h</text>
@@ -87,12 +103,14 @@ import {
   getEquipmentDetail,
   getEquipmentRepairs,
   getEquipmentRoutineRecords,
-  getEquipmentRoutineSchedule
+  getEquipmentRoutineSchedule,
+  markEquipmentRoutinePlansRestDay
 } from '@/api/index.js'
 import { formatDate } from '@/utils/format.js'
 import {
   dueStateLabel,
   dueStateTone,
+  expandRoutineScheduleTasks,
   groupRoutineSchedules,
   isRoutineScheduleExecutable,
   loadEquipmentMonthlyActivity,
@@ -102,6 +120,7 @@ import {
   scheduleDescription
 } from '@/utils/equipment.js'
 import { repairStatusLabel, repairTypeLabel } from '@/utils/equipmentRepair.js'
+import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
 import { useUserStore } from '@/stores/user.js'
 
 export default {
@@ -112,10 +131,13 @@ export default {
     const teamId = ref('')
     const equipment = ref(null)
     const schedules = ref([])
+    const selectedRestDayPlanIds = ref([])
+    const restDaySubmitting = ref(false)
     const monthlyActivity = ref({ month: '', routineRecords: [], routineTotal: 0, repairs: [], repairTotal: 0 })
     const currentRuntimeHours = ref(null)
     const loading = ref(false)
-    const scheduleGroups = computed(() => groupRoutineSchedules(schedules.value))
+    const scheduleTasks = computed(() => expandRoutineScheduleTasks(schedules.value))
+    const scheduleGroups = computed(() => groupRoutineSchedules(scheduleTasks.value))
     const requestParams = () => userStore.isGlobalReadOnly && teamId.value ? { teamId: teamId.value } : {}
 
     const canRecordHours = computed(() => (
@@ -128,11 +150,56 @@ export default {
       userStore.can('equipment.status.apply', { write: true, teamRequired: true }) &&
       userStore.context.membership?.functionalRoleKeys?.includes('ASSET_ADMIN')
     ))
+    const canUseRestDay = computed(() => userStore.isTeamMode && userStore.can(
+      'equipment.inspect',
+      { write: true, teamRequired: true }
+    ))
     const hasExecutionPermission = (entry) => userStore.isTeamMode && userStore.can(
       entry.routineType === 'MAINTENANCE' ? 'equipment.maintain' : 'equipment.inspect',
       { write: true, teamRequired: true }
     )
     const canExecute = (entry) => hasExecutionPermission(entry) && isRoutineScheduleExecutable(entry)
+    const canMarkRestDay = (entry) => (
+      canUseRestDay.value &&
+      entry?.routineType === 'INSPECTION' &&
+      entry?.restDayEligible === true &&
+      Boolean(entry?.planId)
+    )
+    const isRestDaySelected = (entry) => selectedRestDayPlanIds.value.includes(entry?.planId)
+    const toggleRestDay = (entry) => {
+      if (!canMarkRestDay(entry) || restDaySubmitting.value) return
+      const planId = entry.planId
+      selectedRestDayPlanIds.value = isRestDaySelected(entry)
+        ? selectedRestDayPlanIds.value.filter((value) => value !== planId)
+        : [...selectedRestDayPlanIds.value, planId]
+    }
+    const confirmRestDay = () => new Promise((resolve) => {
+      uni.showModal({
+        title: '本日休班，设备不需点检',
+        content: `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划设为休班吗？`,
+        confirmText: '确认休班',
+        success: ({ confirm }) => resolve(confirm),
+        fail: () => resolve(false)
+      })
+    })
+    const markRestDay = async () => {
+      if (!selectedRestDayPlanIds.value.length || restDaySubmitting.value) return
+      if (!await confirmRestDay()) return
+      restDaySubmitting.value = true
+      try {
+        const result = await markEquipmentRoutinePlansRestDay({
+          planIds: [...selectedRestDayPlanIds.value]
+        })
+        selectedRestDayPlanIds.value = []
+        await load()
+        const count = Number(result?.cancelledCount || 0)
+        uni.showToast({ title: count > 0 ? `已设为休班 ${count} 项` : '所选计划已是休班', icon: 'success' })
+      } catch (error) {
+        uni.showToast({ title: requestErrorMessage(error, '休班设置失败'), icon: 'none' })
+      } finally {
+        restDaySubmitting.value = false
+      }
+    }
     const load = async () => {
       if (!equipmentId.value || loading.value) return
       loading.value = true
@@ -152,6 +219,7 @@ export default {
           runtimeHoursUpdatedAt: schedule.equipment?.runtimeHoursUpdatedAt ?? detail.equipment?.runtimeHoursUpdatedAt ?? null
         }
         schedules.value = normalizeRoutineSchedules(schedule)
+        selectedRestDayPlanIds.value = []
         monthlyActivity.value = activity
         currentRuntimeHours.value = equipment.value.currentRuntimeHours
       } finally {
@@ -159,7 +227,7 @@ export default {
       }
     }
     const openExecute = (entry) => uni.navigateTo({
-      url: `/pages/equipment/execute?equipmentId=${equipmentId.value}&ruleId=${entry.ruleId}`
+      url: `/pages/equipment/execute?equipmentId=${equipmentId.value}&ruleId=${entry.ruleId}${entry.planId ? `&planId=${entry.planId}` : ''}`
     })
     const openRuntimeReading = () => {
       const currentQuery = currentRuntimeHours.value == null
@@ -186,8 +254,9 @@ export default {
     })
     onShow(load)
     return {
-      userStore, equipment, schedules, scheduleGroups, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
-      canExecute, hasExecutionPermission, openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
+      userStore, equipment, schedules, scheduleTasks, scheduleGroups, monthlyActivity, currentRuntimeHours, loading, canRecordHours, canRepair, canApplyStatus,
+      canUseRestDay, selectedRestDayPlanIds, restDaySubmitting, canExecute, hasExecutionPermission, canMarkRestDay, isRestDaySelected, toggleRestDay, markRestDay,
+      openExecute, openRuntimeReading, openRepair, openStatusApplication, statusLabel, formatDate,
       resultLabel, dueStateLabel, dueStateTone, routineTypeLabel, routineExecutionStatusLabel, scheduleDescription, repairStatusLabel, repairTypeLabel
     }
   }
@@ -208,18 +277,20 @@ export default {
 .asset-grid text, .asset-grid strong { display: block; overflow-wrap: anywhere; }
 .asset-grid text { color: #64748b; font-size: 22rpx; }
 .asset-grid strong { margin-top: 7rpx; color: #1f2733; font-size: 25rpx; font-weight: 600; }
-.asset-actions { display: flex; gap: 12rpx; margin-top: 22rpx; }
+.asset-actions { display: flex; flex-wrap: wrap; gap: 12rpx; margin-top: 22rpx; }
 .hours-button, .repair-button, .status-button, .execute-button { height: 72rpx; line-height: 72rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
 .asset-actions .hours-button, .asset-actions .repair-button, .asset-actions .status-button { flex: 1; min-width: 0; }
 .hours-button { color: #245d3f; background: #eaf7ef; }
 .repair-button { color: #fff; background: #4096ff; }
 .status-button { color: #8a4b08; background: #fff5e6; }
+.rest-day-button { flex: 0 0 100%; height: 72rpx; line-height: 72rpx; margin: 0; border-radius: 8rpx; color: #7a4b00; background: #fff4d6; font-size: 24rpx; }
 .section-heading { display: flex; justify-content: space-between; margin: 30rpx 0 14rpx; color: #1f2733; font-size: 29rpx; font-weight: 600; }
 .section-count { color: #64748b; font-size: 23rpx; font-weight: 400; }
 .schedule-list { overflow: hidden; }
 .schedule-group + .schedule-group { border-top: 1px solid #dce4ee; }
 .schedule-group-heading { display: flex; align-items: center; justify-content: space-between; padding: 14rpx 24rpx; color: #52606d; background: #f7f9fc; font-size: 22rpx; font-weight: 600; }
 .schedule-row { padding: 24rpx; border-top: 1px solid #e8edf3; }
+.rest-day-checkbox { display: block; width: 44rpx; height: 44rpx; margin-bottom: 8rpx; }
 .schedule-name { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .schedule-meta { margin-top: 7rpx; color: #64748b; font-size: 23rpx; }
 .due-tag { flex: 0 0 auto; padding: 7rpx 12rpx; border-radius: 8rpx; font-size: 21rpx; }

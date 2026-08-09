@@ -170,6 +170,22 @@ function createEquipmentRoutineController({
       }
     },
 
+    async markPlansRestDay(req, res, next) {
+      try {
+        const result = await workflowService.markPlansRestDay({
+          authContext: req.authContext,
+          req,
+          input: req.body || {}
+        });
+        return res.json({
+          message: 'Inspection plans marked as equipment rest day',
+          ...result
+        });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async listExceptions(req, res, next) {
       try {
         return res.json(await workflowService.listExceptions({

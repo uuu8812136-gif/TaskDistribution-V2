@@ -4,6 +4,9 @@
       <text class="rule-type">{{ routineTypeLabel(rule.routineType) }}</text>
       <text class="rule-name">{{ rule.name }}</text>
       <text class="rule-cycle">{{ scheduleDescription(rule.schedule) }}</text>
+      <text v-if="selectedPlan" class="rule-plan-time">
+        计划：{{ formatPlanTime(selectedPlan.scheduledFor) }} 至 {{ formatPlanTime(selectedPlan.dueAt) }}
+      </text>
       <text v-if="rule.description" class="rule-description">{{ rule.description }}</text>
     </view>
 
@@ -110,7 +113,10 @@ export default {
     const userStore = useUserStore()
     const equipmentId = ref('')
     const ruleId = ref('')
+    const requestedPlanId = ref('')
     const planId = ref('')
+    const selectedPlan = ref(null)
+    const equipmentLocation = ref('')
     const rule = ref(null)
     const executionAllowed = ref(false)
     const executionStatusLabel = ref('当前不可执行')
@@ -146,9 +152,23 @@ export default {
         return
       }
       rule.value = entry.rule
-      executionAllowed.value = isRoutineScheduleExecutable(entry)
-      executionStatusLabel.value = routineExecutionStatusLabel(entry)
-      const currentPlan = selectExecutableRoutinePlan(entry.plans)
+      equipmentLocation.value = String(response.equipment?.location || '').trim() || '设备地点未维护'
+      const requestedPlan = requestedPlanId.value
+        ? (entry.plans || []).find((plan) => String(plan?._id || '') === requestedPlanId.value)
+        : null
+      const currentPlan = requestedPlanId.value
+        ? selectExecutableRoutinePlan(requestedPlan ? [requestedPlan] : [])
+        : selectExecutableRoutinePlan(entry.plans)
+      const manualExecution = entry.rule.schedule?.mode === 'MANUAL' && !requestedPlanId.value
+      executionAllowed.value = manualExecution || Boolean(currentPlan) || (
+        !requestedPlanId.value && isRoutineScheduleExecutable(entry)
+      )
+      executionStatusLabel.value = requestedPlanId.value && !requestedPlan
+        ? '所选计划已取消、完成或不可用'
+        : requestedPlanId.value && !currentPlan
+          ? routineExecutionStatusLabel({ ...entry, plan: requestedPlan })
+          : routineExecutionStatusLabel(entry)
+      selectedPlan.value = currentPlan || requestedPlan || null
       planId.value = currentPlan?._id || ''
       runtimeHours.value = response.equipment?.currentRuntimeHours == null
         ? ''
@@ -159,6 +179,10 @@ export default {
     const formatWatermarkTime = (date) => {
       const pad = (value) => String(value).padStart(2, '0')
       return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`
+    }
+    const formatPlanTime = (value) => {
+      const date = new Date(value)
+      return Number.isNaN(date.getTime()) ? '-' : formatWatermarkTime(date).slice(0, 16)
     }
     const locationEvidence = () => new Promise((resolve) => {
       uni.getLocation({
@@ -187,7 +211,7 @@ export default {
     const imageInfo = (src) => new Promise((resolve, reject) => {
       uni.getImageInfo({ src, success: resolve, fail: reject })
     })
-    const burnWatermark = async (sourcePath, { timeText, locationText }) => {
+    const burnWatermark = async (sourcePath, { timeText, equipmentLocationText, coordinateText }) => {
       const image = await imageInfo(sourcePath)
       if (!(image.width > 0) || !(image.height > 0)) throw new Error('无法读取现场照片尺寸')
       const scale = Math.min(1, 1600 / Math.max(image.width, image.height))
@@ -208,7 +232,7 @@ export default {
       const fontSize = Math.max(18, Math.round(width / 42))
       const lineHeight = Math.round(fontSize * 1.45)
       const padding = Math.max(12, Math.round(fontSize * 0.7))
-      const bandHeight = lineHeight * 2 + padding * 2
+      const bandHeight = lineHeight * 3 + padding * 2
       canvasContext.setGlobalAlpha(0.68)
       canvasContext.setFillStyle('#000000')
       canvasContext.fillRect(0, height - bandHeight, width, bandHeight)
@@ -217,7 +241,8 @@ export default {
       canvasContext.setFontSize(fontSize)
       canvasContext.setTextBaseline('top')
       canvasContext.fillText(timeText, padding, height - bandHeight + padding, width - padding * 2)
-      canvasContext.fillText(locationText, padding, height - bandHeight + padding + lineHeight, width - padding * 2)
+      canvasContext.fillText(`设备地点：${equipmentLocationText}`, padding, height - bandHeight + padding + lineHeight, width - padding * 2)
+      canvasContext.fillText(`GPS：${coordinateText}`, padding, height - bandHeight + padding + lineHeight * 2, width - padding * 2)
       return new Promise((resolve, reject) => {
         canvasContext.draw(false, () => {
           uni.canvasToTempFilePath({
@@ -265,15 +290,17 @@ export default {
             return
           }
           const capturedAt = new Date()
-          const locationText = location.locationStatus === 'GRANTED'
+          const coordinateText = location.locationStatus === 'GRANTED'
             ? `${location.latitude.toFixed(6)}, ${location.longitude.toFixed(6)}`
             : `定位状态：${location.locationStatus}`
+          const equipmentLocationText = equipmentLocation.value || '设备地点未维护'
           try {
             const selected = []
             for (const [index, file] of (tempFiles || []).entries()) {
               const watermarkedPath = await burnWatermark(file.tempFilePath, {
                 timeText: formatWatermarkTime(capturedAt),
-                locationText
+                equipmentLocationText,
+                coordinateText
               })
               selected.push({
                 path: watermarkedPath,
@@ -281,7 +308,8 @@ export default {
                 fileId: '',
                 capturedAt: capturedAt.toISOString(),
                 ...location,
-                watermarkPreview: `${formatWatermarkTime(capturedAt)} | ${locationText}`
+                address: equipmentLocationText,
+                watermarkPreview: `${formatWatermarkTime(capturedAt)} | 设备地点：${equipmentLocationText} | GPS：${coordinateText}`
               })
             }
             photos.value = [...photos.value, ...selected].slice(0, 10)
@@ -394,6 +422,7 @@ export default {
     onLoad((options) => {
       equipmentId.value = options.equipmentId || ''
       ruleId.value = options.ruleId || ''
+      requestedPlanId.value = options.planId || ''
       idempotencyKey.value = `routine-${Date.now()}-${Math.random().toString(16).slice(2)}`
       load().catch((error) => uni.showToast({
         title: requestErrorMessage(error, '点检保养规则加载失败'),
@@ -401,10 +430,10 @@ export default {
       }))
     })
     return {
-      rule, executionAllowed, executionStatusLabel, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,
+      rule, selectedPlan, executionAllowed, executionStatusLabel, results, runtimeHours, abnormalSummary, photos, submitting, canvasWidth, canvasHeight,
       resultOptions, needsRuntime,
       photoRuleLabel, itemResult, selectResult, takePhoto, removePhoto, submit,
-      routineTypeLabel, scheduleDescription
+      routineTypeLabel, scheduleDescription, formatPlanTime
     }
   }
 }
@@ -416,9 +445,10 @@ export default {
 .rule-band { padding: 24rpx; }
 .blocked-band { margin-top: 20rpx; padding: 28rpx 24rpx; color: #52606d; background: #f7f9fb; text-align: center; font-size: 25rpx; }
 .rule-type { display: inline-block; padding: 7rpx 12rpx; border-radius: 8rpx; color: #245d3f; background: #eaf7ef; font-size: 21rpx; }
-.rule-name, .rule-cycle, .rule-description { display: block; }
+.rule-name, .rule-cycle, .rule-plan-time, .rule-description { display: block; }
 .rule-name { margin-top: 14rpx; color: #1f2733; font-size: 32rpx; font-weight: 700; }
 .rule-cycle { margin-top: 8rpx; color: #4096ff; font-size: 24rpx; }
+.rule-plan-time { margin-top: 8rpx; color: #52606d; font-size: 22rpx; }
 .rule-description { margin-top: 12rpx; color: #64748b; font-size: 24rpx; line-height: 1.6; }
 .items-band, .extra-band { margin-top: 20rpx; overflow: hidden; }
 .item-row { padding: 24rpx; border-bottom: 1px solid #e8edf3; }

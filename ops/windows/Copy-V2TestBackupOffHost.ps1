@@ -9,7 +9,8 @@ param(
   [ValidateRange(1, 65535)][int]$LinuxPort = 22022,
   [string]$LinuxUser = 'serveradmin',
   [string]$RemoteBackupRoot = '/mnt/taskdistribution-v2-test-backup/backups',
-  [string]$DestinationRoot = 'D:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$DestinationRoot = 'C:\ServerBackups\TaskDistribution-V2-Test',
+  [string]$SourceVmRoot = 'E:\ServerVM',
   [string]$RemoteReceiptPath = '',
   [string]$ConfirmInstance = '',
   [switch]$Apply
@@ -54,6 +55,29 @@ function Assert-SafeRelativePath {
     throw "Manifest path escapes backup root: $Relative"
   }
   return $candidate
+}
+
+function Get-LocalVolumeIdentity {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  if (-not [IO.Path]::IsPathRooted($Path)) { throw "$Label must be an absolute local path" }
+  $fullPath = [IO.Path]::GetFullPath($Path)
+  $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+  if ($pathRoot -notmatch '^([A-Za-z]):\\$') { throw "$Label must use a local drive letter" }
+  $driveLetter = $Matches[1].ToUpperInvariant()
+  $drive = Get-PSDrive -Name $driveLetter -PSProvider FileSystem -ErrorAction Stop
+  if (-not $drive.Root.Equals("${driveLetter}:\", [StringComparison]::OrdinalIgnoreCase)) {
+    throw "$Label must resolve to a local filesystem drive"
+  }
+  $partition = Get-Partition -DriveLetter $driveLetter -ErrorAction Stop
+  return [pscustomobject]@{
+    FullPath = $fullPath
+    DriveLetter = $driveLetter
+    Volume = "${driveLetter}:"
+    DiskNumber = [int]$partition.DiskNumber
+  }
 }
 
 function Assert-BackupSet {
@@ -133,6 +157,8 @@ function Test-OffHostReceipt {
     [Parameter(Mandatory = $true)][string]$ExpectedBackupId,
     [Parameter(Mandatory = $true)][string]$ManifestSha256,
     [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+    [Parameter(Mandatory = $true)][pscustomobject]$DestinationIdentity,
+    [Parameter(Mandatory = $true)][pscustomobject]$SourceVmIdentity,
     [Parameter(Mandatory = $true)][int]$FileCount
   )
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $false }
@@ -150,7 +176,13 @@ function Test-OffHostReceipt {
       $receipt.releaseId -ne $ReleaseId -or
       $receipt.backupId -ne $ExpectedBackupId -or
       [string]$receipt.manifestSha256 -cne $ManifestSha256 -or
-      $receipt.destinationVolume -ne 'D:' -or
+      $receipt.destinationVolume -ne $DestinationIdentity.Volume -or
+      $receipt.sourceVmVolume -ne $SourceVmIdentity.Volume -or
+      $null -eq $receipt.destinationDiskNumber -or
+      [int]$receipt.destinationDiskNumber -ne $DestinationIdentity.DiskNumber -or
+      $null -eq $receipt.sourceVmDiskNumber -or
+      [int]$receipt.sourceVmDiskNumber -ne $SourceVmIdentity.DiskNumber -or
+      $receipt.physicalDiskSeparated -ne $true -or
       -not ([IO.Path]::GetFullPath([string]$receipt.destinationDirectory)).Equals(
         [IO.Path]::GetFullPath($DestinationDirectory),
         [StringComparison]::OrdinalIgnoreCase
@@ -175,6 +207,8 @@ function Write-OffHostReceipt {
     [Parameter(Mandatory = $true)][string]$ExpectedBackupId,
     [Parameter(Mandatory = $true)][string]$ManifestSha256,
     [Parameter(Mandatory = $true)][string]$DestinationDirectory,
+    [Parameter(Mandatory = $true)][pscustomobject]$DestinationIdentity,
+    [Parameter(Mandatory = $true)][pscustomobject]$SourceVmIdentity,
     [Parameter(Mandatory = $true)][int]$FileCount
   )
   $receipt = [ordered]@{
@@ -185,8 +219,12 @@ function Write-OffHostReceipt {
     releaseId = $ReleaseId
     backupId = $ExpectedBackupId
     manifestSha256 = $ManifestSha256
-    destinationVolume = 'D:'
+    destinationVolume = $DestinationIdentity.Volume
     destinationDirectory = $DestinationDirectory
+    destinationDiskNumber = $DestinationIdentity.DiskNumber
+    sourceVmVolume = $SourceVmIdentity.Volume
+    sourceVmDiskNumber = $SourceVmIdentity.DiskNumber
+    physicalDiskSeparated = $true
     fileCount = $FileCount
     requiredMigrationCollections = @($RequiredMigrationCollections)
   }
@@ -207,9 +245,11 @@ if ($SourceReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{5,95}$') { throw 'Sou
 if (-not [IO.Path]::IsPathRooted($IdentityFile)) { throw 'IdentityFile must be absolute' }
 if (-not [IO.Path]::IsPathRooted($KnownHostsFile)) { throw 'KnownHostsFile must be absolute' }
 if (-not [IO.Path]::IsPathRooted($DestinationRoot)) { throw 'DestinationRoot must be absolute' }
-$destinationFull = [IO.Path]::GetFullPath($DestinationRoot)
-if (-not $destinationFull.StartsWith('D:\', [StringComparison]::OrdinalIgnoreCase)) {
-  throw 'DestinationRoot must be on the physical-host D: backup disk'
+$destinationIdentity = Get-LocalVolumeIdentity -Path $DestinationRoot -Label 'DestinationRoot'
+$sourceVmIdentity = Get-LocalVolumeIdentity -Path $SourceVmRoot -Label 'SourceVmRoot'
+$destinationFull = $destinationIdentity.FullPath
+if ($destinationIdentity.DiskNumber -eq $sourceVmIdentity.DiskNumber) {
+  throw 'DestinationRoot must be on a different physical disk from SourceVmRoot'
 }
 if ($RemoteBackupRoot -notmatch '^/mnt/taskdistribution-v2-test-backup/backups$') {
   throw 'RemoteBackupRoot must be the isolated V2 backup mount'
@@ -229,6 +269,11 @@ $plan = [pscustomobject]@{
   BackupId = $BackupId
   Source = "${LinuxUser}@${LinuxHost}:$RemoteBackupRoot/$BackupId"
   Destination = (Join-Path $destinationFull $BackupId)
+  DestinationVolume = $destinationIdentity.Volume
+  DestinationDiskNumber = $destinationIdentity.DiskNumber
+  SourceVmVolume = $sourceVmIdentity.Volume
+  SourceVmDiskNumber = $sourceVmIdentity.DiskNumber
+  PhysicalDiskSeparated = $true
   ExpectedManifestSha256 = $ExpectedManifestSha256.ToLowerInvariant()
   RemoteReceiptPath = $RemoteReceiptPath
 }
@@ -241,17 +286,6 @@ if ($ConfirmInstance -ne $ExpectedInstance) {
 }
 foreach ($file in @($IdentityFile, $KnownHostsFile)) {
   if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required SSH file missing: $file" }
-}
-$destinationDrive = Get-PSDrive -Name D -PSProvider FileSystem -ErrorAction Stop
-if (-not $destinationDrive.Root.StartsWith('D:\', [StringComparison]::OrdinalIgnoreCase)) {
-  throw 'The D: backup destination is not a local filesystem drive'
-}
-$systemDriveLetter = ([string]$env:SystemDrive).TrimEnd(':')
-if ($systemDriveLetter -eq 'D') { throw 'D: is the Windows system drive and cannot be used' }
-$destinationPartition = Get-Partition -DriveLetter D -ErrorAction Stop
-$systemPartition = Get-Partition -DriveLetter $systemDriveLetter -ErrorAction Stop
-if ($destinationPartition.DiskNumber -eq $systemPartition.DiskNumber) {
-  throw 'D: must be a different physical disk from the Windows system volume'
 }
 $scp = (Get-Command 'C:\Windows\System32\OpenSSH\scp.exe' -ErrorAction Stop).Source
 $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')
@@ -314,11 +348,13 @@ if ($PSCmdlet.ShouldProcess($plan.Source, $processDescription)) {
   $receiptPath = Join-Path $receiptRoot "$BackupId.json"
   $receiptReused = Test-OffHostReceipt -Path $receiptPath -ReleaseId $SourceReleaseId `
     -ExpectedBackupId $BackupId -ManifestSha256 $verified.ManifestSha256 `
-    -DestinationDirectory $finalDirectory -FileCount $verified.FileCount
+    -DestinationDirectory $finalDirectory -DestinationIdentity $destinationIdentity `
+    -SourceVmIdentity $sourceVmIdentity -FileCount $verified.FileCount
   if (-not $receiptReused) {
     Write-OffHostReceipt -Path $receiptPath -ReleaseId $SourceReleaseId `
       -ExpectedBackupId $BackupId -ManifestSha256 $verified.ManifestSha256 `
-      -DestinationDirectory $finalDirectory -FileCount $verified.FileCount
+      -DestinationDirectory $finalDirectory -DestinationIdentity $destinationIdentity `
+      -SourceVmIdentity $sourceVmIdentity -FileCount $verified.FileCount
   }
 
   $receiptStdout = Join-Path $logRoot "receipt-$BackupId-$timestamp.stdout.log"
@@ -347,5 +383,10 @@ if ($PSCmdlet.ShouldProcess($plan.Source, $processDescription)) {
     RemoteReceipt = $RemoteReceiptPath
     DownloadPerformed = $downloadPerformed
     ReceiptReused = $receiptReused
+    DestinationVolume = $destinationIdentity.Volume
+    DestinationDiskNumber = $destinationIdentity.DiskNumber
+    SourceVmVolume = $sourceVmIdentity.Volume
+    SourceVmDiskNumber = $sourceVmIdentity.DiskNumber
+    PhysicalDiskSeparated = $true
   } | ConvertTo-Json -Depth 4
 }

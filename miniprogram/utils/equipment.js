@@ -33,7 +33,9 @@ const DUE_STATE_LABELS = Object.freeze({
   UPCOMING: '未到期',
   OVERDUE: '已逾期',
   ON_DEMAND: '按需执行',
-  WAITING_FOR_READING: '待录入运行小时'
+  WAITING_FOR_READING: '待录入运行小时',
+  REST_DAY: '休班',
+  CANCELLED: '已取消'
 })
 
 function requiredObjectId(value, field) {
@@ -213,9 +215,26 @@ export function normalizeRoutineSchedules(response = {}) {
   }).filter((entry) => entry.ruleId)
 }
 
-export function selectExecutableRoutinePlan(plans = []) {
+function effectivePlanStatus(plan, now = new Date()) {
+  if (!['PLANNED', 'IN_WINDOW', 'OVERDUE'].includes(plan?.status)) return plan?.status
+  const current = now instanceof Date ? now.getTime() : new Date(now).getTime()
+  const scheduledFor = Date.parse(plan?.scheduledFor || '')
+  const dueAt = Date.parse(plan?.dueAt || '')
+  if (!Number.isFinite(current) || !Number.isFinite(scheduledFor) || !Number.isFinite(dueAt)) {
+    return plan?.status
+  }
+  if (current < scheduledFor) return 'PLANNED'
+  return current <= dueAt ? 'IN_WINDOW' : 'OVERDUE'
+}
+
+export function selectExecutableRoutinePlan(plans = [], now = new Date()) {
+  const nowTimestamp = now instanceof Date ? now.getTime() : new Date(now).getTime()
   const candidates = Array.isArray(plans)
-    ? plans.filter((plan) => ['OVERDUE', 'IN_WINDOW'].includes(plan?.status))
+    ? plans.filter((plan) => {
+        const scheduledFor = Date.parse(plan?.scheduledFor || '')
+        const hasStarted = !Number.isFinite(scheduledFor) || scheduledFor <= nowTimestamp
+        return hasStarted && ['OVERDUE', 'IN_WINDOW'].includes(effectivePlanStatus(plan, now))
+      })
     : []
   const statusRank = { OVERDUE: 0, IN_WINDOW: 1 }
   const timestamp = (value) => {
@@ -223,7 +242,7 @@ export function selectExecutableRoutinePlan(plans = []) {
     return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER
   }
   return [...candidates].sort((left, right) => (
-    (statusRank[left.status] - statusRank[right.status]) ||
+    (statusRank[effectivePlanStatus(left, now)] - statusRank[effectivePlanStatus(right, now)]) ||
     (timestamp(left.dueAt) - timestamp(right.dueAt)) ||
     (timestamp(left.scheduledFor) - timestamp(right.scheduledFor)) ||
     String(left._id || '').localeCompare(String(right._id || ''))
@@ -231,6 +250,7 @@ export function selectExecutableRoutinePlan(plans = []) {
 }
 
 export function isRoutineScheduleExecutable(entry = {}) {
+  if (entry?.plan) return Boolean(selectExecutableRoutinePlan([entry.plan]))
   if (entry?.rule?.schedule?.mode === 'MANUAL') return true
   if (typeof entry?.executable === 'boolean') return entry.executable
   return Boolean(selectExecutableRoutinePlan(entry?.plans))
@@ -238,10 +258,42 @@ export function isRoutineScheduleExecutable(entry = {}) {
 
 export function routineExecutionStatusLabel(entry = {}) {
   const status = entry?.executionStatus || ''
+  if (status === 'REST_DAY' || entry?.plan?.cancellationReason === 'REST_DAY') return '本日休班'
+  if (status === 'NOT_STARTED' || entry?.plan?.status === 'PLANNED') return '未到开始时间'
   if (status === 'PERIOD_COMPLETED') return '本周期已完成'
   if (status === 'WAITING_FOR_READING') return '待录入运行小时'
   if (status === 'NOT_DUE') return '未到执行周期'
   return isRoutineScheduleExecutable(entry) ? '' : '当前不可执行'
+}
+
+export function expandRoutineScheduleTasks(schedules = [], now = new Date()) {
+  const values = Array.isArray(schedules) ? schedules : normalizeRoutineSchedules(schedules)
+  return values.flatMap((entry) => {
+    const plans = Array.isArray(entry?.plans) ? entry.plans : []
+    if (plans.length === 0) {
+      return [{ ...entry, taskKey: `rule:${entry.ruleId}` }]
+    }
+    return plans.map((plan) => {
+      const status = effectivePlanStatus(plan, now)
+      const normalizedPlan = { ...plan, status }
+      const restDay = plan?.cancellationReason === 'REST_DAY'
+      const dueState = restDay ? 'REST_DAY' : (ROUTINE_PLAN_DUE_STATE_MAP[status] || status)
+      return {
+        ...entry,
+        taskKey: `plan:${plan?._id || entry.ruleId}:${plan?.windowKey || ''}:${plan?.scheduledFor || ''}`,
+        plan: normalizedPlan,
+        planId: plan?._id || '',
+        plans: [normalizedPlan],
+        planStatus: status,
+        dueState,
+        restDayEligible: plan?.restDayEligible === true,
+        executable: Boolean(selectExecutableRoutinePlan([normalizedPlan], now)),
+        executionStatus: restDay
+          ? 'REST_DAY'
+          : status === 'PLANNED' ? 'NOT_STARTED' : entry.executionStatus
+      }
+    })
+  })
 }
 
 export function groupRoutineSchedules(schedules = []) {
