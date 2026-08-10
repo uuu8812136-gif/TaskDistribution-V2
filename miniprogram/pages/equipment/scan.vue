@@ -83,6 +83,7 @@
           <button v-if="canRecordHours" class="hours-button" @click="openRuntimeReading">记录运行小时</button>
           <button class="inspection-record-button" @click="openRoutineRecords('INSPECTION')">点检记录</button>
           <button class="maintenance-record-button" @click="openRoutineRecords('MAINTENANCE')">保养记录</button>
+          <button class="calendar-button" @click="openInspectionCalendar">点检日历</button>
           <button
             v-if="canUseRestDay"
             class="rest-day-button"
@@ -166,7 +167,7 @@
 
 <script>
 import { computed, ref } from 'vue'
-import { onLoad, onUnload } from '@dcloudio/uni-app'
+import { onLoad, onShow, onUnload } from '@dcloudio/uni-app'
 import {
   getEquipmentByQrToken,
   getEquipmentRepairs,
@@ -243,6 +244,39 @@ export default {
       return '当前账号仅可查看设备信息'
     })
     const requestTeamId = () => userStore.isGlobalReadOnly ? selectedTeamId.value : ''
+
+    const refreshLoadedEquipment = async () => {
+      if (!equipment.value || lookingUp.value) return
+      const version = ++requestVersion
+      const requestedTeamId = requestTeamId()
+      try {
+        const response = await getEquipmentRoutineSchedule(equipment.value._id, {
+          ...(requestedTeamId ? { teamId: requestedTeamId } : {})
+        }, { showLoading: false, silentError: true })
+        if (version !== requestVersion || requestedTeamId !== requestTeamId()) return
+        equipment.value = { ...equipment.value, ...(response?.equipment || {}) }
+        schedules.value = normalizeRoutineSchedules(response)
+        selectedRestDayPlanIds.value = []
+      } catch (error) {
+        if (version !== requestVersion) return
+        activityError.value = requestErrorMessage(error, '设备计划暂时无法刷新')
+      }
+      activityLoading.value = true
+      activityError.value = ''
+      try {
+        const activity = await loadEquipmentMonthlyActivity(equipment.value._id, {
+          teamId: requestedTeamId,
+          fetchRecords: getEquipmentRoutineRecords,
+          fetchRepairs: getEquipmentRepairs
+        })
+        if (version !== requestVersion || requestedTeamId !== requestTeamId()) return
+        monthlyActivity.value = activity
+      } catch (error) {
+        if (version === requestVersion) activityError.value = requestErrorMessage(error, '本月稽查记录暂时无法加载')
+      } finally {
+        if (version === requestVersion) activityLoading.value = false
+      }
+    }
 
     const requireQueryContext = () => {
       if (!canView.value) {
@@ -443,6 +477,15 @@ export default {
       uni.navigateTo({ url: `/pages/equipment/routine-record-list?${query}` })
     }
 
+    const openInspectionCalendar = () => {
+      const scopedTeamId = requestTeamId()
+      const query = [
+        `equipmentId=${encodeURIComponent(equipment.value._id)}`,
+        scopedTeamId ? `teamId=${encodeURIComponent(scopedTeamId)}` : ''
+      ].filter(Boolean).join('&')
+      uni.navigateTo({ url: `/pages/equipment/routine-calendar?${query}` })
+    }
+
     const openExecute = (entry) => {
       if (!canExecute(entry)) {
         uni.showToast({ title: '当前账号仅可查看', icon: 'none' })
@@ -468,6 +511,10 @@ export default {
     onLoad((options) => {
       selectedTeamId.value = options.teamId || (userStore.isTeamMode ? userStore.activeTeamId : '') || ''
       if (options.auto === '1') setTimeout(startScan, 150)
+    })
+    onShow(() => {
+      // Returning from execution must reflect the completed plan immediately.
+      refreshLoadedEquipment()
     })
     onUnload(() => { requestVersion += 1 })
 
@@ -510,6 +557,7 @@ export default {
       openRepair,
       openRuntimeReading,
       openRoutineRecords,
+      openInspectionCalendar,
       openExecute,
       onTeamChange,
       statusLabel,
@@ -568,12 +616,13 @@ export default {
 .equipment-grid text { color: #64748b; font-size: 21rpx; }
 .equipment-grid strong { margin-top: 5rpx; color: #1f2733; font-size: 24rpx; }
 .result-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12rpx; margin-top: 22rpx; }
-.detail-button, .repair-button, .hours-button, .inspection-record-button, .maintenance-record-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
+.detail-button, .repair-button, .hours-button, .inspection-record-button, .maintenance-record-button, .calendar-button { width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; font-size: 25rpx; }
 .detail-button { color: #1d5fa7; background: #eaf3ff; }
 .repair-button { color: #fff; background: #245d3f; }
 .hours-button { color: #8a4b08; background: #fff5e6; }
 .inspection-record-button { color: #1d5fa7; background: #eaf3ff; }
 .maintenance-record-button { color: #245d3f; background: #eaf7ef; }
+.calendar-button { color: #7a4b00; background: #fff5e6; }
 .rest-day-button { grid-column: 1 / -1; width: 100%; height: 70rpx; line-height: 70rpx; margin: 0; border-radius: 8rpx; color: #7a4b00; background: #fff4d6; font-size: 24rpx; }
 .routine-title { color: #1f2733; font-size: 28rpx; font-weight: 600; }
 .routine-hint { margin-top: 5rpx; color: #64748b; font-size: 21rpx; }

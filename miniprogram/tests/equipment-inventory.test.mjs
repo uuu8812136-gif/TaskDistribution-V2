@@ -58,6 +58,8 @@ test('mini-program inventory pages are registered and use private camera uploads
   assert.equal(registered.has('pages/equipment/inventory-detail'), true)
   assert.match(equipmentIndexSource, /openInventory/)
   assert.match(listSource, /getEquipmentInventorySessions/)
+  assert.match(listSource, /placeholder="请输入盘点批次名称后点击搜索"/)
+  assert.match(listSource, /class="search-button"[\s\S]*@click="refresh">搜索<\/button>/)
   assert.match(detailSource, /onlyFromCamera:\s*true/)
   assert.match(detailSource, /sourceType:\s*\['camera'\]/)
   assert.match(detailSource, /scanEquipmentInventoryItem/)

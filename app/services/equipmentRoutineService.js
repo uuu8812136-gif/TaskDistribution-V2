@@ -72,6 +72,7 @@ const { FILE_OWNER_TYPES } = FileAsset;
 const {
   EQUIPMENT_ROUTINE_LOCATION_STATUSES,
   EQUIPMENT_ROUTINE_LOCATION_STATUS_VALUES,
+  EQUIPMENT_ROUTINE_OVERALL_RESULTS,
   EQUIPMENT_ROUTINE_OVERALL_RESULT_VALUES
 } = EquipmentRoutineRecord;
 const {
@@ -169,6 +170,39 @@ function pagination(query = {}) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const ROUTINE_CALENDAR_TIME_ZONE = 'Asia/Shanghai';
+const ROUTINE_CALENDAR_MONTH_PATTERN = /^(\d{4})-(\d{2})$/;
+
+function routineCalendarMonthRange(value) {
+  const match = ROUTINE_CALENDAR_MONTH_PATTERN.exec(String(value || '').trim());
+  if (!match) throw inputInvalid('month must use YYYY-MM format');
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) throw inputInvalid('month must use YYYY-MM format');
+  // Shanghai has a fixed +08:00 offset. Use half-open UTC boundaries so
+  // records at the exact next-month midnight are not included twice.
+  const start = new Date(Date.UTC(year, month - 1, 1) - (8 * 60 * 60 * 1000));
+  const nextStart = new Date(Date.UTC(year, month, 1) - (8 * 60 * 60 * 1000));
+  const days = Math.round((nextStart.getTime() - start.getTime()) / 86400000);
+  return { month: `${match[1]}-${match[2]}`, start, nextStart, days };
+}
+
+function routineCalendarDateKey(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: ROUTINE_CALENDAR_TIME_ZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(date)
+      .filter(({ type }) => type !== 'literal')
+      .map(({ type, value: partValue }) => [type, partValue])
+  );
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 function combinedAnyGenerationPrefix(cycleKey) {
@@ -1390,6 +1424,10 @@ function createEquipmentRoutineService({
 
   function recordUserFilter(query = {}) {
     const filters = [];
+    const dateBasis = String(query.dateBasis || 'EXECUTION').trim().toUpperCase();
+    if (!['EXECUTION', 'PLAN'].includes(dateBasis)) {
+      throw inputInvalid('dateBasis must be EXECUTION or PLAN');
+    }
     if (query.routineType) {
       if (!EQUIPMENT_ROUTINE_TYPE_VALUES.includes(query.routineType)) {
         throw inputInvalid('routineType is invalid');
@@ -1421,7 +1459,29 @@ function createEquipmentRoutineService({
       if (range.$gte && range.$lte && range.$gte > range.$lte) {
         throw inputInvalid('from must be less than or equal to to');
       }
-      filters.push({ performedAt: range });
+      if (dateBasis === 'PLAN') {
+        // Planned records carry the immutable plan start separately. Keep a
+        // scheduledFor fallback for records created before planScheduledFor
+        // was introduced, including manual records without a plan.
+        filters.push({
+          $or: [
+            { planScheduledFor: range },
+            {
+              $and: [
+                {
+                  $or: [
+                    { planScheduledFor: { $exists: false } },
+                    { planScheduledFor: null }
+                  ]
+                },
+                { scheduledFor: range }
+              ]
+            }
+          ]
+        });
+      } else {
+        filters.push({ performedAt: range });
+      }
     }
     return filters.length > 0 ? { $and: filters } : {};
   }
@@ -1494,7 +1554,8 @@ function createEquipmentRoutineService({
       'ruleId',
       'overallResult',
       'from',
-      'to'
+      'to',
+      'dateBasis'
     ], 'query');
     assertPermission(authContext, 'equipment.view');
     const teamId = await resolveReadTeamId(authContext, requestedTeamId);
@@ -1506,16 +1567,159 @@ function createEquipmentRoutineService({
       method
     });
     const { page, pageSize, skip } = pagination(query);
-    const [documents, total] = await Promise.all([
-      EquipmentRoutineRecordModel.find(filter)
+    const dateBasis = String(query.dateBasis || 'EXECUTION').trim().toUpperCase();
+    if (!['EXECUTION', 'PLAN'].includes(dateBasis)) {
+      throw inputInvalid('dateBasis must be EXECUTION or PLAN');
+    }
+    const planDateFilter = dateBasis === 'PLAN'
+      ? EquipmentRoutineRecordModel.find(filter).cast()
+      : null;
+    const recordQuery = dateBasis === 'PLAN'
+      ? EquipmentRoutineRecordModel.aggregate([
+        { $match: planDateFilter },
+        {
+          $addFields: {
+            __planSortAt: {
+              $ifNull: [
+                '$planScheduledFor',
+                { $ifNull: ['$scheduledFor', '$performedAt'] }
+              ]
+            }
+          }
+        },
+        { $sort: { __planSortAt: -1, performedAt: -1, _id: -1 } },
+        { $skip: skip },
+        { $limit: pageSize },
+        { $project: { __planSortAt: 0 } }
+      ])
+      : EquipmentRoutineRecordModel.find(filter)
         .sort({ performedAt: -1, _id: -1 })
         .skip(skip)
         .limit(pageSize)
-        .lean(),
+        .lean();
+    const [documents, total] = await Promise.all([
+      recordQuery,
       EquipmentRoutineRecordModel.countDocuments(filter)
     ]);
     const records = await enrichRecords(documents, teamId);
     return { records, total, page, pageSize };
+  }
+
+  async function getInspectionCalendar({
+    authContext,
+    requestedTeamId,
+    method = 'GET',
+    equipmentId,
+    query = {}
+  }) {
+    assertOnlyKeys(query, ['teamId', 'month'], 'query');
+    const range = routineCalendarMonthRange(query.month);
+    const asset = await loadScopedAsset({
+      authContext,
+      requestedTeamId,
+      method,
+      equipmentId
+    });
+    const teamId = asset.teamId;
+    const plans = await EquipmentRoutinePlanModel.find({
+      teamId,
+      equipmentId: asset._id,
+      routineType: EQUIPMENT_ROUTINE_TYPES.INSPECTION,
+      scheduledFor: { $gte: range.start, $lt: range.nextStart }
+    }).sort({ scheduledFor: 1, windowKey: 1, _id: 1 }).lean();
+    const planIds = plans.map((plan) => plan._id);
+    const completedRecordIds = plans
+      .map((plan) => plan.completedRecordId)
+      .filter(Boolean);
+    const recordFilter = {
+      teamId,
+      equipmentId: asset._id,
+      routineType: EQUIPMENT_ROUTINE_TYPES.INSPECTION,
+      $or: [
+        ...(planIds.length ? [{ planId: { $in: planIds } }] : []),
+        { planId: null, performedAt: { $gte: range.start, $lt: range.nextStart } },
+        ...(completedRecordIds.length ? [{ _id: { $in: completedRecordIds } }] : [])
+      ]
+    };
+    const records = await EquipmentRoutineRecordModel.find(recordFilter)
+      .select('_id planId overallResult performedAt planScheduledFor scheduledFor')
+      .lean();
+    const recordsById = new Map(records.map((record) => [String(record._id), record]));
+    const recordsByPlanId = new Map(
+      records.filter((record) => record.planId).map((record) => [String(record.planId), record])
+    );
+    const days = [];
+    const dayByDate = new Map();
+    for (let index = 0; index < range.days; index += 1) {
+      const date = routineCalendarDateKey(new Date(range.start.getTime() + index * 86400000));
+      const day = {
+        date,
+        status: 'NO_PLAN',
+        planCount: 0,
+        pendingCount: 0,
+        normalCount: 0,
+        abnormalCount: 0,
+        restDayCount: 0
+      };
+      days.push(day);
+      dayByDate.set(date, day);
+    }
+    const refreshStatus = (day) => {
+      if (day.abnormalCount > 0) day.status = 'ABNORMAL';
+      else if (day.pendingCount > 0) day.status = 'PENDING';
+      else if (day.normalCount > 0) day.status = 'NORMAL';
+      else if (day.restDayCount > 0) day.status = 'REST_DAY';
+      else day.status = 'NO_PLAN';
+    };
+    for (const plan of plans) {
+      const day = dayByDate.get(routineCalendarDateKey(plan.scheduledFor));
+      if (!day) continue;
+      day.planCount += 1;
+      const status = effectiveRoutinePlanStatus(plan, clock());
+      if (OPEN_ROUTINE_PLAN_STATUSES.includes(status)) {
+        day.pendingCount += 1;
+      } else if (status === EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED) {
+        const record = (plan.completedRecordId && recordsById.get(String(plan.completedRecordId)))
+          || recordsByPlanId.get(String(plan._id));
+        if (!record) day.pendingCount += 1;
+        else if (record.overallResult === EQUIPMENT_ROUTINE_OVERALL_RESULTS.ABNORMAL) {
+          day.abnormalCount += 1;
+        } else {
+          day.normalCount += 1;
+        }
+      } else if (
+        status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
+        routinePlanCancellationReason(plan) === EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY
+      ) {
+        day.restDayCount += 1;
+      }
+      refreshStatus(day);
+    }
+    // Manual records are not attached to a materialized plan. They still
+    // belong on the calendar by their actual execution date.
+    for (const record of records) {
+      if (record.planId) continue;
+      const day = dayByDate.get(routineCalendarDateKey(record.performedAt));
+      if (!day) continue;
+      if (record.overallResult === EQUIPMENT_ROUTINE_OVERALL_RESULTS.ABNORMAL) {
+        day.abnormalCount += 1;
+      } else {
+        day.normalCount += 1;
+      }
+      refreshStatus(day);
+    }
+    return {
+      equipment: {
+        _id: normalizeId(asset._id),
+        teamId: normalizeId(asset.teamId),
+        assetCode: asset.assetCode,
+        name: asset.name,
+        location: asset.location || ''
+      },
+      month: range.month,
+      timeZone: ROUTINE_CALENDAR_TIME_ZONE,
+      days
+    };
   }
 
   async function getRecord({
@@ -2311,6 +2515,7 @@ function createEquipmentRoutineService({
     getRecord,
     getRule,
     getSchedule,
+    getInspectionCalendar,
     listRecords,
     listRules,
     listRuntimeReadings,

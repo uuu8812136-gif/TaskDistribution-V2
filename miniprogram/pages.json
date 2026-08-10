@@ -101,6 +101,14 @@
 			}
 		},
 		{
+			"path": "pages/equipment/routine-calendar",
+			"style": {
+				"navigationBarTitleText": "月度点检日历",
+				"navigationBarBackgroundColor": "#4096FF",
+				"navigationBarTextStyle": "white"
+			}
+		},
+		{
 			"path": "pages/equipment/routine-record-detail",
 			"style": {
 				"navigationBarTitleText": "执行记录详情",

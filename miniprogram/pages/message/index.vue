@@ -68,7 +68,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onUnmounted } from "vue";
 import { onShow } from "@dcloudio/uni-app";
 import {
   getMessages,
@@ -102,16 +102,6 @@ export default {
     const hasMore = ref(true);
     const requestGate = createLatestRequestGate();
     const pendingMessageClicks = new Set();
-
-    // 页面显示时触发
-    onShow(() => {
-      // 通知 TabBar 更新选中状态
-      uni.$emit("tabbar-update");
-    });
-
-    onMounted(() => {
-      loadMessages();
-    });
 
     onUnmounted(() => requestGate.invalidate());
 
@@ -150,15 +140,25 @@ export default {
       }
     };
 
-    // 下拉刷新
-    const onRefresh = () => {
-      refreshing.value = true;
+    const refreshVisibleMessages = () => {
+      requestGate.invalidate();
       page.value = 1;
       messages.value = [];
       hasMore.value = true;
       loadMessages();
-      // 刷新未读数量
       messageStore.fetchUnreadCount();
+    };
+
+    // The page can stay cached while an approval creates a new message.
+    onShow(() => {
+      uni.$emit("tabbar-update");
+      refreshVisibleMessages();
+    });
+
+    // 下拉刷新
+    const onRefresh = () => {
+      refreshing.value = true;
+      refreshVisibleMessages();
     };
 
     // 加载更多

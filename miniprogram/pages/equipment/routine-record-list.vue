@@ -15,7 +15,7 @@
         <view class="filter-heading">
           <view>
             <text class="filter-title">{{ pageTitle }}</text>
-            <text class="filter-hint">{{ selectedTeamName || '当前项目团队' }} · 按执行日期查询</text>
+            <text class="filter-hint">{{ selectedTeamName || '当前项目团队' }} · 按计划日期查询</text>
           </view>
           <text class="filter-total">{{ total }} 条</text>
         </view>
@@ -152,6 +152,7 @@ export default {
       ...(requestTeamId() ? { teamId: requestTeamId() } : {}),
       equipmentId: equipmentId.value,
       routineType: routineType.value,
+      dateBasis: 'PLAN',
       ...routineRecordDateRange(startDate.value, endDate.value),
       page: targetPage,
       pageSize

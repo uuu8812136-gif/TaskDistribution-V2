@@ -282,6 +282,10 @@ export const getEquipmentRoutineSchedule = (equipmentId, params = {}, options = 
   return get(`/equipment/${equipmentId}/routine-schedule`, params, options)
 }
 
+export const getEquipmentRoutineCalendar = (equipmentId, params = {}, options = {}) => {
+  return get(`/equipment/${equipmentId}/routine-calendar`, params, options)
+}
+
 export const createEquipmentRoutineRecord = (equipmentId, data) => {
   return post(`/equipment/${equipmentId}/routine-records`, data)
 }

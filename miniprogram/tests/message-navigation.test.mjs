@@ -105,4 +105,6 @@ test('message page delegates all business targets to the navigation allowlist', 
   assert.match(routineWorkbench, /String\(plan\._id\) === focusedPlanId/)
   assert.match(source, /pendingMessageClicks\.has\(messageId\)/)
   assert.match(source, /setTimeout\(\(\) => pendingMessageClicks\.delete\(messageId\), 800\)/)
+  assert.match(source, /onShow\(\(\) => \{[\s\S]*refreshVisibleMessages\(\)/)
+  assert.match(source, /refreshVisibleMessages[\s\S]*messageStore\.fetchUnreadCount\(\)/)
 })

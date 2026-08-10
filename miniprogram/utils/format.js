@@ -228,6 +228,8 @@ export const messageTypeMap = {
   'extension_applied': '延期申请',
   'extension_approved': '延期审批',
   'extension_rejected': '延期拒绝',
+  'system': '系统提醒',
+  'repair': '设备维修',
   'equipment_status': '设备状态审批',
   'task_overdue': '任务逾期'
 }

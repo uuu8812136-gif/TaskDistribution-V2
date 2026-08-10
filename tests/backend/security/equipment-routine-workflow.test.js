@@ -1943,13 +1943,22 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
     dueAt: new Date('2030-01-15T04:00:00.000Z'),
     status: 'PLANNED'
   };
-  const [inspectionPlan, maintenancePlan, futurePlan, hiddenPlan, otherTeamPlan] = await EquipmentRoutinePlan.create([
+  const [inspectionPlan, overduePlan, maintenancePlan, futurePlan, hiddenPlan, otherTeamPlan] = await EquipmentRoutinePlan.create([
     {
       ...planBase,
       ruleId: inspectionRule._id,
       ruleSnapshot: inspectionRule,
       routineType: 'INSPECTION',
       cycleKey: 'rest-day-current'
+    },
+    {
+      ...planBase,
+      ruleId: inspectionRule._id,
+      ruleSnapshot: inspectionRule,
+      routineType: 'INSPECTION',
+      cycleKey: 'rest-day-overdue',
+      dueAt: new Date('2030-01-15T01:00:00.000Z'),
+      status: 'OVERDUE'
     },
     {
       ...planBase,
@@ -2008,6 +2017,14 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
     authContext: globalContext(fixture.ids.departmentManager),
     input: { planIds: [String(inspectionPlan._id)] }
   }), (error) => error.status === 403);
+
+  const overdueCancelled = await workflow.markPlansRestDay({
+    authContext: fixture.contexts.employee,
+    input: { planIds: [String(overduePlan._id)] }
+  });
+  assert.equal(overdueCancelled.cancelledCount, 1);
+  assert.equal(overdueCancelled.plans[0].status, 'CANCELLED');
+  assert.equal(overdueCancelled.plans[0].cancellationReason, 'REST_DAY');
 
   const cancelled = await workflow.markPlansRestDay({
     authContext: fixture.contexts.employee,
@@ -2655,4 +2672,261 @@ test('required location rejects denial and scoped reads cannot cross organizatio
   const workflow = createEquipmentRoutineWorkflowService();
   const scoped = await workflow.listExceptions({ authContext: fixture.contexts.employee });
   assert.equal(scoped.total, 0);
+});
+
+test('record list can filter by the immutable plan date without changing legacy defaults', async () => {
+  const routineService = createEquipmentRoutineService();
+  const rule = await createRule(routineService, 'INSPECTION', { schedule: { mode: 'MANUAL' } });
+  const common = {
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    routineType: 'INSPECTION',
+    performedBy: fixture.ids.employee,
+    itemResults: [],
+    overallResult: 'NORMAL',
+    photoFileIds: [],
+    photoEvidence: [],
+    ruleSnapshot: rule
+  };
+  const plannedJanuaryPerformedFebruary = objectId();
+  const plannedFebruaryPerformedJanuary = objectId();
+  const legacyJanuaryPerformedMarch = objectId();
+  const plannedEarlyJanuaryPerformedApril = objectId();
+  await EquipmentRoutineRecord.collection.insertMany([
+    {
+      ...common,
+      _id: plannedJanuaryPerformedFebruary,
+      scheduledFor: new Date('2030-01-20T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-01-20T00:00:00.000Z'),
+      planDueAt: new Date('2030-01-20T02:00:00.000Z'),
+      performedAt: new Date('2030-02-05T00:00:00.000Z')
+    },
+    {
+      ...common,
+      _id: plannedFebruaryPerformedJanuary,
+      scheduledFor: new Date('2030-02-12T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-02-12T00:00:00.000Z'),
+      planDueAt: new Date('2030-02-12T02:00:00.000Z'),
+      performedAt: new Date('2030-01-25T00:00:00.000Z')
+    },
+    {
+      ...common,
+      _id: legacyJanuaryPerformedMarch,
+      scheduledFor: new Date('2030-01-25T00:00:00.000Z'),
+      performedAt: new Date('2030-03-01T00:00:00.000Z')
+    },
+    {
+      ...common,
+      _id: plannedEarlyJanuaryPerformedApril,
+      scheduledFor: new Date('2030-01-05T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-01-05T00:00:00.000Z'),
+      planDueAt: new Date('2030-01-05T02:00:00.000Z'),
+      performedAt: new Date('2030-04-01T00:00:00.000Z')
+    }
+  ]);
+
+  const byPlanDate = await routineService.listRecords({
+    authContext: fixture.contexts.manager,
+    query: {
+      dateBasis: 'PLAN',
+      from: '2030-01-01T00:00:00+08:00',
+      to: '2030-01-31T23:59:59.999+08:00'
+    }
+  });
+  assert.deepEqual(byPlanDate.records.map(({ _id }) => _id), [
+    String(legacyJanuaryPerformedMarch),
+    String(plannedJanuaryPerformedFebruary),
+    String(plannedEarlyJanuaryPerformedApril)
+  ]);
+
+  const legacyDefault = await routineService.listRecords({
+    authContext: fixture.contexts.manager,
+    query: {
+      from: '2030-01-01T00:00:00+08:00',
+      to: '2030-01-31T23:59:59.999+08:00'
+    }
+  });
+  assert.deepEqual(legacyDefault.records.map(({ _id }) => _id), [String(plannedFebruaryPerformedJanuary)]);
+  await assert.rejects(
+    routineService.listRecords({
+      authContext: fixture.contexts.manager,
+      query: { dateBasis: 'UNKNOWN' }
+    }),
+    (error) => error.code === 'EQUIPMENT_ROUTINE_INPUT_INVALID'
+  );
+});
+
+test('inspection calendar groups by Shanghai plan date and applies daily state priority', async () => {
+  const routineService = createEquipmentRoutineService({
+    clock: () => new Date('2030-08-15T00:00:00.000Z')
+  });
+  const rule = await createRule(routineService, 'INSPECTION', { schedule: { mode: 'MANUAL' } });
+  const normalRecordId = objectId();
+  const abnormalRecordId = objectId();
+  const mixedNormalRecordId = objectId();
+  const normalPlanId = objectId();
+  const abnormalPlanId = objectId();
+  const mixedNormalPlanId = objectId();
+  const planCommon = {
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    ruleSnapshot: rule,
+    routineType: 'INSPECTION',
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班'
+  };
+  await EquipmentRoutinePlan.collection.insertMany([
+    {
+      ...planCommon,
+      _id: normalPlanId,
+      cycleKey: 'calendar-normal',
+      scheduledFor: new Date('2030-08-05T00:00:00.000Z'),
+      dueAt: new Date('2030-08-05T02:00:00.000Z'),
+      status: 'COMPLETED',
+      completedRecordId: normalRecordId,
+      completedAt: new Date('2030-08-05T01:00:00.000Z'),
+      completedBy: fixture.ids.employee
+    },
+    {
+      ...planCommon,
+      _id: objectId(),
+      cycleKey: 'calendar-pending',
+      scheduledFor: new Date('2030-08-06T00:00:00.000Z'),
+      dueAt: new Date('2030-08-06T02:00:00.000Z'),
+      status: 'PLANNED'
+    },
+    {
+      ...planCommon,
+      _id: objectId(),
+      cycleKey: 'calendar-rest',
+      scheduledFor: new Date('2030-08-07T00:00:00.000Z'),
+      dueAt: new Date('2030-08-07T02:00:00.000Z'),
+      status: 'CANCELLED',
+      cancellationReason: 'REST_DAY',
+      cancelledAt: new Date('2030-08-07T00:30:00.000Z'),
+      cancelledBy: fixture.ids.employee
+    },
+    {
+      ...planCommon,
+      _id: abnormalPlanId,
+      cycleKey: 'calendar-abnormal',
+      scheduledFor: new Date('2030-08-08T00:00:00.000Z'),
+      dueAt: new Date('2030-08-08T02:00:00.000Z'),
+      status: 'COMPLETED',
+      completedRecordId: abnormalRecordId,
+      completedAt: new Date('2030-08-08T01:00:00.000Z'),
+      completedBy: fixture.ids.employee
+    },
+    {
+      ...planCommon,
+      _id: mixedNormalPlanId,
+      cycleKey: 'calendar-mixed-normal',
+      scheduledFor: new Date('2030-08-09T00:00:00.000Z'),
+      dueAt: new Date('2030-08-09T02:00:00.000Z'),
+      status: 'COMPLETED',
+      completedRecordId: mixedNormalRecordId,
+      completedAt: new Date('2030-08-09T01:00:00.000Z'),
+      completedBy: fixture.ids.employee
+    },
+    {
+      ...planCommon,
+      _id: objectId(),
+      cycleKey: 'calendar-mixed-pending',
+      windowKey: 'NIGHT_SHIFT',
+      windowName: '夜班',
+      scheduledFor: new Date('2030-08-09T10:00:00.000Z'),
+      dueAt: new Date('2030-08-09T12:00:00.000Z'),
+      status: 'OVERDUE'
+    }
+  ]);
+  const recordCommon = {
+    teamId: fixture.ids.team,
+    orgUnitId: fixture.asset.orgUnitId,
+    equipmentId: fixture.asset._id,
+    categoryId: fixture.category._id,
+    ruleId: rule._id,
+    ruleVersion: rule.version,
+    routineType: 'INSPECTION',
+    performedBy: fixture.ids.employee,
+    itemResults: [],
+    photoFileIds: [],
+    photoEvidence: [],
+    ruleSnapshot: rule
+  };
+  await EquipmentRoutineRecord.collection.insertMany([
+    {
+      ...recordCommon,
+      _id: normalRecordId,
+      planId: normalPlanId,
+      scheduledFor: new Date('2030-08-05T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-08-05T00:00:00.000Z'),
+      performedAt: new Date('2030-09-01T00:00:00.000Z'),
+      overallResult: 'NORMAL'
+    },
+    {
+      ...recordCommon,
+      _id: abnormalRecordId,
+      planId: abnormalPlanId,
+      scheduledFor: new Date('2030-08-08T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-08-08T00:00:00.000Z'),
+      performedAt: new Date('2030-08-08T01:00:00.000Z'),
+      overallResult: 'ABNORMAL'
+    },
+    {
+      ...recordCommon,
+      _id: mixedNormalRecordId,
+      planId: mixedNormalPlanId,
+      scheduledFor: new Date('2030-08-09T00:00:00.000Z'),
+      planScheduledFor: new Date('2030-08-09T00:00:00.000Z'),
+      performedAt: new Date('2030-08-09T01:00:00.000Z'),
+      overallResult: 'NORMAL'
+    },
+    {
+      ...recordCommon,
+      _id: objectId(),
+      planId: null,
+      scheduledFor: new Date('2030-08-10T00:00:00.000Z'),
+      performedAt: new Date('2030-08-10T00:00:00.000Z'),
+      overallResult: 'ABNORMAL'
+    }
+  ]);
+
+  const calendar = await routineService.getInspectionCalendar({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    query: { month: '2030-08' }
+  });
+  assert.equal(calendar.days.length, 31);
+  const statuses = Object.fromEntries(calendar.days.map((day) => [day.date, day.status]));
+  assert.equal(statuses['2030-08-05'], 'NORMAL');
+  assert.equal(statuses['2030-08-06'], 'PENDING');
+  assert.equal(statuses['2030-08-07'], 'REST_DAY');
+  assert.equal(statuses['2030-08-08'], 'ABNORMAL');
+  assert.equal(statuses['2030-08-09'], 'PENDING');
+  assert.equal(statuses['2030-08-10'], 'ABNORMAL');
+  assert.equal(statuses['2030-08-11'], 'NO_PLAN');
+
+  const global = await routineService.getInspectionCalendar({
+    authContext: globalContext(fixture.ids.otherUser),
+    requestedTeamId: String(fixture.ids.team),
+    equipmentId: String(fixture.asset._id),
+    query: { teamId: String(fixture.ids.team), month: '2030-08' }
+  });
+  assert.equal(global.equipment._id, String(fixture.asset._id));
+  await assert.rejects(
+    routineService.getInspectionCalendar({
+      authContext: globalContext(fixture.ids.otherUser),
+      equipmentId: String(fixture.asset._id),
+      query: { month: '2030-08' }
+    }),
+    (error) => error.code === 'EQUIPMENT_TEAM_REQUIRED'
+  );
 });

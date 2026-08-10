@@ -111,6 +111,20 @@ function createEquipmentRoutineController({
       }
     },
 
+    async getInspectionCalendar(req, res, next) {
+      try {
+        return res.json(await service.getInspectionCalendar({
+          authContext: req.authContext,
+          requestedTeamId: req.query.teamId,
+          method: req.method,
+          equipmentId: req.params.equipmentId,
+          query: req.query
+        }));
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async listRecords(req, res, next) {
       try {
         return res.json(await service.listRecords({

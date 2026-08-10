@@ -347,6 +347,11 @@ router.get(
   equipmentView,
   equipmentRoutineController.getSchedule
 );
+router.get(
+  '/:equipmentId/routine-calendar',
+  equipmentView,
+  equipmentRoutineController.getInspectionCalendar
+);
 router.post(
   '/:equipmentId/routine-records',
   requireTeamContext,

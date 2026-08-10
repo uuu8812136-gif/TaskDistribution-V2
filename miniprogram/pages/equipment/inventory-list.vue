@@ -5,7 +5,10 @@
         <view :class="['filter-tab', { active: !pendingOnly }]" @click="setPending(false)">全部批次</view>
         <view :class="['filter-tab', { active: pendingOnly }]" @click="setPending(true)">我的待审</view>
       </view>
-      <input v-model="keyword" class="search-input" placeholder="搜索批次名称" confirm-type="search" @confirm="refresh" />
+      <view class="search-row">
+        <input v-model="keyword" class="search-input" placeholder="请输入盘点批次名称后点击搜索" confirm-type="search" @confirm="refresh" />
+        <button class="search-button" :loading="loading" :disabled="loading" @click="refresh">搜索</button>
+      </view>
     </view>
 
     <view class="batch-list">
@@ -117,7 +120,9 @@ export default {
 .filter-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 8rpx; padding: 6rpx; border-radius: 8rpx; background: #edf1f5; }
 .filter-tab { height: 62rpx; line-height: 62rpx; border-radius: 6rpx; color: #64748b; text-align: center; font-size: 24rpx; }
 .filter-tab.active { color: #1d5fa7; background: #fff; font-weight: 600; }
-.search-input { height: 72rpx; padding: 0 20rpx; margin-top: 16rpx; box-sizing: border-box; border-radius: 8rpx; background: #f4f7fa; font-size: 25rpx; }
+.search-row { display: grid; grid-template-columns: minmax(0, 1fr) 112rpx; gap: 12rpx; margin-top: 16rpx; }
+.search-input { min-width: 0; height: 72rpx; padding: 0 20rpx; box-sizing: border-box; border-radius: 8rpx; background: #f4f7fa; font-size: 25rpx; }
+.search-button { height: 72rpx; line-height: 72rpx; margin: 0; padding: 0; border-radius: 8rpx; color: #1d5fa7; background: #eaf3ff; font-size: 24rpx; }
 .batch-row { padding: 24rpx; border-bottom: 1px solid #e8edf3; }
 .batch-row:last-child { border-bottom: 0; }
 .batch-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16rpx; }
