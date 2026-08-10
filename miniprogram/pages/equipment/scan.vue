@@ -249,6 +249,7 @@ export default {
       if (!equipment.value || lookingUp.value) return
       const version = ++requestVersion
       const requestedTeamId = requestTeamId()
+      let scheduleRefreshError = ''
       try {
         const response = await getEquipmentRoutineSchedule(equipment.value._id, {
           ...(requestedTeamId ? { teamId: requestedTeamId } : {})
@@ -259,10 +260,10 @@ export default {
         selectedRestDayPlanIds.value = []
       } catch (error) {
         if (version !== requestVersion) return
-        activityError.value = requestErrorMessage(error, '设备计划暂时无法刷新')
+        scheduleRefreshError = requestErrorMessage(error, '设备计划暂时无法刷新')
       }
       activityLoading.value = true
-      activityError.value = ''
+      activityError.value = scheduleRefreshError
       try {
         const activity = await loadEquipmentMonthlyActivity(equipment.value._id, {
           teamId: requestedTeamId,
@@ -272,7 +273,12 @@ export default {
         if (version !== requestVersion || requestedTeamId !== requestTeamId()) return
         monthlyActivity.value = activity
       } catch (error) {
-        if (version === requestVersion) activityError.value = requestErrorMessage(error, '本月稽查记录暂时无法加载')
+        if (version === requestVersion) {
+          const activityRefreshError = requestErrorMessage(error, '本月稽查记录暂时无法加载')
+          activityError.value = scheduleRefreshError
+            ? `${scheduleRefreshError}；${activityRefreshError}`
+            : activityRefreshError
+        }
       } finally {
         if (version === requestVersion) activityLoading.value = false
       }

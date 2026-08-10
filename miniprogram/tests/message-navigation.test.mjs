@@ -2,9 +2,33 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
 
+import { getMessageTypeText } from '../utils/format.js'
 import { hasMessageResource, messageResourceUrl } from '../utils/messageNavigation.js'
 
 const globalOptions = { includeTeamId: true }
+
+test('every persisted message type has a customer-facing Chinese label', () => {
+  const labels = {
+    task_assigned: '任务分配',
+    task_updated: '任务更新',
+    task_completed: '任务完成',
+    task_reviewed: '任务审核',
+    task_confirmed: '任务确认',
+    task_deleted: '任务删除',
+    executor_completed: '任务进度提醒',
+    extension_applied: '延期申请',
+    extension_approved: '延期审批',
+    extension_rejected: '延期拒绝',
+    attendance_missing: '出勤日报缺报',
+    attendance_reviewed: '出勤日报已审核',
+    equipment_status: '设备状态审批',
+    system: '系统提醒'
+  }
+
+  for (const [type, label] of Object.entries(labels)) {
+    assert.equal(getMessageTypeText(type), label)
+  }
+})
 
 test('global read-only messages retain the originating team for every supported mini-program resource', () => {
   assert.equal(messageResourceUrl({

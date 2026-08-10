@@ -53,7 +53,15 @@ test('scan page places the calendar in the open grid slot and refreshes after ex
   assert.ok(calendarIndex < restDayIndex)
   assert.match(scanSource, /pages\/equipment\/routine-calendar\?\$\{query\}/)
   assert.match(scanSource, /onShow\(\(\) => \{[\s\S]*refreshLoadedEquipment\(\)/)
-  assert.match(scanSource, /getEquipmentRoutineSchedule\(equipment\.value\._id/)
+  const refreshSource = scanSource.slice(
+    scanSource.indexOf('const refreshLoadedEquipment = async'),
+    scanSource.indexOf('const requireQueryContext')
+  )
+  assert.match(refreshSource, /getEquipmentRoutineSchedule\(equipment\.value\._id/)
+  assert.match(refreshSource, /let scheduleRefreshError = ''/)
+  assert.match(refreshSource, /scheduleRefreshError = requestErrorMessage\(error, '设备计划暂时无法刷新'\)/)
+  assert.match(refreshSource, /activityError\.value = scheduleRefreshError/)
+  assert.doesNotMatch(refreshSource, /activityLoading\.value = true\s+activityError\.value = ''/)
 })
 
 test('calendar page includes month navigation, Monday-first headings, retry, and legend', () => {
