@@ -18,11 +18,38 @@ const {
 
 const RELEASE_ID = 'v2-20260811-abcdef0';
 const NONCE = 'a'.repeat(64);
+const AUTH_SESSIONS_UUID = '12345678-90ab-cdef-1234-567890abcdef';
 const EQUIPMENT_UUID = '00112233-4455-6677-8899-aabbccddeeff';
 const USERS_UUID = 'ffeeddcc-bbaa-9988-7766-554433221100';
 
+function defaultCollectionHashes() {
+  return {
+    authsessions: '4'.repeat(32),
+    equipment: '2'.repeat(32),
+    users: '3'.repeat(32)
+  };
+}
+
+function defaultDatabaseUuids() {
+  return {
+    authsessions: AUTH_SESSIONS_UUID,
+    equipment: EQUIPMENT_UUID,
+    users: USERS_UUID
+  };
+}
+
 function defaultIndexes() {
   return {
+    authsessions: [
+      { name: 'uq_auth_session_jti_hash', key: { jtiHash: 1 }, unique: true, v: 2 },
+      {
+        name: 'ttl_auth_session_expires_at',
+        key: { expiresAt: 1 },
+        expireAfterSeconds: 0,
+        v: 2
+      },
+      { name: '_id_', key: { _id: 1 }, v: 2 }
+    ],
     equipment: [
       { name: 'serial_1', key: { serialNumber: 1 }, unique: true, v: 2 },
       { name: '_id_', key: { _id: 1 }, v: 2 }
@@ -42,8 +69,9 @@ function fakeTimestamp(seconds, increment) {
 
 function fakeConnection({
   capped = [],
+  collectionHashes = defaultCollectionHashes(),
   databaseHash = '1'.repeat(32),
-  databaseUuids = { users: USERS_UUID, equipment: EQUIPMENT_UUID },
+  databaseUuids = defaultDatabaseUuids(),
   indexesByCollection = defaultIndexes(),
   isWritablePrimary = true,
   myState = 1,
@@ -103,10 +131,7 @@ function fakeConnection({
         commandLog.push('dbHash');
         return {
           md5: databaseHash,
-          collections: {
-            equipment: '2'.repeat(32),
-            users: '3'.repeat(32)
-          },
+          collections: collectionHashes,
           uuids: databaseUuids,
           capped,
           operationTime: fakeTimestamp(oplogSeconds, 2),
@@ -136,21 +161,36 @@ test('captures a deterministic replica-set identity and target database hash', a
     now: () => new Date('2026-08-11T00:00:00.000Z')
   });
   assert.equal(report.status, 'REPLICA_WRITE_ANCHOR_CAPTURED');
+  assert.equal(report.format, 'task-distribution-v2-replica-write-anchor/v2');
   assert.equal(report.anchor.database, 'customer_acceptance_v2_test');
   assert.equal(report.anchor.replicaSet, 'customer_acceptance_v2_rs');
   assert.deepEqual(report.anchor.databaseHash, {
-    md5: '1'.repeat(32),
     collections: {
       equipment: '2'.repeat(32),
       users: '3'.repeat(32)
     },
     uuids: {
+      authsessions: AUTH_SESSIONS_UUID,
       equipment: EQUIPMENT_UUID,
       users: USERS_UUID
     },
-    capped: []
+    capped: [],
+    excludedContentCollections: ['authsessions']
   });
   assert.deepEqual(report.anchor.collectionIndexes, {
+    authsessions: [
+      { name: '_id_', key: [['_id', 1]], options: { v: 2 } },
+      {
+        name: 'ttl_auth_session_expires_at',
+        key: [['expiresAt', 1]],
+        options: { expireAfterSeconds: 0, v: 2 }
+      },
+      {
+        name: 'uq_auth_session_jti_hash',
+        key: [['jtiHash', 1]],
+        options: { unique: true, v: 2 }
+      }
+    ],
     equipment: [
       { name: '_id_', key: [['_id', 1]], options: { v: 2 } },
       { name: 'serial_1', key: [['serialNumber', 1]], options: { unique: true, v: 2 } }
@@ -168,6 +208,7 @@ test('captures a deterministic replica-set identity and target database hash', a
     'replSetGetStatus',
     'serverStatus',
     'dbHash',
+    'listIndexes:authsessions',
     'listIndexes:equipment',
     'listIndexes:users',
     'hello',
@@ -186,7 +227,11 @@ test('captures a deterministic replica-set identity and target database hash', a
   };
   const reordered = await captureReleaseMongoAnchor({
     connection: fakeConnection({
-      databaseUuids: { equipment: EQUIPMENT_UUID, users: USERS_UUID },
+      databaseUuids: {
+        equipment: EQUIPMENT_UUID,
+        users: USERS_UUID,
+        authsessions: AUTH_SESSIONS_UUID
+      },
       indexesByCollection: reorderedIndexes
     }),
     releaseId: RELEASE_ID,
@@ -253,6 +298,57 @@ test('rejects identity drift while database state is being captured', async () =
   );
 });
 
+test('rejects a missing authsessions collection or an invalid TTL expiry index', async () => {
+  const collectionHashesWithoutAuthSessions = defaultCollectionHashes();
+  delete collectionHashesWithoutAuthSessions.authsessions;
+  const databaseUuidsWithoutAuthSessions = defaultDatabaseUuids();
+  delete databaseUuidsWithoutAuthSessions.authsessions;
+  await assert.rejects(
+    captureReleaseMongoAnchor({
+      connection: fakeConnection({
+        collectionHashes: collectionHashesWithoutAuthSessions,
+        databaseUuids: databaseUuidsWithoutAuthSessions
+      }),
+      releaseId: RELEASE_ID,
+      handoffNonce: NONCE
+    }),
+    { code: 'MONGODB_TTL_COLLECTION_MISSING' }
+  );
+
+  const missingTtlIndex = defaultIndexes();
+  missingTtlIndex.authsessions = missingTtlIndex.authsessions.filter(
+    (index) => index.name !== 'ttl_auth_session_expires_at'
+  );
+  await assert.rejects(
+    captureReleaseMongoAnchor({
+      connection: fakeConnection({ indexesByCollection: missingTtlIndex }),
+      releaseId: RELEASE_ID,
+      handoffNonce: NONCE
+    }),
+    { code: 'MONGODB_TTL_COLLECTION_INDEX_INVALID' }
+  );
+
+  for (const mutate of [
+    (index) => { index.name = 'ttl_auth_session_wrong_name'; },
+    (index) => { index.key = { deletedAt: 1 }; },
+    (index) => { index.expireAfterSeconds = 60; }
+  ]) {
+    const invalidIndexes = defaultIndexes();
+    const ttlIndex = invalidIndexes.authsessions.find(
+      (index) => index.name === 'ttl_auth_session_expires_at'
+    );
+    mutate(ttlIndex);
+    await assert.rejects(
+      captureReleaseMongoAnchor({
+        connection: fakeConnection({ indexesByCollection: invalidIndexes }),
+        releaseId: RELEASE_ID,
+        handoffNonce: NONCE
+      }),
+      { code: 'MONGODB_TTL_COLLECTION_INDEX_INVALID' }
+    );
+  }
+});
+
 test('anchor comparison ignores periodic no-op progress', async () => {
   const before = await captureReleaseMongoAnchor({ connection: fakeConnection(), releaseId: RELEASE_ID, handoffNonce: NONCE });
   const afterNoOp = await captureReleaseMongoAnchor({
@@ -263,10 +359,54 @@ test('anchor comparison ignores periodic no-op progress', async () => {
   assert.equal(assertSameReleaseMongoAnchor(before, afterNoOp), true);
 });
 
-test('anchor comparison rejects database final-state, process or topology replacement, and report tampering', async () => {
+test('anchor comparison tolerates authsessions TTL content expiry while retaining a stable business anchor', async () => {
+  const before = await captureReleaseMongoAnchor({
+    connection: fakeConnection({
+      collectionHashes: {
+        ...defaultCollectionHashes(),
+        authsessions: '4'.repeat(32)
+      },
+      databaseHash: '1'.repeat(32)
+    }),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+  const afterTtlExpiry = await captureReleaseMongoAnchor({
+    connection: fakeConnection({
+      collectionHashes: {
+        ...defaultCollectionHashes(),
+        authsessions: '5'.repeat(32)
+      },
+      databaseHash: '6'.repeat(32)
+    }),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+
+  assert.equal(before.anchor.databaseHash.collections.authsessions, undefined);
+  assert.equal(afterTtlExpiry.anchor.databaseHash.collections.authsessions, undefined);
+  assert.notDeepEqual(before.databaseObservation, afterTtlExpiry.databaseObservation);
+  assert.equal(before.databaseObservation.collections.authsessions, '4'.repeat(32));
+  assert.equal(afterTtlExpiry.databaseObservation.collections.authsessions, '5'.repeat(32));
+  assert.equal(before.anchor.databaseHash.uuids.authsessions, AUTH_SESSIONS_UUID);
+  assert.deepEqual(
+    before.anchor.collectionIndexes.authsessions,
+    afterTtlExpiry.anchor.collectionIndexes.authsessions
+  );
+  assert.equal(before.writeAnchorSha256, afterTtlExpiry.writeAnchorSha256);
+  assert.equal(assertSameReleaseMongoAnchor(before, afterTtlExpiry), true);
+});
+
+test('anchor comparison rejects business data, collection UUID, index, process or topology drift', async () => {
   const before = await captureReleaseMongoAnchor({ connection: fakeConnection(), releaseId: RELEASE_ID, handoffNonce: NONCE });
   const changedDatabase = await captureReleaseMongoAnchor({
-    connection: fakeConnection({ databaseHash: '4'.repeat(32) }),
+    connection: fakeConnection({
+      collectionHashes: {
+        ...defaultCollectionHashes(),
+        equipment: '7'.repeat(32)
+      },
+      databaseHash: '8'.repeat(32)
+    }),
     releaseId: RELEASE_ID,
     handoffNonce: NONCE
   });
@@ -283,6 +423,7 @@ test('anchor comparison rejects database final-state, process or topology replac
   const changedUuid = await captureReleaseMongoAnchor({
     connection: fakeConnection({
       databaseUuids: {
+        authsessions: AUTH_SESSIONS_UUID,
         equipment: '11112233-4455-6677-8899-aabbccddeeff',
         users: USERS_UUID
       }
@@ -291,6 +432,21 @@ test('anchor comparison rejects database final-state, process or topology replac
     handoffNonce: NONCE
   });
   assert.throws(() => assertSameReleaseMongoAnchor(before, changedUuid), { code: 'REPLICA_WRITE_ANCHOR_DRIFT' });
+
+  const changedAuthSessionUuid = await captureReleaseMongoAnchor({
+    connection: fakeConnection({
+      databaseUuids: {
+        ...defaultDatabaseUuids(),
+        authsessions: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+      }
+    }),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+  assert.throws(
+    () => assertSameReleaseMongoAnchor(before, changedAuthSessionUuid),
+    { code: 'REPLICA_WRITE_ANCHOR_DRIFT' }
+  );
 
   const changedCappedMetadata = await captureReleaseMongoAnchor({
     connection: fakeConnection({ capped: ['equipment'] }),
@@ -310,6 +466,20 @@ test('anchor comparison rejects database final-state, process or topology replac
     handoffNonce: NONCE
   });
   assert.throws(() => assertSameReleaseMongoAnchor(before, changedIndexOnly), { code: 'REPLICA_WRITE_ANCHOR_DRIFT' });
+
+  const changedAuthSessionIndexes = defaultIndexes();
+  changedAuthSessionIndexes.authsessions.find(
+    (index) => index.name === 'uq_auth_session_jti_hash'
+  ).unique = false;
+  const changedAuthSessionIndexOnly = await captureReleaseMongoAnchor({
+    connection: fakeConnection({ indexesByCollection: changedAuthSessionIndexes }),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+  assert.throws(
+    () => assertSameReleaseMongoAnchor(before, changedAuthSessionIndexOnly),
+    { code: 'REPLICA_WRITE_ANCHOR_DRIFT' }
+  );
 
   const replacedProcess = await captureReleaseMongoAnchor({
     connection: fakeConnection({ pid: 4322 }),
@@ -353,6 +523,26 @@ test('anchor comparison requires valid ordered ISO observation timestamps', asyn
   assert.throws(
     () => assertSameReleaseMongoAnchor(before, invalidObservedAt),
     { code: 'REPLICA_WRITE_ANCHOR_OBSERVED_AT_INVALID' }
+  );
+});
+
+test('anchor comparison rejects legacy v1 reports after the TTL-aware format bump', async () => {
+  const before = await captureReleaseMongoAnchor({
+    connection: fakeConnection(),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+  const after = await captureReleaseMongoAnchor({
+    connection: fakeConnection(),
+    releaseId: RELEASE_ID,
+    handoffNonce: NONCE
+  });
+  const legacy = structuredClone(before);
+  legacy.format = 'task-distribution-v2-replica-write-anchor/v1';
+
+  assert.throws(
+    () => assertSameReleaseMongoAnchor(legacy, after),
+    { code: 'REPLICA_WRITE_ANCHOR_REPORT_INVALID' }
   );
 });
 

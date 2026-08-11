@@ -1042,7 +1042,7 @@ function Assert-MongoAnchorReport {
     [Parameter(Mandatory = $true)][string]$Label
   )
   if (
-    $Report.format -ne 'task-distribution-v2-replica-write-anchor/v1' -or
+    $Report.format -ne 'task-distribution-v2-replica-write-anchor/v2' -or
     $Report.status -ne 'REPLICA_WRITE_ANCHOR_CAPTURED' -or
     $Report.releaseId -ne $ReleaseId -or
     $Report.handoffNonce -ne $HandoffNonce -or
@@ -1906,7 +1906,7 @@ function Restore-PreMigrationRuntime {
     rollbackReady = $false
     codeOnlyRollbackAllowed = $true
     requiredRecovery = 'VERIFY_INDEX_UNCHANGED_THEN_RESTORE_PREVIOUS_RUNTIME'
-    failures = @($recoveryFailures)
+    failures = $recoveryFailures.ToArray()
   }
   $path = Join-Path $evidence 'pre-migration-automatic-recovery.json'
   if (-not (Test-Path -LiteralPath $path)) { Write-JsonCreateNew $path $result }
@@ -2009,7 +2009,7 @@ function Hold-ExecuteFailure {
     codeOnlyRollbackAllowed = $codeOnlyRollbackAllowed
     businessSurfaceHeldStopped = $holdComplete
     requiredRecovery = $requiredRecovery
-    failures = @($holdFailures)
+    failures = $holdFailures.ToArray()
   }
   if (-not (Test-Path -LiteralPath $failureEvidencePath)) { Write-JsonCreateNew $failureEvidencePath $failureState }
   if (-not $holdComplete) {

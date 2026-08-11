@@ -5,6 +5,14 @@ $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $testRoot '..\..'))
 $packageScript = Join-Path $repositoryRoot 'ops\windows\New-V2TestReleasePackage.ps1'
 $copyScript = Join-Path $repositoryRoot 'ops\windows\Copy-V2TestBackupOffHost.ps1'
 $fixedNodeDirectory = Join-Path $repositoryRoot 'tools\runtime\node-v22.23.1-win-x64'
+$offhostFixtureDrive = if ($env:V2_TEST_OFFHOST_FIXTURE_DRIVE) {
+  [string]$env:V2_TEST_OFFHOST_FIXTURE_DRIVE
+} else {
+  'C:'
+}
+if ($offhostFixtureDrive -notmatch '^[A-Z]:$') {
+  throw 'V2_TEST_OFFHOST_FIXTURE_DRIVE must be an uppercase local drive such as H:'
+}
 
 function Write-TestFile {
   param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Value)
@@ -490,7 +498,8 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
   It 'reverifies an existing final backup and retries only its receipt upload' {
     $backupId = 'backup-20260724T120000Z-a1b2c3d4'
     $releaseId = 'release-test-001'
-    $destinationRoot = "C:\V2OffHostRecoveryTest-$([guid]::NewGuid().ToString('N'))"
+    $destinationRoot = "$offhostFixtureDrive\V2OffHostRecoveryTest-$([guid]::NewGuid().ToString('N'))"
+    $destinationDriveLetter = $offhostFixtureDrive.Substring(0, 1)
     $finalDirectory = Join-Path $destinationRoot $backupId
     $identityFile = Join-Path $TestDrive 'identity'
     $knownHostsFile = Join-Path $TestDrive 'known_hosts'
@@ -502,9 +511,11 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
     Write-TestFile -Path $receiptPath -Value "{ invalid receipt }`n"
 
     Mock Get-PSDrive { [pscustomobject]@{ Root = "${Name}:\" } } `
-      -ParameterFilter { $Name -in @('C', 'E') }
+      -ParameterFilter { $Name -in @($destinationDriveLetter, 'E') }
     Mock Get-Partition {
-      if ([string]$DriveLetter -eq 'C') { return [pscustomobject]@{ DiskNumber = 1 } }
+      if ([string]$DriveLetter -eq $destinationDriveLetter) {
+        return [pscustomobject]@{ DiskNumber = 1 }
+      }
       return [pscustomobject]@{ DiskNumber = 0 }
     }
     Mock Get-Command { [pscustomobject]@{ Source = 'C:\fixture\scp.exe' } } `
@@ -537,7 +548,7 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
       Test-Path -LiteralPath $receiptPath -PathType Leaf | Should Be $true
       { [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json } | Should Not Throw
       $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json
-      $receipt.destinationVolume | Should Be 'C:'
+      $receipt.destinationVolume | Should Be $offhostFixtureDrive
       $receipt.sourceVmVolume | Should Be 'E:'
       $receipt.destinationDiskNumber | Should Be 1
       $receipt.sourceVmDiskNumber | Should Be 0

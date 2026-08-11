@@ -589,7 +589,7 @@ function Assert-InjectedRuntime([string]$Candidate, [object]$Expected) {
 function Test-MongoAnchorReport([object]$Report) {
   return (
     $null -ne $Report -and
-    $Report.format -eq 'task-distribution-v2-replica-write-anchor/v1' -and
+    $Report.format -eq 'task-distribution-v2-replica-write-anchor/v2' -and
     $Report.status -eq 'REPLICA_WRITE_ANCHOR_CAPTURED' -and
     $Report.releaseId -eq $ReleaseId -and
     $Report.handoffNonce -eq $HandoffNonce -and

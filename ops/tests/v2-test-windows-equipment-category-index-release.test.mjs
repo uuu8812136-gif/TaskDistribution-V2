@@ -116,6 +116,142 @@ $result | ConvertTo-Json -Compress
   assert.match(observed.error, /fixture first stop failure/)
 })
 
+test('failure evidence never directly array-wraps PowerShell generic lists', () => {
+  assert.doesNotMatch(activate, /@\(\s*\$holdFailures\s*\)/)
+  assert.doesNotMatch(activate, /@\(\s*\$recoveryFailures\s*\)/)
+  assert.match(activate, /failures = \$holdFailures\.ToArray\(\)/)
+  assert.match(activate, /failures = \$recoveryFailures\.ToArray\(\)/)
+})
+
+test('PowerShell 5.1 writes Hold-ExecuteFailure evidence for empty and non-empty generic lists', () => {
+  const writerStart = activate.indexOf('function Write-Utf8NoBomCreateNew')
+  const writerEnd = activate.indexOf('function Write-AtomicJson', writerStart)
+  const holdStart = activate.indexOf('function Hold-ExecuteFailure')
+  const holdEnd = activate.indexOf('\n\ntry {', holdStart)
+  assert.ok(writerStart >= 0 && writerEnd > writerStart)
+  assert.ok(holdStart >= 0 && holdEnd > holdStart)
+  const writerSource = activate.slice(writerStart, writerEnd)
+  const holdFunctionSource = activate.slice(holdStart, holdEnd)
+  const workRoot = path.join(repositoryRoot, 'work')
+  fs.mkdirSync(workRoot, { recursive: true })
+  const fixtureRoot = fs.mkdtempSync(path.join(workRoot, '.ps51-hold-failure-'))
+  const harness = `
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$RecoveryRoot = $env:V2_PS51_FAILURE_FIXTURE_ROOT
+$managementTunnelTask = 'management-tunnel'
+$mongoTask = 'mongo'
+$ReleaseId = 'release-fixture'
+$SourceCommit = '1111111111111111111111111111111111111111'
+$PreviousReleaseId = 'previous-fixture'
+$PreviousCommit = '2222222222222222222222222222222222222222'
+$expectedDatabase = 'customer_acceptance_v2_test'
+$BackupId = 'backup-fixture'
+$BackupManifestSha256 = '3333333333333333333333333333333333333333333333333333333333333333'
+$runtimeInputsSha256 = '4444444444444444444444444444444444444444444444444444444444444444'
+$AppEnvSha256 = '5555555555555555555555555555555555555555555555555555555555555555'
+$trustedPublicKeyRelativePath = 'ops/keys/public.pem'
+$candidateIdentity = [pscustomobject]@{
+  trustedPublicKeySha256 = '6666666666666666666666666666666666666666666666666666666666666666'
+}
+$expectedSchemaCapability = 'equipment-category-parent-scoped-uniqueness'
+$StoppedHandoffSha256 = '7777777777777777777777777777777777777777777777777777777777777777'
+$HandoffNonce = 'fixture-nonce'
+$script:failProtectedTask = $false
+
+function Assert-NoReparsePointPath {
+  param([string]$TrustedRoot, [string]$Candidate, [string]$Label)
+  return $Candidate
+}
+
+${writerSource}
+
+function Write-AtomicJson {
+  param([string]$Path, [object]$Value)
+  [IO.File]::WriteAllText(
+    $Path,
+    (ConvertTo-Json $Value -Depth 12),
+    (New-Object Text.UTF8Encoding($false))
+  )
+}
+
+function Stop-BusinessSurface {
+  return [pscustomobject]@{ businessSurfaceHeldStopped = $true }
+}
+
+function Assert-TaskRunning {
+  param([string]$TaskName)
+  if ($script:failProtectedTask -and $TaskName -eq $mongoTask) {
+    throw 'fixture protected task failure'
+  }
+  return [pscustomobject]@{ name = $TaskName; state = 'Running' }
+}
+
+${holdFunctionSource}
+
+function Invoke-HoldFailureCase {
+  param([string]$Name, [bool]$FailProtectedTask)
+  $caseRoot = Join-Path $RecoveryRoot $Name
+  New-Item -ItemType Directory -Path $caseRoot | Out-Null
+  $activeMarker = Join-Path $caseRoot 'active-release.json'
+  $failureEvidencePath = Join-Path $caseRoot 'migration-or-activation-failed.json'
+  $holdMongoAnchorPath = Join-Path $caseRoot 'absent-hold-anchor.json'
+  $executeMongoAnchorPath = Join-Path $caseRoot 'absent-execute-anchor.json'
+  $migrationStartedPath = Join-Path $caseRoot 'absent-migration-started.json'
+  $migrationCompletedPath = Join-Path $caseRoot 'absent-migration-completed.json'
+  $script:failProtectedTask = $FailProtectedTask
+  $caught = $null
+  try {
+    Hold-ExecuteFailure -Failure 'fixture execute failure' -MigrationMayHaveStarted $false
+  }
+  catch {
+    $caught = $_.Exception.Message
+  }
+  return [ordered]@{
+    error = $caught
+    marker = [IO.File]::ReadAllText($activeMarker) | ConvertFrom-Json
+    failure = [IO.File]::ReadAllText($failureEvidencePath) | ConvertFrom-Json
+  }
+}
+
+[ordered]@{
+  powerShellVersion = $PSVersionTable.PSVersion.ToString()
+  empty = Invoke-HoldFailureCase -Name 'empty' -FailProtectedTask $false
+  nonEmpty = Invoke-HoldFailureCase -Name 'non-empty' -FailProtectedTask $true
+} | ConvertTo-Json -Depth 12 -Compress
+`
+  try {
+    const encoded = Buffer.from(harness, 'utf16le').toString('base64')
+    const result = spawnSync(windowsPowerShell, ['-NoProfile', '-EncodedCommand', encoded], {
+      cwd: repositoryRoot,
+      encoding: 'utf8',
+      env: { ...process.env, V2_PS51_FAILURE_FIXTURE_ROOT: fixtureRoot },
+      windowsHide: true
+    })
+    assert.equal(result.status, 0, result.stderr || result.stdout)
+    const observed = JSON.parse(result.stdout.trim())
+    assert.match(observed.powerShellVersion, /^5\.1\./)
+
+    assert.equal(observed.empty.error, null)
+    assert.equal(observed.empty.marker.status, 'WINDOWS_RECOVERY_PRE_MIGRATION_EXECUTE_FAILED_STOPPED')
+    assert.equal(observed.empty.failure.status, 'PRE_MIGRATION_EXECUTE_FAILURE_HELD_STOPPED')
+    assert.ok(Array.isArray(observed.empty.failure.failures))
+    assert.deepEqual(observed.empty.failure.failures, [])
+
+    assert.match(observed.nonEmpty.error, /EXECUTE_FAILURE_HOLD_INCOMPLETE/)
+    assert.match(observed.nonEmpty.error, /fixture protected task failure/)
+    assert.equal(observed.nonEmpty.marker.status, 'WINDOWS_RECOVERY_EXECUTE_FAILURE_HOLD_INCOMPLETE')
+    assert.equal(observed.nonEmpty.failure.status, 'EXECUTE_FAILURE_HOLD_INCOMPLETE')
+    assert.ok(Array.isArray(observed.nonEmpty.failure.failures))
+    assert.deepEqual(observed.nonEmpty.failure.failures, [{
+      step: 'verify-mongo',
+      message: 'fixture protected task failure'
+    }])
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true })
+  }
+})
+
 test('Execute accepts only a fresh stopped backup and a final offhost archive receipt', () => {
   assert.match(activate, /\$BackupId -eq \[string\]\$staged\.predeployBackup\.backupId/)
   assert.match(activate, /backupCreatedAt -lt \$stoppedAtValue/)
@@ -318,6 +454,10 @@ test('Hold and Execute seal an unchanged Mongo write anchor before the migration
   assert.match(audit, /mongo_write_anchor_changed_during_stopped_backup_window/)
   assert.match(audit, /holdMongoAnchorPath -cne \$holdMongoAnchorPath/)
   assert.match(audit, /executeMongoAnchorPath -cne \$executeMongoAnchorPath/)
+  for (const consumer of [activate, audit]) {
+    assert.match(consumer, /task-distribution-v2-replica-write-anchor\/v2/)
+    assert.doesNotMatch(consumer, /task-distribution-v2-replica-write-anchor\/v1/)
+  }
 })
 
 test('postdeploy audit runs the exact 6 5 1 equipment routine business gate read only', () => {

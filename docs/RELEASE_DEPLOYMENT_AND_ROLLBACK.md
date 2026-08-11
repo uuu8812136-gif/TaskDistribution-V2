@@ -508,6 +508,8 @@ $HoldMongoAnchorSha256 = [string]$Hold.holdMongoAnchorSha256
 
 `Hold` 的固定顺序是业务 tunnel -> Web -> API，三项均停止并禁用；管理 tunnel 和 MongoDB 必须继续运行。脚本还会验证 `18120/18130` 已无监听、没有 Recovery 目标库写进程、停写状态下的第二次 dry-run 仍满足迁移前状态，然后一次性写入随机 nonce，采集 `mongo-write-anchor-hold.json`，最后把其绝对路径和整个文件的 SHA256 连同 `stoppedAt` 封入 handoff。从 `Hold` 成功返回到 `Execute` 完成前，客户业务面按设计不可用；不得手工启动、启用或运行这三个业务任务，否则 `Execute` 会因任务动作、`LastRunTime`、监听状态或 Mongo write anchor 漂移而拒绝。
 
+Mongo write anchor 使用 `task-distribution-v2-replica-write-anchor/v2`。只有 `authsessions` 集合在精确存在 `ttl_auth_session_expires_at`（`expiresAt: 1`、`expireAfterSeconds: 0`）时，其内容哈希和受其影响的数据库聚合 MD5 不参与 Hold/Execute 等值判断；原始 `dbHash` 仍写入报告的 `databaseObservation` 供取证。其他所有业务集合内容哈希、全部集合 UUID（包括 `authsessions`）、全部索引、capped 元数据以及 MongoDB 进程、版本、副本集和拓扑身份都必须完全一致。这个例外依赖业务面停写和 writer guard 将合法变化限制为 TTL 清理，不能扩展到其他集合或索引。
+
 #### 4.5.3 停写后新备份和服务器 ZIP 证据
 
 必须在 `Hold.stoppedAt` 之后用候选 release 的官方 `ops/backup.js` 创建全新备份。该 `backupId` 必须不同于 `staged.json` 中的预部署备份，目录必须位于 `$ApprovedBackupRoot` 下，manifest 的 `createdAt` 和 `completedAt` 都不得早于 `stoppedAt`：
@@ -644,7 +646,7 @@ $OffhostVerificationReceiptSha256 = (Get-FileHash `
   -Confirm:$false
 ```
 
-`Execute` 在创建 claim 和写索引前，会生成 `mongo-write-anchor-execute.json` 并与 Hold anchor 比较；只要 oplog、Mongo 进程/拓扑身份、release 或 nonce 有变化，就保持业务闭锁并失败。不要中断默认的 330 秒候选稳定性观察和 300 秒 worker 观察。第一次 execute 报告必须是 `EXECUTED`、`writePerformed=true`；脚本紧接着进行的第二次 execute 必须是 `ALREADY_APPLIED`、`writePerformed=false`。随后才允许切换 stable runner、启动 API/Web、恢复业务 tunnel、开启 worker，并验证本地/公网健康、两团队列表、进程未重启且 worker 日志没有 `Equipment routine worker failed:`。handoff nonce 和所有报告路径只能消费一次；SSH 或终端断开时先查证据和任务状态，禁止盲目重跑 `Execute`。
+`Execute` 在创建 claim 和写索引前，会生成 `mongo-write-anchor-execute.json` 并与 Hold anchor 比较；除上文限定的 `authsessions` TTL 内容变化外，只要业务集合内容、集合 UUID、任一索引、Mongo 进程/拓扑身份、release 或 nonce 有变化，就保持业务闭锁并失败。不要中断默认的 330 秒候选稳定性观察和 300 秒 worker 观察。第一次 execute 报告必须是 `EXECUTED`、`writePerformed=true`；脚本紧接着进行的第二次 execute 必须是 `ALREADY_APPLIED`、`writePerformed=false`。随后才允许切换 stable runner、启动 API/Web、恢复业务 tunnel、开启 worker，并验证本地/公网健康、两团队列表、进程未重启且 worker 日志没有 `Equipment routine worker failed:`。handoff nonce 和所有报告路径只能消费一次；SSH 或终端断开时先查证据和任务状态，禁止盲目重跑 `Execute`。
 
 MongoDB 的 `createIndex/dropIndex` 与文件证据台账不是一个数据库事务，不能描述为“DDL 与 ledger 原子提交”。本流程依靠停写窗口、Mongo write anchor、create-new 证据、失败闭锁和幂等复跑前向收敛；`migration-started.json` 落盘后禁止普通代码回滚。
 

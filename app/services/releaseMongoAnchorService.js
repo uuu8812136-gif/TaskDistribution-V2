@@ -2,11 +2,12 @@
 
 const { createHash } = require('node:crypto');
 
-const RELEASE_MONGO_ANCHOR_FORMAT = 'task-distribution-v2-replica-write-anchor/v1';
+const RELEASE_MONGO_ANCHOR_FORMAT = 'task-distribution-v2-replica-write-anchor/v2';
 const EXPECTED_DATABASE = 'customer_acceptance_v2_test';
 const EXPECTED_REPLICA_SET = 'customer_acceptance_v2_rs';
 const RELEASE_ID_PATTERN = /^v2-\d{8}-[0-9a-f]{7}$/;
 const NONCE_PATTERN = /^[0-9a-f]{64}$/;
+const TTL_MANAGED_CONTENT_COLLECTIONS = Object.freeze(['authsessions']);
 
 class ReleaseMongoAnchorError extends Error {
   constructor(code, message, details = null) {
@@ -194,11 +195,44 @@ function stableIdentityPayload({ hello, replStatus, serverStatus }) {
   };
 }
 
+function stableDatabaseHashParts(databaseHash, collectionIndexes) {
+  for (const collection of TTL_MANAGED_CONTENT_COLLECTIONS) {
+    if (!Object.hasOwn(databaseHash.collections, collection)) {
+      fail('MONGODB_TTL_COLLECTION_MISSING', 'Required TTL-managed collection is missing', {
+        collection
+      });
+    }
+    const ttlIndex = collectionIndexes[collection]?.find((index) => (
+      index.name === 'ttl_auth_session_expires_at' &&
+      JSON.stringify(index.key) === JSON.stringify([['expiresAt', 1]]) &&
+      index.options?.expireAfterSeconds === 0
+    ));
+    if (!ttlIndex) {
+      fail(
+        'MONGODB_TTL_COLLECTION_INDEX_INVALID',
+        'TTL-managed collection does not have the required expiry index',
+        { collection }
+      );
+    }
+  }
+
+  return {
+    collections: Object.fromEntries(Object.entries(databaseHash.collections)
+      .filter(([name]) => !TTL_MANAGED_CONTENT_COLLECTIONS.includes(name))),
+    uuids: databaseHash.uuids,
+    capped: databaseHash.capped,
+    excludedContentCollections: [...TTL_MANAGED_CONTENT_COLLECTIONS]
+  };
+}
+
 function stableAnchorPayload({ identity, databaseState }) {
   return {
     database: EXPECTED_DATABASE,
     replicaSet: EXPECTED_REPLICA_SET,
-    databaseHash: databaseState.databaseHash,
+    databaseHash: stableDatabaseHashParts(
+      databaseState.databaseHash,
+      databaseState.collectionIndexes
+    ),
     collectionIndexes: databaseState.collectionIndexes,
     server: identity.server,
     replication: identity.replication
@@ -310,7 +344,8 @@ async function captureReleaseMongoAnchor({
     releaseId,
     handoffNonce,
     writeAnchorSha256: sha256Json(anchor),
-    anchor
+    anchor,
+    databaseObservation: databaseState.databaseHash
   };
 }
 
@@ -364,12 +399,14 @@ module.exports = {
   NONCE_PATTERN,
   RELEASE_ID_PATTERN,
   RELEASE_MONGO_ANCHOR_FORMAT,
+  TTL_MANAGED_CONTENT_COLLECTIONS,
   ReleaseMongoAnchorError,
   assertSameReleaseMongoAnchor,
   captureReleaseMongoAnchor,
   databaseHashParts,
   normalizeCollectionIndexes,
   sha256Json,
+  stableDatabaseHashParts,
   stableIdentityPayload,
   stableAnchorPayload
 };
