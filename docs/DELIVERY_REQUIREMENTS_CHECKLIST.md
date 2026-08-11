@@ -23,10 +23,12 @@ If any source conflicts with another, use the least-complete status and keep the
 
 ## 2026-08-11 Current Runtime Blocker
 
-- [x] The latest authoritative observation on 2026-08-11 is a partial recovery: public V2 `/health` returns HTTP 200 with instance `task-distribution-v2-customer-test-recovery`, the Web root returns HTTP 200, and edge loopback ports `23224` and `38130` are listening. However, the `23224` management route accepts TCP but does not return the customer SSH banner, while the legacy `38080` edge listener is absent.
-- [ ] Restore an operable customer management SSH session and the legacy boundary, then inventory the running release, MongoDB/uploads, backups, scheduled tasks and legacy production isolation before deploying this candidate or reopening write/real-device testing.
-- [ ] Keep public Web and real-device testing paused until the fresh inventory proves both sites healthy and the required isolated services are running.
-- [ ] Commit and push the current source changes, build an immutable release from a clean commit, and deploy it through the approved gate. The current worktree changes have not been committed, pushed, packaged, or deployed.
+- [x] The dedicated `23224` management route was restored and reverified with pinned edge and customer host keys. It reaches `DKY-20260713SLA` as `codexops`; edge `23224`/`38130` and customer loopback `22/18120/18130/27150` are listening, while public V2 `/health` and the Web root return HTTP 200.
+- [x] The fresh inventory proves that active release `v2-20260810-9da987a` is running from `C:\TaskDistribution-V2\Recovery`, the database is the single-node replica set `customer_acceptance_v2_rs/customer_acceptance_v2_test`, and all five V2 runtime tasks are running. The database has 34 collections and 9,857 documents; 354/354 non-deleted FileAsset references match the current 591 upload files by path, size and SHA256.
+- [x] A new online recovery point `backup-20260811T144657Z-77862fb4` was created and verified on the replacement D drive, then copied to the independent development workstation E drive. The off-host ZIP is 337,619,457 bytes with SHA256 `f94f5154fc3ba3fbf096959ac58f707be67cd9c8b1899ee26b1df6a6b991d550`; its manifest SHA256 is `c5b7a3c2629353869764d3174df0734a8ea1772075b7c1e770f062980476ec05`, with 34 collections, 9,857 documents, 591 upload files and 354/354 verified references. This is an online non-atomic recovery point, not the stopped pre-deployment backup or a recurring off-host chain.
+- [ ] Restore or formally retire the legacy site before activating this candidate. Edge `38080` is absent and legacy `/`, `/admin` and `/health` return HTTP 502 because `LinuxServerPersistentTunnel` and `LinuxServerVM-Autostart` still point to the lost `E:\ServerVM\...` tree and fail after boot.
+- [ ] Keep contract acceptance, new customer writes and real-device testing paused until the legacy decision is recorded, a stopped pre-deployment backup is independently verified, and the approved release gate completes.
+- [x] Commit `1a8942fde629187b7068c1fa80b3817fb058b440` was pushed to remote `main`, and immutable package `v2-20260811-1a8942f.tar.gz` was built from the clean commit. The candidate is not deployed; its SHA256 is `5f611082c3aafa0d72e6cbf800823274cefbb8283177f8fd6cc8bec2bfb424c0`.
 - [x] All HTTP 200, active-release, stable-PID, worker, backup, and mini-program upload statements dated 2026-08-10 or earlier are historical checkpoints only. They do not override this section or prove current availability.
 
 ## Historical 2026-08-08 Recovery Checkpoint
@@ -54,7 +56,7 @@ The checked items in this section record what was true at that checkpoint. They 
 - [x] Development source remains on the E drive; after the E-drive/VM failure, the isolated emergency runtime, restored database, and uploads are intentionally hosted under `C:\TaskDistribution-V2\Recovery`. The failed E drive was not enumerated, formatted, initialized, or repaired during recovery.
 - [x] Customer source files are excluded from Git.
 - [x] A database and upload backup exists before the real-data import.
-- [ ] Re-establish and reverify the dedicated V2 domain/vhost, `38130` tunnel, loopback `18120/18130/27150` services, isolated C-drive recovery paths, and the legacy `38080`/production-database boundary after the 2026-08-11 outage. The 2026-08-10 verification is historical only.
+- [ ] The V2 domain/vhost, `38130` tunnel, loopback `18120/18130/27150` services, isolated C-drive recovery paths and current V2 database/uploads were reverified after the 2026-08-11 outage. The remaining blocker is the legacy `38080`/production-database boundary: the legacy site is still HTTP 502 and must be restored or formally retired before candidate activation.
 
 ## Requirements Baseline
 
