@@ -48,7 +48,7 @@
             />
             <p class="field-hint">点检用于检查设备状态，保养用于记录维护工作。</p>
           </el-form-item>
-          <el-form-item label="设备类型" prop="categoryId">
+          <el-form-item label="设备一级名称" prop="categoryId">
             <el-tree-select
               v-model="form.categoryId"
               :data="categoryOptions"
@@ -58,8 +58,9 @@
               filterable
               :disabled="isEditing"
               class="full-width"
-              placeholder="选择适用的设备类型"
+              placeholder="选择适用的设备一级名称"
             />
+            <p class="field-hint">一级名称规则会覆盖其下全部设备二级名称。</p>
           </el-form-item>
           <el-form-item label="规则名称" prop="name" class="span-full">
             <el-input v-model="form.name" maxlength="200" show-word-limit placeholder="例如：电机皮带点检" />
@@ -358,7 +359,7 @@
   >
     <div class="routine-rule-help-content">
       <p class="routine-rule-help-intro">
-        本页用于为一个具体设备类型建立点检或保养规则，统一设置适用设备、现场项目、执行周期、计划窗口和提交证据。
+        本页用于按设备一级名称建立点检或保养规则，统一设置适用设备、现场项目、执行周期、计划窗口和提交证据。
       </p>
 
       <section class="routine-rule-help-section">
@@ -371,15 +372,15 @@
       </section>
 
       <section class="routine-rule-help-section">
-        <h3>2. 基本信息、设备类型与二维码</h3>
+        <h3>2. 基本信息、设备一级名称与二维码</h3>
         <ul>
           <li><strong>业务类型：</strong>点检用于确认设备状态，保养用于记录维护工作；规则创建后不能直接更换业务类型。</li>
-          <li><strong>设备类型：</strong>规则只与所选分类精确匹配，规则创建后不能直接更换设备类型。</li>
+          <li><strong>设备一级名称：</strong>规则绑定一级名称，并自动适用于该名称下全部设备二级名称；规则创建后不能直接更换一级名称。</li>
           <li><strong>规则名称和说明：</strong>用于在规则列表、计划、消息和现场执行页中识别规则及查看注意事项。</li>
           <li><strong>二维码关系：</strong>每台设备的二维码通过隐藏令牌定位唯一设备记录，标签同时显示固定资产编号；扫码后，系统再按该设备的类型查询适用规则，规则内容不会写入二维码。</li>
         </ul>
         <div class="routine-rule-help-callout" role="note">
-          当前设备类型按所选分类精确匹配。选择父级分类不会自动覆盖其下级设备；不同下级分类需要分别建立规则。
+          只能选择第三级“设备一级名称”。设备二级名称只作为台账名称记录，不参与规则配置，也不需要分别建立规则。
         </div>
       </section>
 
@@ -429,7 +430,7 @@
       <section class="routine-rule-help-section">
         <h3>6. 计划生成逻辑</h3>
         <ul>
-          <li>只有状态为“启用”的规则，才会为同一团队、设备类型精确匹配且状态为“在用”的设备生成计划。</li>
+          <li>只有状态为“启用”的规则，才会为同一团队、该设备一级名称及其全部二级名称下状态为“在用”的设备生成计划。</li>
           <li>“首次到期时间”只是周期计算起点，不是后台任务的固定执行时刻；每日规则以它为基准每隔 1 天形成一个周期。</li>
           <li>日历点检会保留当前周期和下一周期，所以通常会提前一个周期看到明日计划；保养只生成下一到期周期，运行小时计划在累计读数达到条件后生成。</li>
           <li>计划开始和截止时间来自执行窗口；截止时间不晚于开始时间时，系统按跨到次日的窗口计算。</li>
@@ -454,15 +455,15 @@
           <li>保存编辑会生成新的规则版本，并取消旧版本尚未完成的开放计划；已完成记录和历史审计继续保留。</li>
           <li>停用规则后不再生成新计划，并取消该规则当前尚未完成的开放计划；以后可以重新启用。</li>
           <li>永久删除前必须先停用规则；已有执行记录或已完成计划的规则不能删除，只能继续保留为停用状态。</li>
-          <li>业务类型或设备类型需要改变时，应复制或新建正确规则，再停用旧规则。</li>
+          <li>业务类型或设备一级名称需要改变时，应复制或新建正确规则，再停用旧规则。</li>
         </ul>
       </section>
 
       <section class="routine-rule-help-section">
         <h3>9. 配置示例</h3>
         <ol>
-          <li>叉车每日点检：选择具体叉车分类，使用“按日历周期 / 每 1 天”，再启用白班和夜班窗口。</li>
-          <li>车辆每 500 小时保养：选择车辆的具体分类，使用“按运行小时 / 500 小时”，并持续录入累计运行小时。</li>
+          <li>叉车每日点检：选择叉车的设备一级名称，使用“按日历周期 / 每 1 天”，再启用白班和夜班窗口。</li>
+          <li>车辆每 500 小时保养：选择车辆的设备一级名称，使用“按运行小时 / 500 小时”，并持续录入累计运行小时。</li>
           <li>同一设备既要每日检查又要每月检查：分别建立两条规则，不能把不同频率的项目放在同一条规则中。</li>
         </ol>
       </section>
@@ -483,6 +484,8 @@ import {
   appendChecklistItem as appendChecklistItemToList,
   buildCategoryTree,
   buildRoutineRulePayload,
+  equipmentCategoryPath,
+  equipmentPrimaryCategoryId,
   moveChecklistItem,
   removeChecklistItemAt
 } from '@/utils/equipment'
@@ -542,19 +545,26 @@ const calendarIntervalLabel = computed(() => ({
   MONTH: '每隔多少月'
 }[form.schedule.calendar.unit] || '周期间隔'))
 const categoryOptions = computed(() => {
-  const convert = (items) => items
+  const selectedPath = equipmentCategoryPath(props.categories, form.categoryId)
+  const selectedPathIds = new Set(selectedPath.map((item) => String(item._id)))
+  const selectedDepth = selectedPath.length
+  const convert = (items, depth = 1) => items
     .filter((item) => item.status === 'ACTIVE' || item._id === form.categoryId)
+    .filter((item) => depth <= 3 || selectedPathIds.has(String(item._id)))
     .map((item) => ({
       value: item._id,
       label: item.name,
-      children: convert(item.children || [])
+      disabled: depth !== 3,
+      children: depth < 3 || (selectedDepth > 3 && selectedPathIds.has(String(item._id)))
+        ? convert(item.children || [], depth + 1)
+        : []
     }))
   return convert(buildCategoryTree(props.categories))
 })
 
 const rules = {
   routineType: [{ required: true, message: '请选择业务类型', trigger: 'change' }],
-  categoryId: [{ required: true, message: '请选择设备类型', trigger: 'change' }],
+  categoryId: [{ required: true, message: '请选择设备一级名称', trigger: 'change' }],
   name: [{ required: true, message: '请输入规则名称', trigger: 'blur' }]
 }
 
@@ -613,7 +623,7 @@ function createExecutionWindow(source = {}, index = 0) {
 function emptyForm() {
   return {
     routineType: props?.routineType || 'INSPECTION',
-    categoryId: props?.defaultCategoryId || '',
+    categoryId: equipmentPrimaryCategoryId(props?.categories, props?.defaultCategoryId) || '',
     name: '',
     description: '',
     checklistItems: [createChecklistItem()],
@@ -641,7 +651,9 @@ function resetForm() {
   } else {
     Object.assign(form, {
       routineType: source.routineType || props.routineType,
-      categoryId: source.categoryId?._id || source.categoryId || '',
+      categoryId: props.copy
+        ? equipmentPrimaryCategoryId(props.categories, source.categoryId?._id || source.categoryId)
+        : source.categoryId?._id || source.categoryId || '',
       name: props.copy ? `${source.name || ''}（副本）` : source.name || '',
       description: source.description || '',
       checklistItems: (source.checklistItems || []).map(createChecklistItem),

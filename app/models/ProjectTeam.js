@@ -65,6 +65,12 @@ const projectTeamSchema = new mongoose.Schema({
     type: projectTeamSettingsSchema,
     default: () => ({})
   },
+  equipmentCategoryStructureRevision: {
+    type: Number,
+    min: 0,
+    required: true,
+    default: 0
+  },
   createdBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',

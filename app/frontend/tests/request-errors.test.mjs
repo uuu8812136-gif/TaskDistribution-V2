@@ -18,6 +18,14 @@ test('Web and mini-program expose the same centralized Chinese error-code map', 
   assert.equal(webMessages.ATTENDANCE_LATE_REASON_REQUIRED, '09:00 后补报或修改出勤时，请填写修正原因')
   assert.equal(webMessages.GLOBAL_READ_ONLY, '跨团队查看模式为只读，请先进入具体团队后再修改')
   assert.equal(webMessages.EQUIPMENT_IMPORT_FILE_UNSUPPORTED, '仅支持符合模板的 .xlsx 文件')
+  assert.equal(
+    webMessages.EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT,
+    '请先停用关联点检/保养规则，或保持设备一级名称层级'
+  )
+  assert.equal(
+    webMessages.EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT,
+    '设备分类结构已发生变化，请刷新后重试'
+  )
   assert.equal(webMessages.TASK_CONFIRMATION_DENIED, '只有任务创建人或项目管理员可以确认任务完成')
   assert.equal(webMessages.EXTENSION_APPROVAL_DENIED, '只有任务创建人或项目管理员可以审批延期申请')
   const leadershipMessages = {
@@ -70,6 +78,16 @@ test('stable codes replace English API messages on both clients', () => {
     }, '保存失败'),
     '设备操作失败，请检查填写内容和当前状态'
   )
+
+  const categoryConflictMessages = {
+    EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT: '请先停用关联点检/保养规则，或保持设备一级名称层级',
+    EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT: '设备分类结构已发生变化，请刷新后重试'
+  }
+  for (const [code, expected] of Object.entries(categoryConflictMessages)) {
+    const response = { code, message: 'Technical equipment category conflict', statusCode: 409 }
+    assert.equal(resolveRequestErrorMessage(response, '设备操作失败'), expected)
+    assert.equal(resolveMiniProgramErrorMessage(response, '设备操作失败'), expected)
+  }
 })
 
 test('Chinese server details remain visible while unknown English never leaks', () => {

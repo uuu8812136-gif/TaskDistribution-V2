@@ -7,6 +7,12 @@ dotenv.config({ path: process.env.ENV_FILE || path.join(__dirname, '.env') });
 const { loadEnvironment } = require('./config/environment');
 const { createApp } = require('./app');
 const { startEquipmentRoutineScheduler } = require('./services/equipmentRoutineWorkerService');
+const {
+  EXPECTED_SCHEMA_LEDGER,
+  SCHEMA_CAPABILITY,
+  SCHEMA_LEDGER_COLLECTION,
+  isExactSchemaLedger
+} = require('./services/equipmentCategoryIndexMigrationService');
 
 function listenForHttpRequests(app, config, logger = console) {
   return app.listen(config.port, config.apiBindHost, () => {
@@ -15,9 +21,59 @@ function listenForHttpRequests(app, config, logger = console) {
   });
 }
 
+function buildMongoConnectOptions(config) {
+  return {
+    autoIndex: config.appEnv !== 'production' && config.nodeEnv !== 'production'
+  };
+}
+
+async function assertRequiredSchemaCapabilities(database, rawCapabilities = '') {
+  const required = [...new Set(String(rawCapabilities || '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  if (required.length === 0) return [];
+  const unsupported = required.filter((capability) => capability !== SCHEMA_CAPABILITY);
+  if (unsupported.length > 0) {
+    const error = new Error(`Required database schema capability is unsupported: ${unsupported.join(', ')}`);
+    error.code = 'DATABASE_SCHEMA_CAPABILITY_UNSUPPORTED';
+    throw error;
+  }
+  const ledger = await database.collection(SCHEMA_LEDGER_COLLECTION).findOne({
+    _id: EXPECTED_SCHEMA_LEDGER._id
+  });
+  if (!isExactSchemaLedger(ledger)) {
+    const error = new Error(`Required database schema capability is missing or incompatible: ${SCHEMA_CAPABILITY}`);
+    error.code = 'DATABASE_SCHEMA_CAPABILITY_MISSING';
+    throw error;
+  }
+  return required;
+}
+
+async function connectDatabaseForServer(config, {
+  mongooseClient = mongoose,
+  requiredSchemaCapabilities = process.env.REQUIRED_SCHEMA_CAPABILITIES
+} = {}) {
+  let connected = false;
+  try {
+    await mongooseClient.connect(config.mongodbUri, buildMongoConnectOptions(config));
+    connected = true;
+    await assertRequiredSchemaCapabilities(
+      mongooseClient.connection.db,
+      requiredSchemaCapabilities
+    );
+  } catch (error) {
+    if (connected || mongooseClient.connection?.readyState !== 0) {
+      try { await mongooseClient.disconnect(); }
+      catch (disconnectError) { error.disconnectError = disconnectError; }
+    }
+    throw error;
+  }
+}
+
 async function startServer() {
   const config = loadEnvironment();
-  await mongoose.connect(config.mongodbUri);
+  await connectDatabaseForServer(config);
 
   const app = createApp(config);
   const routineScheduler = startEquipmentRoutineScheduler({
@@ -48,4 +104,10 @@ if (require.main === module) {
   });
 }
 
-module.exports = { listenForHttpRequests, startServer };
+module.exports = {
+  assertRequiredSchemaCapabilities,
+  buildMongoConnectOptions,
+  connectDatabaseForServer,
+  listenForHttpRequests,
+  startServer
+};

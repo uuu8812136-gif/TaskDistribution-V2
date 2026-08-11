@@ -22,6 +22,7 @@
     "migrate:task-review-stages": "node script/migrateTaskReviewStages.js",
     "migrate:transport-master-data": "node script/backfillTransportMasterData.js",
     "migrate:position-levels": "node script/migratePositionLevels.js",
+    "migrate:equipment-category-index": "node script/migrateEquipmentCategoryIndex.js",
     "import:customer-test-data": "node script/importCustomerRealTestData.js",
     "import:customer-attendance-test-data": "node script/importCustomerAttendanceTestData.js",
     "cleanup:equipment-imports": "node script/cleanupEquipmentImportPreviews.js",

@@ -2,15 +2,25 @@
 
 const mongoose = require('mongoose');
 const EquipmentAsset = require('../models/EquipmentAsset');
+const EquipmentCategory = require('../models/EquipmentCategory');
 const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
 const EquipmentRoutineRule = require('../models/EquipmentRoutineRule');
 const Message = require('../models/Message');
 const OrgUnit = require('../models/OrgUnit');
 const TeamMembership = require('../models/TeamMembership');
 const User = require('../models/User');
-const { addCalendarInterval } = require('./equipmentRoutineCalendarService');
+const {
+  DAY_MS,
+  calendarAnchorAtOrBefore,
+  calendarAnchorsAround,
+  statusAt,
+  timeZoneParts,
+  windowBounds,
+  zonedDate
+} = require('./equipmentRoutineCalendarService');
 const {
   createEquipmentRoutineService,
+  resolveRoutineRuleAssetCategoryIds,
   serializeRule
 } = require('./equipmentRoutineService');
 const {
@@ -20,6 +30,13 @@ const {
 } = require('./equipmentRoutineWorkflowService');
 const { normalizeId } = require('./authSessionService');
 const { runWithRequiredTransaction } = require('./transactionService');
+const {
+  EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES,
+  combinedAnyCycleKey,
+  cycleKeyForCalendar,
+  materializeOpenRoutinePlan,
+  runtimeCycleKey
+} = require('./equipmentRoutinePlanMaterializationService');
 
 const { EQUIPMENT_STATUSES } = EquipmentAsset;
 const {
@@ -33,7 +50,11 @@ const {
   EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS
 } = EquipmentRoutinePlan;
 
-const DAY_MS = 24 * 60 * 60 * 1000;
+const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+]);
 
 function modelQuery(query, session) {
   if (session && typeof query.session === 'function') query.session(session);
@@ -54,62 +75,6 @@ function validTimeZone(value) {
     throw new TypeError('executionConfig.timeZone must be a valid IANA time zone');
   }
   return timeZone;
-}
-
-function timeZoneParts(date, timeZone) {
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23'
-  });
-  return Object.fromEntries(
-    formatter.formatToParts(date)
-      .filter(({ type }) => type !== 'literal')
-      .map(({ type, value }) => [type, Number(value)])
-  );
-}
-
-function zonedDate({ year, month, day, hour = 0, minute = 0, second = 0 }, timeZone) {
-  let candidate = Date.UTC(year, month - 1, day, hour, minute, second);
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const rendered = timeZoneParts(new Date(candidate), timeZone);
-    const renderedUtc = Date.UTC(
-      rendered.year,
-      rendered.month - 1,
-      rendered.day,
-      rendered.hour,
-      rendered.minute,
-      rendered.second
-    );
-    const desiredUtc = Date.UTC(year, month - 1, day, hour, minute, second);
-    const correction = desiredUtc - renderedUtc;
-    candidate += correction;
-    if (correction === 0) break;
-  }
-  return new Date(candidate);
-}
-
-function addLocalDays(parts, days) {
-  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
-  return {
-    year: shifted.getUTCFullYear(),
-    month: shifted.getUTCMonth() + 1,
-    day: shifted.getUTCDate()
-  };
-}
-
-function weekdayFromParts(parts) {
-  const day = new Date(Date.UTC(parts.year, parts.month - 1, parts.day)).getUTCDay();
-  return day === 0 ? 7 : day;
-}
-
-function lastDayOfMonth(year, month) {
-  return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
 function executionConfig(rule) {
@@ -135,95 +100,6 @@ function executionConfig(rule) {
   };
 }
 
-function calendarAnchorAtOrBefore(firstDueAt, unit, interval, now) {
-  const first = validDate(firstDueAt, 'firstDueAt');
-  const instant = validDate(now, 'now');
-  if (first >= instant) return first;
-  if (unit === 'DAY' || unit === 'WEEK') {
-    const intervalMs = interval * (unit === 'WEEK' ? 7 : 1) * DAY_MS;
-    return new Date(first.getTime() + Math.floor((instant - first) / intervalMs) * intervalMs);
-  }
-  if (unit === 'MONTH') {
-    const roughMonths = (
-      (instant.getUTCFullYear() - first.getUTCFullYear()) * 12 +
-      instant.getUTCMonth() - first.getUTCMonth()
-    );
-    let cycles = Math.max(0, Math.floor(roughMonths / interval));
-    let candidate = addCalendarInterval(first, 'MONTH', cycles * interval || interval);
-    if (cycles === 0) candidate = first;
-    while (candidate > instant && cycles > 0) {
-      cycles -= 1;
-      candidate = cycles === 0 ? first : addCalendarInterval(first, 'MONTH', cycles * interval);
-    }
-    while (addCalendarInterval(candidate, 'MONTH', interval) <= instant) {
-      candidate = addCalendarInterval(candidate, 'MONTH', interval);
-    }
-    return candidate;
-  }
-  throw new TypeError('Unsupported calendar unit');
-}
-
-function configuredAnchorParts(anchor, unit, config) {
-  let parts = timeZoneParts(validDate(anchor), config.timeZone);
-  if (unit === 'WEEK') {
-    parts = {
-      ...parts,
-      ...addLocalDays(parts, config.weeklyDay - weekdayFromParts(parts))
-    };
-  }
-  if (unit === 'MONTH') {
-    parts.day = Math.min(config.monthlyDay, lastDayOfMonth(parts.year, parts.month));
-  }
-  return parts;
-}
-
-function windowBounds(anchor, unit, window, config) {
-  const anchorParts = configuredAnchorParts(anchor, unit, config);
-  const [startHour, startMinute] = window.startTime.split(':').map(Number);
-  const [endHour, endMinute] = window.endTime.split(':').map(Number);
-  const scheduledFor = zonedDate({
-    ...anchorParts,
-    hour: startHour,
-    minute: startMinute,
-    second: 0
-  }, config.timeZone);
-  let dueAt = zonedDate({
-    ...anchorParts,
-    hour: endHour,
-    minute: endMinute,
-    second: 0
-  }, config.timeZone);
-  if (dueAt <= scheduledFor) {
-    dueAt = zonedDate({
-      ...addLocalDays(anchorParts, 1),
-      hour: endHour,
-      minute: endMinute,
-      second: 0
-    }, config.timeZone);
-  }
-  return { scheduledFor, dueAt };
-}
-
-function statusAt({ scheduledFor, dueAt }, now) {
-  const instant = validDate(now);
-  if (instant < scheduledFor) return EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED;
-  if (instant <= dueAt) return EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW;
-  return EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE;
-}
-
-function cycleVersionSegment(ruleVersion) {
-  const version = Number(ruleVersion);
-  return Number.isInteger(version) && version > 1 ? `v${version}:` : '';
-}
-
-function cycleKeyForCalendar(anchor, ruleVersion = null) {
-  return `calendar:${cycleVersionSegment(ruleVersion)}${validDate(anchor).toISOString()}`;
-}
-
-function runtimeCycleKey(nextDueRuntimeHours, ruleVersion = null) {
-  return `runtime:${cycleVersionSegment(ruleVersion)}${Number(nextDueRuntimeHours).toFixed(6)}`;
-}
-
 function dueStateTriggered(status) {
   return status === 'DUE' || status === 'OVERDUE';
 }
@@ -231,18 +107,6 @@ function dueStateTriggered(status) {
 function isCombinedAnyRule(rule) {
   return rule.schedule?.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED &&
     rule.schedule?.duePolicy === 'ANY';
-}
-
-function combinedAnyCycleKey(schedule, triggerKey, ruleVersion = null) {
-  const recordKey = schedule.latestRecordId || 'initial';
-  const calendarKey = schedule.nextDueAt
-    ? validDate(schedule.nextDueAt).toISOString()
-    : 'none';
-  const runtimeKey = schedule.nextDueRuntimeHours === null ||
-    schedule.nextDueRuntimeHours === undefined
-    ? 'none'
-    : Number(schedule.nextDueRuntimeHours).toFixed(6);
-  return `combined:any:${recordKey}:${cycleVersionSegment(ruleVersion)}calendar:${calendarKey}:runtime:${runtimeKey}:${triggerKey}`;
 }
 
 function messageDetails({ plan, asset, level }) {
@@ -255,6 +119,7 @@ function messageDetails({ plan, asset, level }) {
 
 function createEquipmentRoutineWorkerService({
   EquipmentAssetModel = EquipmentAsset,
+  EquipmentCategoryModel = EquipmentCategory,
   EquipmentRoutinePlanModel = EquipmentRoutinePlan,
   EquipmentRoutineRuleModel = EquipmentRoutineRule,
   MessageModel = Message,
@@ -276,8 +141,18 @@ function createEquipmentRoutineWorkerService({
       cycleKey,
       windowKey: window.key
     };
-    await EquipmentRoutinePlanModel.updateOne(filter, {
-      $setOnInsert: {
+    const completedCycle = await modelQuery(EquipmentRoutinePlanModel.findOne({
+      teamId: rule.teamId,
+      ruleId: rule._id,
+      equipmentId: asset._id,
+      cycleKey,
+      status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
+    }).select('_id').lean(), session);
+    if (completedCycle) return null;
+    return materializeOpenRoutinePlan({
+      EquipmentRoutinePlanModel,
+      filter,
+      insert: {
         teamId: rule.teamId,
         orgUnitId: asset.orgUnitId,
         equipmentId: asset._id,
@@ -292,17 +167,21 @@ function createEquipmentRoutineWorkerService({
         scheduledFor: bounds.scheduledFor,
         dueAt: bounds.dueAt,
         status: desiredStatus
-      }
-    }, { upsert: true, setDefaultsOnInsert: true, session });
-    await EquipmentRoutinePlanModel.updateOne({
-      ...filter,
-      status: { $in: [
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-      ] }
-    }, { $set: { status: desiredStatus } }, { session });
-    return modelQuery(EquipmentRoutinePlanModel.findOne(filter).lean(), session);
+      },
+      desiredStatus,
+      rematerializedAt: now,
+      source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.WORKER,
+      recoverableCancellationReasons: (
+        rule.schedule?.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.COMBINED &&
+        rule.schedule?.duePolicy === 'ALL'
+      )
+        ? [
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED
+          ]
+        : [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED],
+      session
+    });
   }
 
   async function notifyPlan(plan, asset, now, session) {
@@ -389,16 +268,15 @@ function createEquipmentRoutineWorkerService({
     if (rule.routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE) {
       return serviceSchedule.nextDueAt ? [new Date(serviceSchedule.nextDueAt)] : [];
     }
-    const firstAnchor = isCombinedAnyRule(rule) && serviceSchedule.nextDueAt
-      ? serviceSchedule.nextDueAt
-      : schedule.calendar.firstDueAt;
-    const current = calendarAnchorAtOrBefore(
+    const firstAnchor = serviceSchedule.nextDueAt || schedule.calendar.firstDueAt;
+    const config = executionConfig(rule);
+    const { current, next } = calendarAnchorsAround(
       firstAnchor,
       schedule.calendar.unit,
       schedule.calendar.interval,
-      now
+      now,
+      config.timeZone
     );
-    const next = addCalendarInterval(current, schedule.calendar.unit, schedule.calendar.interval);
     return current.getTime() === next.getTime() ? [current] : [current, next];
   }
 
@@ -430,8 +308,10 @@ function createEquipmentRoutineWorkerService({
       cycleKey,
       windowKey: 'RUNTIME'
     };
-    await EquipmentRoutinePlanModel.updateOne(filter, {
-      $setOnInsert: {
+    return materializeOpenRoutinePlan({
+      EquipmentRoutinePlanModel,
+      filter,
+      insert: {
         teamId: rule.teamId,
         orgUnitId: asset.orgUnitId,
         equipmentId: asset._id,
@@ -446,30 +326,54 @@ function createEquipmentRoutineWorkerService({
         scheduledFor: now,
         dueAt: now,
         status: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-      }
-    }, { upsert: true, setDefaultsOnInsert: true, session });
-    return modelQuery(EquipmentRoutinePlanModel.findOne(filter).lean(), session);
+      },
+      desiredStatus: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE,
+      rematerializedAt: now,
+      source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.WORKER,
+      session
+    });
   }
 
-  async function findOpenCombinedAnyRuntimePlan(rule, asset, schedule, session = null) {
+  async function findOpenCombinedAnyRuntimePlan(rule, asset, schedule, now, session = null) {
     if (!isCombinedAnyRule(rule) || schedule.nextDueRuntimeHours === null) return null;
     const cycleKey = combinedAnyCycleKey(
       schedule,
       `trigger:runtime:${Number(schedule.nextDueRuntimeHours).toFixed(6)}`,
       rule.version
     );
-    return modelQuery(EquipmentRoutinePlanModel.findOne({
+    const filter = {
       teamId: rule.teamId,
       ruleId: rule._id,
       equipmentId: asset._id,
       cycleKey,
-      windowKey: 'RUNTIME',
-      status: { $in: [
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
-        EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
-      ] }
+      windowKey: 'RUNTIME'
+    };
+    const existing = await modelQuery(EquipmentRoutinePlanModel.findOne({
+      ...filter,
+      $or: [
+        { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
+        {
+          status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+          cancellationReason:
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED
+        }
+      ]
     }).lean(), session);
+    if (!existing) return null;
+    if (OPEN_ROUTINE_PLAN_STATUSES.includes(existing.status)) return existing;
+    const recovered = await materializeOpenRoutinePlan({
+      EquipmentRoutinePlanModel,
+      filter: { ...filter, _id: existing._id },
+      insert: null,
+      desiredStatus: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE,
+      rematerializedAt: now,
+      source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.WORKER,
+      allowInsert: false,
+      session
+    });
+    return recovered && OPEN_ROUTINE_PLAN_STATUSES.includes(recovered.status)
+      ? recovered
+      : null;
   }
 
   async function cancelOtherCombinedAnyPlans(rule, asset, keepPlans, now, session = null) {
@@ -484,7 +388,7 @@ function createEquipmentRoutineWorkerService({
         EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
       ] }
     };
-    const keepIds = keepPlans.map(({ _id }) => _id).filter(Boolean);
+    const keepIds = keepPlans.filter(Boolean).map(({ _id }) => _id).filter(Boolean);
     if (keepIds.length > 0) filter._id = { $nin: keepIds };
     await EquipmentRoutinePlanModel.updateMany(filter, {
       $set: {
@@ -514,10 +418,16 @@ function createEquipmentRoutineWorkerService({
         return { staleRule: true, plansProcessed: 0, notificationWritesAttempted: 0 };
       }
 
+      const allowedCategoryIds = await resolveRoutineRuleAssetCategoryIds({
+        EquipmentCategoryModel,
+        teamId: rule.teamId,
+        ruleCategoryId: rule.categoryId,
+        session
+      });
       const asset = await EquipmentAssetModel.findOneAndUpdate({
         _id: assetId,
         teamId: rule.teamId,
-        categoryId: rule.categoryId,
+        categoryId: { $in: allowedCategoryIds },
         status: EQUIPMENT_STATUSES.IN_USE
       }, {
         $inc: { routineMaterializationRevision: 1 }
@@ -540,7 +450,7 @@ function createEquipmentRoutineWorkerService({
         : null;
       const plans = [];
       const existingRuntimePlan = isCombinedAnyRule(rule)
-        ? await findOpenCombinedAnyRuntimePlan(rule, asset, calculatedSchedule, session)
+        ? await findOpenCombinedAnyRuntimePlan(rule, asset, calculatedSchedule, instant, session)
         : null;
       const runtimeOwnsCombinedCycle = Boolean(existingRuntimePlan) || (
         isCombinedAnyRule(rule) &&
@@ -558,7 +468,7 @@ function createEquipmentRoutineWorkerService({
           : config.windows;
         for (const anchor of anchors) {
           for (const window of windows) {
-            plans.push(await materializePlan({
+            const plan = await materializePlan({
               rule,
               asset,
               anchor,
@@ -572,7 +482,8 @@ function createEquipmentRoutineWorkerService({
                     rule.version
                   )
                 : cycleKeyForCalendar(anchor, rule.version)
-            }, session));
+            }, session);
+            if (plan) plans.push(plan);
           }
         }
       }
@@ -605,6 +516,68 @@ function createEquipmentRoutineWorkerService({
     });
   }
 
+  async function reconcileRulePlanScope(staleRule, instant) {
+    return runWithRequiredTransaction(async (session) => {
+      const rule = await modelQuery(EquipmentRoutineRuleModel.findOne({
+        _id: staleRule._id,
+        teamId: staleRule.teamId,
+        version: staleRule.version
+      }).lean(), session);
+      if (!rule) return;
+
+      const allowedCategoryIds = await resolveRoutineRuleAssetCategoryIds({
+        EquipmentCategoryModel,
+        teamId: rule.teamId,
+        ruleCategoryId: rule.categoryId,
+        session
+      });
+      const openPlans = await modelQuery(EquipmentRoutinePlanModel.find({
+        teamId: rule.teamId,
+        ruleId: rule._id,
+        status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+      }).select('_id equipmentId').lean(), session);
+      if (openPlans.length === 0) return;
+
+      const ruleIsActive = rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE;
+      let cancellationReason = allowedCategoryIds.length === 0
+        ? EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_CATEGORY_INVALID
+        : EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED;
+      let planIds = openPlans.map(({ _id }) => _id);
+      if (ruleIsActive && allowedCategoryIds.length > 0) {
+        cancellationReason = EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED;
+        const equipmentIds = [...new Set(openPlans.map(({ equipmentId }) => normalizeId(equipmentId)))]
+          .filter(Boolean);
+        const applicableAssets = await modelQuery(EquipmentAssetModel.find({
+          _id: { $in: equipmentIds },
+          teamId: rule.teamId,
+          categoryId: { $in: allowedCategoryIds }
+        }).select('_id').lean(), session);
+        const applicableAssetIds = new Set(applicableAssets.map(({ _id }) => normalizeId(_id)));
+        planIds = openPlans
+          .filter(({ equipmentId }) => !applicableAssetIds.has(normalizeId(equipmentId)))
+          .map(({ _id }) => _id);
+      }
+      if (planIds.length === 0) return;
+
+      await EquipmentRoutinePlanModel.updateMany({
+        _id: { $in: planIds },
+        teamId: rule.teamId,
+        ruleId: rule._id,
+        status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+      }, {
+        $set: {
+          status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+          cancellationReason,
+          cancelledAt: instant,
+          cancelledBy: null
+        }
+      }, { session });
+    }, connection, {
+      code: 'EQUIPMENT_ROUTINE_TRANSACTIONS_REQUIRED',
+      message: 'Equipment routine plan reconciliation requires MongoDB replica-set transactions'
+    });
+  }
+
   async function runOnce({ now = clock(), teamId = null } = {}) {
     const instant = validDate(now, 'now');
     const ruleFilter = { status: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE };
@@ -616,9 +589,14 @@ function createEquipmentRoutineWorkerService({
     let plansProcessed = 0;
     let notificationWritesAttempted = 0;
     for (const rule of rules) {
+      const allowedCategoryIds = await resolveRoutineRuleAssetCategoryIds({
+        EquipmentCategoryModel,
+        teamId: rule.teamId,
+        ruleCategoryId: rule.categoryId
+      });
       const assets = await EquipmentAssetModel.find({
         teamId: rule.teamId,
-        categoryId: rule.categoryId,
+        categoryId: { $in: allowedCategoryIds },
         status: EQUIPMENT_STATUSES.IN_USE
       }).lean();
       for (const asset of assets) {
@@ -626,6 +604,21 @@ function createEquipmentRoutineWorkerService({
         plansProcessed += materialized.plansProcessed;
         notificationWritesAttempted += materialized.notificationWritesAttempted;
         if (materialized.staleRule) break;
+      }
+      await reconcileRulePlanScope(rule, instant);
+    }
+    const openPlanFilter = { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } };
+    if (teamId) openPlanFilter.teamId = teamId;
+    const openRuleIds = await EquipmentRoutinePlanModel.distinct('ruleId', openPlanFilter);
+    if (openRuleIds.length > 0) {
+      const inactiveRuleFilter = {
+        _id: { $in: openRuleIds },
+        status: { $ne: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE }
+      };
+      if (teamId) inactiveRuleFilter.teamId = teamId;
+      const inactiveRules = await EquipmentRoutineRuleModel.find(inactiveRuleFilter).lean();
+      for (const rule of inactiveRules) {
+        await reconcileRulePlanScope(rule, instant);
       }
     }
     return {

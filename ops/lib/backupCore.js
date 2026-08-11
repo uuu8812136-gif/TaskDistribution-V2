@@ -6,6 +6,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 
 const BACKUP_FORMAT = 'task-distribution-v2-backup/v1';
+const BACKUP_CAPTURE_MODE = 'BEST_EFFORT_ONLINE_MONGODUMP';
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const RESTORE_DATABASE_PATTERN = /(?:_restore_test|_v2_test)$/i;
 const BACKUP_ID_PATTERN = /^backup-\d{8}T\d{6}Z-[a-f0-9]{8}$/;
@@ -22,6 +23,15 @@ class OperationsError extends Error {
 
 function fail(code, message, details) {
   throw new OperationsError(code, message, details);
+}
+
+function backupConsistencyMetadata() {
+  return Object.freeze({
+    restoreSet: 'database-and-uploads',
+    databaseFileAssetsVerifiedAgainstUploadBytes: true,
+    captureMode: BACKUP_CAPTURE_MODE,
+    databaseAndUploadsAtomic: false
+  });
 }
 
 function pathApi(platform = process.platform) {
@@ -283,18 +293,30 @@ function parseMongoUri(uri) {
   const pathStart = uri.indexOf('/', schemeEnd);
   if (pathStart < 0) fail('MONGODB_DATABASE_REQUIRED', 'MONGODB_URI must include a database name');
   const authority = uri.slice(schemeEnd, pathStart).split('@').at(-1);
-  const hosts = authority.split(',').map((entry) => {
+  const serverEntries = authority.split(',').map((entry) => entry.trim());
+  const hosts = serverEntries.map((entry) => {
     const value = entry.trim();
     if (value.startsWith('[')) return value.slice(1, value.indexOf(']')).toLowerCase();
     return value.split(':')[0].toLowerCase();
   });
+  const servers = serverEntries.map((entry) => entry.toLowerCase());
   const databaseName = decodeURIComponent(uri.slice(pathStart + 1).split(/[?/#]/, 1)[0]);
   if (!databaseName || !/^[A-Za-z0-9_.-]+$/.test(databaseName)) {
     fail('MONGODB_DATABASE_INVALID', 'MONGODB_URI database name is missing or unsafe');
   }
+  const queryStart = uri.indexOf('?', pathStart);
+  const queryEnd = uri.indexOf('#', queryStart >= 0 ? queryStart : pathStart);
+  const query = queryStart >= 0
+    ? uri.slice(queryStart + 1, queryEnd >= 0 ? queryEnd : undefined)
+    : '';
+  const replicaSets = [...new URLSearchParams(query).entries()]
+    .filter(([name]) => name.toLowerCase() === 'replicaset')
+    .map(([, value]) => value);
   return Object.freeze({
     databaseName,
     hosts: Object.freeze(hosts),
+    servers: Object.freeze(servers),
+    replicaSet: replicaSets.length === 1 ? replicaSets[0] : null,
     isSrv: /^mongodb\+srv:/i.test(uri),
     loopbackOnly: !/^mongodb\+srv:/i.test(uri) && hosts.every((host) => LOOPBACK_HOSTS.has(host))
   });
@@ -812,6 +834,8 @@ async function createBackup(config, {
       database: {
         name: mongo.databaseName,
         hosts: mongo.hosts,
+        servers: mongo.servers,
+        replicaSet: mongo.replicaSet,
         remoteExplicitlyAuthorized: !mongo.loopbackOnly,
         oplogCaptured: config.useOplog === true,
         collectionCount: collections.length,
@@ -823,10 +847,7 @@ async function createBackup(config, {
         bytes: uploadFiles.reduce((sum, entry) => sum + entry.bytes, 0),
         fileAssetReferences: fileAssetConsistency
       },
-      consistency: {
-        restoreSet: 'database-and-uploads',
-        databaseFileAssetsVerifiedAgainstUploadBytes: true
-      },
+      consistency: backupConsistencyMetadata(),
       files
     };
     const serialized = await writeJsonAtomic(path.join(temporaryDirectory, 'manifest.json'), manifest, fsImpl);
@@ -1154,6 +1175,7 @@ async function restoreBackup(config, backupId, {
 }
 
 module.exports = {
+  BACKUP_CAPTURE_MODE,
   BACKUP_ID_PATTERN,
   BACKUP_FORMAT,
   LOOPBACK_HOSTS,
@@ -1164,6 +1186,7 @@ module.exports = {
   applyRetention,
   assertBackupPathPolicy,
   assertMongoBackupScope,
+  backupConsistencyMetadata,
   assertRestoreDatabaseEmpty,
   assertRestoreTarget,
   buildFileEntries,

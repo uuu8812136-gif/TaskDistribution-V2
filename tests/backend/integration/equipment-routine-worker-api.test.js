@@ -140,16 +140,37 @@ async function createOrganization(teamId, prefix) {
 }
 
 async function createRoutineFixture({ team, org, createdBy, suffix }) {
+  const majorCategory = await EquipmentCategory.create({
+    teamId: team._id,
+    name: `${suffix} Major`,
+    createdBy,
+    updatedBy: createdBy
+  });
+  const categoryType = await EquipmentCategory.create({
+    teamId: team._id,
+    parentId: majorCategory._id,
+    name: `${suffix} Type`,
+    createdBy,
+    updatedBy: createdBy
+  });
   const category = await EquipmentCategory.create({
     teamId: team._id,
-    name: `${suffix} Equipment`,
+    parentId: categoryType._id,
+    name: `${suffix} Primary`,
+    createdBy,
+    updatedBy: createdBy
+  });
+  const secondaryCategory = await EquipmentCategory.create({
+    teamId: team._id,
+    parentId: category._id,
+    name: `${suffix} Secondary`,
     createdBy,
     updatedBy: createdBy
   });
   const asset = await EquipmentAsset.create({
     teamId: team._id,
     orgUnitId: org.group._id,
-    categoryId: category._id,
+    categoryId: secondaryCategory._id,
     assetCode: `${suffix}-EQ-001`,
     name: `${suffix} Equipment`,
     status: 'IN_USE',
@@ -185,7 +206,7 @@ async function createRoutineFixture({ team, org, createdBy, suffix }) {
     createdBy,
     updatedBy: createdBy
   });
-  return { category, asset, rule };
+  return { majorCategory, categoryType, category, secondaryCategory, asset, rule };
 }
 
 async function seed() {

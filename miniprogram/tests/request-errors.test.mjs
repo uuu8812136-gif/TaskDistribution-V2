@@ -39,6 +39,21 @@ test('mini-program maps dynamic task leadership errors to Chinese', () => {
   }
 })
 
+test('mini-program maps equipment category conflicts to actionable Chinese', () => {
+  const cases = {
+    EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT: '请先停用关联点检/保养规则，或保持设备一级名称层级',
+    EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT: '设备分类结构已发生变化，请刷新后重试'
+  }
+
+  for (const [code, expected] of Object.entries(cases)) {
+    assert.equal(REQUEST_ERROR_CODE_MESSAGES[code], expected)
+    assert.equal(
+      resolveRequestErrorMessage({ code, message: 'Technical equipment category conflict' }, '设备操作失败'),
+      expected
+    )
+  }
+})
+
 test('mini-program preserves Chinese API details but hides unknown English', () => {
   assert.equal(
     resolveRequestErrorMessage({ code: 'UNKNOWN', message: '该流程已经结束' }, '提交失败'),

@@ -70,8 +70,8 @@ equipmentCategorySchema.pre('validate', function validateParent(next) {
 });
 
 equipmentCategorySchema.index(
-  { teamId: 1, name: 1 },
-  { unique: true, name: 'uq_equipment_category_team_name' }
+  { teamId: 1, parentId: 1, name: 1 },
+  { unique: true, name: 'uq_equipment_category_team_parent_name' }
 );
 equipmentCategorySchema.index(
   { teamId: 1, parentId: 1, status: 1, sortOrder: 1 },

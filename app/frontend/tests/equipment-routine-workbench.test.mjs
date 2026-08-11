@@ -84,6 +84,7 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(workbenchSource, /v-model="filters\.overallResult"/)
   assert.match(workbenchSource, /v-model="filters\.exceptionStatus"/)
   assert.match(workbenchSource, /params\.overallResult = filters\.overallResult/)
+  assert.match(workbenchSource, /params\.dateBasis = 'PLAN'/)
   assert.match(workbenchSource, /params\.status = filters\.exceptionStatus/)
   assert.match(ruleDialogSource, /添加窗口/)
   assert.match(ruleDialogSource, /inspectionEscalationMinutes/)

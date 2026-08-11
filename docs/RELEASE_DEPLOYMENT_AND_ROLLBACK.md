@@ -2,6 +2,12 @@
 
 本文描述 TaskDistribution V2 的最终发布包检查、环境变量、Windows/Linux 部署、回滚演练和微信小程序版本回退。它是可执行操作手册，不代表任何环境已经部署或验收。
 
+## 0. 2026-08-11 当前运维状态
+
+> 当前 V2 与旧站 `/health` 均为 HTTP 502；边缘管理端口 `23224` 和 V2 业务端口 `38130` 均未监听，客户管理隧道待恢复。客户公网与真实设备测试必须暂停。
+>
+> 当前工作树包含未提交改动，本轮源码未提交、未推送、未构建不可变 release、未部署。本文中的 2026-08-10 HTTP 200、已激活 release、稳定性采样和更早边缘回滚 ID 都是历史 checkpoint，不是当前运行或可执行回滚证明。恢复管理通道后应先只读盘点现有边缘配置、监听、任务、release、数据库/附件和备份，再批准任何发布或回滚。
+
 > **V2 客户测试环境专用流程**：`v2-test.horselink.cn`、`18120/18130/27150`、
 > `customer_acceptance_v2_test` 的发布和恢复必须使用
 > [`V2_TEST_RELEASE_AND_ROLLBACK_RUNBOOK.md`](./V2_TEST_RELEASE_AND_ROLLBACK_RUNBOOK.md)。
@@ -16,6 +22,7 @@
 - `.env`、凭据、`customer-data/`、`.test-data/`、`work/`、上传文件、数据库 dump、客户表格、
   客户图片、日志、截图和本机构建/依赖产物不得进入 release 或 Git。客户原始资料只能放在已忽略的
   `customer-data/`、`references/`、`attachments/` 或 `screenshots/` 中；不能混入源码资源目录。
+- RSA 私钥 XML 必须留在独立工作站、Git 仓库之外的受保护 E 盘目录；不得进入 Git、release、聊天或命令输出。固定 public-only RSA XML 可以进入候选包，并必须由 release manifest 和 SHA256 绑定。
 - 不使用 `app/install.bat`、`app/install.sh`、`app/init-db.js`、`npm run init:clear` 或任何 `import:*` 命令部署 V2。它们属于旧版初始化或测试数据工具。
 - 当前 API 依赖 MongoDB 事务；正式环境必须使用 replica set，单节点 replica set 也可以。独立 `mongod` 会使点检/保养写入失败。
 - API 生产进程由操作系统服务管理；Web 使用静态站点；MongoDB 和反向代理不由本仓库脚本自动安装。
@@ -214,7 +221,7 @@ $Nssm = 'E:\ApprovedTools\nssm.exe'
 
 在 `services.msc` 或客户批准的凭据部署工具中，把 `TaskDistributionV2Api` 的“登录”账号改为前述低权限服务账号并授予“作为服务登录”；不要把该账号密码放入命令行、脚本或 release 记录，也不要保留 NSSM 默认的 LocalSystem 身份。
 
-此时只注册服务和核对账号、ACL、Node 版本及路径，不运行候选 `server.js`。包含新 TaskReview 索引声明的候选 API 在下一节备份与迁移完成前不得首次连接旧数据库，否则 Mongoose `autoIndex` 可能提前创建索引并绕过迁移门禁。迁移完成后再按 4.5 节执行前台启动预检和正式启动；不得执行初始化或导入命令。
+此时只注册服务和核对账号、ACL、Node 版本及路径，不运行候选 `server.js`。包含新 TaskReview 索引声明的候选 API 在相应的备份与迁移完成前不得首次连接旧数据库，否则 Mongoose `autoIndex` 可能提前创建索引并绕过迁移门禁。Task / TaskReview 迁移完成后再按 4.6 节执行前台启动预检和正式启动；Windows Recovery 设备分类索引发布必须改走 4.5 节的专用两阶段流程，不得执行初始化或导入命令。
 
 ### 4.4 Task / TaskReview 审核轮次索引迁移门禁
 
@@ -231,7 +238,477 @@ release 解包、安装依赖和切换 `current` 都不会自动执行数据库 
 
 这是 forward-only 迁移：一旦同一人员和阶段已产生多个 `reviewRound`，就不能直接重建旧两字段、三字段或四字段 stage 唯一索引，也不能只切回不了解 `reviewRound` 的旧代码。此后代码回滚必须停在兼容 `uq_task_review_stage_round` 和多轮历史的版本；若必须恢复迁移前状态，只能走单独批准的整库恢复/RPO 决策，不能按普通 release 回滚处理。
 
-### 4.5 切换版本
+### 4.5 Windows Recovery 设备分类唯一索引两阶段发布
+
+本节只适用于以下固定拓扑，不得套用到其他数据库、端口或 Windows 实例：
+
+- Recovery 根目录：`C:\TaskDistribution-V2\Recovery`；
+- 数据库：`customer_acceptance_v2_test`；
+- API/Web 回环端口：`18120`、`18130`；
+- 公网测试入口：`https://v2-test.horselink.cn`；
+- 业务任务：`TaskDistribution-V2-Recovery-Tunnel`、`TaskDistribution-V2-Recovery-Web`、`TaskDistribution-V2-Recovery-API`；
+- 始终保留的管理任务：`TaskDistribution-V2-Recovery-Management-Tunnel`、`TaskDistribution-V2-Recovery-MongoDB`。
+
+本流程把旧的团队级唯一索引 `uq_equipment_category_team_name` 迁移为父分类范围唯一索引 `uq_equipment_category_team_parent_name`。它同时完成候选激活，不能再执行 4.6 节的通用目录切换。没有完整通过 `Plan -> Hold -> 停写备份 -> 独立工作站验签 -> Execute -> post-audit` 时，只能写“候选已暂存”或“发布受阻”，不能写“已发布”。
+
+#### 4.5.1 不可变输入和发布前门禁
+
+1. 先把所有修改提交到一个干净工作树，再从该完整 40 位 commit 构建不可变包。`New-V2TestReleasePackage.ps1` 会强制检查干净工作树、Node `v22.23.1`、npm `10.9.8`、必需迁移脚本、staging 生成器和三份 Windows 发布/验签脚本。不得从未提交工作树直接拼包。
+2. 候选准备和 evidence 生成是两个明确阶段。先按下面的固定步骤把归档解压到全新的 incoming 目录，复制已记录 SHA256 的固定 Node runtime 和 Web proxy，按 lockfile 执行 `npm ci`，生成两个 runner，最后以无覆盖改名得到候选目录。`Candidate`、`Incoming` 或本 release 的 `Evidence` 任一已存在都必须停止，不得删除后复用同一 release ID。
+3. 只有依赖注入完成后，才运行候选内的 `New-V2RecoveryEquipmentCategoryIndexStage.ps1`。它会重新验证归档和 artifact manifest、候选精确 manifest、release metadata、固定公钥、上一活动 release 的精确文件树、预部署离机备份回执、Node/app 依赖树、Mongo guard 及两份环境文件，然后以 create-new 语义生成 `staged.json`。重复运行只允许复验完全相同的 evidence；任一输入漂移都失败，不覆盖旧文件。
+   - 预部署 `deployment-backup-receipt.json` 是经批准传输链提供的外部 handoff 信任根。staging 只复核其传输 SHA256、字段结构和发布身份，不重新打开备份 ZIP、解析 BSON 或验证签名，因此 `staged.json` 会明确记录 `TRANSFER_SHA256_AND_SCHEMA_ONLY`。它不能替代停写后新备份的独立工作站验签；`Execute` 仍必须消费一份新的 RSA 签名回执并真实复验完整文件集、`fileassets.bson` 与 uploads。
+4. `staged.json` 必须绑定 release、commit、上一 release、上一 commit、`deploy\FILE-MANIFEST.json` SHA256、预部署备份、精确顺序的 `runtimeInputs` 和顶层 `runtimeInputsSha256`。禁止手工编写或修补该 JSON。候选 `deploy\RELEASE.json` 还必须声明唯一 schema capability `equipment-category-parent-name-index-v1`、固定公钥相对路径及公钥 SHA256。
+5. 候选 API 在 `Execute` 前禁止启动，禁止手工运行 `server.js`、`syncIndexes()`、`dropIndexes()` 或直接在 MongoDB 中改索引。
+6. 在业务仍在线时，用候选 CLI 生成一个新的、只读的批准 dry-run。报告必须位于本 release 的 evidence 目录，状态为 `DRY_RUN_READY`，`writePerformed=false`，证明目标索引尚不存在、旧索引恰好一个、未知团队级 unique 索引为零、blocker 为零。
+
+先在服务器的提升权限 Windows PowerShell 5.1 会话中填写非秘密发布标识。真实环境文件仍放在受保护路径，只传绝对路径，不把其内容写入命令记录或聊天：
+
+```powershell
+$RecoveryRoot = 'C:\TaskDistribution-V2\Recovery'
+$ApprovedBackupRoot = 'C:\ServerBackups\TaskDistribution-V2-Test'
+$ReleaseId = 'v2-YYYYMMDD-abcdef0'
+$SourceCommit = '<40-char candidate commit SHA>'
+$PreviousReleaseId = 'v2-YYYYMMDD-1234567'
+$PreviousCommit = '<40-char previous commit SHA>'
+$OperationsEnv = '<absolute protected operations env path>'
+$ReleaseArchive = '<absolute path to v2-YYYYMMDD-abcdef0.tar.gz>'
+$ExpectedReleaseArchiveSha256 = '<SHA256 from the approved build transfer record>'
+$ArtifactManifest = '<absolute path to v2-YYYYMMDD-abcdef0.artifact-manifest.json>'
+$ExpectedArtifactManifestSha256 = '<artifact manifest SHA256 from the approved transfer record>'
+$PredeployBackupReceipt = '<absolute path to deployment-backup-receipt.json>'
+$ExpectedPredeployBackupReceiptSha256 = '<predeploy receipt SHA256 from the off-host handoff>'
+$PinnedRuntimeSource = '<absolute path to the approved node-v22.23.1-win-x64 directory>'
+$ExpectedPinnedNodeSha256 = '<approved SHA256 of PinnedRuntimeSource\node.exe>'
+$PinnedWebProxySource = '<absolute path to the approved serve-v2-recovery.cjs>'
+$ExpectedPinnedWebProxySha256 = '<approved SHA256 of PinnedWebProxySource>'
+
+$Candidate = Join-Path (Join-Path $RecoveryRoot 'releases') $ReleaseId
+$PreviousCandidate = Join-Path (Join-Path $RecoveryRoot 'releases') $PreviousReleaseId
+$Incoming = Join-Path (Join-Path $RecoveryRoot 'releases') ".incoming-$ReleaseId"
+$Evidence = Join-Path (Join-Path $RecoveryRoot 'evidence') "release-$ReleaseId"
+$AppEnv = Join-Path $RecoveryRoot 'config\app.env'
+$TrustedPublicKeyRelativePath = 'deploy/v2-test/trusted-offhost-receipt-public-key.xml'
+$TrustedPublicKeyPath = Join-Path $Candidate ($TrustedPublicKeyRelativePath -replace '/', '\')
+$StageScript = Join-Path $Candidate 'ops\windows\New-V2RecoveryEquipmentCategoryIndexStage.ps1'
+$ReleaseScript = Join-Path $Candidate 'ops\windows\Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1'
+$PostAuditScript = Join-Path $Candidate 'ops\windows\Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
+$ApprovedDryRun = Join-Path $Evidence 'equipment-category-index-approved-dry-run.json'
+$StagedPath = Join-Path $Evidence 'staged.json'
+```
+
+候选准备必须在业务仍运行、候选 API 从未启动时执行。下面步骤没有覆盖或自动清理分支；任一步失败时保留 incoming 目录和输出，调查后使用新 release ID，除非已有单独批准的清理记录：
+
+```powershell
+foreach ($path in @($Candidate, $Incoming, $Evidence, $StagedPath)) {
+  if (Test-Path -LiteralPath $path) { throw "Release path already exists; refusing overwrite: $path" }
+}
+foreach ($file in @(
+  $ReleaseArchive, $ArtifactManifest, $PredeployBackupReceipt,
+  (Join-Path $PinnedRuntimeSource 'node.exe'),
+  (Join-Path $PinnedRuntimeSource 'npm.cmd'),
+  $PinnedWebProxySource
+)) {
+  if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { throw "Required staging input missing: $file" }
+}
+if ((Get-FileHash -LiteralPath $ReleaseArchive -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $ExpectedReleaseArchiveSha256) { throw 'Release archive transfer SHA256 mismatch' }
+if ((Get-FileHash -LiteralPath $ArtifactManifest -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $ExpectedArtifactManifestSha256) { throw 'Artifact manifest transfer SHA256 mismatch' }
+if ((Get-FileHash -LiteralPath $PredeployBackupReceipt -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $ExpectedPredeployBackupReceiptSha256) { throw 'Predeploy receipt transfer SHA256 mismatch' }
+if ((Get-FileHash -LiteralPath (Join-Path $PinnedRuntimeSource 'node.exe') -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $ExpectedPinnedNodeSha256) { throw 'Pinned Node SHA256 mismatch' }
+if ((Get-FileHash -LiteralPath $PinnedWebProxySource -Algorithm SHA256).Hash.ToLowerInvariant() -cne
+    $ExpectedPinnedWebProxySha256) { throw 'Pinned Web proxy SHA256 mismatch' }
+$pinnedWebProxyText = [IO.File]::ReadAllText($PinnedWebProxySource)
+foreach ($requiredProxyVariable in @('WEB_ROOT', 'WEB_PORT', 'API_UPSTREAM')) {
+  if (-not $pinnedWebProxyText.Contains($requiredProxyVariable)) {
+    throw "Pinned Web proxy does not implement required variable: $requiredProxyVariable"
+  }
+}
+
+$archiveEntries = @(& tar.exe -tzf $ReleaseArchive)
+if ($LASTEXITCODE -ne 0 -or $archiveEntries.Count -eq 0) { throw 'Unable to list release archive' }
+$archivePathSet = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+foreach ($entry in $archiveEntries) {
+  $relative = ([string]$entry).Replace('\', '/').TrimEnd('/')
+  while ($relative.StartsWith('./', [StringComparison]::Ordinal)) {
+    $relative = $relative.Substring(2)
+  }
+  if (-not $relative) { continue }
+  $segments = @($relative.Split('/'))
+  if (
+    [IO.Path]::IsPathRooted($relative) -or $relative.Contains(':') -or
+    ($segments | Where-Object { $_ -eq '' -or $_ -eq '.' -or $_ -eq '..' }) -or
+    -not $archivePathSet.Add($relative)
+  ) { throw "Unsafe or duplicate release archive path: $entry" }
+}
+
+New-Item -ItemType Directory -Path $Incoming | Out-Null
+& tar.exe -xzf $ReleaseArchive -C $Incoming
+if ($LASTEXITCODE -ne 0) { throw 'Release archive extraction failed; incoming is retained' }
+$reparse = @(Get-ChildItem -LiteralPath $Incoming -Recurse -Force | Where-Object {
+  $_.Attributes -band [IO.FileAttributes]::ReparsePoint
+})
+if ($reparse.Count -ne 0) { throw "Extracted candidate contains a reparse point: $($reparse[0].FullName)" }
+
+Copy-Item -LiteralPath $PinnedRuntimeSource -Destination (Join-Path $Incoming 'runtime-node') -Recurse
+$candidateNode = Join-Path $Incoming 'runtime-node\node.exe'
+$candidateNpm = Join-Path $Incoming 'runtime-node\npm.cmd'
+if (([string](& $candidateNode --version)).Trim() -cne 'v22.23.1') { throw 'Injected Node version mismatch' }
+Push-Location (Join-Path $Incoming 'app')
+try {
+  & $candidateNpm ci --omit=dev --ignore-scripts --no-audit --no-fund
+  if ($LASTEXITCODE -ne 0) { throw 'Candidate npm ci failed; incoming is retained' }
+}
+finally { Pop-Location }
+foreach ($dependency in @('dotenv', 'express', 'mongoose')) {
+  if (-not (Test-Path -LiteralPath (Join-Path $Incoming "app\node_modules\$dependency\package.json") -PathType Leaf)) {
+    throw "Required production dependency missing after npm ci: $dependency"
+  }
+}
+Copy-Item -LiteralPath $PinnedWebProxySource -Destination (Join-Path $Incoming 'serve-v2-recovery.cjs')
+
+$apiRunner = @'
+$ErrorActionPreference = 'Stop'
+$releaseRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$recoveryRoot = Split-Path -Parent (Split-Path -Parent $releaseRoot)
+$env:ENV_FILE = Join-Path $recoveryRoot 'config\app.env'
+Set-Location (Join-Path $releaseRoot 'app')
+& (Join-Path $releaseRoot 'runtime-node\node.exe') (Join-Path $releaseRoot 'app\server.js')
+exit $LASTEXITCODE
+'@
+$webRunner = @'
+$ErrorActionPreference = 'Stop'
+$releaseRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$env:WEB_ROOT = Join-Path $releaseRoot 'app\frontend\dist'
+$env:WEB_PORT = '18130'
+$env:API_UPSTREAM = 'http://127.0.0.1:18120'
+Set-Location $releaseRoot
+& (Join-Path $releaseRoot 'runtime-node\node.exe') (Join-Path $releaseRoot 'serve-v2-recovery.cjs')
+exit $LASTEXITCODE
+'@
+$utf8NoBom = New-Object Text.UTF8Encoding($false)
+[IO.File]::WriteAllText((Join-Path $Incoming 'run-v2-recovery-api.ps1'), "$apiRunner`n", $utf8NoBom)
+[IO.File]::WriteAllText((Join-Path $Incoming 'run-v2-recovery-web.ps1'), "$webRunner`n", $utf8NoBom)
+& $candidateNode --check (Join-Path $Incoming 'serve-v2-recovery.cjs')
+if ($LASTEXITCODE -ne 0) { throw 'Pinned Web proxy syntax check failed' }
+
+foreach ($path in @($Candidate, $Evidence)) {
+  if (Test-Path -LiteralPath $path) {
+    throw "Release path appeared concurrently; refusing overwrite: $path"
+  }
+}
+Move-Item -LiteralPath $Incoming -Destination $Candidate
+```
+
+`PinnedRuntimeSource` 和 `PinnedWebProxySource` 是经变更记录批准的只读输入，不得临时从网络下载，也不得仅凭文件名复用；其 SHA256 必须随本次 package/stage 证据归档。固定 Web proxy 必须实际读取并支持 `WEB_ROOT`、`WEB_PORT`、`API_UPSTREAM`，上述门禁会先检查三个变量契约，激活和 post-audit 还会验证其真实监听及反向代理结果。归档预检和解压后 reparse 检查都必须通过，才能执行依赖安装。候选准备只生成运行依赖和 runner，不生成 `staged.json`。
+
+接着调用候选内的 staging 生成器。第一遍不带 `-Apply` 输出 `WINDOWS_RECOVERY_CANDIDATE_STAGE_PLAN_READY`；第二遍才以 create-new 方式写入。若 `staged.json` 已存在，同一命令只会输出 `WINDOWS_RECOVERY_CANDIDATE_STAGE_REVERIFIED`，输入不同则拒绝且不覆盖：
+
+```powershell
+$StageArgs = @{
+  ReleaseId = $ReleaseId
+  SourceCommit = $SourceCommit
+  PreviousReleaseId = $PreviousReleaseId
+  PreviousCommit = $PreviousCommit
+  ReleaseArchivePath = $ReleaseArchive
+  ExpectedReleaseArchiveSha256 = $ExpectedReleaseArchiveSha256
+  ArtifactManifestPath = $ArtifactManifest
+  ExpectedArtifactManifestSha256 = $ExpectedArtifactManifestSha256
+  PredeployBackupReceiptPath = $PredeployBackupReceipt
+  ExpectedPredeployBackupReceiptSha256 = $ExpectedPredeployBackupReceiptSha256
+  OperationsEnvPath = $OperationsEnv
+  RecoveryRoot = $RecoveryRoot
+}
+& $StageScript @StageArgs
+& $StageScript @StageArgs `
+  -ConfirmInstance 'task-distribution-v2-customer-test' `
+  -ConfirmReleaseId $ReleaseId `
+  -ConfirmPreviousReleaseId $PreviousReleaseId `
+  -Apply -Confirm:$false
+
+$Staged = [IO.File]::ReadAllText($StagedPath) | ConvertFrom-Json
+$AppEnvSha256 = [string]$Staged.runtimeInputs.appEnvSha256
+$OperationsEnvSha256 = [string]$Staged.runtimeInputs.operationsEnvSha256
+$TrustedPublicKeySha256 = [string]$Staged.runtimeInputs.trustedPublicKeySha256
+$RuntimeInputsJson = ConvertTo-Json $Staged.runtimeInputs -Depth 12 -Compress
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try {
+  $RuntimeInputsSha256 = ([BitConverter]::ToString($sha256.ComputeHash(
+    (New-Object Text.UTF8Encoding($false)).GetBytes($RuntimeInputsJson)
+  ))).Replace('-', '').ToLowerInvariant()
+}
+finally { $sha256.Dispose() }
+if ([string]$Staged.runtimeInputsSha256 -cne $RuntimeInputsSha256) {
+  throw 'staged.json runtime input hash contract mismatch'
+}
+
+if (Test-Path -LiteralPath $ApprovedDryRun) { throw 'Approved dry-run path must be new' }
+$hadEnvFile = Test-Path Env:ENV_FILE
+$previousEnvFile = $env:ENV_FILE
+try {
+  $env:ENV_FILE = $AppEnv
+  & (Join-Path $Candidate 'runtime-node\node.exe') `
+    (Join-Path $Candidate 'app\script\migrateEquipmentCategoryIndex.js') `
+    --dry-run --report $ApprovedDryRun
+  if ($LASTEXITCODE -ne 0) { throw 'Approved equipment-category dry-run failed' }
+}
+finally {
+  if ($hadEnvFile) { $env:ENV_FILE = $previousEnvFile }
+  else { Remove-Item Env:ENV_FILE -ErrorAction SilentlyContinue }
+}
+
+$MigrationDryRunReportSha256 = (Get-FileHash -LiteralPath $ApprovedDryRun -Algorithm SHA256).Hash.ToLowerInvariant()
+$StagedEvidenceSha256 = (Get-FileHash -LiteralPath $StagedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$Common = @{
+  ReleaseId = $ReleaseId
+  SourceCommit = $SourceCommit
+  PreviousReleaseId = $PreviousReleaseId
+  PreviousCommit = $PreviousCommit
+  MigrationDryRunReport = $ApprovedDryRun
+  MigrationDryRunReportSha256 = $MigrationDryRunReportSha256
+  StagedEvidenceSha256 = $StagedEvidenceSha256
+  OperationsEnvPath = $OperationsEnv
+  AppEnvSha256 = $AppEnvSha256
+  OperationsEnvSha256 = $OperationsEnvSha256
+  RecoveryRoot = $RecoveryRoot
+  ApprovedBackupRoot = $ApprovedBackupRoot
+}
+```
+
+#### 4.5.2 Phase 1：Plan 和 Hold
+
+先执行只读 `Plan`。输出必须是 `TWO_PHASE_PLAN_READY`，并人工复核 release、commit、数据库、停止顺序、保留任务、观察时长和 `requiredRecoveryAfterMigrationStarts=FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE`：
+
+```powershell
+& $ReleaseScript @Common -Mode Plan
+```
+
+获得维护窗口批准后执行一次 `Hold`。显式确认参数是防误操作边界，不能改成相近名称：
+
+```powershell
+$holdOutput = @(& $ReleaseScript @Common `
+  -Mode Hold `
+  -ConfirmInstance 'task-distribution-v2-customer-test' `
+  -ConfirmDatabase 'customer_acceptance_v2_test' `
+  -ConfirmReleaseId $ReleaseId `
+  -ConfirmPreviousReleaseId $PreviousReleaseId `
+  -Confirm:$false 2>&1)
+$Hold = (($holdOutput | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
+if ($Hold.status -ne 'BUSINESS_SURFACE_HELD_FOR_STOPPED_BACKUP') { throw 'Hold did not complete' }
+
+$StoppedHandoffPath = [string]$Hold.stoppedHandoffPath
+$StoppedHandoffSha256 = [string]$Hold.stoppedHandoffSha256
+$HandoffNonce = [string]$Hold.handoffNonce
+$SourceHost = [string]$Hold.sourceHost
+$HoldMongoAnchorPath = [string]$Hold.holdMongoAnchorPath
+$HoldMongoAnchorSha256 = [string]$Hold.holdMongoAnchorSha256
+```
+
+`Hold` 的固定顺序是业务 tunnel -> Web -> API，三项均停止并禁用；管理 tunnel 和 MongoDB 必须继续运行。脚本还会验证 `18120/18130` 已无监听、没有 Recovery 目标库写进程、停写状态下的第二次 dry-run 仍满足迁移前状态，然后一次性写入随机 nonce，采集 `mongo-write-anchor-hold.json`，最后把其绝对路径和整个文件的 SHA256 连同 `stoppedAt` 封入 handoff。从 `Hold` 成功返回到 `Execute` 完成前，客户业务面按设计不可用；不得手工启动、启用或运行这三个业务任务，否则 `Execute` 会因任务动作、`LastRunTime`、监听状态或 Mongo write anchor 漂移而拒绝。
+
+#### 4.5.3 停写后新备份和服务器 ZIP 证据
+
+必须在 `Hold.stoppedAt` 之后用候选 release 的官方 `ops/backup.js` 创建全新备份。该 `backupId` 必须不同于 `staged.json` 中的预部署备份，目录必须位于 `$ApprovedBackupRoot` 下，manifest 的 `createdAt` 和 `completedAt` 都不得早于 `stoppedAt`：
+
+```powershell
+$backupOutput = @(& (Join-Path $Candidate 'runtime-node\node.exe') `
+  (Join-Path $Candidate 'ops\backup.js') --env-file $OperationsEnv 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ($backupOutput -join "`n") }
+$Backup = (($backupOutput | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
+if ($Backup.status -ne 'BACKUP_COMPLETED' -or $Backup.database -ne 'customer_acceptance_v2_test') {
+  throw 'Stopped backup identity mismatch'
+}
+
+$BackupId = [string]$Backup.backupId
+$BackupDirectory = [string]$Backup.directory
+$BackupManifestSha256 = [string]$Backup.manifestSha256
+$verifyOutput = @(& (Join-Path $Candidate 'runtime-node\node.exe') `
+  (Join-Path $Candidate 'ops\verify-backup.js') `
+  --env-file $OperationsEnv --backup-id $BackupId 2>&1)
+if ($LASTEXITCODE -ne 0) { throw ($verifyOutput -join "`n") }
+$Verified = (($verifyOutput | ForEach-Object { [string]$_ }) -join "`n") | ConvertFrom-Json
+if ($Verified.status -ne 'BACKUP_VERIFIED' -or $Verified.manifestSha256 -ne $BackupManifestSha256) {
+  throw 'Stopped backup verification mismatch'
+}
+
+$ServerArchive = Join-Path $ApprovedBackupRoot "$BackupId.zip"
+if (Test-Path -LiteralPath $ServerArchive) { throw 'Stopped backup archive path must be new' }
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::CreateFromDirectory(
+  $BackupDirectory,
+  $ServerArchive,
+  [IO.Compression.CompressionLevel]::Optimal,
+  $true
+)
+$ExpectedArchiveSha256 = (Get-FileHash -LiteralPath $ServerArchive -Algorithm SHA256).Hash.ToLowerInvariant()
+$ExpectedArchiveBytes = [int64](Get-Item -LiteralPath $ServerArchive).Length
+```
+
+备份 manifest 必须声明 `task-distribution-v2-backup/v1`、`customer_acceptance_v2_test`、`BEST_EFFORT_ONLINE_MONGODUMP` 和 `databaseAndUploadsAtomic=false`，并完整包含 `equipmentcategories.bson`、`equipmentcategories.metadata.json`、uploads 文件及 FileAsset 引用验证。业务写入已经停止，但数据库和上传文件仍不是底层原子快照；恢复时必须把同一个 `backupId` 的数据库与 uploads 当作一套恢复点，不能拼接不同备份。
+
+#### 4.5.4 独立工作站 E 盘验签和 receipt
+
+把最终 `$BackupId.zip` 以二进制原样下载到一台不同于 `$SourceHost` 的独立 Windows 工作站 E 盘，同时取得候选中的以下五个原样文件：
+
+- `runtime-node\node.exe`；
+- `ops\lib\backupCore.js`；
+- `ops\windows\New-V2RecoveryStoppedBackupOffhostReceipt.ps1`；
+- `ops\windows\New-V2RecoveryOffhostReceiptSigningKey.ps1`；
+- `deploy\v2-test\trusted-offhost-receipt-public-key.xml`。
+
+传输记录必须保存服务器侧 ZIP SHA256、字节数和工作站侧复算值。Node、backupCore、receipt generator、key generator 和固定公钥也必须与服务器候选逐文件 SHA256 相同；receipt 会记录其实际消费工具的 SHA，`Execute` 会再次和候选比较。签名私钥必须提前由候选包内 `New-V2RecoveryOffhostReceiptSigningKey.ps1` 在独立工作站 E 盘受保护目录生成；该脚本会拒绝把 key root 放在 Git 仓库内。私钥只能留在该工作站，禁止上传服务器、写入仓库、命令输出或聊天。独立副本根目录必须真实位于 E 盘且不是 reparse point，ZIP、全新解压目录、固定公钥和全新 receipt 路径都必须位于该根目录下。
+
+在独立工作站执行下面命令。第一遍不带 `-Apply` 只输出计划，确认无误后第二遍才写入；`ConfirmIndependentHost` 必须等于工作站自己的 `$env:COMPUTERNAME`：
+
+```powershell
+$IndependentRoot = "E:\TaskDistribution-V2-Offhost\$ReleaseId\$BackupId"
+$ArchivePath = Join-Path $IndependentRoot "$BackupId.zip"
+$ExtractionDirectory = Join-Path $IndependentRoot 'verified-extracted'
+$ReceiptPath = Join-Path $IndependentRoot "offhost-verification-$BackupId.json"
+$NodePath = Join-Path $IndependentRoot 'candidate-tools\runtime-node\node.exe'
+$BackupCorePath = Join-Path $IndependentRoot 'candidate-tools\ops\lib\backupCore.js'
+$ReceiptGenerator = Join-Path $IndependentRoot 'candidate-tools\ops\windows\New-V2RecoveryStoppedBackupOffhostReceipt.ps1'
+$SigningPrivateKeyPath = '<protected E:\ path to offhost-receipt-private.xml>'
+$ExpectedTrustedPublicKeySha256 = '<candidate public key SHA256 recorded at staging>'
+$IndependentTrustedPublicKeyPath = Join-Path $IndependentRoot `
+  'candidate-tools\deploy\v2-test\trusted-offhost-receipt-public-key.xml'
+$IndependentTrustedPublicKeySha256 = (Get-FileHash `
+  -LiteralPath $IndependentTrustedPublicKeyPath -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($IndependentTrustedPublicKeySha256 -cne $ExpectedTrustedPublicKeySha256) {
+  throw 'Independent workstation public key differs from the staged candidate'
+}
+
+$ReceiptArgs = @{
+  ReleaseId = $ReleaseId
+  SourceCommit = $SourceCommit
+  PreviousReleaseId = $PreviousReleaseId
+  PreviousCommit = $PreviousCommit
+  BackupId = $BackupId
+  BackupManifestSha256 = $BackupManifestSha256
+  StoppedHandoffSha256 = $StoppedHandoffSha256
+  HandoffNonce = $HandoffNonce
+  ExpectedArchiveSha256 = $ExpectedArchiveSha256
+  ExpectedArchiveBytes = $ExpectedArchiveBytes
+  SourceHost = $SourceHost
+  IndependentCopyRoot = $IndependentRoot
+  ArchivePath = $ArchivePath
+  ExtractionDirectory = $ExtractionDirectory
+  ReceiptPath = $ReceiptPath
+  NodePath = $NodePath
+  BackupCorePath = $BackupCorePath
+  SigningPrivateKeyPath = $SigningPrivateKeyPath
+  TrustedPublicKeyPath = $IndependentTrustedPublicKeyPath
+  TrustedPublicKeySha256 = $IndependentTrustedPublicKeySha256
+  ConfirmIndependentHost = $env:COMPUTERNAME
+}
+& $ReceiptGenerator @ReceiptArgs
+& $ReceiptGenerator @ReceiptArgs -Apply -Confirm:$false
+```
+
+生成器会拒绝 ZIP 路径穿越、重复项、符号链接、已有解压/receipt 路径、source host 与 independent host 相同、ZIP SHA/字节数不一致，并调用 `verifyBackupSet(..., { verifyFiles: true })` 复核精确文件集、每个声明文件 SHA256、设备分类 BSON/metadata、uploads 和 FileAsset 引用。最终文件是 `task-distribution-v2-windows-stopped-backup-offhost-signed-envelope/v2`，使用 RSA-3072、SHA256、PKCS#1 v1.5 签名；服务器只信任候选包内固定公钥。保留 E 盘 ZIP、解压结果和原始 signed receipt，不要在 `Execute` 后立即清理。
+
+将 receipt 原样上传回服务器的唯一固定路径，上传前该路径必须不存在，上传后再复算 SHA256；不要手工编辑 JSON：
+
+```powershell
+$OffhostVerificationReceipt = Join-Path $Evidence "offhost-verification-$BackupId.json"
+# Upload the exact independent-workstation ReceiptPath through the approved transfer channel.
+$OffhostVerificationReceiptSha256 = (Get-FileHash `
+  -LiteralPath $OffhostVerificationReceipt -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+#### 4.5.5 Phase 2：Execute
+
+`Execute` 会重新校验 handoff、nonce、任务连续性、停写后备份、离机 receipt、候选三份验证工具 SHA 和第三次 stopped-state dry-run，之后才创建一次性 execute claim。所有值必须来自本次链路，不能复用其他 release、主机或备份的报告：
+
+```powershell
+& $ReleaseScript @Common `
+  -Mode Execute `
+  -StoppedHandoffPath $StoppedHandoffPath `
+  -StoppedHandoffSha256 $StoppedHandoffSha256 `
+  -HandoffNonce $HandoffNonce `
+  -BackupDirectory $BackupDirectory `
+  -BackupId $BackupId `
+  -BackupManifestSha256 $BackupManifestSha256 `
+  -OffhostVerificationReceipt $OffhostVerificationReceipt `
+  -OffhostVerificationReceiptSha256 $OffhostVerificationReceiptSha256 `
+  -TrustedPublicKeyPath $TrustedPublicKeyPath `
+  -TrustedPublicKeySha256 $TrustedPublicKeySha256 `
+  -ConfirmInstance 'task-distribution-v2-customer-test' `
+  -ConfirmDatabase 'customer_acceptance_v2_test' `
+  -ConfirmReleaseId $ReleaseId `
+  -ConfirmPreviousReleaseId $PreviousReleaseId `
+  -ConfirmBackupId $BackupId `
+  -ConfirmHandoffNonce $HandoffNonce `
+  -Confirm:$false
+```
+
+`Execute` 在创建 claim 和写索引前，会生成 `mongo-write-anchor-execute.json` 并与 Hold anchor 比较；只要 oplog、Mongo 进程/拓扑身份、release 或 nonce 有变化，就保持业务闭锁并失败。不要中断默认的 330 秒候选稳定性观察和 300 秒 worker 观察。第一次 execute 报告必须是 `EXECUTED`、`writePerformed=true`；脚本紧接着进行的第二次 execute 必须是 `ALREADY_APPLIED`、`writePerformed=false`。随后才允许切换 stable runner、启动 API/Web、恢复业务 tunnel、开启 worker，并验证本地/公网健康、两团队列表、进程未重启且 worker 日志没有 `Equipment routine worker failed:`。handoff nonce 和所有报告路径只能消费一次；SSH 或终端断开时先查证据和任务状态，禁止盲目重跑 `Execute`。
+
+MongoDB 的 `createIndex/dropIndex` 与文件证据台账不是一个数据库事务，不能描述为“DDL 与 ledger 原子提交”。本流程依靠停写窗口、Mongo write anchor、create-new 证据、失败闭锁和幂等复跑前向收敛；`migration-started.json` 落盘后禁止普通代码回滚。
+
+#### 4.5.6 Post-audit 和成功判定
+
+`Execute` 成功返回后，使用同一组 release、commit、backup、handoff、nonce 和 receipt SHA 运行独立 post-audit。`IndexAuditReport` 必须是 evidence 目录下的全新路径：
+
+```powershell
+$stamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+$IndexAuditReport = Join-Path $Evidence `
+  "equipment-category-index-postaudit-$stamp-$([Guid]::NewGuid().ToString('N')).json"
+$BusinessAuditReport = Join-Path $Evidence `
+  "equipment-routine-business-postaudit-$stamp-$([Guid]::NewGuid().ToString('N')).json"
+& $PostAuditScript `
+  -ReleaseId $ReleaseId `
+  -SourceCommit $SourceCommit `
+  -PreviousReleaseId $PreviousReleaseId `
+  -PreviousCommit $PreviousCommit `
+  -BackupId $BackupId `
+  -BackupManifestSha256 $BackupManifestSha256 `
+  -StagedEvidenceSha256 $StagedEvidenceSha256 `
+  -StoppedHandoffSha256 $StoppedHandoffSha256 `
+  -HandoffNonce $HandoffNonce `
+  -OffhostVerificationReceiptSha256 $OffhostVerificationReceiptSha256 `
+  -TrustedPublicKeyPath $TrustedPublicKeyPath `
+  -TrustedPublicKeySha256 $TrustedPublicKeySha256 `
+  -OperationsEnvPath $OperationsEnv `
+  -AppEnvSha256 $AppEnvSha256 `
+  -OperationsEnvSha256 $OperationsEnvSha256 `
+  -RecoveryRoot $RecoveryRoot `
+  -IndexAuditReport $IndexAuditReport `
+  -BusinessAuditReport $BusinessAuditReport
+```
+
+只有输出 `POSTDEPLOY_AUDIT_PASSED` 才算发布链通过。post-audit 会重新验证候选精确 `FILE-MANIFEST.json`、固定公钥、`app.env`/`operations.env` 及 `runtimeInputsSha256` 的完整哈希链，复核 Hold/Execute 两份 Mongo write anchor 未漂移，并执行只读设备点检/保养业务审计。业务审计要求 `GEARBOX_LOGISTICS` 下三种在用一级设备名称的数量门禁分别为铅酸电池电动叉车 `6`、锂离子电池电动叉车 `5`、辊子输送机 `1`，且 `writePerformed=false`、违规数为零。它还验证目标索引存在、旧索引和未知团队级 unique 索引为零、blocker 为零、五个计划任务运行、API/Web 仅监听 loopback、当前进程属于候选 release、本地/公网健康、`ENGINE_LOGISTICS` 和 `GEARBOX_LOGISTICS` 可见。只要 release evidence 中存在 `migration-or-activation-failed.json`，即使同时存在 `active.json` 或 `activation-commit.json`，也必须判失败。post-audit 工具本身只报告并抛错，不会替操作者停止已激活服务；若它失败，应立即按事故流程冻结业务面并保全证据，不能宣告成功或直接回滚代码。
+
+#### 4.5.7 固定证据和失败恢复边界
+
+以下证据必须归档并记录 SHA256。除 post-audit 的带时间戳报告外，脚本对固定路径使用 create-new 语义；禁止删除后复用：
+
+| 阶段 | 必需证据 |
+| --- | --- |
+| package/stage | release `.tar.gz`、归档 SHA256、artifact manifest、候选 `deploy\RELEASE.json`、`deploy\FILE-MANIFEST.json` 及 SHA256、`staged.json` 及 SHA256、`runtimeInputsSha256`、批准 dry-run及 SHA256 |
+| Hold | `migration-rollback-state.json`、`equipment-category-index-stopped-dry-run.json`、`equipment-category-index-stopped-handoff.json` 及其 nonce、`stoppedAt`、`sourceHost`、任务动作/LastRunTime/监听状态、`mongo-write-anchor-hold.json` 及 SHA256 |
+| stopped backup | 完整 `$BackupDirectory`、`manifest.json`、`manifest.sha256`、服务器 `$BackupId.zip` 的 SHA256 和字节数、官方 verify 成功输出 |
+| independent workstation | E 盘原始 ZIP、全新解压目录、原始 `offhost-verification-$BackupId.json`、工作站名及 Node/backupCore/receipt generator/key generator SHA |
+| Execute | `backup-verification-before-index-migration.json`、`equipment-category-index-execute-dry-run.json`、`equipment-category-index-execute-claim.json`、`mongo-write-anchor-execute.json` 及 SHA256、`migration-started.json`、`equipment-category-index-execute.json`、`equipment-category-index-idempotency.json`、`migration-completed.json` |
+| activation/audit | `active.json`、`active-release.json`、`activation-commit.json`、带时间戳 post-audit index 报告及 SHA256、带时间戳只读 equipment-routine business 报告及 SHA256、post-audit 完整输出、任务/监听/健康/worker 观察结果 |
+
+恢复决策以 `migration-started.json` 是否已落盘为唯一硬分界，不以操作者猜测 CLI 是否“可能还没写”代替证据：
+
+| 状态 | 允许动作 |
+| --- | --- |
+| `Plan` 失败 | 没有业务变更；修复输入或 blocker 后创建新报告再评审。 |
+| `Hold` 自身失败 | 脚本尝试按 `migration-rollback-state.json` 自动恢复旧 API/Web/tunnel，并写 `pre-migration-automatic-recovery.json`；若恢复不完整，继续保持事故状态，不能宣称旧版已恢复。 |
+| `Hold` 成功，或 `Execute` 在 `migration-started.json` 前失败 | 业务面保持停止，`rollbackReady=false`。只有先证明索引完全未变，再严格恢复捕获的旧任务动作、runner 和 active marker，才允许恢复上一 release；不能随手启用任务。 |
+| `migration-started.json` 已存在，无论后续迁移、激活或观察在哪一步失败 | 业务 tunnel、Web、API 必须保持停止；`rollbackReady=false`、`codeOnlyRollbackAllowed=false`，唯一恢复方向是 `FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE`。不得启动旧代码、重建旧索引、覆盖活动数据库或删除失败证据。 |
+| 迁移及激活成功 | 仍然是 `rollbackReady=false`、`codeOnlyRollbackAllowed=false`。新索引允许不同父分类下出现相同二级名称，之后旧代码可能无法重建旧的团队级唯一约束，因此禁止普通代码单独回滚。 |
+
+“恢复到新数据库”指：保持业务停止，把本次停写备份的数据库和 uploads 恢复到全新的隔离数据库名与隔离上传目录，完成 manifest/文件/索引/业务只读校验，再经单独批准切换兼容运行时；不能原地覆盖 `customer_acceptance_v2_test`。恢复完成前，管理 tunnel 和 MongoDB 可按取证需要保留，但不得借此开放客户业务面。
+
+### 4.6 切换版本
+
+本节是没有专用迁移激活器时的通用 Windows 切换。4.5 节的 Windows Recovery 设备分类索引发布已经由 `Execute` 完成 runner、active marker、API/Web、tunnel 和 worker 激活，不得再执行本节命令。
 
 上线前先按 `docs/OPERATIONS_RUNBOOK.md` 创建并校验备份。维护窗口内：
 
@@ -520,17 +997,17 @@ sudo systemctl reload nginx
 
 恢复到 Task/TaskReview 审核轮次迁移前的旧测试快照后，新测试库的字段和索引状态也随快照回退；在用当前版本启动 API 或继续冒烟前，必须针对该恢复库重新执行 dry-run 和显式迁移，不能沿用原数据库的迁移报告。
 
-### 6.5 当前公网测试域名的边缘回滚
+### 6.5 历史公网测试域名边缘回滚记录
 
-`v2-test.horselink.cn` 是独立客户测试入口，不是生产切换。当前真实回滚点和验收结果见 `PUBLIC_TEST_DEPLOYMENT_ACCEPTANCE_20260722.md`。执行回滚时：
+`v2-test.horselink.cn` 是独立客户测试入口，不是生产切换。`PUBLIC_TEST_DEPLOYMENT_ACCEPTANCE_20260722.md` 和下列 ID 仅记录 2026-07-22 的历史演练，不是 2026-08-11 的当前真实回滚点。管理通道恢复后，必须先重新盘点并校验当前边缘配置、备份目录、证书、监听和实际 active release；在此之前禁止直接执行这些旧 ID。
 
-1. 使用明确的 HTTPS 切换备份 `deploy-20260722T175528418-9e0c0ad6` 回到 HTTP 阶段；需要完全移除测试 vhost 时，再使用 HTTP 部署备份 `deploy-20260722T170909046-28c7dbed`。
+1. 历史 provenance：当时的 HTTPS 切换备份为 `deploy-20260722T175528418-9e0c0ad6`，HTTP 部署备份为 `deploy-20260722T170909046-28c7dbed`。只有重新盘点证明目标、内容、完整性和当前拓扑仍匹配，并获得新的维护窗口批准后，才允许把某个历史备份提升为候选。
 2. 禁止使用模糊的 `latest` 备份。回滚脚本必须先创建 safety backup，在 candidate 配置树执行 `nginx -t`，替换后再次执行 live `nginx -t`，成功后才 reload。
 3. 边缘入口回滚并验证旧版 `/`、`/admin`、`/health` 和 `38080` 后，才删除测试 DNS 记录。
 4. 完全下线时单独禁用 `TaskDistribution-V2-Test-Certificate-Renewal`，只停止 `taskdistribution-v2-test-tunnel.service` 和 V2 服务；不得触碰生产 `38080`、`27017` 或旧版服务。
 5. 不删除 V2 MongoDB、附件、备份和 release。数据库恢复不属于普通边缘或代码回滚。
 
-当前回滚脚本已通过 PowerShell 5.1 解析和自包含 `21/21` 断言，但真实边缘完整撤销再恢复尚未演练；完成前不得把测试版部署写成正式生产回滚验收。
+历史回滚脚本曾通过 PowerShell 5.1 解析和自包含 `21/21` 断言，但真实边缘完整撤销再恢复尚未演练，且2026-08-11管理通道不可用；完成重新盘点和新演练前，不得把旧脚本、旧备份或测试版部署写成当前回滚验收。
 
 ## 7. 微信小程序发布与版本回退
 

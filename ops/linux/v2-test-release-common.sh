@@ -521,11 +521,18 @@ const fs = require('node:fs');
 const source = fs.readFileSync(process.argv[2], 'utf8');
 const required = [
   'loadEnvironment',
-  'mongoose.connect(config.mongodbUri)',
+  'connectDatabaseForServer',
+  'SCHEMA_CAPABILITY',
+  'requiredSchemaCapabilities: SCHEMA_CAPABILITY',
   'createApp(config)',
   'app.listen(config.port'
 ];
-const forbidden = ['http.createServer', 'const port = 18130', 'V2 test Web'];
+const forbidden = [
+  'mongoose.connect(config.mongodbUri)',
+  'http.createServer',
+  'const port = 18130',
+  'V2 test Web'
+];
 const failures = [
   ...required.filter(value => !source.includes(value)).map(value => `missing:${value}`),
   ...forbidden.filter(value => source.includes(value)).map(value => `forbidden:${value}`)
@@ -570,6 +577,7 @@ v2_assert_candidate_layout() {
     ops/linux/activate-v2-test-transport-load-types.sh \
     deploy/RELEASE.json \
     deploy/FILE-MANIFEST.json \
+    deploy/v2-test/trusted-offhost-receipt-public-key.xml \
     deploy/linux/staging-server.cjs; do
     test -f "$candidate/$required" || v2_die "Candidate file is missing: $required"
   done
@@ -581,7 +589,9 @@ v2_assert_release_metadata() {
   local expected_release_id="$2"
   local expected_commit="${3:-}"
   /usr/bin/node - "$candidate/deploy/RELEASE.json" "$expected_release_id" "$expected_commit" <<'NODE'
+const crypto = require('node:crypto');
 const fs = require('node:fs');
+const path = require('node:path');
 const [file, releaseId, expectedCommit] = process.argv.slice(2);
 const value = JSON.parse(fs.readFileSync(file, 'utf8'));
 const failures = [];
@@ -595,6 +605,30 @@ if (value.mongoPort !== 27150) failures.push('mongoPort');
 if (value.replicaSet !== 'customer_acceptance_v2_rs') failures.push('replicaSet');
 if (value.database !== 'customer_acceptance_v2_test') failures.push('database');
 if (value.webApiBaseUrl !== '/api') failures.push('webApiBaseUrl');
+if (value.trustedOffhostReceiptPublicKeyPath !== 'deploy/v2-test/trusted-offhost-receipt-public-key.xml') {
+  failures.push('trustedOffhostReceiptPublicKeyPath');
+}
+if (!/^[a-f0-9]{64}$/.test(value.trustedOffhostReceiptPublicKeySha256 || '')) {
+  failures.push('trustedOffhostReceiptPublicKeySha256');
+}
+if (!Array.isArray(value.schemaCapabilities) || value.schemaCapabilities.length !== 1 ||
+    value.schemaCapabilities[0] !== 'equipment-category-parent-name-index-v1') {
+  failures.push('schemaCapabilities');
+}
+const releaseRoot = path.resolve(path.dirname(file), '..');
+const publicKeyPath = path.join(
+  releaseRoot,
+  ...String(value.trustedOffhostReceiptPublicKeyPath || '').split('/')
+);
+if (!fs.existsSync(publicKeyPath) || !fs.lstatSync(publicKeyPath).isFile() ||
+    fs.lstatSync(publicKeyPath).isSymbolicLink()) {
+  failures.push('trustedOffhostReceiptPublicKey');
+} else {
+  const publicKeySha256 = crypto.createHash('sha256').update(fs.readFileSync(publicKeyPath)).digest('hex');
+  if (publicKeySha256 !== value.trustedOffhostReceiptPublicKeySha256) {
+    failures.push('trustedOffhostReceiptPublicKeySha256Mismatch');
+  }
+}
 if (!/^[a-f0-9]{40}$/.test(value.commit || '')) failures.push('commitFormat');
 if (failures.length) {
   process.stderr.write(`Release metadata mismatch: ${failures.join(', ')}\n`);
@@ -614,14 +648,27 @@ const crypto = require('node:crypto');
 const [root, releaseId, commit] = process.argv.slice(2);
 const manifestPath = path.join(root, 'deploy', 'FILE-MANIFEST.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const expectedKeys = [
+  'commit', 'fileCount', 'files', 'format', 'generatedAt', 'pathComparison',
+  'releaseId', 'selfPath', 'setSemantics'
+];
+const actualKeys = Object.keys(manifest).sort();
 if (manifest.format !== 'task-distribution-v2-release-files/v1' ||
-    manifest.releaseId !== releaseId || manifest.commit !== commit || !Array.isArray(manifest.files)) {
+    manifest.releaseId !== releaseId || manifest.commit !== commit ||
+    manifest.pathComparison !== 'windows-ordinal-ignore-case' ||
+    manifest.setSemantics !== 'exact-package-files-excluding-manifest' ||
+    manifest.selfPath !== 'deploy/FILE-MANIFEST.json' ||
+    !Array.isArray(manifest.files) || manifest.fileCount !== manifest.files.length ||
+    JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
   throw new Error('Release file manifest identity mismatch');
 }
+const canonical = (value) => value.toUpperCase();
 const declared = new Map();
 for (const entry of manifest.files) {
+  const key = typeof entry?.file === 'string' ? canonical(entry.file) : '';
   if (!entry || typeof entry.file !== 'string' || !Number.isInteger(entry.bytes) || entry.bytes < 0 ||
-      !/^[a-f0-9]{64}$/.test(entry.sha256 || '') || declared.has(entry.file)) {
+      !/^[\x20-\x7e]+$/.test(entry.file) || !/^[a-f0-9]{64}$/.test(entry.sha256 || '') ||
+      declared.has(key)) {
     throw new Error(`Invalid release manifest entry: ${entry?.file || '(unknown)'}`);
   }
   const segments = entry.file.split('/');
@@ -636,9 +683,9 @@ for (const entry of manifest.files) {
   }
   const hash = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   if (hash !== entry.sha256) throw new Error(`Release file SHA256 mismatch: ${entry.file}`);
-  declared.set(entry.file, true);
+  declared.set(key, entry.file);
 }
-const actual = [];
+const actual = new Map();
 function walk(directory) {
   for (const name of fs.readdirSync(directory)) {
     const file = path.join(directory, name);
@@ -647,13 +694,20 @@ function walk(directory) {
     if (stat.isDirectory()) walk(file);
     else if (stat.isFile()) {
       const relative = path.relative(root, file).split(path.sep).join('/');
-      if (relative !== 'deploy/FILE-MANIFEST.json') actual.push(relative);
+      if (relative !== 'deploy/FILE-MANIFEST.json') {
+        if (!/^[\x20-\x7e]+$/.test(relative)) {
+          throw new Error(`Non-ASCII release path is unsupported: ${relative}`);
+        }
+        const key = canonical(relative);
+        if (actual.has(key)) throw new Error(`Duplicate Windows-insensitive release path: ${relative}`);
+        actual.set(key, relative);
+      }
     } else throw new Error(`Release contains unsupported file type: ${file}`);
   }
 }
 walk(root);
-const undeclared = actual.filter((file) => !declared.has(file));
-const missing = [...declared.keys()].filter((file) => !actual.includes(file));
+const undeclared = [...actual.keys()].filter((key) => !declared.has(key));
+const missing = [...declared.keys()].filter((key) => !actual.has(key));
 if (undeclared.length || missing.length) {
   throw new Error(`Release file set mismatch; undeclared=${undeclared.length}, missing=${missing.length}`);
 }

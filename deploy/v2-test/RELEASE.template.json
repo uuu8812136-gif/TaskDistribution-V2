@@ -10,5 +10,9 @@
   "mongoPort": 27150,
   "replicaSet": "customer_acceptance_v2_rs",
   "database": "customer_acceptance_v2_test",
-  "webApiBaseUrl": "/api"
+  "webApiBaseUrl": "/api",
+  "trustedOffhostReceiptPublicKeyPath": "deploy/v2-test/trusted-offhost-receipt-public-key.xml",
+  "schemaCapabilities": [
+    "equipment-category-parent-name-index-v1"
+  ]
 }

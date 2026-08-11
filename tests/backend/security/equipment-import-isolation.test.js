@@ -31,6 +31,9 @@ const {
   createEquipmentImportService
 } = require('../../../app/services/equipmentImportService');
 const {
+  createEquipmentRegistryService
+} = require('../../../app/services/equipmentRegistryService');
+const {
   createEquipmentImportStagingCleanupService
 } = require('../../../app/services/equipmentImportStagingCleanupService');
 
@@ -175,12 +178,87 @@ function objectId() {
   return new mongoose.Types.ObjectId();
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function withTimeout(promise, message, timeoutMs = 10000) {
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timeout));
+}
+
+function pauseFirstEquipmentCategoryStructureLock() {
+  const locked = deferred();
+  const release = deferred();
+  let first = true;
+  return {
+    locked: locked.promise,
+    release: release.resolve,
+    ProjectTeamModel: {
+      async findOneAndUpdate(...args) {
+        const team = await ProjectTeam.findOneAndUpdate(...args);
+        if (first) {
+          first = false;
+          locked.resolve();
+          await release.promise;
+        }
+        return team;
+      }
+    }
+  };
+}
+
+function observeNextMongoWriteConflict(timeoutMs = 10000) {
+  const client = mongoose.connection.getClient();
+  let timer;
+  let settled = false;
+  let listener;
+  const cleanup = () => {
+    clearTimeout(timer);
+    client.off('commandFailed', listener);
+  };
+  const promise = new Promise((resolve, reject) => {
+    listener = (event) => {
+      if (event.failure?.code !== 112 && event.failure?.codeName !== 'WriteConflict') return;
+      settled = true;
+      cleanup();
+      resolve(event);
+    };
+    client.on('commandFailed', listener);
+    timer = setTimeout(() => {
+      settled = true;
+      cleanup();
+      reject(new Error('Timed out waiting for a real MongoDB WriteConflict'));
+    }, timeoutMs);
+  });
+  return {
+    promise,
+    dispose() {
+      if (settled) return;
+      settled = true;
+      cleanup();
+    }
+  };
+}
+
 function context({
   teamId,
   orgUnitId,
   userId,
   scope = permissions.DATA_SCOPES.TEAM,
-  equipmentOrgUnitScopeIds = undefined
+  equipmentOrgUnitScopeIds = undefined,
+  permissionKeys = ['equipment.import']
 }) {
   return Object.freeze({
     authenticated: true,
@@ -202,7 +280,7 @@ function context({
     }),
     orgUnit: Object.freeze({ _id: String(orgUnitId), teamId: String(teamId) }),
     actorRole: permissions.AUDIT_ACTOR_ROLES.PROJECT_ADMIN,
-    permissionKeys: Object.freeze(['equipment.import']),
+    permissionKeys: Object.freeze([...permissionKeys]),
     moduleDataScopes: Object.freeze({ equipment: scope }),
     ...(equipmentOrgUnitScopeIds
       ? { equipmentOrgUnitScopeIds: Object.freeze(equipmentOrgUnitScopeIds.map(String)) }
@@ -279,6 +357,37 @@ function validRow(overrides = {}) {
     叉车是否高低位: '高位',
     叉车环保编号: '环D-TEST-001',
     ...overrides
+  };
+}
+
+function fourLevelLedgerRow({ major, type, primary, secondary, assetCode }) {
+  return {
+    序号: 1,
+    设备所属大类: major,
+    设备所属类型: type,
+    设备一级名称: primary,
+    设备二级名称: secondary,
+    固定资产编号: assetCode,
+    车牌号: assetCode,
+    环保编号: '/',
+    '产品/品牌编码': `${assetCode}-PRODUCT`,
+    型号规格: secondary,
+    单位: '台',
+    出厂日期: '2024/1/1',
+    启用日期: '2024/1/1',
+    车长: '/',
+    吨位: '/',
+    '高位/低位': '/',
+    '设备动力类型：锂电/铅酸/柴油': '柴油',
+    排放标准: '国5',
+    品牌: '测试品牌',
+    生产厂家: '测试厂家',
+    账存数量: 1,
+    实盘数量: 1,
+    所在部室: 'A1',
+    使用人: 'User A1',
+    状态: '在用',
+    存放地点: '测试位置'
   };
 }
 
@@ -464,7 +573,10 @@ before(async () => {
     replSet: { count: 1 },
     instanceOpts: [{ dbName: TEST_DATABASE_NAME }]
   });
-  await mongoose.connect(replicaSet.getUri(TEST_DATABASE_NAME), { dbName: TEST_DATABASE_NAME });
+  await mongoose.connect(replicaSet.getUri(TEST_DATABASE_NAME), {
+    dbName: TEST_DATABASE_NAME,
+    monitorCommands: true
+  });
   await Promise.all(MODELS.map((model) => model.syncIndexes()));
 });
 
@@ -629,6 +741,220 @@ test('new ledger imports resolve the exact four-level category path before publi
   assert.equal(asset.name, '4.2米轻卡');
   assert.equal(asset.powerType, '柴油');
   assert.equal(asset.emissionStandard, '国5');
+});
+
+test('confirmation replaces stale preview names with the current renamed and moved category path', async () => {
+  const ids = {
+    major: objectId(),
+    oldType: objectId(),
+    newType: objectId(),
+    primary: objectId(),
+    secondary: objectId()
+  };
+  await EquipmentCategory.collection.insertMany([
+    { _id: ids.major, teamId: fixture.teamA, name: '预览大类', parentId: null, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids.oldType, teamId: fixture.teamA, name: '预览设备类型', parentId: ids.major, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids.newType, teamId: fixture.teamA, name: '当前设备类型', parentId: ids.major, status: 'ACTIVE', sortOrder: 1, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids.primary, teamId: fixture.teamA, name: '目标一级名称', parentId: ids.oldType, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids.secondary, teamId: fixture.teamA, name: '目标二级名称', parentId: ids.primary, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 }
+  ]);
+  const importContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const registryContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    permissionKeys: ['equipment.view', 'equipment.create', 'equipment.edit']
+  });
+  const importService = createEquipmentImportService();
+  const registryService = createEquipmentRegistryService();
+  const preview = await importService.createPreview({
+    authContext: importContext,
+    upload: multiSheetWorkbookUpload([['设备台账模板', [fourLevelLedgerRow({
+      major: '预览大类',
+      type: '预览设备类型',
+      primary: '目标一级名称',
+      secondary: '目标二级名称',
+      assetCode: 'STALE-PREVIEW-001'
+    })]]]),
+    input: {}
+  });
+  assert.deepEqual([
+    preview.importJob.rows[0].candidate.majorCategoryName,
+    preview.importJob.rows[0].candidate.equipmentTypeName,
+    preview.importJob.rows[0].candidate.primaryName,
+    preview.importJob.rows[0].candidate.secondaryName
+  ], ['预览大类', '预览设备类型', '目标一级名称', '目标二级名称']);
+
+  await registryService.updateCategory({
+    authContext: registryContext,
+    categoryId: ids.major,
+    input: { name: '当前大类' }
+  });
+  await registryService.updateCategory({
+    authContext: registryContext,
+    categoryId: ids.primary,
+    input: { parentId: ids.newType }
+  });
+  const staleJob = await ImportJob.findById(preview.importJob._id).lean();
+  assert.deepEqual([
+    staleJob.stagedRows[0].candidate.majorCategoryName,
+    staleJob.stagedRows[0].candidate.equipmentTypeName
+  ], ['预览大类', '预览设备类型']);
+
+  await importService.confirmImport({
+    authContext: importContext,
+    importJobId: preview.importJob._id,
+    input: {
+      expectedVersion: preview.importJob.version,
+      reason: '确认时使用最新分类路径',
+      decisions: []
+    }
+  });
+  const asset = await EquipmentAsset.findOne({ assetCode: 'STALE-PREVIEW-001' }).lean();
+  assert.deepEqual([
+    asset.majorCategoryName,
+    asset.equipmentTypeName,
+    asset.primaryName,
+    asset.secondaryName
+  ], ['当前大类', '当前设备类型', '目标一级名称', '目标二级名称']);
+  const publishedJob = await ImportJob.findById(preview.importJob._id).lean();
+  assert.deepEqual([
+    publishedJob.stagedRows[0].candidate.majorCategoryName,
+    publishedJob.stagedRows[0].candidate.equipmentTypeName,
+    publishedJob.stagedRows[0].candidate.primaryName,
+    publishedJob.stagedRows[0].candidate.secondaryName
+  ], ['当前大类', '当前设备类型', '目标一级名称', '目标二级名称']);
+});
+
+test('concurrent category rename and import confirmation produce a real write conflict and retry fresh paths', async () => {
+  const ids = [objectId(), objectId(), objectId(), objectId()];
+  await EquipmentCategory.collection.insertMany([
+    { _id: ids[0], teamId: fixture.teamA, name: '并发导入大类', parentId: null, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[1], teamId: fixture.teamA, name: '并发导入类型', parentId: ids[0], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[2], teamId: fixture.teamA, name: '并发改名前一级名称', parentId: ids[1], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[3], teamId: fixture.teamA, name: '并发导入二级名称', parentId: ids[2], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 }
+  ]);
+  const importContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const registryContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    permissionKeys: ['equipment.view', 'equipment.create', 'equipment.edit']
+  });
+  const importService = createEquipmentImportService();
+  const preview = await importService.createPreview({
+    authContext: importContext,
+    upload: multiSheetWorkbookUpload([['设备台账模板', [fourLevelLedgerRow({
+      major: '并发导入大类',
+      type: '并发导入类型',
+      primary: '并发改名前一级名称',
+      secondary: '并发导入二级名称',
+      assetCode: 'CONCURRENT-IMPORT-001'
+    })]]]),
+    input: {}
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision || 0;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const registryService = createEquipmentRegistryService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const conflict = observeNextMongoWriteConflict();
+  const renamedPrimary = '并发重试后一级名称';
+  let confirmPromise;
+  const renamePromise = registryService.updateCategory({
+    authContext: registryContext,
+    categoryId: ids[2],
+    input: { name: renamedPrimary }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for the category rename to acquire the structure lock'
+    );
+    confirmPromise = importService.confirmImport({
+      authContext: importContext,
+      importJobId: preview.importJob._id,
+      input: {
+        expectedVersion: preview.importJob.version,
+        reason: '验证导入确认并发重试',
+        decisions: []
+      }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await Promise.all([renamePromise, confirmPromise]);
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([renamePromise, confirmPromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  const asset = await EquipmentAsset.findOne({ assetCode: 'CONCURRENT-IMPORT-001' }).lean();
+  assert.deepEqual([
+    asset.majorCategoryName,
+    asset.equipmentTypeName,
+    asset.primaryName,
+    asset.secondaryName
+  ], ['并发导入大类', '并发导入类型', renamedPrimary, '并发导入二级名称']);
+  assert.equal(await EquipmentAsset.countDocuments({ assetCode: 'CONCURRENT-IMPORT-001' }), 1);
+  assert.equal(await EquipmentChangeRecord.countDocuments({ equipmentId: asset._id }), 1);
+  const publishedJob = await ImportJob.findById(preview.importJob._id).lean();
+  assert.equal(publishedJob.status, ImportJob.IMPORT_JOB_STATUSES.PUBLISHED);
+  assert.equal(publishedJob.publishedRows, 1);
+  const finalRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  assert.equal(finalRevision, baselineRevision + 2);
+});
+
+test('an exhausted import category structure conflict has a stable retryable response', async () => {
+  const authContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const writeConflict = Object.assign(new Error('simulated exhausted write conflict'), {
+    code: 112,
+    codeName: 'WriteConflict'
+  });
+  const service = createEquipmentImportService({
+    ProjectTeamModel: {
+      async findOneAndUpdate() {
+        throw writeConflict;
+      }
+    }
+  });
+
+  await assert.rejects(service.confirmImport({
+    authContext,
+    importJobId: objectId(),
+    input: {
+      expectedVersion: 0,
+      reason: '验证冲突错误归一化',
+      decisions: []
+    }
+  }), (error) => {
+    assert.equal(error.status, 409);
+    assert.equal(error.code, 'EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT');
+    assert.equal(
+      error.message,
+      'Equipment category structure changed concurrently; retry the operation'
+    );
+    return true;
+  });
 });
 
 test('a second-level equipment row accepts a custodian from its child group only', async () => {
@@ -1337,6 +1663,12 @@ test('confirmation audit failure rolls back assets, change records, decisions, a
     upload: workbookUpload([validRow({ 资产编码: 'ROLLBACK-IMPORT' })]),
     input: {}
   });
+  const [teamBefore, orgUnitBefore, auditCountBefore, exceptionsBefore] = await Promise.all([
+    ProjectTeam.findById(fixture.teamA).lean(),
+    OrgUnit.findById(fixture.orgA1).lean(),
+    AuditLog.countDocuments({}),
+    ImportException.find({ importJobId: preview.importJob._id }).sort({ _id: 1 }).lean()
+  ]);
   const failingService = createEquipmentImportService({
     storageRoot,
     auditService: {
@@ -1364,6 +1696,19 @@ test('confirmation audit failure rolls back assets, change records, decisions, a
   const persistedJob = await ImportJob.findById(preview.importJob._id).lean();
   assert.equal(persistedJob.status, ImportJob.IMPORT_JOB_STATUSES.PREVIEW_READY);
   assert.equal(persistedJob.publishedRows, 0);
+  const [teamAfter, orgUnitAfter, auditCountAfter, exceptionsAfter] = await Promise.all([
+    ProjectTeam.findById(fixture.teamA).lean(),
+    OrgUnit.findById(fixture.orgA1).lean(),
+    AuditLog.countDocuments({}),
+    ImportException.find({ importJobId: preview.importJob._id }).sort({ _id: 1 }).lean()
+  ]);
+  assert.equal(
+    teamAfter.equipmentCategoryStructureRevision || 0,
+    teamBefore.equipmentCategoryStructureRevision || 0
+  );
+  assert.equal(orgUnitAfter.referenceRevision || 0, orgUnitBefore.referenceRevision || 0);
+  assert.equal(auditCountAfter, auditCountBefore);
+  assert.deepEqual(exceptionsAfter, exceptionsBefore);
   const stagedMedia = await FileAsset.findOne({
     ownerId: preview.importJob._id,
     ownerType: FileAsset.FILE_OWNER_TYPES.EQUIPMENT_IMPORT_MEDIA

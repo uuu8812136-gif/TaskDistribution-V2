@@ -10,13 +10,19 @@ dotenv.config({ path: process.env.ENV_FILE })
 
 const { loadEnvironment } = require(path.join(repoRoot, 'app/config/environment'))
 const { createApp } = require(path.join(repoRoot, 'app/app'))
+const { connectDatabaseForServer } = require(path.join(repoRoot, 'app/server'))
+const { SCHEMA_CAPABILITY } = require(
+  path.join(repoRoot, 'app/services/equipmentCategoryIndexMigrationService')
+)
 const { startEquipmentRoutineScheduler } = require(
   path.join(repoRoot, 'app/services/equipmentRoutineWorkerService')
 )
 
 async function main() {
   const config = loadEnvironment()
-  await mongoose.connect(config.mongodbUri)
+  await connectDatabaseForServer(config, {
+    requiredSchemaCapabilities: SCHEMA_CAPABILITY
+  })
   const scheduler = startEquipmentRoutineScheduler({
     enabled: config.equipmentRoutineWorkerEnabled,
     intervalMs: config.equipmentRoutineWorkerIntervalMs
