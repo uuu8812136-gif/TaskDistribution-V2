@@ -47,7 +47,10 @@ const {
   resolveModuleDataScope,
   sameId
 } = require('./teamContextService');
-const { runWithOptionalTransaction } = require('./transactionService');
+const {
+  runWithOptionalTransaction,
+  runWithRequiredTransaction
+} = require('./transactionService');
 const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
 const { orgUnitsShareSubDepartment } = require('./subDepartmentLeadershipService');
 
@@ -57,6 +60,24 @@ const {
   EQUIPMENT_CATEGORY_STATUS_VALUES
 } = EquipmentCategory;
 const { EQUIPMENT_CHANGE_TYPES } = EquipmentChangeRecord;
+const {
+  EQUIPMENT_ROUTINE_PLAN_STATUSES,
+  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS
+} = EquipmentRoutinePlan;
+const { EQUIPMENT_ROUTINE_RULE_STATUSES } = EquipmentRoutineRule;
+const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
+  EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+]);
+const EQUIPMENT_REGISTRY_TRANSACTION_OPTIONS = Object.freeze({
+  code: 'EQUIPMENT_REGISTRY_TRANSACTIONS_REQUIRED',
+  message: 'Equipment category and asset snapshot writes require MongoDB replica-set transaction support'
+});
+const EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT = Object.freeze({
+  code: 'EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT',
+  message: 'Equipment category structure changed concurrently; retry the operation'
+});
 
 const QR_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43,86}$/;
 const DEFAULT_PAGE_SIZE = 20;
@@ -342,7 +363,19 @@ function normalizePersistenceError(error) {
       assetCodeDuplicate ? 'EQUIPMENT_ASSET_CODE_DUPLICATE' : 'EQUIPMENT_CATEGORY_DUPLICATE',
       assetCodeDuplicate
         ? 'assetCode must be unique within the team'
-        : 'Equipment category name must be unique within the team'
+        : 'Equipment category name must be unique under the same parent'
+    );
+  }
+  if (
+    error?.code === 112 ||
+    error?.codeName === 'WriteConflict' ||
+    error?.hasErrorLabel?.('TransientTransactionError') ||
+    error?.errorLabels?.includes?.('TransientTransactionError')
+  ) {
+    return registryError(
+      409,
+      EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT.code,
+      EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT.message
     );
   }
   return error;
@@ -398,6 +431,33 @@ function createEquipmentRegistryService({
   connection = mongoose.connection
 } = {}) {
   const files = fileAssetService || createFileAssetService({ connection });
+  const runRegistryWriteTransaction = (work) => runWithRequiredTransaction(
+    work,
+    connection,
+    EQUIPMENT_REGISTRY_TRANSACTION_OPTIONS
+  );
+
+  async function lockEquipmentCategoryStructure(context, session) {
+    const team = await ProjectTeamModel.findOneAndUpdate({
+      _id: context.activeTeamId,
+      status: TEAM_STATUSES.ACTIVE
+    }, {
+      $inc: { equipmentCategoryStructureRevision: 1 }
+    }, {
+      new: true,
+      projection: { _id: 1, equipmentCategoryStructureRevision: 1 },
+      session
+    });
+    if (!team) {
+      throw registryError(
+        409,
+        'EQUIPMENT_TEAM_CONTEXT_STALE',
+        'The active equipment team is no longer available'
+      );
+    }
+    return team;
+  }
+
   async function resolveReadTeamId(authContext, requestedTeamId) {
     const context = assertBusinessContext(authContext);
     if (context.mode === SESSION_MODES.TEAM) {
@@ -534,7 +594,7 @@ function createEquipmentRegistryService({
     return category;
   }
 
-  async function categorySnapshots({ context, category, session }) {
+  async function loadCategoryPath({ context, category, session }) {
     const path = [];
     const visited = new Set();
     let cursor = category;
@@ -557,6 +617,11 @@ function createEquipmentRegistryService({
         `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
       );
     }
+    return path;
+  }
+
+  async function categorySnapshots({ context, category, session }) {
+    const path = await loadCategoryPath({ context, category, session });
     const names = path.map(({ name }) => name);
     return {
       majorCategoryName: names[0] || '',
@@ -564,6 +629,42 @@ function createEquipmentRegistryService({
       primaryName: names[2] || '',
       secondaryName: names[3] || ''
     };
+  }
+
+  async function routinePrimaryCategoryId({ context, category, session }) {
+    const path = await loadCategoryPath({ context, category, session });
+    return normalizeId(path[2]?._id);
+  }
+
+  async function refreshAssetCategorySnapshots({ context, assets, session }) {
+    const assetIdsByCategoryId = new Map();
+    for (const asset of assets) {
+      const assetCategoryId = normalizeId(asset.categoryId);
+      if (!assetCategoryId) throw relatedInvalid();
+      const assetIds = assetIdsByCategoryId.get(assetCategoryId) || [];
+      assetIds.push(asset._id);
+      assetIdsByCategoryId.set(assetCategoryId, assetIds);
+    }
+
+    for (const [assetCategoryId, assetIds] of assetIdsByCategoryId) {
+      const assetCategory = await execute(EquipmentCategoryModel.findOne({
+        _id: assetCategoryId,
+        teamId: context.activeTeamId
+      }), session);
+      if (!assetCategory) throw relatedInvalid();
+      const snapshots = await categorySnapshots({
+        context,
+        category: assetCategory,
+        session
+      });
+      await execute(EquipmentAssetModel.updateMany({
+        _id: { $in: assetIds },
+        teamId: context.activeTeamId,
+        categoryId: assetCategoryId
+      }, {
+        $set: snapshots
+      }), session);
+    }
   }
 
   async function resolveCustodian({ context, custodianUserId, orgUnitId, session }) {
@@ -638,7 +739,7 @@ function createEquipmentRegistryService({
     return { parent, parentDepth };
   }
 
-  async function categorySubtreeHeight({ context, categoryId, session }) {
+  async function loadCategorySubtree({ context, categoryId, session }) {
     const categories = await execute(EquipmentCategoryModel.find({
       teamId: context.activeTeamId
     }).select('_id parentId').lean(), session);
@@ -653,18 +754,28 @@ function createEquipmentRegistryService({
     let maximumDepth = 1;
     const queue = [{ id: normalizeId(categoryId), depth: 1 }];
     const visited = new Set();
+    const depthByCategoryId = new Map();
     while (queue.length > 0) {
       const current = queue.shift();
       if (!current.id || visited.has(current.id)) {
         throw registryError(409, 'EQUIPMENT_CATEGORY_CYCLE', 'Category hierarchy cannot contain a cycle');
       }
       visited.add(current.id);
+      depthByCategoryId.set(current.id, current.depth);
       maximumDepth = Math.max(maximumDepth, current.depth);
       for (const childId of childrenByParent.get(current.id) || []) {
         queue.push({ id: childId, depth: current.depth + 1 });
       }
     }
-    return maximumDepth;
+    return {
+      categoryIds: [...visited],
+      depthByCategoryId,
+      height: maximumDepth
+    };
+  }
+
+  async function categorySubtreeHeight({ context, categoryId, session }) {
+    return (await loadCategorySubtree({ context, categoryId, session })).height;
   }
 
   function categoryUserFilter(query = {}) {
@@ -766,7 +877,8 @@ function createEquipmentRegistryService({
     const context = assertCanManageCategories(authContext, 'equipment.create');
     assertNoClientTeamId(input);
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(context, session);
         const { parent } = await assertCategoryParent({
           context,
           parentId: input.parentId,
@@ -793,7 +905,7 @@ function createEquipmentRegistryService({
           session
         });
         return after;
-      }, connection);
+      });
     } catch (error) {
       throw normalizePersistenceError(error);
     }
@@ -803,7 +915,8 @@ function createEquipmentRegistryService({
     const context = assertCanManageCategories(authContext, 'equipment.edit');
     assertNoClientTeamId(input);
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(context, session);
         const filter = {
           _id: normalizeDetailId(categoryId),
           teamId: context.activeTeamId
@@ -811,6 +924,9 @@ function createEquipmentRegistryService({
         const category = await execute(EquipmentCategoryModel.findOne(filter), session);
         if (!category) throw notFound('Equipment category');
         const before = serializeCategory(category);
+        let changedSubtreeAssets = null;
+        let categoryParentChanged = false;
+        const previousPrimaryByCategoryId = new Map();
 
         if (Object.prototype.hasOwnProperty.call(input, 'name')) {
           category.name = requiredString(input.name, 'name', 100);
@@ -825,17 +941,59 @@ function createEquipmentRegistryService({
             currentCategoryId: category._id,
             session
           });
-          const subtreeHeight = await categorySubtreeHeight({
+          const subtree = await loadCategorySubtree({
             context,
             categoryId: category._id,
             session
           });
-          if (parentDepth + subtreeHeight > MAX_EQUIPMENT_CATEGORY_DEPTH) {
+          if (parentDepth + subtree.height > MAX_EQUIPMENT_CATEGORY_DEPTH) {
             throw registryError(
               409,
               'EQUIPMENT_CATEGORY_DEPTH_LIMIT',
               `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
             );
+          }
+          const previousParentId = normalizeId(category.parentId) || null;
+          const nextParentId = normalizeId(parent?._id) || null;
+          if (previousParentId !== nextParentId) {
+            categoryParentChanged = true;
+            const activeRules = await execute(EquipmentRoutineRuleModel.find({
+              teamId: context.activeTeamId,
+              categoryId: { $in: subtree.categoryIds },
+              status: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE
+            }).select('categoryId').lean(), session);
+            const invalidRule = activeRules.find(({ categoryId: ruleCategoryId }) => (
+              parentDepth + (subtree.depthByCategoryId.get(normalizeId(ruleCategoryId)) || 0) !== 3
+            ));
+            if (invalidRule) {
+              throw registryError(
+                409,
+                'EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT',
+                'Category move would place an active routine rule outside level 3'
+              );
+            }
+            changedSubtreeAssets = await execute(EquipmentAssetModel.find({
+              teamId: context.activeTeamId,
+              categoryId: { $in: subtree.categoryIds }
+            }).select('_id categoryId').lean(), session);
+            const assetCategoryIds = [...new Set(
+              changedSubtreeAssets
+                .map(({ categoryId: assetCategoryId }) => normalizeId(assetCategoryId))
+            )].filter(Boolean);
+            for (const assetCategoryId of assetCategoryIds) {
+              const assetCategory = sameId(assetCategoryId, category._id)
+                ? category
+                : await execute(EquipmentCategoryModel.findOne({
+                    _id: assetCategoryId,
+                    teamId: context.activeTeamId
+                  }), session);
+              previousPrimaryByCategoryId.set(
+                assetCategoryId,
+                assetCategory
+                  ? await routinePrimaryCategoryId({ context, category: assetCategory, session })
+                  : null
+              );
+            }
           }
           category.parentId = parent?._id || null;
         }
@@ -844,7 +1002,7 @@ function createEquipmentRegistryService({
             throw registryError(400, 'EQUIPMENT_INPUT_INVALID', 'Invalid category status');
           }
           if (input.status === EQUIPMENT_CATEGORY_STATUSES.DISABLED) {
-            const [child, asset] = await Promise.all([
+            const [child, asset, activeRule] = await Promise.all([
               execute(EquipmentCategoryModel.exists({
                 teamId: context.activeTeamId,
                 parentId: category._id,
@@ -853,13 +1011,18 @@ function createEquipmentRegistryService({
               execute(EquipmentAssetModel.exists({
                 teamId: context.activeTeamId,
                 categoryId: category._id
+              }), session),
+              execute(EquipmentRoutineRuleModel.exists({
+                teamId: context.activeTeamId,
+                categoryId: category._id,
+                status: EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE
               }), session)
             ]);
-            if (child || asset) {
+            if (child || asset || activeRule) {
               throw registryError(
                 409,
                 'EQUIPMENT_CATEGORY_IN_USE',
-                'Category cannot be disabled while active children or equipment reference it'
+                'Category cannot be disabled while active children, equipment, or active routine rules reference it'
               );
             }
           } else if (category.parentId) {
@@ -872,8 +1035,69 @@ function createEquipmentRegistryService({
           }
           category.status = input.status;
         }
+        const categoryNameChanged = before.name !== category.name;
+        if (categoryNameChanged && changedSubtreeAssets === null) {
+          const subtree = await loadCategorySubtree({
+            context,
+            categoryId: category._id,
+            session
+          });
+          changedSubtreeAssets = await execute(EquipmentAssetModel.find({
+            teamId: context.activeTeamId,
+            categoryId: { $in: subtree.categoryIds }
+          }).select('_id categoryId').lean(), session);
+        }
         category.updatedBy = context.userId;
         await category.save({ session: session || undefined });
+        if (categoryParentChanged && changedSubtreeAssets.length > 0) {
+          const nextPrimaryByCategoryId = new Map();
+          for (const assetCategoryId of previousPrimaryByCategoryId.keys()) {
+            const assetCategory = await execute(EquipmentCategoryModel.findOne({
+              _id: assetCategoryId,
+              teamId: context.activeTeamId
+            }), session);
+            nextPrimaryByCategoryId.set(
+              assetCategoryId,
+              assetCategory
+                ? await routinePrimaryCategoryId({ context, category: assetCategory, session })
+                : null
+            );
+          }
+          const affectedAssetIds = changedSubtreeAssets
+            .filter(({ categoryId: assetCategoryId }) => {
+              const normalizedCategoryId = normalizeId(assetCategoryId);
+              const previousPrimaryId = previousPrimaryByCategoryId.get(normalizedCategoryId) || null;
+              const nextPrimaryId = nextPrimaryByCategoryId.get(normalizedCategoryId) || null;
+              return (
+                !previousPrimaryId ||
+                !nextPrimaryId ||
+                previousPrimaryId !== nextPrimaryId
+              );
+            })
+            .map(({ _id }) => _id);
+          if (affectedAssetIds.length > 0) {
+            await execute(EquipmentRoutinePlanModel.updateMany({
+              teamId: context.activeTeamId,
+              equipmentId: { $in: affectedAssetIds },
+              status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+            }, {
+              $set: {
+                status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+                cancellationReason:
+                  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+                cancelledAt: new Date(),
+                cancelledBy: context.userId
+              }
+            }), session);
+          }
+        }
+        if (changedSubtreeAssets?.length > 0) {
+          await refreshAssetCategorySnapshots({
+            context,
+            assets: changedSubtreeAssets,
+            session
+          });
+        }
         const after = serializeCategory(category);
         await auditService.record({
           req,
@@ -892,7 +1116,7 @@ function createEquipmentRegistryService({
           session
         });
         return after;
-      }, connection);
+      });
     } catch (error) {
       throw normalizePersistenceError(error);
     }
@@ -922,7 +1146,8 @@ function createEquipmentRegistryService({
     const reason = optionalString(input.reason, 'reason', 2000, 'Deleted from equipment categories');
 
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(context, session);
         const filter = {
           _id: normalizeDetailId(categoryId),
           teamId: context.activeTeamId
@@ -987,7 +1212,7 @@ function createEquipmentRegistryService({
           session
         });
         return before;
-      }, connection);
+      });
     } catch (error) {
       throw normalizePersistenceError(error);
     }
@@ -1175,7 +1400,8 @@ function createEquipmentRegistryService({
     assertNoClientTeamId(input);
     const requestedPhotoFileIds = interactivePhotoFileIds(input.photoFileIds);
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(context, session);
         const orgUnit = await resolveWritableOrgUnit({
           context,
           requestedOrgUnitId: input.orgUnitId,
@@ -1249,7 +1475,7 @@ function createEquipmentRegistryService({
           session
         });
         return after;
-      }, connection);
+      });
     } catch (error) {
       throw normalizePersistenceError(error);
     }
@@ -1261,7 +1487,8 @@ function createEquipmentRegistryService({
     assertNoClientTeamId(input);
     const requestedPhotoFileIds = interactivePhotoFileIds(input.photoFileIds);
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(context, session);
         const filter = buildScopedDetailFilter({
           authContext: context,
           moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
@@ -1284,6 +1511,28 @@ function createEquipmentRegistryService({
             : equipment.categoryId,
           session
         });
+        const orgUnitChanged = !sameId(equipment.orgUnitId, orgUnit._id);
+        const categoryChanged = !sameId(equipment.categoryId, category._id);
+        let routineScopeChanged = false;
+        if (categoryChanged) {
+          const previousCategory = await execute(EquipmentCategoryModel.findOne({
+            _id: equipment.categoryId,
+            teamId: context.activeTeamId
+          }), session);
+          const previousPrimaryCategoryId = previousCategory
+            ? await routinePrimaryCategoryId({ context, category: previousCategory, session })
+            : null;
+          const nextPrimaryCategoryId = await routinePrimaryCategoryId({
+            context,
+            category,
+            session
+          });
+          routineScopeChanged = (
+            !previousPrimaryCategoryId ||
+            !nextPrimaryCategoryId ||
+            previousPrimaryCategoryId !== nextPrimaryCategoryId
+          );
+        }
         const custodian = await resolveCustodian({
           context,
           custodianUserId: Object.prototype.hasOwnProperty.call(input, 'custodianUserId')
@@ -1324,6 +1573,30 @@ function createEquipmentRegistryService({
           updatedBy: context.userId
         });
         await equipment.save({ session: session || undefined });
+        if (orgUnitChanged) {
+          await EquipmentRoutinePlanModel.collection.updateMany({
+            teamId: equipment.teamId,
+            equipmentId: equipment._id,
+            status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+          }, {
+            $set: { orgUnitId: orgUnit._id }
+          }, { session });
+        }
+        if (routineScopeChanged) {
+          await execute(EquipmentRoutinePlanModel.updateMany({
+            teamId: context.activeTeamId,
+            equipmentId: equipment._id,
+            status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+          }, {
+            $set: {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+              cancellationReason:
+                EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+              cancelledAt: new Date(),
+              cancelledBy: context.userId
+            }
+          }), session);
+        }
         const after = serializeAsset(equipment);
         await createOne(EquipmentChangeRecordModel, {
           teamId: context.activeTeamId,
@@ -1348,7 +1621,7 @@ function createEquipmentRegistryService({
           session
         });
         return after;
-      }, connection);
+      });
     } catch (error) {
       throw normalizePersistenceError(error);
     }

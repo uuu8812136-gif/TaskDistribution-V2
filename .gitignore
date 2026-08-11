@@ -8,6 +8,9 @@
 *.pfx
 *.p12
 *.ppk
+*private*.xml
+*secret*.xml
+*signing*.xml
 id_rsa*
 id_ed25519*
 known_hosts

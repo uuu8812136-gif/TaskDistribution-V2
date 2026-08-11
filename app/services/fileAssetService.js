@@ -13,6 +13,7 @@ const EquipmentRoutineRecord = require('../models/EquipmentRoutineRecord');
 const EquipmentRepairOrder = require('../models/EquipmentRepairOrder');
 const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
 const InventoryItem = require('../models/InventoryItem');
+const SupplierContractRecord = require('../models/SupplierContractRecord');
 const ProjectTeam = require('../models/ProjectTeam');
 const {
   AUDIT_ACTIONS,
@@ -64,7 +65,8 @@ const TEMPORARY_UPLOAD_PERMISSIONS = Object.freeze([
   'equipment.inspect',
   'equipment.repair',
   'equipment.maintain',
-  'equipment.status.apply'
+  'equipment.status.apply',
+  'contract.supplier.manage'
 ]);
 const OWNER_ACCESS_POLICIES = Object.freeze({
   [FILE_OWNER_TYPES.TASK]: Object.freeze({
@@ -144,6 +146,20 @@ const OWNER_ACCESS_POLICIES = Object.freeze({
     moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
     readPermission: 'equipment.view',
     writePermission: 'equipment.status.apply'
+  }),
+  [FILE_OWNER_TYPES.SUPPLIER_PROFILE]: Object.freeze({
+    resourceModel: 'SUPPLIER_CONTRACT_RECORD',
+    teamOnly: true,
+    readPermission: 'contract.supplier.view',
+    writePermission: 'contract.supplier.manage',
+    userFilter: Object.freeze({ category: 'SUPPLIER_INFO' })
+  }),
+  [FILE_OWNER_TYPES.SUPPLIER_CONTRACT]: Object.freeze({
+    resourceModel: 'SUPPLIER_CONTRACT_RECORD',
+    teamOnly: true,
+    readPermission: 'contract.supplier.view',
+    writePermission: 'contract.supplier.manage',
+    userFilter: Object.freeze({ category: { $ne: 'SUPPLIER_INFO' } })
   })
 });
 const WORKFLOW_MANAGED_OWNER_TYPES = new Set([
@@ -158,7 +174,9 @@ const WORKFLOW_MANAGED_OWNER_TYPES = new Set([
   FILE_OWNER_TYPES.INSPECTION,
   FILE_OWNER_TYPES.REPAIR,
   FILE_OWNER_TYPES.MAINTENANCE,
-  FILE_OWNER_TYPES.EQUIPMENT_STATUS_APPLICATION
+  FILE_OWNER_TYPES.EQUIPMENT_STATUS_APPLICATION,
+  FILE_OWNER_TYPES.SUPPLIER_PROFILE,
+  FILE_OWNER_TYPES.SUPPLIER_CONTRACT
 ]);
 const MAX_OWNER_FILES = 10;
 const DEFAULT_TEMPORARY_FILE_LIMITS = Object.freeze({
@@ -434,6 +452,7 @@ function createFileAssetService({
   EquipmentRepairOrderModel = EquipmentRepairOrder,
   EquipmentStatusApplicationModel = EquipmentStatusApplication,
   InventoryItemModel = InventoryItem,
+  SupplierContractRecordModel = SupplierContractRecord,
   ProjectTeamModel = ProjectTeam,
   auditService = createAuditService(),
   connection = mongoose.connection,
@@ -547,7 +566,13 @@ function createFileAssetService({
       assertPermission(authContext, permissionKeys[0]);
     }
     let ownerFilter;
-    if (policy.resourceModel === 'IMPORT_JOB') {
+    if (policy.teamOnly) {
+      ownerFilter = {
+        _id: normalizeObjectId(ownerId, 'ownerId'),
+        teamId,
+        ...(policy.userFilter || {})
+      };
+    } else if (policy.resourceModel === 'IMPORT_JOB') {
       ownerFilter = { _id: normalizeObjectId(ownerId, 'ownerId'), teamId };
       if (authContext.mode === SESSION_MODES.TEAM) {
         const scope = resolveModuleDataScope(authContext, policy.moduleKey);
@@ -577,6 +602,8 @@ function createFileAssetService({
               ? EquipmentStatusApplicationModel
             : policy.resourceModel === 'INVENTORY_ITEM'
               ? InventoryItemModel
+            : policy.resourceModel === 'SUPPLIER_CONTRACT_RECORD'
+              ? SupplierContractRecordModel
             : TaskModel;
     const query = OwnerModel.findOne(ownerFilter).select('_id teamId orgUnitId');
     if (session) query.session(session);

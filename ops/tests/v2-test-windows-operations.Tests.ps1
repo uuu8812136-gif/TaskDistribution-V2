@@ -87,10 +87,24 @@ Describe 'New-V2TestReleasePackage allowlist' {
     }
     foreach ($file in @(
       'app/server.js',
+      'app/controllers/contractController.js',
+      'app/models/Supplier.js',
+      'app/models/SupplierContractRecord.js',
+      'app/models/SupplierSettlementFee.js',
+      'app/routes/contracts.js',
+      'app/services/contractIndexService.js',
+      'app/services/contractManagementService.js',
+      'app/services/contractWorkbookService.js',
       'app/script/migratePositionLevels.js',
+      'app/script/migrateEquipmentCategoryIndex.js',
+      'app/script/captureReleaseMongoAnchor.js',
+      'app/script/auditEquipmentRoutineBusiness.js',
       'app/script/backfillTransportMasterData.js',
       'app/script/backfillCustomerEquipmentOwnership.js',
       'app/services/equipmentOwnershipBackfillService.js',
+      'app/services/equipmentCategoryIndexMigrationService.js',
+      'app/services/releaseMongoAnchorService.js',
+      'app/services/equipmentRoutineBusinessAuditService.js',
       'app/script/repairAcceptanceJuly2026Data.js',
       'app/script/repairAcceptanceTransportJuly2026.js',
       'app/services/acceptanceJuly2026DataRepairService.js',
@@ -110,11 +124,33 @@ Describe 'New-V2TestReleasePackage allowlist' {
     )) {
       Write-TestFile -Path (Join-Path $fixtureRoot $file) -Value $validJavaScript
     }
+    foreach ($file in @(
+      'app/frontend/src/api/contract.js',
+      'app/frontend/src/utils/contract.js'
+    )) {
+      Write-TestFile -Path (Join-Path $fixtureRoot $file) -Value "export {}`n"
+    }
+    foreach ($file in @(
+      'app/frontend/src/views/contracts/ContractExpiryAlerts.vue',
+      'app/frontend/src/views/contracts/SupplierContractDetail.vue',
+      'app/frontend/src/views/contracts/SupplierContracts.vue',
+      'app/frontend/src/views/contracts/SupplierSettlementFees.vue',
+      'app/frontend/src/views/contracts/components/ContractFileUpload.vue'
+    )) {
+      Write-TestFile -Path (Join-Path $fixtureRoot $file) -Value "<template><div /></template>`n"
+    }
     Write-TestFile -Path (Join-Path $fixtureRoot 'deploy/v2-test/linux/staging-server.cjs') `
       -Value $validJavaScript
+    Write-TestFile -Path (Join-Path $fixtureRoot 'deploy/v2-test/trusted-offhost-receipt-public-key.xml') `
+      -Value '<RSAKeyValue><Modulus>fixture</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
     Write-TestFile -Path (Join-Path $fixtureRoot 'deploy/v2-test/operations.restore.env.template') `
       -Value "SECRET_MUST_NOT_SHIP=true`n"
     $releaseTemplate = [ordered]@{
+      format = 'task-distribution-v2-release/v1'
+      releaseId = '__RELEASE_ID__'
+      commit = '__COMMIT__'
+      commitTime = '__COMMIT_TIME__'
+      builtAt = '__BUILT_AT__'
       environment = 'customer-test'
       apiPort = 18120
       innerWebPort = 18130
@@ -122,6 +158,8 @@ Describe 'New-V2TestReleasePackage allowlist' {
       replicaSet = 'customer_acceptance_v2_rs'
       database = 'customer_acceptance_v2_test'
       webApiBaseUrl = '/api'
+      trustedOffhostReceiptPublicKeyPath = 'deploy/v2-test/trusted-offhost-receipt-public-key.xml'
+      schemaCapabilities = @('equipment-category-parent-name-index-v1')
     }
     Write-TestFile -Path (Join-Path $fixtureRoot 'deploy/v2-test/RELEASE.template.json') `
       -Value "$(ConvertTo-Json $releaseTemplate -Depth 4)`n"
@@ -143,6 +181,17 @@ Describe 'New-V2TestReleasePackage allowlist' {
     foreach ($script in $expectedShellScripts) {
       Write-TestFile -Path (Join-Path $fixtureRoot "ops/linux/$script") `
         -Value "#!/usr/bin/env bash`r`ntrue`r`n"
+    }
+    $expectedWindowsScripts = @(
+      'New-V2RecoveryEquipmentCategoryIndexStage.ps1',
+      'New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
+      'New-V2RecoveryOffhostReceiptSigningKey.ps1',
+      'Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1',
+      'Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
+    )
+    foreach ($script in $expectedWindowsScripts) {
+      Write-TestFile -Path (Join-Path $fixtureRoot "ops/windows/$script") `
+        -Value "`$ErrorActionPreference = 'Stop'`n"
     }
 
     Write-TestFile -Path (Join-Path $fixtureRoot 'ops/linux/repair-v2-test-config-acl.sh') `
@@ -187,22 +236,86 @@ exit /b 91
     $previousPath = $env:PATH
     try {
       $env:PATH = "$fakeBin;$fixedNodeDirectory;$previousPath"
-      & $packageScript -ReleaseId 'allowlist-test-001' -RepositoryRoot $fixtureRoot `
+      & $packageScript -ReleaseId 'v2-20260811-a110001' -RepositoryRoot $fixtureRoot `
         -ConfirmCommit $commit -Apply -Confirm:$false | Out-Null
     }
     finally {
       $env:PATH = $previousPath
     }
 
-    $archive = Join-Path $fixtureRoot 'work/release/out/allowlist-test-001.tar.gz'
+    $archive = Join-Path $fixtureRoot 'work/release/out/v2-20260811-a110001.tar.gz'
     Test-Path -LiteralPath $archive -PathType Leaf | Should Be $true
     $entries = @(& tar.exe -tf $archive | ForEach-Object { $_ -replace '^\./', '' })
     if ($LASTEXITCODE -ne 0) { throw 'Unable to inspect generated fixture archive' }
+    $archiveFiles = @($entries | Where-Object { $_ -and -not $_.EndsWith('/') })
+
+    $metadataRoot = Join-Path $TestDrive 'release-metadata'
+    New-Item -ItemType Directory -Force -Path $metadataRoot | Out-Null
+    & tar.exe -xzf $archive -C $metadataRoot './deploy/RELEASE.json' './deploy/FILE-MANIFEST.json'
+    if ($LASTEXITCODE -ne 0) { throw 'Unable to extract generated release metadata' }
+    $releaseMetadata = Get-Content -LiteralPath (Join-Path $metadataRoot 'deploy/RELEASE.json') -Raw |
+      ConvertFrom-Json
+    ($releaseMetadata.schemaCapabilities -is [Array]) | Should Be $true
+    @($releaseMetadata.schemaCapabilities).Count | Should Be 1
+    [string]::Equals(
+      [string]$releaseMetadata.schemaCapabilities[0],
+      'equipment-category-parent-name-index-v1',
+      [StringComparison]::Ordinal
+    ) | Should Be $true
+    $releaseMetadata.trustedOffhostReceiptPublicKeyPath | Should Be `
+      'deploy/v2-test/trusted-offhost-receipt-public-key.xml'
+    $releaseMetadata.trustedOffhostReceiptPublicKeySha256 | Should Match '^[0-9a-f]{64}$'
+
+    $fileManifest = Get-Content -LiteralPath (Join-Path $metadataRoot 'deploy/FILE-MANIFEST.json') -Raw |
+      ConvertFrom-Json
+    [string]::Equals(
+      [string]$fileManifest.format,
+      'task-distribution-v2-release-files/v1',
+      [StringComparison]::Ordinal
+    ) | Should Be $true
+    [string]::Equals(
+      [string]$fileManifest.pathComparison,
+      'windows-ordinal-ignore-case',
+      [StringComparison]::Ordinal
+    ) | Should Be $true
+    [string]::Equals(
+      [string]$fileManifest.setSemantics,
+      'exact-package-files-excluding-manifest',
+      [StringComparison]::Ordinal
+    ) | Should Be $true
+    [string]::Equals(
+      [string]$fileManifest.selfPath,
+      'deploy/FILE-MANIFEST.json',
+      [StringComparison]::Ordinal
+    ) | Should Be $true
+    [int]$fileManifest.fileCount | Should Be @($fileManifest.files).Count
+
+    $declaredPathSet = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($manifestEntry in @($fileManifest.files)) {
+      ($declaredPathSet.Add([string]$manifestEntry.file)) | Should Be $true
+    }
+    $actualPathSet = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($archiveFile in @($archiveFiles | Where-Object {
+      -not [string]::Equals($_, [string]$fileManifest.selfPath, [StringComparison]::OrdinalIgnoreCase)
+    })) {
+      ($actualPathSet.Add([string]$archiveFile)) | Should Be $true
+    }
+    $declaredPathSet.Count | Should Be $actualPathSet.Count
+    $declaredPathSet.Count | Should Be ([int]$fileManifest.fileCount)
+    foreach ($declaredPath in $declaredPathSet) {
+      $actualPathSet.Contains($declaredPath) | Should Be $true
+    }
+    foreach ($actualPath in $actualPathSet) {
+      $declaredPathSet.Contains($actualPath) | Should Be $true
+    }
 
     $packagedShellScripts = @($entries | Where-Object { $_ -match '^ops/linux/[^/]+\.sh$' })
     $packagedShellScripts.Count | Should Be $expectedShellScripts.Count
     foreach ($script in $expectedShellScripts) {
       ($packagedShellScripts -contains "ops/linux/$script") | Should Be $true
+    }
+    foreach ($script in $expectedWindowsScripts) {
+      ($entries -contains "ops/windows/$script") | Should Be $true
     }
     foreach ($library in @(
       'backupCore.js',
@@ -223,8 +336,29 @@ exit /b 91
     ($entries -contains 'app/frontend/stale.env.template') | Should Be $false
     ($entries -contains 'app/frontend/src/assets/1.jpg') | Should Be $true
     foreach ($file in @(
+      'app/controllers/contractController.js',
+      'app/models/Supplier.js',
+      'app/models/SupplierContractRecord.js',
+      'app/models/SupplierSettlementFee.js',
+      'app/routes/contracts.js',
+      'app/services/contractIndexService.js',
+      'app/services/contractManagementService.js',
+      'app/services/contractWorkbookService.js',
+      'app/frontend/src/api/contract.js',
+      'app/frontend/src/utils/contract.js',
+      'app/frontend/src/views/contracts/ContractExpiryAlerts.vue',
+      'app/frontend/src/views/contracts/SupplierContractDetail.vue',
+      'app/frontend/src/views/contracts/SupplierContracts.vue',
+      'app/frontend/src/views/contracts/SupplierSettlementFees.vue',
+      'app/frontend/src/views/contracts/components/ContractFileUpload.vue',
       'app/script/backfillCustomerEquipmentOwnership.js',
+      'app/script/migrateEquipmentCategoryIndex.js',
+      'app/script/captureReleaseMongoAnchor.js',
+      'app/script/auditEquipmentRoutineBusiness.js',
       'app/services/equipmentOwnershipBackfillService.js',
+      'app/services/equipmentCategoryIndexMigrationService.js',
+      'app/services/releaseMongoAnchorService.js',
+      'app/services/equipmentRoutineBusinessAuditService.js',
       'app/script/repairAcceptanceJuly2026Data.js',
       'app/script/repairAcceptanceTransportJuly2026.js',
       'app/services/acceptanceJuly2026DataRepairService.js',
@@ -236,7 +370,7 @@ exit /b 91
       ($entries -contains $file) | Should Be $true
     }
 
-    $installedToolRoot = Join-Path $TestDrive 'installed-tools/release-allowlist-test-001'
+    $installedToolRoot = Join-Path $TestDrive 'installed-tools/release-v2-20260811-a110001'
     New-Item -ItemType Directory -Force -Path $installedToolRoot | Out-Null
     & tar.exe -xzf $archive -C $installedToolRoot './ops/linux' './ops/lib'
     if ($LASTEXITCODE -ne 0) { throw 'Unable to extract the versioned operations tool fixture' }
@@ -273,13 +407,13 @@ exit /b 91
     $forbiddenCommit = ([string](& git.exe -C $fixtureRoot rev-parse HEAD)).Trim()
     try {
       $env:PATH = "$fakeBin;$fixedNodeDirectory;$previousPath"
-      { & $packageScript -ReleaseId 'allowlist-test-002' -RepositoryRoot $fixtureRoot `
+      { & $packageScript -ReleaseId 'v2-20260811-a110002' -RepositoryRoot $fixtureRoot `
           -ConfirmCommit $forbiddenCommit -Apply -Confirm:$false } | Should Throw
     }
     finally {
       $env:PATH = $previousPath
     }
-    Test-Path -LiteralPath (Join-Path $fixtureRoot 'work/release/out/allowlist-test-002.tar.gz') |
+    Test-Path -LiteralPath (Join-Path $fixtureRoot 'work/release/out/v2-20260811-a110002.tar.gz') |
       Should Be $false
 
     foreach ($path in @(
@@ -302,13 +436,31 @@ exit /b 91
     $forbiddenRasterCommit = ([string](& git.exe -C $fixtureRoot rev-parse HEAD)).Trim()
     try {
       $env:PATH = "$fakeBin;$fixedNodeDirectory;$previousPath"
-      { & $packageScript -ReleaseId 'allowlist-test-003' -RepositoryRoot $fixtureRoot `
+      { & $packageScript -ReleaseId 'v2-20260811-a110003' -RepositoryRoot $fixtureRoot `
           -ConfirmCommit $forbiddenRasterCommit -Apply -Confirm:$false } | Should Throw
     }
     finally {
       $env:PATH = $previousPath
     }
-    Test-Path -LiteralPath (Join-Path $fixtureRoot 'work/release/out/allowlist-test-003.tar.gz') |
+    Test-Path -LiteralPath (Join-Path $fixtureRoot 'work/release/out/v2-20260811-a110003.tar.gz') |
+      Should Be $false
+
+    Remove-Item -LiteralPath `
+      (Join-Path $fixtureRoot 'app/frontend/src/assets/customer-screenshot.png') -Force
+    Write-TestFile -Path (Join-Path $fixtureRoot 'app/receipt.xml') `
+      -Value '<RSAKeyValue><Modulus>fixture</Modulus><Exponent>AQAB</Exponent><D>private</D></RSAKeyValue>'
+    Invoke-TestGit -WorkingDirectory $fixtureRoot -Arguments @('add', '--all')
+    Invoke-TestGit -WorkingDirectory $fixtureRoot -Arguments @('commit', '--quiet', '-m', 'private XML fixture')
+    $privateXmlCommit = ([string](& git.exe -C $fixtureRoot rev-parse HEAD)).Trim()
+    try {
+      $env:PATH = "$fakeBin;$fixedNodeDirectory;$previousPath"
+      { & $packageScript -ReleaseId 'v2-20260811-a110004' -RepositoryRoot $fixtureRoot `
+          -ConfirmCommit $privateXmlCommit -Apply -Confirm:$false } | Should Throw
+    }
+    finally {
+      $env:PATH = $previousPath
+    }
+    Test-Path -LiteralPath (Join-Path $fixtureRoot 'work/release/out/v2-20260811-a110004.tar.gz') |
       Should Be $false
   }
 }

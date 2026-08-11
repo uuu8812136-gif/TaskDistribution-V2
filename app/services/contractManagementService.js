@@ -1,0 +1,1151 @@
+'use strict';
+
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const mongoose = require('mongoose');
+const Supplier = require('../models/Supplier');
+const SupplierContractRecord = require('../models/SupplierContractRecord');
+const SupplierSettlementFee = require('../models/SupplierSettlementFee');
+const FileAsset = require('../models/FileAsset');
+const {
+  AUDIT_ACTIONS,
+  AUDIT_RESOURCE_TYPES
+} = require('../config/permissions');
+const { createAuditService } = require('./auditService');
+const { createFileAssetService } = require('./fileAssetService');
+const {
+  createStorageKey,
+  resolveStoragePath
+} = require('./fileStorageService');
+const { normalizeObjectId } = require('./scopedQueryService');
+const { resolveReadTeamId } = require('./reportingServiceSupport');
+const {
+  assertPermission,
+  assertTeamContext
+} = require('./teamContextService');
+const { runWithRequiredTransaction } = require('./transactionService');
+const {
+  createExpiryExportWorkbook,
+  createSettlementExportWorkbook,
+  createSupplierExportWorkbook,
+  parseDateOnly,
+  parseMonth,
+  parseSettlementWorkbook,
+  parseSupplierWorkbook
+} = require('./contractWorkbookService');
+
+const {
+  CONTRACT_ATTACHMENT_PURPOSES,
+  CONTRACT_RECORD_CATEGORIES,
+  CONTRACT_SIGNING_STATUSES
+} = SupplierContractRecord;
+const { FILE_OWNER_TYPES, FILE_STATUSES } = FileAsset;
+
+const CATEGORY_VALUES = Object.freeze(Object.values(CONTRACT_RECORD_CATEGORIES));
+const CONTRACT_CATEGORIES = Object.freeze(CATEGORY_VALUES.filter(
+  (category) => category !== CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO
+));
+const DAY_MS = 24 * 60 * 60 * 1000;
+const MAX_IMPORT_FILE_SIZE = 20 * 1024 * 1024;
+const EXCEL_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+const DETAIL_FIELDS_BY_CATEGORY = Object.freeze({
+  [CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO]: Object.freeze([
+    'supplyStatus', 'hasInvoiceInfo', 'invoiceInfoText', 'contacts',
+    'reconciliationEmails', 'unsignedReason', 'remarks'
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT]: Object.freeze([
+    'supplierSignedDate', 'companySignedDate', 'returnDate', 'courierNumber',
+    'deliveredBusinessDate', 'deliveredFactoryDate', 'remarks'
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.LOGISTICS_FEE_AGREEMENT]: Object.freeze([
+    'warehouseServiceRate', 'overstorageServiceRate', 'overstorageDays',
+    'settlementCycle', 'remarks'
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.TURNOVER_EQUIPMENT_SERVICE]: Object.freeze([
+    'equipmentType', 'equipmentServicePrice', 'supplierSignedDate',
+    'companySignedDate', 'returnDate', 'courierNumber', 'deliveredBusinessDate',
+    'deliveredFactoryDate', 'remarks'
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.EQUIPMENT_RENTAL]: Object.freeze([
+    'equipmentType', 'specification', 'productionBatch', 'color', 'quantity', 'remarks'
+  ])
+});
+
+const DATE_DETAIL_FIELDS = new Set([
+  'supplierSignedDate', 'companySignedDate', 'returnDate',
+  'deliveredBusinessDate', 'deliveredFactoryDate'
+]);
+
+const PURPOSES_BY_CATEGORY = Object.freeze({
+  [CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO]: new Set([
+    CONTRACT_ATTACHMENT_PURPOSES.INVOICE_INFO,
+    CONTRACT_ATTACHMENT_PURPOSES.GENERAL
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT]: new Set([
+    CONTRACT_ATTACHMENT_PURPOSES.CONTRACT_PDF,
+    CONTRACT_ATTACHMENT_PURPOSES.GENERAL
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.LOGISTICS_FEE_AGREEMENT]: new Set([
+    CONTRACT_ATTACHMENT_PURPOSES.GENERAL
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.TURNOVER_EQUIPMENT_SERVICE]: new Set([
+    CONTRACT_ATTACHMENT_PURPOSES.GENERAL
+  ]),
+  [CONTRACT_RECORD_CATEGORIES.EQUIPMENT_RENTAL]: new Set([
+    CONTRACT_ATTACHMENT_PURPOSES.CONTRACT_PDF,
+    CONTRACT_ATTACHMENT_PURPOSES.PAYMENT_RECEIPT,
+    CONTRACT_ATTACHMENT_PURPOSES.GENERAL
+  ])
+});
+
+const IMAGE_OR_PDF_MIMES = new Set(['image/jpeg', 'image/png', 'application/pdf']);
+const ALL_SAFE_MIMES = Object.freeze([
+  'image/jpeg', 'image/png', 'image/gif', 'application/pdf', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'text/plain'
+]);
+
+class ContractManagementError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.name = 'ContractManagementError';
+    this.status = status;
+    this.code = code;
+    this.expose = true;
+  }
+}
+
+function contractError(status, code, message) {
+  return new ContractManagementError(status, code, message);
+}
+
+function requiredText(value, field, max = 200) {
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}不能为空`);
+  }
+  const normalized = String(value).trim();
+  if (!normalized || normalized.length > max) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}不能为空且不能超过${max}个字符`);
+  }
+  return normalized;
+}
+
+function optionalText(value, field, max = 5000) {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string' && typeof value !== 'number') {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}格式不正确`);
+  }
+  const normalized = String(value).trim();
+  if (normalized.length > max) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}不能超过${max}个字符`);
+  }
+  return normalized;
+}
+
+function booleanValue(value, field, { nullable = false } = {}) {
+  if (nullable && (value === null || value === undefined || value === '')) return null;
+  if (value === true || value === false) return value;
+  throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}必须是布尔值`);
+}
+
+function normalizeDate(value, field) {
+  try {
+    return parseDateOnly(value);
+  } catch {
+    throw contractError(400, 'CONTRACT_DATE_INVALID', `${field}必须是有效日期`);
+  }
+}
+
+function normalizeId(value, resource = '记录') {
+  try {
+    return normalizeObjectId(value, 'id');
+  } catch {
+    throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', `${resource}不存在`);
+  }
+}
+
+function plain(document) {
+  return typeof document?.toObject === 'function'
+    ? document.toObject({ depopulate: true, versionKey: false })
+    : document;
+}
+
+function escapeRegex(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function pagination(query = {}) {
+  const page = Number(query.page || 1);
+  const pageSize = Number(query.pageSize || 20);
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) {
+    throw contractError(400, 'CONTRACT_PAGINATION_INVALID', '分页参数不正确');
+  }
+  return { page, pageSize };
+}
+
+function queryBoolean(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  if (value === true || value === 'true' || value === '1') return true;
+  if (value === false || value === 'false' || value === '0') return false;
+  throw contractError(400, 'CONTRACT_FILTER_INVALID', `${field}筛选值不正确`);
+}
+
+function queryInteger(value, field) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || Math.abs(parsed) > 1000000) {
+    throw contractError(400, 'CONTRACT_FILTER_INVALID', `${field}筛选值不正确`);
+  }
+  return parsed;
+}
+
+function todayShanghai(now = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(now).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day)));
+}
+
+function derivedContractState(latestMain, today = todayShanghai()) {
+  const signed = latestMain?.signingStatus === CONTRACT_SIGNING_STATUSES.SIGNED;
+  const effective = latestMain?.effectiveDate ? new Date(latestMain.effectiveDate) : null;
+  const expiry = latestMain?.expiryDate ? new Date(latestMain.expiryDate) : null;
+  const dateReady = effective && expiry && Number.isFinite(effective.getTime()) && Number.isFinite(expiry.getTime());
+  const activeStarted = Boolean(dateReady && today >= effective);
+  const inRange = Boolean(activeStarted && today <= expiry);
+  const renewedAfterExpiry = Boolean(activeStarted && today > expiry && latestMain.autoRenew === true);
+  return {
+    hasSignedContract: signed,
+    contractValid: Boolean(signed && (inRange || renewedAfterExpiry))
+  };
+}
+
+function assertNoFields(input, fields, code = 'CONTRACT_COMPUTED_FIELD_READ_ONLY') {
+  for (const field of fields) {
+    if (Object.prototype.hasOwnProperty.call(input || {}, field)) {
+      throw contractError(400, code, `${field}由系统计算，不能手工填写`);
+    }
+  }
+}
+
+function normalizeSupplierInput(input, { partial = false, current = null } = {}) {
+  assertNoFields(input, ['teamId', 'hasSignedContract', 'contractValid']);
+  const allowed = new Set(['name', 'code', 'trusteeAttribute']);
+  if (Object.keys(input || {}).some((key) => !allowed.has(key))) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '供应商包含不支持的字段');
+  }
+  const source = { ...(current || {}), ...(input || {}) };
+  const trusteeAttribute = source.trusteeAttribute;
+  if (!['HOSTED', 'NON_HOSTED'].includes(trusteeAttribute)) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '托管属性必须是HOSTED或NON_HOSTED');
+  }
+  const result = {
+    name: requiredText(source.name, '供应商名称'),
+    code: requiredText(source.code, '供应商编码', 100),
+    trusteeAttribute
+  };
+  if (partial && Object.keys(input || {}).length === 0) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '至少修改一个字段');
+  }
+  return result;
+}
+
+function normalizeContacts(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 100) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '联系人必须是数组且不能超过100人');
+  }
+  return value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) ||
+      Object.keys(item).some((key) => !['name', 'phone'].includes(key))) {
+      throw contractError(400, 'CONTRACT_INPUT_INVALID', '联系人格式不正确');
+    }
+    const contact = {
+      name: optionalText(item.name, '联系人姓名', 100),
+      phone: optionalText(item.phone, '联系电话', 100)
+    };
+    if (!contact.name && !contact.phone) {
+      throw contractError(400, 'CONTRACT_INPUT_INVALID', '联系人姓名和电话至少填写一项');
+    }
+    return contact;
+  });
+}
+
+function normalizeDetails(category, value) {
+  const details = value === undefined || value === null ? {} : value;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', 'details格式不正确');
+  }
+  const allowed = new Set(DETAIL_FIELDS_BY_CATEGORY[category] || []);
+  if (Object.keys(details).some((key) => !allowed.has(key))) {
+    throw contractError(400, 'CONTRACT_DETAIL_FIELD_INVALID', '当前合同类型包含不支持的明细字段');
+  }
+  const normalized = {};
+  for (const field of allowed) {
+    const fieldValue = details[field];
+    if (field === 'contacts') normalized[field] = normalizeContacts(fieldValue);
+    else if (field === 'reconciliationEmails') {
+      if (fieldValue === undefined || fieldValue === null) normalized[field] = [];
+      else if (!Array.isArray(fieldValue) || fieldValue.length > 100) {
+        throw contractError(400, 'CONTRACT_INPUT_INVALID', '对账邮箱格式不正确');
+      } else normalized[field] = fieldValue.map((email) => requiredText(email, '对账邮箱', 254));
+    } else if (field === 'hasInvoiceInfo') normalized[field] = booleanValue(fieldValue, '是否已有开票信息', { nullable: true });
+    else if (DATE_DETAIL_FIELDS.has(field)) normalized[field] = normalizeDate(fieldValue, field);
+    else if (field === 'supplyStatus') {
+      if (fieldValue === undefined || fieldValue === null || fieldValue === '') normalized[field] = null;
+      else if (!['NORMAL', 'STOPPED'].includes(fieldValue)) throw contractError(400, 'CONTRACT_INPUT_INVALID', '供货状态不正确');
+      else normalized[field] = fieldValue;
+    } else if (field === 'overstorageDays') {
+      if (fieldValue === undefined || fieldValue === null || fieldValue === '') normalized[field] = null;
+      else if (!['NONE', '30+15', '60+15', '90+15'].includes(fieldValue)) throw contractError(400, 'CONTRACT_INPUT_INVALID', '超储天数不正确');
+      else normalized[field] = fieldValue;
+    } else normalized[field] = optionalText(fieldValue, field, field === 'remarks' ? 5000 : 2000);
+  }
+  return normalized;
+}
+
+function normalizeAttachmentInput(category, value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value) || value.length > 10) {
+    throw contractError(400, 'CONTRACT_ATTACHMENT_INVALID', '附件不能超过10个');
+  }
+  const allowedPurposes = PURPOSES_BY_CATEGORY[category];
+  const seen = new Set();
+  return value.map((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item) ||
+      Object.keys(item).some((key) => !['fileId', 'purpose'].includes(key))) {
+      throw contractError(400, 'CONTRACT_ATTACHMENT_INVALID', '附件必须包含fileId和purpose');
+    }
+    const fileId = normalizeId(item.fileId, '附件');
+    if (!allowedPurposes.has(item.purpose)) {
+      throw contractError(400, 'CONTRACT_ATTACHMENT_PURPOSE_INVALID', '附件用途不适用于当前合同类型');
+    }
+    if (seen.has(fileId)) throw contractError(400, 'CONTRACT_ATTACHMENT_DUPLICATE', '同一附件不能重复绑定');
+    seen.add(fileId);
+    return { fileId, purpose: item.purpose };
+  });
+}
+
+function normalizeRecordInput(input, { current = null, partial = false } = {}) {
+  assertNoFields(input, ['teamId', 'supplierId', 'hasSignedContract', 'contractValid']);
+  const allowed = new Set([
+    'category', 'signingStatus', 'contractNumber', 'effectiveDate', 'expiryDate',
+    'autoRenew', 'details', 'attachments'
+  ]);
+  if (Object.keys(input || {}).some((key) => !allowed.has(key))) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '合同记录包含不支持的字段');
+  }
+  const category = current?.category || input.category;
+  if (!CATEGORY_VALUES.includes(category)) throw contractError(400, 'CONTRACT_CATEGORY_INVALID', '合同类型不正确');
+  if (current && Object.prototype.hasOwnProperty.call(input, 'category') && input.category !== current.category) {
+    throw contractError(400, 'CONTRACT_CATEGORY_IMMUTABLE', '合同类型创建后不能修改');
+  }
+  const source = { ...(current || {}), ...(input || {}) };
+  const isInfo = category === CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO;
+  const signingStatus = isInfo ? null : source.signingStatus;
+  if (!isInfo && !Object.values(CONTRACT_SIGNING_STATUSES).includes(signingStatus)) {
+    throw contractError(400, 'CONTRACT_SIGNING_STATUS_INVALID', '合同签订状态必须是SIGNED或UNSIGNED');
+  }
+  const effectiveDate = isInfo ? null : normalizeDate(source.effectiveDate, '合同生效日期');
+  const expiryDate = isInfo ? null : normalizeDate(source.expiryDate, '合同截止日期');
+  if (effectiveDate && expiryDate && effectiveDate > expiryDate) {
+    throw contractError(400, 'CONTRACT_DATE_RANGE_INVALID', '合同截止日期不能早于生效日期');
+  }
+  if (partial && Object.keys(input || {}).length === 0) throw contractError(400, 'CONTRACT_INPUT_INVALID', '至少修改一个字段');
+  const currentDetails = current
+    ? Object.fromEntries((DETAIL_FIELDS_BY_CATEGORY[category] || []).map(
+      (field) => [field, current.details?.[field]]
+    ))
+    : {};
+  return {
+    category,
+    signingStatus,
+    contractNumber: isInfo ? '' : optionalText(source.contractNumber, '合同编号', 200),
+    effectiveDate,
+    expiryDate,
+    autoRenew: isInfo ? false : booleanValue(source.autoRenew ?? false, '是否自动顺延'),
+    details: normalizeDetails(
+      category,
+      current && Object.prototype.hasOwnProperty.call(input || {}, 'details')
+        ? { ...currentDetails, ...(input.details || {}) }
+        : current ? currentDetails : source.details
+    ),
+    attachments: Object.prototype.hasOwnProperty.call(input || {}, 'attachments')
+      ? normalizeAttachmentInput(category, input.attachments)
+      : null
+  };
+}
+
+function normalizePersistenceError(error) {
+  if (error instanceof ContractManagementError) return error;
+  if (error?.code === 11000) {
+    const monthDuplicate = Boolean(error?.keyPattern?.month || error?.keyValue?.month);
+    return monthDuplicate
+      ? contractError(409, 'CONTRACT_SETTLEMENT_DUPLICATE', '同一月份和供应商编码的结算费用已存在')
+      : contractError(409, 'CONTRACT_SUPPLIER_CODE_DUPLICATE', '当前团队已存在相同供应商编码');
+  }
+  if (error?.name === 'ValidationError' || error?.name === 'StrictModeError') {
+    return contractError(400, 'CONTRACT_INPUT_INVALID', error.message);
+  }
+  return error;
+}
+
+async function execute(query, session) {
+  if (session && typeof query.session === 'function') query.session(session);
+  return query;
+}
+
+async function createOne(Model, values, session) {
+  const created = await Model.create([values], { session });
+  return created[0];
+}
+
+function createContractManagementService({
+  SupplierModel = Supplier,
+  ContractRecordModel = SupplierContractRecord,
+  SettlementModel = SupplierSettlementFee,
+  FileAssetModel = FileAsset,
+  auditService = createAuditService(),
+  fileAssetService = createFileAssetService({ storageRoot: process.env.UPLOAD_PATH }),
+  connection = mongoose.connection,
+  now = () => new Date(),
+  storageRoot = process.env.UPLOAD_PATH
+} = {}) {
+  const runWrite = (work) => runWithRequiredTransaction(work, connection, {
+    code: 'CONTRACT_TRANSACTIONS_REQUIRED',
+    message: '合同管理写入需要MongoDB事务支持，请先启用副本集后重试'
+  });
+
+  async function teamForRead(authContext, requestedTeamId, permissionKey) {
+    assertPermission(authContext, permissionKey);
+    return resolveReadTeamId({ authContext, requestedTeamId });
+  }
+
+  function teamForWrite(authContext, permissionKey) {
+    const context = assertTeamContext(authContext);
+    assertPermission(context, permissionKey);
+    return { context, teamId: normalizeObjectId(context.activeTeamId, 'activeTeamId') };
+  }
+
+  async function latestMainBySupplier(teamId, supplierIds) {
+    if (!supplierIds.length) return new Map();
+    const records = await ContractRecordModel.find({
+      teamId,
+      supplierId: { $in: supplierIds },
+      category: CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT
+    }).sort({ effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 }).lean();
+    const result = new Map();
+    for (const record of records) {
+      const key = String(record.supplierId);
+      if (!result.has(key)) result.set(key, record);
+    }
+    return result;
+  }
+
+  async function attachDerivedStates(teamId, suppliers) {
+    const latest = await latestMainBySupplier(teamId, suppliers.map((supplier) => supplier._id));
+    return suppliers.map((supplier) => {
+      const latestContract = latest.get(String(supplier._id));
+      return {
+        ...plain(supplier),
+        ...derivedContractState(latestContract, todayShanghai(now())),
+        latestContractNumber: latestContract?.contractNumber || '',
+        latestContractExpiryDate: latestContract?.expiryDate || null
+      };
+    });
+  }
+
+  async function listSuppliers({ authContext, requestedTeamId, query = {} }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
+    const filter = { teamId };
+    if (query.code) filter.code = requiredText(query.code, '供应商编码', 100);
+    if (query.name) filter.name = { $regex: escapeRegex(requiredText(query.name, '供应商名称')), $options: 'i' };
+    if (query.trusteeAttribute) {
+      if (!['HOSTED', 'NON_HOSTED'].includes(query.trusteeAttribute)) throw contractError(400, 'CONTRACT_FILTER_INVALID', '托管属性筛选值不正确');
+      filter.trusteeAttribute = query.trusteeAttribute;
+    }
+    const suppliers = await SupplierModel.find(filter).sort({ name: 1, code: 1, _id: 1 }).lean();
+    const withStates = await attachDerivedStates(teamId, suppliers);
+    const hasSigned = queryBoolean(query.hasSignedContract, '是否签订合同');
+    const contractValid = queryBoolean(query.contractValid, '合同是否有效');
+    const filtered = withStates.filter((supplier) => (
+      (hasSigned === null || supplier.hasSignedContract === hasSigned) &&
+      (contractValid === null || supplier.contractValid === contractValid)
+    ));
+    const { page, pageSize } = pagination(query);
+    return {
+      suppliers: filtered.slice((page - 1) * pageSize, page * pageSize),
+      page,
+      pageSize,
+      total: filtered.length
+    };
+  }
+
+  async function getSupplier({ authContext, requestedTeamId, supplierId }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
+    const supplier = await SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }).lean();
+    if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    const [withState] = await attachDerivedStates(teamId, [supplier]);
+    const records = await ContractRecordModel.find({ teamId, supplierId: supplier._id })
+      .sort({ category: 1, effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 }).lean();
+    const summaries = {};
+    for (const category of CATEGORY_VALUES) {
+      const categoryRecords = records.filter((record) => record.category === category);
+      summaries[category] = {
+        count: categoryRecords.length,
+        latest: categoryRecords[0] || null
+      };
+    }
+    return { ...withState, categorySummaries: summaries };
+  }
+
+  async function createSupplier({ authContext, req, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    const values = normalizeSupplierInput(input);
+    try {
+      return await runWrite(async (session) => {
+        const supplier = await createOne(SupplierModel, {
+          teamId, ...values, createdBy: context.userId, updatedBy: context.userId
+        }, session);
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+          after: plain(supplier), targetTeamId: teamId, session });
+        return { ...plain(supplier), hasSignedContract: false, contractValid: false };
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function updateSupplier({ authContext, req, supplierId, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    try {
+      return await runWrite(async (session) => {
+        const supplier = await execute(SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }), session);
+        if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const before = plain(supplier);
+        const values = normalizeSupplierInput(input, { partial: true, current: before });
+        Object.assign(supplier, values, { updatedBy: context.userId });
+        await supplier.save({ session });
+        await SettlementModel.updateMany({ teamId, supplierId: supplier._id }, {
+          $set: { supplierName: supplier.name, supplierCode: supplier.code, updatedBy: context.userId }
+        }, { session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+          before, after: plain(supplier), targetTeamId: teamId, session });
+        const [result] = await attachDerivedStates(teamId, [plain(supplier)]);
+        return result;
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function deleteSupplier({ authContext, req, supplierId }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    try {
+      return await runWrite(async (session) => {
+        const supplier = await execute(SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }), session);
+        if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const [recordExists, settlementExists] = await Promise.all([
+          execute(ContractRecordModel.exists({ teamId, supplierId: supplier._id }), session),
+          execute(SettlementModel.exists({ teamId, supplierId: supplier._id }), session)
+        ]);
+        if (recordExists || settlementExists) {
+          throw contractError(409, 'CONTRACT_SUPPLIER_HAS_DEPENDENCIES', '该供应商已有合同记录或结算数据，不能删除');
+        }
+        const before = plain(supplier);
+        await supplier.deleteOne({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+          before, targetTeamId: teamId, session });
+        return before;
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function reconcileRecordAttachments({ context, req, record, requested, previous, session }) {
+    if (requested === null) return previous || [];
+    const ownerType = record.category === CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO
+      ? FILE_OWNER_TYPES.SUPPLIER_PROFILE
+      : FILE_OWNER_TYPES.SUPPLIER_CONTRACT;
+    const references = await fileAssetService.reconcileOwnerFiles({
+      authContext: context, req,
+      attachments: requested.map(({ fileId }) => ({ fileId })),
+      previousAttachments: previous || [], ownerType, ownerId: record._id,
+      allowedMimeTypes: ALL_SAFE_MIMES, session
+    });
+    const purposeById = new Map(requested.map((item) => [String(item.fileId), item.purpose]));
+    return references.map((reference) => {
+      const purpose = purposeById.get(String(reference.fileId));
+      const mime = String(reference.mimeType).toLowerCase();
+      if (purpose === CONTRACT_ATTACHMENT_PURPOSES.CONTRACT_PDF && mime !== 'application/pdf') {
+        throw contractError(415, 'CONTRACT_ATTACHMENT_MIME_INVALID', '合同PDF附件只能上传PDF文件');
+      }
+      if ([CONTRACT_ATTACHMENT_PURPOSES.INVOICE_INFO, CONTRACT_ATTACHMENT_PURPOSES.PAYMENT_RECEIPT].includes(purpose) && !IMAGE_OR_PDF_MIMES.has(mime)) {
+        throw contractError(415, 'CONTRACT_ATTACHMENT_MIME_INVALID', '开票资料和打款凭证只能上传JPEG、PNG或PDF');
+      }
+      return { ...reference, purpose };
+    });
+  }
+
+  async function listRecords({ authContext, requestedTeamId, supplierId, query = {} }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
+    const normalizedSupplierId = normalizeId(supplierId, '供应商');
+    if (!await SupplierModel.exists({ _id: normalizedSupplierId, teamId })) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    const filter = { teamId, supplierId: normalizedSupplierId };
+    if (query.category) {
+      if (!CATEGORY_VALUES.includes(query.category)) throw contractError(400, 'CONTRACT_CATEGORY_INVALID', '合同类型不正确');
+      filter.category = query.category;
+    }
+    const { page, pageSize } = pagination(query);
+    const [records, total] = await Promise.all([
+      ContractRecordModel.find(filter).sort({ effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 })
+        .skip((page - 1) * pageSize).limit(pageSize).lean(),
+      ContractRecordModel.countDocuments(filter)
+    ]);
+    return { records, page, pageSize, total };
+  }
+
+  async function getRecord({ authContext, requestedTeamId, recordId }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
+    const record = await ContractRecordModel.findOne({ _id: normalizeId(recordId, '合同记录'), teamId }).lean();
+    if (!record) throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', '合同记录不存在');
+    return record;
+  }
+
+  async function createRecord({ authContext, req, supplierId, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    const normalizedSupplierId = normalizeId(supplierId, '供应商');
+    const values = normalizeRecordInput(input);
+    try {
+      return await runWrite(async (session) => {
+        if (!await execute(SupplierModel.exists({ _id: normalizedSupplierId, teamId }), session)) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const record = await createOne(ContractRecordModel, {
+          teamId, supplierId: normalizedSupplierId, category: values.category,
+          signingStatus: values.signingStatus, contractNumber: values.contractNumber,
+          effectiveDate: values.effectiveDate, expiryDate: values.expiryDate,
+          autoRenew: values.autoRenew, details: values.details, attachments: [],
+          createdBy: context.userId, updatedBy: context.userId
+        }, session);
+        record.attachments = await reconcileRecordAttachments({ context, req, record,
+          requested: values.attachments || [], previous: [], session });
+        await record.save({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+          after: plain(record), targetTeamId: teamId, session });
+        return plain(record);
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function updateRecord({ authContext, req, recordId, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    try {
+      return await runWrite(async (session) => {
+        const record = await execute(ContractRecordModel.findOne({ _id: normalizeId(recordId, '合同记录'), teamId }), session);
+        if (!record) throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', '合同记录不存在');
+        const before = plain(record);
+        const values = normalizeRecordInput(input, { current: before, partial: true });
+        Object.assign(record, {
+          signingStatus: values.signingStatus, contractNumber: values.contractNumber,
+          effectiveDate: values.effectiveDate, expiryDate: values.expiryDate,
+          autoRenew: values.autoRenew, details: values.details, updatedBy: context.userId
+        });
+        await record.validate();
+        record.attachments = await reconcileRecordAttachments({ context, req, record,
+          requested: values.attachments, previous: before.attachments, session });
+        await record.save({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+          before, after: plain(record), targetTeamId: teamId, session });
+        return plain(record);
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function deleteRecord({ authContext, req, recordId }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    try {
+      return await runWrite(async (session) => {
+        const record = await execute(ContractRecordModel.findOne({ _id: normalizeId(recordId, '合同记录'), teamId }), session);
+        if (!record) throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', '合同记录不存在');
+        const before = plain(record);
+        await reconcileRecordAttachments({ context, req, record, requested: [], previous: before.attachments, session });
+        await record.deleteOne({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+          before, targetTeamId: teamId, session });
+        return before;
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function supplierExport({ authContext, req, requestedTeamId, query = {} }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.export');
+    const supplierFilter = { teamId };
+    if (query.supplierId) supplierFilter._id = normalizeId(query.supplierId, '供应商');
+    if (query.code) supplierFilter.code = requiredText(query.code, '供应商编码', 100);
+    if (query.name) supplierFilter.name = { $regex: escapeRegex(requiredText(query.name, '供应商名称')), $options: 'i' };
+    if (query.category && !CATEGORY_VALUES.includes(query.category)) {
+      throw contractError(400, 'CONTRACT_CATEGORY_INVALID', '合同类型不正确');
+    }
+    const suppliers = await SupplierModel.find(supplierFilter).sort({ name: 1, code: 1, _id: 1 }).lean();
+    if (query.supplierId && suppliers.length === 0) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    const withStates = await attachDerivedStates(teamId, suppliers);
+    const recordFilter = { teamId, supplierId: { $in: suppliers.map((supplier) => supplier._id) } };
+    if (query.category) recordFilter.category = query.category;
+    const records = suppliers.length
+      ? await ContractRecordModel.find(recordFilter).sort({ supplierId: 1, category: 1, effectiveDate: -1, createdAt: -1 }).lean()
+      : [];
+    const buffer = await createSupplierExportWorkbook({ suppliers: withStates, records, category: query.category || null });
+    await auditService.record({ req, authContext, action: AUDIT_ACTIONS.EXPORT,
+      resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
+      targetTeamId: teamId, after: { supplierCount: suppliers.length, recordCount: records.length,
+        supplierId: query.supplierId || null, category: query.category || null } });
+    return { buffer, supplierCount: suppliers.length, recordCount: records.length };
+  }
+
+  function importedMediaStorageRoot() {
+    if (typeof storageRoot !== 'string' || !storageRoot.trim()) {
+      throw contractError(503, 'CONTRACT_FILE_STORAGE_UNAVAILABLE', '合同附件存储目录未配置');
+    }
+    return path.resolve(storageRoot);
+  }
+
+  async function stageImportedInvoiceMedia({ media, code, rowNumber, index, teamId }) {
+    const originalName = `invoice-${String(code).replace(/[^A-Za-z0-9_-]/g, '_')}-${rowNumber}-${index + 1}${media.extension}`;
+    const storageKey = createStorageKey({ teamId, originalName, mimeType: media.mimeType });
+    const storagePath = resolveStoragePath(importedMediaStorageRoot(), storageKey);
+    await fs.promises.mkdir(path.dirname(storagePath), { recursive: true, mode: 0o700 });
+    await fs.promises.writeFile(storagePath, media.buffer, { flag: 'wx', mode: 0o600 });
+    return { storageKey, storagePath, originalName, mimeType: media.mimeType,
+      size: media.buffer.length, sha256: crypto.createHash('sha256').update(media.buffer).digest('hex') };
+  }
+
+  async function persistImportedInvoiceMedia({ staged, context, req, teamId, record, session }) {
+    const file = await createOne(FileAssetModel, {
+      teamId,
+      ownerType: FILE_OWNER_TYPES.SUPPLIER_PROFILE,
+      ownerId: record._id,
+      storageKey: staged.storageKey,
+      originalName: staged.originalName,
+      mimeType: staged.mimeType,
+      size: staged.size,
+      sha256: staged.sha256,
+      uploaderId: context.userId,
+      status: FILE_STATUSES.ACTIVE
+    }, session);
+    await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+      resourceType: AUDIT_RESOURCE_TYPES.FILE_ASSET, resourceId: file._id,
+      after: { _id: file._id, ownerType: file.ownerType, ownerId: file.ownerId,
+        originalName: file.originalName, mimeType: file.mimeType, size: file.size, status: file.status },
+      targetTeamId: teamId, session });
+    return {
+      fileId: file._id,
+      originalName: file.originalName,
+      mimeType: file.mimeType,
+      size: file.size,
+      uploadTime: file.createdAt,
+      purpose: CONTRACT_ATTACHMENT_PURPOSES.INVOICE_INFO
+    };
+  }
+
+  async function importSuppliers({ authContext, req, file, supplierId = null }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.import');
+    if (!file || !Buffer.isBuffer(file.buffer)) throw contractError(400, 'CONTRACT_IMPORT_FILE_REQUIRED', '请选择合同Excel文件');
+    if (file.buffer.length > MAX_IMPORT_FILE_SIZE) throw contractError(413, 'CONTRACT_IMPORT_FILE_TOO_LARGE', '合同Excel文件不能超过20MB');
+    const parsed = parseSupplierWorkbook(file.buffer);
+    let targetSupplier = null;
+    if (supplierId) {
+      targetSupplier = await SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }).lean();
+      if (!targetSupplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+      if (parsed.suppliers.some((supplier) => supplier.code !== targetSupplier.code)) {
+        throw contractError(409, 'CONTRACT_IMPORT_SUPPLIER_MISMATCH', '导入文件中的供应商编码与当前供应商不一致');
+      }
+    }
+
+    const dummySupplierIds = new Map(parsed.suppliers.map((supplier) => [supplier.code, new mongoose.Types.ObjectId()]));
+    for (const supplier of parsed.suppliers) {
+      await new SupplierModel({ teamId, name: supplier.name, code: supplier.code,
+        trusteeAttribute: supplier.trusteeAttribute, createdBy: context.userId, updatedBy: context.userId }).validate();
+    }
+    for (const row of parsed.rows) {
+      for (const record of row.records) {
+        await new ContractRecordModel({ teamId, supplierId: dummySupplierIds.get(row.supplierCode),
+          category: record.category, signingStatus: record.signingStatus,
+          contractNumber: record.contractNumber, effectiveDate: record.effectiveDate,
+          expiryDate: record.expiryDate, autoRenew: record.autoRenew,
+          details: record.details, attachments: [],
+          createdBy: context.userId, updatedBy: context.userId }).validate();
+      }
+    }
+
+    const stagedByMedia = new Map();
+    const stagedFiles = [];
+    try {
+      for (const row of parsed.rows) {
+        for (const record of row.records) {
+          for (const [index, media] of (record.importedMedia || []).entries()) {
+            const staged = await stageImportedInvoiceMedia({ media, code: row.supplierCode,
+              rowNumber: row.rowNumber, index, teamId });
+            stagedByMedia.set(media, staged);
+            stagedFiles.push(staged);
+          }
+        }
+      }
+      const result = await runWrite(async (session) => {
+        const supplierByCode = new Map();
+        let createdSuppliers = 0;
+        let updatedSuppliers = 0;
+        for (const input of parsed.suppliers) {
+          let supplier = await execute(SupplierModel.findOne({ teamId, code: input.code }), session);
+          if (supplier) {
+            const before = plain(supplier);
+            supplier.name = input.name;
+            supplier.trusteeAttribute = input.trusteeAttribute;
+            supplier.updatedBy = context.userId;
+            await supplier.save({ session });
+            updatedSuppliers += 1;
+            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+              before, after: plain(supplier), targetTeamId: teamId, session });
+          } else {
+            supplier = await createOne(SupplierModel, { teamId, name: input.name, code: input.code,
+              trusteeAttribute: input.trusteeAttribute, createdBy: context.userId, updatedBy: context.userId }, session);
+            createdSuppliers += 1;
+            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+              after: plain(supplier), targetTeamId: teamId, session });
+          }
+          supplierByCode.set(input.code, supplier);
+        }
+
+        let createdRecords = 0;
+        let importedImages = 0;
+        for (const row of parsed.rows) {
+          const supplier = supplierByCode.get(row.supplierCode);
+          for (const input of row.records) {
+            const record = await createOne(ContractRecordModel, {
+              teamId, supplierId: supplier._id, category: input.category,
+              signingStatus: input.signingStatus, contractNumber: input.contractNumber,
+              effectiveDate: input.effectiveDate, expiryDate: input.expiryDate,
+              autoRenew: input.autoRenew, details: input.details, attachments: [],
+              createdBy: context.userId, updatedBy: context.userId
+            }, session);
+            for (const [index, media] of (input.importedMedia || []).entries()) {
+              record.attachments.push(await persistImportedInvoiceMedia({
+                staged: stagedByMedia.get(media), context, req, teamId, record, session
+              }));
+              importedImages += 1;
+            }
+            await record.save({ session });
+            createdRecords += 1;
+            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.IMPORT,
+              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+              after: plain(record), targetTeamId: teamId, session });
+          }
+        }
+        return { createdSuppliers, updatedSuppliers, createdRecords, importedImages,
+          mediaSummary: parsed.mediaSummary };
+      });
+      return result;
+    } catch (error) {
+      await Promise.all(stagedFiles.map(async (staged) => {
+        const bound = await FileAssetModel.exists({ storageKey: staged.storageKey, status: FILE_STATUSES.ACTIVE }).catch(() => null);
+        if (!bound) await fs.promises.rm(staged.storagePath, { force: true }).catch(() => {});
+      }));
+      throw normalizePersistenceError(error);
+    }
+  }
+
+  async function buildExpiryAlerts({ authContext, requestedTeamId, query = {}, permissionKey = 'contract.expiry.view' }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, permissionKey);
+    const supplierFilter = { teamId };
+    if (query.supplierCode) supplierFilter.code = requiredText(query.supplierCode, '供应商编码', 100);
+    if (query.supplierName) supplierFilter.name = { $regex: escapeRegex(requiredText(query.supplierName, '供应商名称')), $options: 'i' };
+    const suppliers = await SupplierModel.find(supplierFilter).lean();
+    const supplierById = new Map(suppliers.map((supplier) => [String(supplier._id), supplier]));
+    const autoRenew = queryBoolean(query.autoRenew, '是否顺延');
+    const recordFilter = {
+      teamId,
+      supplierId: { $in: suppliers.map((supplier) => supplier._id) },
+      category: { $in: CONTRACT_CATEGORIES },
+      signingStatus: CONTRACT_SIGNING_STATUSES.SIGNED,
+      effectiveDate: { $ne: null },
+      expiryDate: { $ne: null }
+    };
+    if (autoRenew !== null) recordFilter.autoRenew = autoRenew;
+    const records = suppliers.length ? await ContractRecordModel.find(recordFilter).lean() : [];
+    const today = todayShanghai(now());
+    const gt = queryInteger(query.remainingDaysGt, '有效期大于');
+    const lt = queryInteger(query.remainingDaysLt, '有效期小于');
+    const alerts = records.map((record) => {
+      const supplier = supplierById.get(String(record.supplierId));
+      const remainingDays = Math.round((new Date(record.expiryDate).getTime() - today.getTime()) / DAY_MS);
+      return {
+        _id: record._id,
+        recordId: record._id,
+        supplierId: record.supplierId,
+        supplierName: supplier.name,
+        supplierCode: supplier.code,
+        category: record.category,
+        signingStatus: record.signingStatus,
+        contractNumber: record.contractNumber,
+        effectiveDate: record.effectiveDate,
+        expiryDate: record.expiryDate,
+        remainingDays,
+        autoRenew: record.autoRenew,
+        alertLevel: record.autoRenew ? 'NORMAL' : remainingDays < 0 ? 'EXPIRED' : remainingDays <= 30 ? 'WARNING' : 'NORMAL'
+      };
+    }).filter((item) => (gt === null || item.remainingDays > gt) && (lt === null || item.remainingDays < lt))
+      .sort((left, right) => left.remainingDays - right.remainingDays || left.supplierCode.localeCompare(right.supplierCode));
+    return { teamId, alerts };
+  }
+
+  async function listExpiryAlerts(input) {
+    const { alerts } = await buildExpiryAlerts(input);
+    const { page, pageSize } = pagination(input.query || {});
+    return { alerts: alerts.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: alerts.length };
+  }
+
+  async function expiryExport({ authContext, req, requestedTeamId, query = {} }) {
+    const { teamId, alerts } = await buildExpiryAlerts({ authContext, requestedTeamId, query,
+      permissionKey: 'contract.expiry.export' });
+    const buffer = await createExpiryExportWorkbook(alerts);
+    await auditService.record({ req, authContext, action: AUDIT_ACTIONS.EXPORT,
+      resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
+      after: { alertCount: alerts.length }, targetTeamId: teamId });
+    return { buffer, count: alerts.length };
+  }
+
+  function amount(value, field, fallback = 0) {
+    const resolved = value === undefined || value === null || value === '' ? fallback : Number(value);
+    if (!Number.isFinite(resolved) || resolved < 0) throw contractError(400, 'CONTRACT_SETTLEMENT_AMOUNT_INVALID', `${field}必须是非负金额`);
+    return resolved;
+  }
+
+  async function resolveSettlementSupplier({ teamId, input, current = null, session = null }) {
+    let filter;
+    if (input.supplierId) filter = { _id: normalizeId(input.supplierId, '供应商'), teamId };
+    else if (input.supplierCode) filter = { code: requiredText(input.supplierCode, '供应商编码', 100), teamId };
+    else if (current) filter = { _id: current.supplierId, teamId };
+    else throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_REQUIRED', '请选择供应商');
+    const supplier = await execute(SupplierModel.findOne(filter), session);
+    if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    if (current && String(current.supplierId) !== String(supplier._id)) {
+      throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_IMMUTABLE', '结算记录创建后不能更换供应商');
+    }
+    return supplier;
+  }
+
+  function normalizeSettlementValues(input, current = null) {
+    assertNoFields(input, ['teamId', 'supplierName', 'hasSignedContract', 'contractValid']);
+    const allowed = new Set(['supplierId', 'supplierCode', 'month', 'productLaunchAmount',
+      'warehousingLogisticsFee', 'overstorageProductAmount', 'overstorageLogisticsFee', 'remarks']);
+    if (Object.keys(input || {}).some((key) => !allowed.has(key))) throw contractError(400, 'CONTRACT_INPUT_INVALID', '结算记录包含不支持的字段');
+    let month;
+    try { month = parseMonth(input.month === undefined ? current?.month : input.month); }
+    catch { throw contractError(400, 'CONTRACT_SETTLEMENT_MONTH_INVALID', '月份格式必须是YYYY-MM'); }
+    return {
+      month,
+      productLaunchAmount: amount(input.productLaunchAmount, '产品上线金额', current?.productLaunchAmount || 0),
+      warehousingLogisticsFee: amount(input.warehousingLogisticsFee, '仓储物流费', current?.warehousingLogisticsFee || 0),
+      overstorageProductAmount: amount(input.overstorageProductAmount, '超储产品金额', current?.overstorageProductAmount || 0),
+      overstorageLogisticsFee: amount(input.overstorageLogisticsFee, '超储物流费', current?.overstorageLogisticsFee || 0),
+      remarks: optionalText(input.remarks === undefined ? current?.remarks : input.remarks, '备注')
+    };
+  }
+
+  async function settlementRows({ authContext, requestedTeamId, query = {}, permissionKey = 'contract.settlement.view' }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, permissionKey);
+    const filter = { teamId };
+    if (query.month) {
+      try { filter.month = parseMonth(query.month); }
+      catch { throw contractError(400, 'CONTRACT_SETTLEMENT_MONTH_INVALID', '月份格式必须是YYYY-MM'); }
+    }
+    if (query.supplierCode) filter.supplierCode = requiredText(query.supplierCode, '供应商编码', 100);
+    if (query.supplierName) filter.supplierName = { $regex: escapeRegex(requiredText(query.supplierName, '供应商名称')), $options: 'i' };
+    const settlements = await SettlementModel.find(filter).sort({ month: -1, supplierName: 1, supplierCode: 1, _id: 1 }).lean();
+    const latest = await latestMainBySupplier(teamId, [...new Set(settlements.map((item) => String(item.supplierId)))]);
+    const today = todayShanghai(now());
+    const rows = settlements.map((item) => ({ ...item,
+      ...derivedContractState(latest.get(String(item.supplierId)), today) }));
+    const hasSigned = queryBoolean(query.hasSignedContract, '是否签订合同');
+    const valid = queryBoolean(query.contractValid, '合同是否有效');
+    return { teamId, rows: rows.filter((item) =>
+      (hasSigned === null || item.hasSignedContract === hasSigned) &&
+      (valid === null || item.contractValid === valid)) };
+  }
+
+  async function listSettlements(input) {
+    const { rows } = await settlementRows(input);
+    const { page, pageSize } = pagination(input.query || {});
+    const totals = rows.reduce((result, item) => ({
+      productLaunchAmount: result.productLaunchAmount + item.productLaunchAmount,
+      warehousingLogisticsFee: result.warehousingLogisticsFee + item.warehousingLogisticsFee,
+      overstorageProductAmount: result.overstorageProductAmount + item.overstorageProductAmount,
+      overstorageLogisticsFee: result.overstorageLogisticsFee + item.overstorageLogisticsFee
+    }), { productLaunchAmount: 0, warehousingLogisticsFee: 0,
+      overstorageProductAmount: 0, overstorageLogisticsFee: 0 });
+    return { settlements: rows.slice((page - 1) * pageSize, page * pageSize), page, pageSize, total: rows.length, totals };
+  }
+
+  async function getSettlement({ authContext, requestedTeamId, settlementId }) {
+    const teamId = await teamForRead(authContext, requestedTeamId, 'contract.settlement.view');
+    const settlement = await SettlementModel.findOne({ _id: normalizeId(settlementId, '结算记录'), teamId }).lean();
+    if (!settlement) throw contractError(404, 'CONTRACT_SETTLEMENT_NOT_FOUND', '结算记录不存在');
+    const latest = await latestMainBySupplier(teamId, [settlement.supplierId]);
+    return { ...settlement, ...derivedContractState(latest.get(String(settlement.supplierId)), todayShanghai(now())) };
+  }
+
+  async function createSettlement({ authContext, req, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.settlement.manage');
+    const values = normalizeSettlementValues(input);
+    try {
+      return await runWrite(async (session) => {
+        const supplier = await resolveSettlementSupplier({ teamId, input, session });
+        const settlement = await createOne(SettlementModel, { teamId, supplierId: supplier._id,
+          supplierName: supplier.name, supplierCode: supplier.code, ...values,
+          createdBy: context.userId, updatedBy: context.userId }, session);
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_SETTLEMENT_FEE, resourceId: settlement._id,
+          after: plain(settlement), targetTeamId: teamId, session });
+        const latest = await latestMainBySupplier(teamId, [supplier._id]);
+        return { ...plain(settlement), ...derivedContractState(latest.get(String(supplier._id)), todayShanghai(now())) };
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function updateSettlement({ authContext, req, settlementId, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.settlement.manage');
+    try {
+      return await runWrite(async (session) => {
+        const settlement = await execute(SettlementModel.findOne({ _id: normalizeId(settlementId, '结算记录'), teamId }), session);
+        if (!settlement) throw contractError(404, 'CONTRACT_SETTLEMENT_NOT_FOUND', '结算记录不存在');
+        const before = plain(settlement);
+        const supplier = await resolveSettlementSupplier({ teamId, input, current: before, session });
+        Object.assign(settlement, normalizeSettlementValues(input, before), {
+          supplierName: supplier.name, supplierCode: supplier.code, updatedBy: context.userId
+        });
+        await settlement.save({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_SETTLEMENT_FEE, resourceId: settlement._id,
+          before, after: plain(settlement), targetTeamId: teamId, session });
+        const latest = await latestMainBySupplier(teamId, [supplier._id]);
+        return { ...plain(settlement), ...derivedContractState(latest.get(String(supplier._id)), todayShanghai(now())) };
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function deleteSettlement({ authContext, req, settlementId }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.settlement.manage');
+    try {
+      return await runWrite(async (session) => {
+        const settlement = await execute(SettlementModel.findOne({ _id: normalizeId(settlementId, '结算记录'), teamId }), session);
+        if (!settlement) throw contractError(404, 'CONTRACT_SETTLEMENT_NOT_FOUND', '结算记录不存在');
+        const before = plain(settlement);
+        await settlement.deleteOne({ session });
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_SETTLEMENT_FEE, resourceId: settlement._id,
+          before, targetTeamId: teamId, session });
+        return before;
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function importSettlements({ authContext, req, file }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.settlement.import');
+    if (!file || !Buffer.isBuffer(file.buffer)) throw contractError(400, 'CONTRACT_IMPORT_FILE_REQUIRED', '请选择结算Excel文件');
+    if (file.buffer.length > MAX_IMPORT_FILE_SIZE) throw contractError(413, 'CONTRACT_IMPORT_FILE_TOO_LARGE', '结算Excel文件不能超过20MB');
+    const rows = parseSettlementWorkbook(file.buffer);
+    const codes = [...new Set(rows.map((row) => row.supplierCode))];
+    const suppliers = await SupplierModel.find({ teamId, code: { $in: codes } }).lean();
+    const supplierByCode = new Map(suppliers.map((supplier) => [supplier.code, supplier]));
+    for (const row of rows) {
+      const supplier = supplierByCode.get(row.supplierCode);
+      if (!supplier) throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_NOT_FOUND', `结算表第${row.rowNumber}行供应商编码不存在`);
+      if (supplier.name !== row.supplierName) throw contractError(409, 'CONTRACT_SETTLEMENT_SUPPLIER_MISMATCH', `结算表第${row.rowNumber}行供应商名称与编码不匹配`);
+      await new SettlementModel({ teamId, supplierId: supplier._id,
+        month: row.month, supplierName: supplier.name, supplierCode: supplier.code,
+        productLaunchAmount: row.productLaunchAmount,
+        warehousingLogisticsFee: row.warehousingLogisticsFee,
+        overstorageProductAmount: row.overstorageProductAmount,
+        overstorageLogisticsFee: row.overstorageLogisticsFee,
+        remarks: row.remarks, createdBy: context.userId, updatedBy: context.userId }).validate();
+    }
+    try {
+      return await runWrite(async (session) => {
+        const lockedSuppliers = await execute(SupplierModel.find({ teamId, code: { $in: codes } }), session);
+        const lockedByCode = new Map(lockedSuppliers.map((supplier) => [supplier.code, supplier]));
+        for (const row of rows) {
+          const supplier = lockedByCode.get(row.supplierCode);
+          if (!supplier) throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_NOT_FOUND', `结算表第${row.rowNumber}行供应商编码不存在`);
+          if (supplier.name !== row.supplierName) throw contractError(409, 'CONTRACT_SETTLEMENT_SUPPLIER_MISMATCH', `结算表第${row.rowNumber}行供应商名称与编码不匹配`);
+        }
+        const created = [];
+        for (const row of rows) {
+          const supplier = lockedByCode.get(row.supplierCode);
+          const settlement = await createOne(SettlementModel, { teamId, supplierId: supplier._id,
+            month: row.month, supplierName: supplier.name, supplierCode: supplier.code,
+            productLaunchAmount: row.productLaunchAmount,
+            warehousingLogisticsFee: row.warehousingLogisticsFee,
+            overstorageProductAmount: row.overstorageProductAmount,
+            overstorageLogisticsFee: row.overstorageLogisticsFee,
+            remarks: row.remarks, createdBy: context.userId, updatedBy: context.userId }, session);
+          created.push(settlement);
+          await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.IMPORT,
+            resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_SETTLEMENT_FEE, resourceId: settlement._id,
+            after: plain(settlement), targetTeamId: teamId, session });
+        }
+        return { importedCount: created.length };
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
+  async function settlementExport({ authContext, req, requestedTeamId, query = {} }) {
+    const { teamId, rows } = await settlementRows({ authContext, requestedTeamId, query,
+      permissionKey: 'contract.settlement.export' });
+    const buffer = await createSettlementExportWorkbook(rows);
+    await auditService.record({ req, authContext, action: AUDIT_ACTIONS.EXPORT,
+      resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_SETTLEMENT_FEE,
+      after: { count: rows.length }, targetTeamId: teamId });
+    return { buffer, count: rows.length };
+  }
+
+  return Object.freeze({
+    createRecord,
+    createSettlement,
+    createSupplier,
+    deleteRecord,
+    deleteSettlement,
+    deleteSupplier,
+    expiryExport,
+    getRecord,
+    getSettlement,
+    getSupplier,
+    importSettlements,
+    importSuppliers,
+    listExpiryAlerts,
+    listRecords,
+    listSettlements,
+    listSuppliers,
+    settlementExport,
+    supplierExport,
+    updateRecord,
+    updateSettlement,
+    updateSupplier
+  });
+}
+
+module.exports = {
+  ContractManagementError,
+  EXCEL_MIME_TYPE,
+  MAX_IMPORT_FILE_SIZE,
+  createContractManagementService,
+  derivedContractState,
+  normalizeAttachmentInput,
+  normalizeRecordInput,
+  normalizeSupplierInput,
+  todayShanghai
+};

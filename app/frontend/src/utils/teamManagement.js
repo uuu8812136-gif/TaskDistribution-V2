@@ -92,6 +92,22 @@ export const PERMISSION_GROUPS = Object.freeze([
     ]
   },
   {
+    key: 'contract',
+    label: '合同管理',
+    options: [
+      ['contract.supplier.view', '供应商合同查看'],
+      ['contract.supplier.manage', '供应商合同维护'],
+      ['contract.supplier.import', '供应商合同导入'],
+      ['contract.supplier.export', '供应商合同导出'],
+      ['contract.expiry.view', '合同到期预警查看'],
+      ['contract.expiry.export', '合同到期预警导出'],
+      ['contract.settlement.view', '供应商结算费用查看'],
+      ['contract.settlement.manage', '供应商结算费用维护'],
+      ['contract.settlement.import', '供应商结算费用导入'],
+      ['contract.settlement.export', '供应商结算费用导出']
+    ]
+  },
+  {
     key: 'team',
     label: '团队管理',
     options: [

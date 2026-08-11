@@ -21,7 +21,9 @@ const ProjectTeam = require('../../../app/models/ProjectTeam');
 const User = require('../../../app/models/User');
 const permissions = require('../../../app/config/permissions');
 const {
-  createEquipmentRoutineService
+  createEquipmentRoutineService,
+  resolveRoutineRuleAssetCategoryIds,
+  resolveRoutineRuleLookupCategoryIds
 } = require('../../../app/services/equipmentRoutineService');
 
 const TEST_DATABASE_NAME = 'equipment_routine_isolation_v2_test';
@@ -221,21 +223,54 @@ async function seedFixture() {
     orgUnitId: ids.orgB1,
     userId: ids.userB
   });
+  const [majorCategoryA, majorCategoryB] = await Promise.all([
+    EquipmentCategory.create({
+      teamId: ids.teamA,
+      name: 'Team A machinery',
+      createdBy: ids.userA,
+      updatedBy: ids.userA
+    }),
+    EquipmentCategory.create({
+      teamId: ids.teamB,
+      name: 'Team B machinery',
+      createdBy: ids.userB,
+      updatedBy: ids.userB
+    })
+  ]);
+  const [equipmentTypeA, equipmentTypeB] = await Promise.all([
+    EquipmentCategory.create({
+      teamId: ids.teamA,
+      parentId: majorCategoryA._id,
+      name: 'Team A powered equipment',
+      createdBy: ids.userA,
+      updatedBy: ids.userA
+    }),
+    EquipmentCategory.create({
+      teamId: ids.teamB,
+      parentId: majorCategoryB._id,
+      name: 'Team B powered equipment',
+      createdBy: ids.userB,
+      updatedBy: ids.userB
+    })
+  ]);
   const [categoryA1, categoryA2, categoryB] = await Promise.all([
     EquipmentCategory.create({
       teamId: ids.teamA,
+      parentId: equipmentTypeA._id,
       name: 'Motor',
       createdBy: ids.userA,
       updatedBy: ids.userA
     }),
     EquipmentCategory.create({
       teamId: ids.teamA,
+      parentId: equipmentTypeA._id,
       name: 'Forklift',
       createdBy: ids.userA,
       updatedBy: ids.userA
     }),
     EquipmentCategory.create({
       teamId: ids.teamB,
+      parentId: equipmentTypeB._id,
       name: 'Motor',
       createdBy: ids.userB,
       updatedBy: ids.userB
@@ -274,6 +309,10 @@ async function seedFixture() {
     ...ids,
     contextA,
     contextB,
+    majorCategoryA,
+    majorCategoryB,
+    equipmentTypeA,
+    equipmentTypeB,
     categoryA1,
     categoryA2,
     categoryB,
@@ -396,6 +435,190 @@ test('routine rules persist and return more than two checklist items after addit
   assert.deepEqual(schedule.schedules[0].rule.checklistItems, updated.checklistItems);
 });
 
+test('new routine rules only accept level-3 primary equipment name categories', async () => {
+  const routineService = service();
+  const secondaryCategory = await EquipmentCategory.create({
+    teamId: fixture.teamA,
+    parentId: fixture.categoryA1._id,
+    name: 'Motor secondary name',
+    createdBy: fixture.userA,
+    updatedBy: fixture.userA
+  });
+  for (const categoryId of [
+    fixture.majorCategoryA._id,
+    fixture.equipmentTypeA._id,
+    secondaryCategory._id
+  ]) {
+    await assert.rejects(
+      createRule(routineService, fixture.contextA, categoryId),
+      (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED'
+    );
+  }
+
+  const rule = await createRule(
+    routineService,
+    fixture.contextA,
+    fixture.categoryA1._id,
+    { name: 'Valid primary category rule' }
+  );
+  assert.equal(rule.categoryId, String(fixture.categoryA1._id));
+
+  const legacyRule = await EquipmentRoutineRule.create({
+    teamId: fixture.teamA,
+    categoryId: secondaryCategory._id,
+    routineType: 'INSPECTION',
+    name: 'Legacy secondary rule',
+    checklistItems: [{ key: 'legacy', name: 'Legacy check' }],
+    schedule: { mode: 'MANUAL' },
+    status: 'ACTIVE',
+    version: 1,
+    createdBy: fixture.userA,
+    updatedBy: fixture.userA
+  });
+  for (const input of [{ name: 'Still active' }, { status: 'ACTIVE' }]) {
+    await assert.rejects(routineService.updateRule({
+      authContext: fixture.contextA,
+      ruleId: String(legacyRule._id),
+      input
+    }), (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED');
+  }
+  const disabled = await routineService.updateRule({
+    authContext: fixture.contextA,
+    ruleId: String(legacyRule._id),
+    input: { status: 'DISABLED' }
+  });
+  assert.equal(disabled.status, 'DISABLED');
+  await assert.rejects(routineService.updateRule({
+    authContext: fixture.contextA,
+    ruleId: String(legacyRule._id),
+    input: { status: 'ACTIVE' }
+  }), (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED');
+  const historical = await routineService.getRule({
+    authContext: fixture.contextA,
+    ruleId: String(legacyRule._id)
+  });
+  assert.equal(historical.status, 'DISABLED');
+});
+
+test('routine category resolution fails closed for disabled primary paths', async () => {
+  const secondaryCategory = await EquipmentCategory.create({
+    teamId: fixture.teamA,
+    parentId: fixture.categoryA1._id,
+    name: 'Disabled-path secondary name',
+    createdBy: fixture.userA,
+    updatedBy: fixture.userA
+  });
+  const initialRuleCategories = await resolveRoutineRuleAssetCategoryIds({
+    teamId: fixture.teamA,
+    ruleCategoryId: fixture.categoryA1._id
+  });
+  assert.deepEqual(
+    new Set(initialRuleCategories.map(String)),
+    new Set([String(fixture.categoryA1._id), String(secondaryCategory._id)])
+  );
+  assert.deepEqual(
+    (await resolveRoutineRuleLookupCategoryIds({
+      teamId: fixture.teamA,
+      assetCategoryId: secondaryCategory._id
+    })).map(String),
+    [String(fixture.categoryA1._id)]
+  );
+
+  await EquipmentCategory.collection.updateOne({
+    _id: fixture.categoryA1._id
+  }, {
+    $set: { status: 'DISABLED' }
+  });
+  assert.deepEqual(await resolveRoutineRuleAssetCategoryIds({
+    teamId: fixture.teamA,
+    ruleCategoryId: fixture.categoryA1._id
+  }), []);
+  assert.deepEqual(await resolveRoutineRuleLookupCategoryIds({
+    teamId: fixture.teamA,
+    assetCategoryId: secondaryCategory._id
+  }), []);
+});
+
+test('ORG_UNIT scope resolves primary rules for local secondary equipment only', async () => {
+  const routineService = service();
+  const [localSecondaryCategory, otherPrimarySecondaryCategory] = await Promise.all([
+    EquipmentCategory.create({
+      teamId: fixture.teamA,
+      parentId: fixture.categoryA1._id,
+      name: 'Local motor secondary',
+      createdBy: fixture.userA,
+      updatedBy: fixture.userA
+    }),
+    EquipmentCategory.create({
+      teamId: fixture.teamA,
+      parentId: fixture.categoryA2._id,
+      name: 'Other primary secondary',
+      createdBy: fixture.userA,
+      updatedBy: fixture.userA
+    })
+  ]);
+  const [localSecondaryAsset, crossOrgAsset, otherPrimaryAsset] = await Promise.all([
+    EquipmentAsset.create({
+      teamId: fixture.teamA,
+      orgUnitId: fixture.orgA1,
+      categoryId: localSecondaryCategory._id,
+      assetCode: 'A1-LOCAL-SECONDARY',
+      name: 'A1 Local Secondary',
+      createdBy: fixture.userA,
+      updatedBy: fixture.userA
+    }),
+    EquipmentAsset.create({
+      teamId: fixture.teamA,
+      orgUnitId: fixture.orgA2,
+      categoryId: localSecondaryCategory._id,
+      assetCode: 'A2-CROSS-ORG-SECONDARY',
+      name: 'A2 Cross-org Secondary',
+      createdBy: fixture.userA,
+      updatedBy: fixture.userA
+    }),
+    EquipmentAsset.create({
+      teamId: fixture.teamA,
+      orgUnitId: fixture.orgA1,
+      categoryId: otherPrimarySecondaryCategory._id,
+      assetCode: 'A1-OTHER-PRIMARY',
+      name: 'A1 Other Primary',
+      createdBy: fixture.userA,
+      updatedBy: fixture.userA
+    })
+  ]);
+  const rule = await createRule(routineService, fixture.contextA, fixture.categoryA1._id, {
+    name: 'Local primary rule'
+  });
+  const orgContext = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+
+  const localSchedule = await routineService.getSchedule({
+    authContext: orgContext,
+    equipmentId: String(localSecondaryAsset._id)
+  });
+  assert.deepEqual(localSchedule.schedules.map(({ rule: value }) => value._id), [rule._id]);
+  const visibleRules = await routineService.listRules({ authContext: orgContext });
+  assert.deepEqual(visibleRules.rules.map(({ _id }) => _id), [rule._id]);
+  assert.equal((await routineService.getRule({
+    authContext: orgContext,
+    ruleId: rule._id
+  }))._id, rule._id);
+
+  await assert.rejects(routineService.getSchedule({
+    authContext: orgContext,
+    equipmentId: String(crossOrgAsset._id)
+  }), (error) => error.status === 404);
+  const otherPrimarySchedule = await routineService.getSchedule({
+    authContext: orgContext,
+    equipmentId: String(otherPrimaryAsset._id)
+  });
+  assert.equal(otherPrimarySchedule.schedules.length, 0);
+});
+
 test('dynamic checklist, photo policy, version snapshot, and next calendar due stay consistent', async () => {
   const routineService = service();
   const rule = await createRule(routineService, fixture.contextA, fixture.categoryA1._id, {
@@ -479,7 +702,7 @@ test('dynamic checklist, photo policy, version snapshot, and next calendar due s
     equipmentId: String(fixture.assetA1._id)
   });
   assert.equal(schedule.schedules[0].status, 'UPCOMING');
-  assert.equal(schedule.schedules[0].nextDueAt.toISOString(), '2030-01-16T12:00:00.000Z');
+  assert.equal(schedule.schedules[0].nextDueAt.toISOString(), '2030-01-16T08:00:00.000Z');
   assert.equal(schedule.schedules[0].latestRecord._id, record._id);
   assert.equal(schedule.schedules[0].latestRecord.overallResult, 'ABNORMAL');
   const filteredRules = await routineService.listRules({

@@ -68,7 +68,10 @@ export const AUDIT_RESOURCE_TYPE_OPTIONS = Object.freeze([
   ['GENERATED_DAILY_REPORT', '生产日报'],
   ['REPORT_CORRECTION_RECORD', '提报纠正记录'],
   ['IMPORT_JOB', '导入任务'],
-  ['IMPORT_EXCEPTION', '导入异常']
+  ['IMPORT_EXCEPTION', '导入异常'],
+  ['SUPPLIER', '供应商'],
+  ['SUPPLIER_CONTRACT_RECORD', '供应商合同记录'],
+  ['SUPPLIER_SETTLEMENT_FEE', '供应商结算费用']
 ].map(([value, label]) => Object.freeze({ value, label })))
 
 const actionLabels = new Map(AUDIT_ACTION_OPTIONS.map((item) => [item.value, item.label]))

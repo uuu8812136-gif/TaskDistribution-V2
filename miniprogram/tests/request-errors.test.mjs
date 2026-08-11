@@ -18,6 +18,9 @@ test('mini-program maps attendance cutoff errors to Chinese', () => {
     '09:00 后补报或修改出勤时，请填写修正原因'
   )
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.EQUIPMENT_IMPORT_NOT_CLEANABLE, '请先取消设备导入预览，再清理暂存文件')
+  assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_FILE_UNSUPPORTED, '仅支持 .xlsx 格式的合同管理 Excel 文件')
+  assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED, '合同附件未能从 Excel 读取，请在合同页面单独上传')
+  assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_SETTLEMENT_SUPPLIER_IMMUTABLE, '结算记录创建后不能更换供应商')
   assert.equal(Object.keys(REQUEST_ERROR_CODE_MESSAGES).length >= 200, true)
 })
 
@@ -34,6 +37,21 @@ test('mini-program maps dynamic task leadership errors to Chinese', () => {
     assert.equal(REQUEST_ERROR_CODE_MESSAGES[code], expected)
     assert.equal(
       resolveRequestErrorMessage({ code, message: 'Technical leadership error' }, '操作失败'),
+      expected
+    )
+  }
+})
+
+test('mini-program maps equipment category conflicts to actionable Chinese', () => {
+  const cases = {
+    EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT: '请先停用关联点检/保养规则，或保持设备一级名称层级',
+    EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT: '设备分类结构已发生变化，请刷新后重试'
+  }
+
+  for (const [code, expected] of Object.entries(cases)) {
+    assert.equal(REQUEST_ERROR_CODE_MESSAGES[code], expected)
+    assert.equal(
+      resolveRequestErrorMessage({ code, message: 'Technical equipment category conflict' }, '设备操作失败'),
       expected
     )
   }

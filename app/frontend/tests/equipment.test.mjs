@@ -16,6 +16,8 @@ import {
   entityName,
   equipmentCategoryChildren,
   equipmentCategoryPath,
+  equipmentPrimaryCategoryId,
+  fetchAllEquipmentCategories,
   equipmentImportDecisionOptions,
   equipmentImportExceptionLabel,
   equipmentImportFieldLabel,
@@ -53,8 +55,9 @@ test('routine rule dialog exposes detailed and accessible contextual help', () =
   assert.match(dialog, /title="点检\/保养规则功能说明"/)
   assert.match(dialog, /helpVisible\.value = false/)
   for (const phrase of [
-    '精确匹配',
-    '选择父级分类不会自动覆盖其下级设备',
+    '只能选择第三级“设备一级名称”',
+    '设备二级名称只作为台账名称记录',
+    '该设备一级名称及其全部二级名称',
     '二维码通过隐藏令牌定位唯一设备记录',
     '默认每 5 分钟对账补计划',
     '计划生成逻辑',
@@ -168,6 +171,135 @@ test('category tree and labels are deterministic', () => {
     equipmentCategoryChildren(categories, 'type').map((item) => item._id),
     ['primary']
   )
+  assert.equal(equipmentPrimaryCategoryId(categories, 'secondary'), 'primary')
+  assert.equal(equipmentPrimaryCategoryId(categories, 'primary'), 'primary')
+  assert.equal(equipmentPrimaryCategoryId(categories, 'type'), '')
+})
+
+test('equipment categories load every page before resolving a cross-page hierarchy', async () => {
+  const firstPageFillers = Array.from({ length: 199 }, (_, index) => ({
+    _id: `first-page-${index}`,
+    parentId: null,
+    name: `First ${index}`,
+    status: 'ACTIVE'
+  }))
+  const secondPageFillers = Array.from({ length: 199 }, (_, index) => ({
+    _id: `second-page-${index}`,
+    parentId: null,
+    name: `Second ${index}`,
+    status: 'ACTIVE'
+  }))
+  const pagedCategories = [
+    { _id: 'major', parentId: null, name: 'Major', status: 'ACTIVE' },
+    ...firstPageFillers,
+    { _id: 'type', parentId: 'major', name: 'Type', status: 'ACTIVE' },
+    ...secondPageFillers,
+    { _id: 'primary', parentId: 'type', name: 'Primary', status: 'ACTIVE' },
+    { _id: 'secondary', parentId: 'primary', name: 'Secondary', status: 'ACTIVE' }
+  ]
+  const calls = []
+  const categories = await fetchAllEquipmentCategories(async (params) => {
+    calls.push(params)
+    const start = (params.page - 1) * params.pageSize
+    return {
+      categories: pagedCategories.slice(start, start + params.pageSize),
+      total: pagedCategories.length,
+      page: params.page,
+      pageSize: params.pageSize
+    }
+  }, { teamId: 'team-1' })
+
+  assert.deepEqual(calls.map(({ teamId, page, pageSize }) => ({ teamId, page, pageSize })), [
+    { teamId: 'team-1', page: 1, pageSize: 200 },
+    { teamId: 'team-1', page: 2, pageSize: 200 },
+    { teamId: 'team-1', page: 3, pageSize: 200 }
+  ])
+  assert.equal(categories.length, 402)
+  const majorBranch = buildCategoryTree(categories).find((category) => category._id === 'major')
+  assert.equal(majorBranch.children[0]._id, 'type')
+  assert.equal(majorBranch.children[0].children[0]._id, 'primary')
+  assert.equal(majorBranch.children[0].children[0].children[0]._id, 'secondary')
+  assert.deepEqual(
+    equipmentCategoryPath(categories, 'secondary').map((item) => item._id),
+    ['major', 'type', 'primary', 'secondary']
+  )
+  assert.equal(equipmentPrimaryCategoryId(categories, 'secondary'), 'primary')
+})
+
+test('equipment category paths reject a missing ancestor instead of shifting hierarchy levels', () => {
+  const incompleteCategories = [
+    { _id: 'type', parentId: 'missing-major', name: 'Type', status: 'ACTIVE' },
+    { _id: 'primary', parentId: 'type', name: 'Primary', status: 'ACTIVE' },
+    { _id: 'secondary', parentId: 'primary', name: 'Secondary', status: 'ACTIVE' }
+  ]
+
+  assert.deepEqual(equipmentCategoryPath(incompleteCategories, 'secondary'), [])
+  assert.equal(equipmentPrimaryCategoryId(incompleteCategories, 'secondary'), '')
+
+  const cyclicCategories = [
+    { _id: 'major', parentId: null, name: 'Major', status: 'ACTIVE' },
+    { _id: 'type-a', parentId: 'type-b', name: 'Type A', status: 'ACTIVE' },
+    { _id: 'type-b', parentId: 'type-a', name: 'Type B', status: 'ACTIVE' },
+    { _id: 'primary', parentId: 'type-a', name: 'Primary', status: 'ACTIVE' }
+  ]
+  assert.deepEqual(equipmentCategoryPath(cyclicCategories, 'primary'), [])
+  assert.equal(equipmentPrimaryCategoryId(cyclicCategories, 'primary'), '')
+
+  const tooDeepCategories = [
+    { _id: 'major', parentId: null, name: 'Major', status: 'ACTIVE' },
+    { _id: 'type', parentId: 'major', name: 'Type', status: 'ACTIVE' },
+    { _id: 'primary', parentId: 'type', name: 'Primary', status: 'ACTIVE' },
+    { _id: 'secondary', parentId: 'primary', name: 'Secondary', status: 'ACTIVE' },
+    { _id: 'unexpected-fifth', parentId: 'secondary', name: 'Fifth', status: 'ACTIVE' }
+  ]
+  assert.equal(equipmentPrimaryCategoryId(tooDeepCategories, 'unexpected-fifth'), '')
+})
+
+test('equipment category pagination fails closed when total is absent or changes between pages', async () => {
+  await assert.rejects(fetchAllEquipmentCategories(async () => ({
+    categories: [{ _id: 'only-page', parentId: null }]
+  })), /分页总数无效/)
+
+  await assert.rejects(fetchAllEquipmentCategories(async ({ page }) => ({
+    categories: Array.from({ length: page === 1 ? 200 : 1 }, (_, index) => ({
+      _id: `page-${page}-${index}`,
+      parentId: null
+    })),
+    total: page === 1 ? 201 : 202
+  })), /分页结果发生变化/)
+})
+
+test('routine rule UI binds new rules and equipment-detail navigation to level-three names', () => {
+  const dialog = fs.readFileSync(
+    path.join(root, 'src/views/equipment/components/EquipmentRuleDialog.vue'),
+    'utf8'
+  )
+  const rulesView = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentRules.vue'),
+    'utf8'
+  )
+  const detail = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentDetail.vue'),
+    'utf8'
+  )
+
+  assert.match(dialog, /label="设备一级名称"/)
+  assert.match(dialog, /disabled: depth !== 3/)
+  assert.match(dialog, /equipmentPrimaryCategoryId\(props\?\.categories, props\?\.defaultCategoryId\)/)
+  assert.match(rulesView, /disabled: depth !== 3/)
+  assert.match(rulesView, /equipmentPrimaryCategoryId\(categories\.value, filters\.categoryId\)/)
+  assert.match(rulesView, /fetchAllEquipmentCategories\([\s\S]*?getEquipmentCategories/)
+  assert.match(detail, /equipmentPrimaryCategoryId\(categories\.value, assetCategoryId\)/)
+  assert.match(detail, /fetchAllEquipmentCategories\(getEquipmentCategories, requestParams\.value\)/)
+  assert.match(rulesView, /v-if="categoryFilterError"/)
+  assert.match(rulesView, /if \(!primaryCategoryId\) \{[\s\S]*?rules\.value = \[\][\s\S]*?return false/)
+  assert.match(rulesView, /if \(categoryFilterError\.value\) \{[\s\S]*?rules\.value = \[\][\s\S]*?return/)
+  assert.doesNotMatch(rulesView, /categoryId: primaryCategoryId \|\| undefined/)
+  assert.match(detail, /if \(!categoryId\) \{[\s\S]*?ElMessage\.error\([\s\S]*?return[\s\S]*?\}/)
+  assert.doesNotMatch(detail, /categoryId: categoryId \? String\(categoryId\) : undefined/)
+  assert.doesNotMatch(rulesView, /getEquipmentCategories\(\{[\s\S]*?pageSize: 200/)
+  assert.doesNotMatch(detail, /getEquipmentCategories\(\{[\s\S]*?pageSize: 200/)
+  assert.doesNotMatch(dialog, /选择父级分类不会自动覆盖其下级设备/)
 })
 
 test('category maintenance stops at the fixed four-level equipment hierarchy', () => {

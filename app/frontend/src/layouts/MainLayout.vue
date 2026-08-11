@@ -122,6 +122,25 @@
             </el-menu-item>
           </el-sub-menu>
 
+          <el-sub-menu
+            v-if="canAccessContractModule"
+            index="/contract-module"
+          >
+            <template #title>
+              <el-icon><FolderChecked /></el-icon>
+              <span>合同管理</span>
+            </template>
+            <el-menu-item v-if="session.hasPermission('contract.supplier.view')" index="/contracts/suppliers">
+              供应商合同管理
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('contract.expiry.view')" index="/contracts/expiry-alerts">
+              供应商合同到期预警
+            </el-menu-item>
+            <el-menu-item v-if="session.hasPermission('contract.settlement.view')" index="/contracts/settlements">
+              供应商结算费用
+            </el-menu-item>
+          </el-sub-menu>
+
           <el-sub-menu v-if="session.hasPermission('report.view')" index="/reporting-module">
             <template #title>
               <el-icon><Tickets /></el-icon>
@@ -244,6 +263,11 @@ const canAccessTaskLeadership = computed(() => isTaskLeadershipCandidateContext(
 const canAccessAllTasks = computed(() => (
   session.hasPermission('task.view') || canAccessTaskLeadership.value
 ))
+const canAccessContractModule = computed(() => session.hasPermission([
+  'contract.supplier.view',
+  'contract.expiry.view',
+  'contract.settlement.view'
+], 'any'))
 const canManageOrganization = computed(() => (
   session.isTeamMode &&
   session.hasPermission('org.manage') &&

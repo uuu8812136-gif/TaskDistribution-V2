@@ -158,6 +158,14 @@ function normalizeRelatedId(value) {
 function serializePlan(document, now = new Date()) {
   const value = plain(document);
   const cancellationReason = routinePlanCancellationReason(value);
+  const rematerializationHistory = (value.rematerializationHistory || []).map((event) => ({
+    cancellationReason: event.cancellationReason,
+    cancelledAt: event.cancelledAt || null,
+    cancelledBy: normalizeId(event.cancelledBy),
+    rematerializedAt: event.rematerializedAt,
+    rematerializedBy: normalizeId(event.rematerializedBy),
+    source: event.source
+  }));
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -181,6 +189,8 @@ function serializePlan(document, now = new Date()) {
     cancellationReasonLabel: routinePlanCancellationReasonLabel(value),
     cancelledAt: value.cancelledAt || null,
     cancelledBy: normalizeId(value.cancelledBy),
+    rematerializationCount: Number(value.rematerializationCount || 0),
+    rematerializationHistory,
     restDayEligible: isRoutinePlanRestDayEligible(value, now),
     ruleSnapshot: value.ruleSnapshot,
     createdAt: value.createdAt,
@@ -1094,18 +1104,74 @@ function createEquipmentRoutineWorkflowService({
 
   async function exportRecords({ authContext, req, requestedTeamId, method = 'GET', query = {} }) {
     assertOnlyKeys(query, [
-      'teamId', 'routineType', 'equipmentId', 'orgUnitId', 'overallResult', 'from', 'to'
+      'teamId', 'routineType', 'equipmentId', 'orgUnitId', 'overallResult', 'from', 'to', 'dateBasis'
     ], 'query');
     assertPermission(authContext, 'equipment.view');
     assertPermission(authContext, 'equipment.export');
     const teamId = await resolveReadTeamId(authContext, requestedTeamId);
-    const userFilter = { ...rangeFilter(query, 'performedAt') };
+    const dateBasis = String(query.dateBasis || 'EXECUTION').trim().toUpperCase();
+    if (!['EXECUTION', 'PLAN'].includes(dateBasis)) {
+      throw inputInvalid('dateBasis must be EXECUTION or PLAN');
+    }
+    const dateRange = rangeFilter(query, 'performedAt').performedAt || null;
+    const userFilter = {};
+    if (dateRange && dateBasis === 'PLAN') {
+      userFilter.$or = [
+        { planScheduledFor: dateRange },
+        {
+          $and: [
+            {
+              $or: [
+                { planScheduledFor: { $exists: false } },
+                { planScheduledFor: null }
+              ]
+            },
+            { scheduledFor: dateRange }
+          ]
+        },
+        {
+          $and: [
+            {
+              $or: [
+                { planScheduledFor: { $exists: false } },
+                { planScheduledFor: null }
+              ]
+            },
+            {
+              $or: [
+                { scheduledFor: { $exists: false } },
+                { scheduledFor: null }
+              ]
+            },
+            { performedAt: dateRange }
+          ]
+        }
+      ];
+    } else if (dateRange) {
+      userFilter.performedAt = dateRange;
+    }
     if (query.routineType) userFilter.routineType = requiredString(query.routineType, 'routineType', 50);
     if (query.equipmentId) userFilter.equipmentId = normalizeRelatedId(query.equipmentId);
     if (query.orgUnitId) userFilter.orgUnitId = normalizeRelatedId(query.orgUnitId);
     if (query.overallResult) userFilter.overallResult = requiredString(query.overallResult, 'overallResult', 50);
     const filter = await readFilter({ authContext, teamId, method, userFilter });
-    const records = await EquipmentRoutineRecordModel.find(filter).sort({ performedAt: -1, _id: -1 }).lean();
+    const records = dateBasis === 'PLAN'
+      ? await EquipmentRoutineRecordModel.aggregate([
+        { $match: EquipmentRoutineRecordModel.find(filter).cast() },
+        {
+          $addFields: {
+            __planSortAt: {
+              $ifNull: [
+                '$planScheduledFor',
+                { $ifNull: ['$scheduledFor', '$performedAt'] }
+              ]
+            }
+          }
+        },
+        { $sort: { __planSortAt: -1, performedAt: -1, _id: -1 } },
+        { $project: { __planSortAt: 0 } }
+      ])
+      : await EquipmentRoutineRecordModel.find(filter).sort({ performedAt: -1, _id: -1 }).lean();
     const enriched = await enrichRows(records, {
       includeException: true,
       includePlan: true,
@@ -1177,12 +1243,13 @@ function createEquipmentRoutineWorkflowService({
       after: {
         routineTypes,
         filters: {
+          dateBasis,
           routineType: userFilter.routineType || null,
           equipmentId: userFilter.equipmentId ? normalizeId(userFilter.equipmentId) : null,
           orgUnitId: userFilter.orgUnitId ? normalizeId(userFilter.orgUnitId) : null,
           overallResult: userFilter.overallResult || null,
-          from: userFilter.performedAt?.$gte?.toISOString() || null,
-          to: userFilter.performedAt?.$lte?.toISOString() || null
+          from: dateRange?.$gte?.toISOString() || null,
+          to: dateRange?.$lte?.toISOString() || null
         },
         count: rows.length
       },

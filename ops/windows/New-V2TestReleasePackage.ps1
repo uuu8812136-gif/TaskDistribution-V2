@@ -11,6 +11,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $ExpectedNodeVersion = 'v22.23.1'
 $ExpectedNpmVersion = '10.9.8'
+$ExpectedSchemaCapabilities = @('equipment-category-parent-name-index-v1')
+$FileManifestFormat = 'task-distribution-v2-release-files/v1'
+$FileManifestPathComparison = 'windows-ordinal-ignore-case'
+$FileManifestSetSemantics = 'exact-package-files-excluding-manifest'
+$FileManifestSelfPath = 'deploy/FILE-MANIFEST.json'
+$TrustedOffhostReceiptPublicKeyPath = 'deploy/v2-test/trusted-offhost-receipt-public-key.xml'
 $allowedTrackedRasterPaths = @(
   'app/frontend/src/assets/1.jpg',
   'app/frontend/src/assets/2.png',
@@ -39,11 +45,17 @@ $releaseOpsPaths = @(
   'ops/linux/resume-v2-test-candidate-activation.sh',
   'ops/linux/verify-v2-test-release.sh',
   'ops/linux/restore-v2-test-backup.sh',
-  'ops/linux/activate-v2-test-restored-rollback.sh'
+  'ops/linux/activate-v2-test-restored-rollback.sh',
+  'ops/windows/New-V2RecoveryEquipmentCategoryIndexStage.ps1',
+  'ops/windows/New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
+  'ops/windows/New-V2RecoveryOffhostReceiptSigningKey.ps1',
+  'ops/windows/Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1',
+  'ops/windows/Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
 )
 $releaseArchivePaths = @(
   'app',
   'deploy/v2-test/RELEASE.template.json',
+  $TrustedOffhostReceiptPublicKeyPath,
   'deploy/v2-test/linux/staging-server.cjs'
 ) + $releaseOpsPaths
 
@@ -98,6 +110,25 @@ function Get-RelativePackagePath {
   return $fileFull.Substring($rootFull.Length + 1).Replace('\', '/')
 }
 
+function Test-PrivateKeyXmlFile {
+  param([Parameter(Mandatory = $true)][IO.FileInfo]$File)
+
+  if ($File.Extension -ine '.xml') { return $false }
+  # A private/secret-named XML is sensitive even when its format is unknown.
+  if ($File.Name -match '(?i)(private|secret|signing)') { return $true }
+  try {
+    $xml = [xml][IO.File]::ReadAllText($File.FullName)
+    return $null -ne $xml.SelectSingleNode(
+      '//*[local-name()="RSAKeyValue"]/*[local-name()="D"]'
+    )
+  }
+  catch {
+    # Unparseable XML is not evidence of a private key; other package checks
+    # still reject known sensitive extensions and paths.
+    return $false
+  }
+}
+
 function Convert-ShellScriptsToLf {
   param([Parameter(Mandatory = $true)][string]$Root)
 
@@ -143,8 +174,8 @@ function Assert-ShellScriptsUseLf {
   }
 }
 
-if ($ReleaseId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]{5,95}$') {
-  throw 'ReleaseId must be 6-96 safe ASCII characters'
+if ($ReleaseId -notmatch '^v2-\d{8}-[0-9a-f]{7}$') {
+  throw 'ReleaseId must match v2-YYYYMMDD-7hex'
 }
 if (-not $RepositoryRoot) {
   $RepositoryRoot = Join-Path $PSScriptRoot '..\..'
@@ -183,6 +214,8 @@ $forbiddenTrackedPaths = @($trackedPaths | Where-Object {
   ) -and $name -notmatch '\.(example|template)$'
   $isUnexpectedRaster = $extension -in $trackedRasterExtensions -and
     $relativePath -notin $allowedTrackedRasterPaths
+  $isPrivateKeyXmlName = $extension -eq '.xml' -and
+    $name -match '(?i)(private|secret|signing)'
   $relativePath -match '(^|/)(\.test-data|test-data|work|customer-data|references|attachments|screenshots|uploads|logs|backups?|dumps?|node_modules|dist|build|out|coverage|unpackage|test-results|playwright-report)(/|$)' -or
     $extension -in @(
       '.xls', '.xlsx', '.xlsm', '.xlsb', '.log', '.bson', '.wt', '.sqlite',
@@ -191,7 +224,7 @@ $forbiddenTrackedPaths = @($trackedPaths | Where-Object {
     ) -or
     $name -in @('id_rsa', 'id_ed25519', 'known_hosts', 'authorized_keys') -or
     $name -like 'id_rsa_*' -or $name -like 'id_ed25519_*' -or
-    $isEnvironmentFile -or $isUnexpectedRaster
+    $isEnvironmentFile -or $isUnexpectedRaster -or $isPrivateKeyXmlName
 })
 if ($forbiddenTrackedPaths.Count -ne 0) {
   throw "SourceCommit contains forbidden tracked release material: $($forbiddenTrackedPaths[0])"
@@ -201,12 +234,36 @@ $requiredCommittedPaths = @(
   'app/package.json',
   'app/package-lock.json',
   'app/server.js',
+  'app/controllers/contractController.js',
+  'app/models/Supplier.js',
+  'app/models/SupplierContractRecord.js',
+  'app/models/SupplierSettlementFee.js',
+  'app/routes/contracts.js',
+  'app/services/contractIndexService.js',
+  'app/services/contractManagementService.js',
+  'app/services/contractWorkbookService.js',
   'app/frontend/package.json',
   'app/frontend/package-lock.json',
+  'app/frontend/src/api/contract.js',
+  'app/frontend/src/utils/contract.js',
+  'app/frontend/src/views/contracts/ContractExpiryAlerts.vue',
+  'app/frontend/src/views/contracts/SupplierContractDetail.vue',
+  'app/frontend/src/views/contracts/SupplierContracts.vue',
+  'app/frontend/src/views/contracts/SupplierSettlementFees.vue',
+  'app/frontend/src/views/contracts/components/ContractFileUpload.vue',
+  $TrustedOffhostReceiptPublicKeyPath,
+  'ops/windows/New-V2RecoveryEquipmentCategoryIndexStage.ps1',
+  'ops/windows/New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
   'app/script/migratePositionLevels.js',
+  'app/script/migrateEquipmentCategoryIndex.js',
+  'app/script/captureReleaseMongoAnchor.js',
+  'app/script/auditEquipmentRoutineBusiness.js',
   'app/script/backfillTransportMasterData.js',
   'app/script/backfillCustomerEquipmentOwnership.js',
   'app/services/equipmentOwnershipBackfillService.js',
+  'app/services/equipmentCategoryIndexMigrationService.js',
+  'app/services/releaseMongoAnchorService.js',
+  'app/services/equipmentRoutineBusinessAuditService.js',
   'app/script/repairAcceptanceJuly2026Data.js',
   'app/script/repairAcceptanceTransportJuly2026.js',
   'app/script/correctAttendancePlanned20260727.js',
@@ -302,18 +359,41 @@ try {
 
   $templatePath = Join-Path $packageRoot 'deploy\v2-test\RELEASE.template.json'
   $template = [IO.File]::ReadAllText($templatePath) | ConvertFrom-Json
+  $expectedTemplateProperties = @(
+    'format', 'releaseId', 'commit', 'commitTime', 'builtAt', 'environment',
+    'apiPort', 'innerWebPort', 'mongoPort', 'replicaSet', 'database',
+    'webApiBaseUrl', 'trustedOffhostReceiptPublicKeyPath', 'schemaCapabilities'
+  )
+  $templateProperties = @($template.PSObject.Properties.Name)
+  $templatePropertyDrift = @(
+    Compare-Object -ReferenceObject $expectedTemplateProperties -DifferenceObject $templateProperties
+  ).Count -ne 0
+  $templateSchemaCapabilities = @($template.schemaCapabilities)
   if (
+    $templatePropertyDrift -or
+    $template.format -ne 'task-distribution-v2-release/v1' -or
+    $template.releaseId -cne '__RELEASE_ID__' -or
+    $template.commit -cne '__COMMIT__' -or
+    $template.commitTime -cne '__COMMIT_TIME__' -or
+    $template.builtAt -cne '__BUILT_AT__' -or
     $template.environment -ne 'customer-test' -or
     [int]$template.apiPort -ne 18120 -or
     [int]$template.innerWebPort -ne 18130 -or
     [int]$template.mongoPort -ne 27150 -or
     $template.replicaSet -ne 'customer_acceptance_v2_rs' -or
     $template.database -ne 'customer_acceptance_v2_test' -or
-    $template.webApiBaseUrl -ne '/api'
+    $template.webApiBaseUrl -ne '/api' -or
+    $template.trustedOffhostReceiptPublicKeyPath -cne $TrustedOffhostReceiptPublicKeyPath -or
+    -not ($template.schemaCapabilities -is [Array]) -or
+    $templateSchemaCapabilities.Count -ne $ExpectedSchemaCapabilities.Count -or
+    [string]$templateSchemaCapabilities[0] -cne $ExpectedSchemaCapabilities[0]
   ) {
     throw 'Committed RELEASE template does not match the isolated V2 test environment'
   }
   $builtAt = (Get-Date).ToUniversalTime().ToString('o')
+  $trustedPublicKeyPath = Join-Path $packageRoot `
+    ($TrustedOffhostReceiptPublicKeyPath -replace '/', '\')
+  $trustedPublicKeySha256 = (Get-FileHash -LiteralPath $trustedPublicKeyPath -Algorithm SHA256).Hash.ToLowerInvariant()
   $releaseMetadata = [ordered]@{
     format = 'task-distribution-v2-release/v1'
     releaseId = $ReleaseId
@@ -327,6 +407,9 @@ try {
     replicaSet = 'customer_acceptance_v2_rs'
     database = 'customer_acceptance_v2_test'
     webApiBaseUrl = '/api'
+    trustedOffhostReceiptPublicKeyPath = $TrustedOffhostReceiptPublicKeyPath
+    trustedOffhostReceiptPublicKeySha256 = $trustedPublicKeySha256
+    schemaCapabilities = @($ExpectedSchemaCapabilities)
     node = $nodeVersion
     npm = $npmVersion
   }
@@ -395,7 +478,8 @@ try {
       $_.Name -like '*.env' -or $_.Name -like '*.env.*' -or
       $extension -in $forbiddenFileExtensions -or
       $_.Name -in @('id_rsa', 'id_ed25519', 'known_hosts', 'authorized_keys') -or
-      $unexpectedRaster
+      $unexpectedRaster -or
+      (Test-PrivateKeyXmlFile -File $_)
     )) -or
     ($_.Attributes -band [IO.FileAttributes]::ReparsePoint)
   })
@@ -403,8 +487,8 @@ try {
     throw "Forbidden release artifact found: $($forbidden[0].FullName)"
   }
 
-  $fileManifestPath = Join-Path $packageRoot 'deploy\FILE-MANIFEST.json'
-  $fileEntries = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -File | Where-Object {
+  $fileManifestPath = Join-Path $packageRoot ($FileManifestSelfPath -replace '/', '\')
+  $fileEntries = @(Get-ChildItem -LiteralPath $packageRoot -Recurse -Force -File | Where-Object {
     $_.FullName -ne $fileManifestPath
   } | ForEach-Object {
     [pscustomobject][ordered]@{
@@ -413,20 +497,53 @@ try {
       sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     }
   } | Sort-Object file)
+  $manifestPaths = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+  foreach ($entry in $fileEntries) {
+    if ([string]$entry.file -notmatch '^[\x20-\x7e]+$') {
+      throw "Package manifest paths must remain printable ASCII: $($entry.file)"
+    }
+    if (-not $manifestPaths.Add([string]$entry.file)) {
+      throw "Duplicate Windows-insensitive package manifest path: $($entry.file)"
+    }
+  }
   $fileManifest = [ordered]@{
-    format = 'task-distribution-v2-release-files/v1'
+    format = $FileManifestFormat
     releaseId = $ReleaseId
     commit = $resolvedCommit
     generatedAt = $builtAt
+    pathComparison = $FileManifestPathComparison
+    setSemantics = $FileManifestSetSemantics
+    selfPath = $FileManifestSelfPath
+    fileCount = $fileEntries.Count
     files = $fileEntries
   }
   Write-Utf8NoBom -Path $fileManifestPath -Value "$(ConvertTo-Json $fileManifest -Depth 8)`n"
 
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\server.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\controllers\contractController.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\models\Supplier.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\models\SupplierContractRecord.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\models\SupplierSettlementFee.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\routes\contracts.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\contractIndexService.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\contractManagementService.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\contractWorkbookService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $deployLinux 'staging-server.cjs'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\backup.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\verify-backup.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\restore.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\backupCore.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\operationsConfig.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\transportReleaseInvariant.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\customerRepairReleaseInvariant.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\v2TestMongoTargetGuard.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\migratePositionLevels.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\migrateEquipmentCategoryIndex.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\equipmentCategoryIndexMigrationService.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\captureReleaseMongoAnchor.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\releaseMongoAnchorService.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\auditEquipmentRoutineBusiness.js'))
+  Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\equipmentRoutineBusinessAuditService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\backfillTransportMasterData.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\script\backfillCustomerEquipmentOwnership.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\equipmentOwnershipBackfillService.js'))
@@ -438,6 +555,22 @@ try {
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\attendancePlannedCorrectionService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'app\services\attendanceProductionCumulativeCorrectionService.js'))
   Invoke-NativeChecked -FilePath $node -Arguments @('--check', (Join-Path $packageRoot 'ops\lib\v2MigrationPreviewInvariant.js'))
+  foreach ($script in @(
+    'ops\windows\New-V2RecoveryEquipmentCategoryIndexStage.ps1',
+    'ops\windows\New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
+    'ops\windows\New-V2RecoveryOffhostReceiptSigningKey.ps1',
+    'ops\windows\Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1',
+    'ops\windows\Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
+  )) {
+    $tokens = $null
+    $parseErrors = $null
+    [void][Management.Automation.Language.Parser]::ParseFile(
+      (Join-Path $packageRoot $script),
+      [ref]$tokens,
+      [ref]$parseErrors
+    )
+    if (@($parseErrors).Count -ne 0) { throw "Packaged PowerShell syntax error: $script" }
+  }
   Invoke-NativeChecked -FilePath $tar -Arguments @('-czf', $temporaryArchive, '-C', $packageRoot, '.')
 
   $archiveInfo = Get-Item -LiteralPath $temporaryArchive

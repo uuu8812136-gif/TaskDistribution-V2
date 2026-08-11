@@ -117,6 +117,18 @@ const PERMISSIONS_BY_MODULE = Object.freeze({
     'report.daily.generate',
     'report.monthly.generate'
   ]),
+  contract: Object.freeze([
+    'contract.supplier.view',
+    'contract.supplier.manage',
+    'contract.supplier.import',
+    'contract.supplier.export',
+    'contract.expiry.view',
+    'contract.expiry.export',
+    'contract.settlement.view',
+    'contract.settlement.manage',
+    'contract.settlement.import',
+    'contract.settlement.export'
+  ]),
   team: Object.freeze([
     'member.view',
     'member.manage',
@@ -234,7 +246,10 @@ const AUDIT_RESOURCE_TYPES = Object.freeze({
   GENERATED_DAILY_REPORT: 'GENERATED_DAILY_REPORT',
   REPORT_CORRECTION_RECORD: 'REPORT_CORRECTION_RECORD',
   IMPORT_JOB: 'IMPORT_JOB',
-  IMPORT_EXCEPTION: 'IMPORT_EXCEPTION'
+  IMPORT_EXCEPTION: 'IMPORT_EXCEPTION',
+  SUPPLIER: 'SUPPLIER',
+  SUPPLIER_CONTRACT_RECORD: 'SUPPLIER_CONTRACT_RECORD',
+  SUPPLIER_SETTLEMENT_FEE: 'SUPPLIER_SETTLEMENT_FEE'
 });
 
 const values = (constantObject) => Object.freeze(Object.values(constantObject));

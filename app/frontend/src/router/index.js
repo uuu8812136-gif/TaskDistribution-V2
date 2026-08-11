@@ -205,6 +205,51 @@ const router = createRouter({
           }
         },
         {
+          path: 'contracts/suppliers',
+          name: 'SupplierContracts',
+          component: () => import('@/views/contracts/SupplierContracts.vue'),
+          meta: {
+            title: '供应商合同管理',
+            permission: 'contract.supplier.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'contracts/suppliers/:supplierId',
+          name: 'SupplierContractDetail',
+          component: () => import('@/views/contracts/SupplierContractDetail.vue'),
+          meta: {
+            title: '供应商合同详情',
+            activeMenu: '/contracts/suppliers',
+            permission: 'contract.supplier.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'contracts/expiry-alerts',
+          name: 'ContractExpiryAlerts',
+          component: () => import('@/views/contracts/ContractExpiryAlerts.vue'),
+          meta: {
+            title: '供应商合同到期预警',
+            permission: 'contract.expiry.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'contracts/settlements',
+          name: 'SupplierSettlementFees',
+          component: () => import('@/views/contracts/SupplierSettlementFees.vue'),
+          meta: {
+            title: '供应商结算费用',
+            permission: 'contract.settlement.view',
+            teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
           path: 'reporting/transport/:id',
           name: 'TransportRecordDetail',
           component: () => import('@/views/reporting/TransportRecordDetail.vue'),

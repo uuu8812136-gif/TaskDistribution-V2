@@ -35,6 +35,14 @@
       />
     </el-tabs>
 
+    <el-alert
+      v-if="categoryFilterError"
+      :title="categoryFilterError"
+      type="error"
+      :closable="false"
+      show-icon
+    />
+
     <section class="toolbar">
       <el-select
         v-if="session.isGlobalReadOnly"
@@ -63,7 +71,7 @@
         default-expand-all
         filterable
         class="category-select"
-        placeholder="设备类型"
+        placeholder="设备一级名称"
       />
       <el-select v-model="filters.scheduleMode" clearable class="mode-select" placeholder="周期模式">
         <el-option
@@ -99,7 +107,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="设备类型" min-width="150" show-overflow-tooltip>
+        <el-table-column label="设备一级名称" min-width="150" show-overflow-tooltip>
           <template #default="{ row }">{{ categoryName(row.categoryId) }}</template>
         </el-table-column>
         <el-table-column label="周期" min-width="230">
@@ -218,6 +226,8 @@ import {
   ROUTINE_SCHEDULE_MODE_OPTIONS,
   ROUTINE_TYPE_OPTIONS,
   buildCategoryTree,
+  equipmentPrimaryCategoryId,
+  fetchAllEquipmentCategories,
   optionForValue,
   routineScheduleLabel
 } from '@/utils/equipment'
@@ -236,6 +246,7 @@ const selectedRule = ref(null)
 const rules = ref([])
 const categories = ref([])
 const total = ref(0)
+const categoryFilterError = ref('')
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const filters = reactive({
   keyword: '',
@@ -274,10 +285,13 @@ const hasTeamEquipmentScope = computed(() => (
 ))
 const canManageActiveType = computed(() => canManageType(activeRoutineType.value))
 const filterCategoryOptions = computed(() => {
-  const convert = (items) => items.map((item) => ({
+  const convert = (items, depth = 1) => items
+    .filter((item) => depth <= 3)
+    .map((item) => ({
     value: item._id,
     label: item.name,
-    children: convert(item.children || [])
+    disabled: depth !== 3,
+    children: depth < 3 ? convert(item.children || [], depth + 1) : []
   }))
   return convert(buildCategoryTree(categories.value))
 })
@@ -303,12 +317,38 @@ const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') :
 
 async function loadCategories() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getEquipmentCategories({ ...requestTeamParams.value, pageSize: 200 })
-  categories.value = result.categories || []
+  categories.value = await fetchAllEquipmentCategories(
+    getEquipmentCategories,
+    requestTeamParams.value
+  )
+  if (filters.categoryId) {
+    const primaryCategoryId = equipmentPrimaryCategoryId(categories.value, filters.categoryId)
+    if (!primaryCategoryId) {
+      categoryFilterError.value = '设备分类路径无效，请返回设备台账刷新后重试'
+      rules.value = []
+      total.value = 0
+      return false
+    }
+    categoryFilterError.value = ''
+    if (primaryCategoryId !== filters.categoryId) {
+      filters.categoryId = primaryCategoryId
+      await router.replace({
+        query: { ...route.query, categoryId: primaryCategoryId }
+      })
+    }
+  } else {
+    categoryFilterError.value = ''
+  }
+  return true
 }
 
 async function loadRules() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  if (categoryFilterError.value) {
+    rules.value = []
+    total.value = 0
+    return
+  }
   loading.value = true
   try {
     const result = await getEquipmentRoutineRules({
@@ -333,10 +373,22 @@ async function initialize() {
     selectedTeamId.value = session.teams[0]?._id || ''
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  await Promise.all([loadCategories(), loadRules()])
+  if (await loadCategories() === false) return
+  await loadRules()
 }
 
 async function applyFilters() {
+  if (filters.categoryId) {
+    const primaryCategoryId = equipmentPrimaryCategoryId(categories.value, filters.categoryId)
+    if (!primaryCategoryId) {
+      categoryFilterError.value = '设备分类路径无效，请返回设备台账刷新后重试'
+      rules.value = []
+      total.value = 0
+      return
+    }
+    filters.categoryId = primaryCategoryId
+  }
+  categoryFilterError.value = ''
   filters.page = 1
   await router.replace({
     query: {
@@ -349,6 +401,7 @@ async function applyFilters() {
 
 async function resetFilters() {
   Object.assign(filters, { keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1 })
+  categoryFilterError.value = ''
   await router.replace({ query: { ...route.query, categoryId: undefined } })
   await loadRules()
 }
@@ -363,6 +416,7 @@ async function handleTypeChange() {
 async function handleTeamChange(teamId) {
   await router.replace({ query: { ...route.query, teamId, categoryId: undefined } })
   Object.assign(filters, { keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1 })
+  categoryFilterError.value = ''
   await Promise.all([loadCategories(), loadRules()])
 }
 

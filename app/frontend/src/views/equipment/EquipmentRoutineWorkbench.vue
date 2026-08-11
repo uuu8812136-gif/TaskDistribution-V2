@@ -649,7 +649,10 @@ function queryParams() {
     pageSize: filters.pageSize
   }
   if (activeTab.value === 'plans') params.status = filters.planStatus || undefined
-  if (activeTab.value === 'records') params.overallResult = filters.overallResult || undefined
+  if (activeTab.value === 'records') {
+    params.overallResult = filters.overallResult || undefined
+    params.dateBasis = 'PLAN'
+  }
   if (activeTab.value === 'exceptions') params.status = filters.exceptionStatus || undefined
   return params
 }

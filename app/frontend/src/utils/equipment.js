@@ -576,6 +576,50 @@ export function buildEquipmentPayload(form) {
   }
 }
 
+export const EQUIPMENT_CATEGORY_PAGE_SIZE = 200
+
+export async function fetchAllEquipmentCategories(fetchPage, params = {}) {
+  const firstResult = await fetchPage({
+    ...params,
+    page: 1,
+    pageSize: EQUIPMENT_CATEGORY_PAGE_SIZE
+  })
+  const firstPage = Array.isArray(firstResult?.categories) ? firstResult.categories : []
+  const reportedTotal = Number(firstResult?.total)
+  if (!Number.isInteger(reportedTotal) || reportedTotal < firstPage.length) {
+    throw new Error('设备分类分页总数无效，请重新加载')
+  }
+  const expectedTotal = reportedTotal
+  const totalPages = Math.max(1, Math.ceil(expectedTotal / EQUIPMENT_CATEGORY_PAGE_SIZE))
+  const collected = [...firstPage]
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    const result = await fetchPage({
+      ...params,
+      page,
+      pageSize: EQUIPMENT_CATEGORY_PAGE_SIZE
+    })
+    const pageCategories = Array.isArray(result?.categories) ? result.categories : []
+    if (Number(result?.total) !== expectedTotal) {
+      throw new Error('设备分类分页结果发生变化，请重新加载')
+    }
+    if (pageCategories.length === 0 && collected.length < expectedTotal) {
+      throw new Error('设备分类分页结果不完整，请重新加载')
+    }
+    collected.push(...pageCategories)
+  }
+
+  const categoriesById = new Map()
+  collected.forEach((category) => {
+    const categoryId = category?._id ? String(category._id) : ''
+    if (categoryId && !categoriesById.has(categoryId)) categoriesById.set(categoryId, category)
+  })
+  if (categoriesById.size !== expectedTotal) {
+    throw new Error('设备分类分页结果发生变化，请重新加载')
+  }
+  return [...categoriesById.values()]
+}
+
 export function equipmentCategoryPath(categories = [], categoryId = '') {
   const byId = new Map((categories || []).map((item) => [String(item._id), item]))
   const path = []
@@ -586,9 +630,18 @@ export function equipmentCategoryPath(categories = [], categoryId = '') {
     if (visited.has(id)) return []
     visited.add(id)
     path.unshift(cursor)
-    cursor = cursor.parentId ? byId.get(String(cursor.parentId)) : null
+    if (!cursor.parentId) return path
+    cursor = byId.get(String(cursor.parentId))
+    if (!cursor) return []
   }
-  return path
+  return []
+}
+
+export function equipmentPrimaryCategoryId(categories = [], categoryId = '') {
+  const path = equipmentCategoryPath(categories, categoryId)
+  if (path.length !== 3 && path.length !== 4) return ''
+  const primaryCategory = path[2]
+  return primaryCategory?._id ? String(primaryCategory._id) : ''
 }
 
 export function equipmentCategoryChildren(categories = [], parentId = null) {

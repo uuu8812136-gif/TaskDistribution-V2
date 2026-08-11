@@ -15,6 +15,7 @@ const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
 const EquipmentChangeRecord = require('../../../app/models/EquipmentChangeRecord');
 const EquipmentRoutinePlan = require('../../../app/models/EquipmentRoutinePlan');
+const EquipmentRoutineRecord = require('../../../app/models/EquipmentRoutineRecord');
 const EquipmentRoutineRule = require('../../../app/models/EquipmentRoutineRule');
 const EquipmentRuntimeReading = require('../../../app/models/EquipmentRuntimeReading');
 const FileAsset = require('../../../app/models/FileAsset');
@@ -26,6 +27,15 @@ const permissions = require('../../../app/config/permissions');
 const {
   createEquipmentRegistryService
 } = require('../../../app/services/equipmentRegistryService');
+const {
+  createEquipmentRoutineService
+} = require('../../../app/services/equipmentRoutineService');
+const {
+  createEquipmentRoutineWorkflowService
+} = require('../../../app/services/equipmentRoutineWorkflowService');
+const {
+  createEquipmentRoutineWorkerService
+} = require('../../../app/services/equipmentRoutineWorkerService');
 const { createTeamContextService } = require('../../../app/services/teamContextService');
 
 const TEST_DATABASE_NAME = 'equipment_registry_isolation_v2_test';
@@ -35,6 +45,7 @@ const MODELS = [
   EquipmentCategory,
   EquipmentChangeRecord,
   EquipmentRoutinePlan,
+  EquipmentRoutineRecord,
   EquipmentRoutineRule,
   EquipmentRuntimeReading,
   FileAsset,
@@ -48,6 +59,7 @@ const EQUIPMENT_PERMISSIONS = Object.freeze([
   'equipment.create',
   'equipment.edit',
   'equipment.export',
+  'equipment.inspect',
   'equipment.qrcode'
 ]);
 
@@ -56,6 +68,80 @@ let fixture;
 
 function objectId() {
   return new mongoose.Types.ObjectId();
+}
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function withTimeout(promise, message, timeoutMs = 10000) {
+  let timeout;
+  return Promise.race([
+    promise,
+    new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
+    })
+  ]).finally(() => clearTimeout(timeout));
+}
+
+function pauseFirstEquipmentCategoryStructureLock() {
+  const locked = deferred();
+  const release = deferred();
+  let first = true;
+  return {
+    locked: locked.promise,
+    release: release.resolve,
+    ProjectTeamModel: {
+      async findOneAndUpdate(...args) {
+        const team = await ProjectTeam.findOneAndUpdate(...args);
+        if (first) {
+          first = false;
+          locked.resolve();
+          await release.promise;
+        }
+        return team;
+      }
+    }
+  };
+}
+
+function observeNextMongoWriteConflict(timeoutMs = 10000) {
+  const client = mongoose.connection.getClient();
+  let timer;
+  let settled = false;
+  let listener;
+  const cleanup = () => {
+    clearTimeout(timer);
+    client.off('commandFailed', listener);
+  };
+  const promise = new Promise((resolve, reject) => {
+    listener = (event) => {
+      if (event.failure?.code !== 112 && event.failure?.codeName !== 'WriteConflict') return;
+      settled = true;
+      cleanup();
+      resolve(event);
+    };
+    client.on('commandFailed', listener);
+    timer = setTimeout(() => {
+      settled = true;
+      cleanup();
+      reject(new Error('Timed out waiting for a real MongoDB WriteConflict'));
+    }, timeoutMs);
+  });
+  return {
+    promise,
+    dispose() {
+      if (settled) return;
+      settled = true;
+      cleanup();
+    }
+  };
 }
 
 function teamContext({
@@ -307,7 +393,10 @@ before(async () => {
     replSet: { count: 1 },
     instanceOpts: [{ dbName: TEST_DATABASE_NAME }]
   });
-  await mongoose.connect(replicaSet.getUri(TEST_DATABASE_NAME), { dbName: TEST_DATABASE_NAME });
+  await mongoose.connect(replicaSet.getUri(TEST_DATABASE_NAME), {
+    dbName: TEST_DATABASE_NAME,
+    monitorCommands: true
+  });
   await Promise.all(MODELS.map((model) => model.syncIndexes()));
 });
 
@@ -774,6 +863,1251 @@ test('interactive equipment writes persist four-level categories, template field
   }), (error) => error.code === 'EQUIPMENT_INPUT_INVALID');
 });
 
+test('moving equipment across primary names cancels old open plans but a secondary-only move does not', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await service.createCategory({
+    authContext: context,
+    input: { name: '装卸装备' }
+  });
+  const type = await service.createCategory({
+    authContext: context,
+    input: { name: '叉车', parentId: major._id }
+  });
+  const primaryA = await service.createCategory({
+    authContext: context,
+    input: { name: '铅酸叉车', parentId: type._id }
+  });
+  const secondaryA1 = await service.createCategory({
+    authContext: context,
+    input: { name: '铅酸叉车一组', parentId: primaryA._id }
+  });
+  const secondaryA2 = await service.createCategory({
+    authContext: context,
+    input: { name: '铅酸叉车二组', parentId: primaryA._id }
+  });
+  const primaryB = await service.createCategory({
+    authContext: context,
+    input: { name: '锂电叉车', parentId: type._id }
+  });
+  const secondaryB = await service.createCategory({
+    authContext: context,
+    input: { name: '锂电叉车一组', parentId: primaryB._id }
+  });
+  const asset = await equipment(service, context, {
+    assetCode: 'MOVE-PRIMARY-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: secondaryA1._id
+  });
+  const ruleId = objectId();
+  const openPlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    equipmentId: asset._id,
+    categoryId: secondaryA1._id,
+    ruleId,
+    ruleVersion: 1,
+    ruleSnapshot: { name: '铅酸叉车点检' },
+    routineType: 'INSPECTION',
+    cycleKey: 'calendar:2030-01-01T00:00:00.000Z',
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2030-01-01T00:00:00.000Z'),
+    dueAt: new Date('2030-01-01T01:00:00.000Z'),
+    status: 'PLANNED'
+  });
+  const completedPlan = await EquipmentRoutinePlan.create({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    equipmentId: asset._id,
+    categoryId: secondaryA1._id,
+    ruleId,
+    ruleVersion: 1,
+    ruleSnapshot: { name: '铅酸叉车点检' },
+    routineType: 'INSPECTION',
+    cycleKey: 'calendar:2029-12-31T00:00:00.000Z',
+    windowKey: 'DAY_SHIFT',
+    windowName: '白班',
+    scheduledFor: new Date('2029-12-31T00:00:00.000Z'),
+    dueAt: new Date('2029-12-31T01:00:00.000Z'),
+    status: 'COMPLETED',
+    completedRecordId: objectId(),
+    completedAt: new Date('2029-12-31T00:30:00.000Z'),
+    completedBy: fixture.userA1
+  });
+
+  await service.updateAsset({
+    authContext: context,
+    equipmentId: asset._id,
+    input: { categoryId: secondaryA2._id, reason: '仅调整设备二级名称' }
+  });
+  assert.equal((await EquipmentRoutinePlan.findById(openPlan._id).lean()).status, 'PLANNED');
+
+  const moved = await service.updateAsset({
+    authContext: context,
+    equipmentId: asset._id,
+    input: { categoryId: secondaryB._id, reason: '调整设备一级名称' }
+  });
+  const cancelled = await EquipmentRoutinePlan.findById(openPlan._id).lean();
+  assert.equal(moved.primaryName, '锂电叉车');
+  assert.equal(moved.secondaryName, '锂电叉车一组');
+  assert.equal(cancelled.status, 'CANCELLED');
+  assert.equal(cancelled.cancellationReason, 'EQUIPMENT_CATEGORY_CHANGED');
+  assert.ok(cancelled.cancelledAt instanceof Date);
+  assert.equal(String(cancelled.cancelledBy), String(fixture.userA1));
+  assert.equal((await EquipmentRoutinePlan.findById(completedPlan._id).lean()).status, 'COMPLETED');
+});
+
+test('organization moves rebind only open routine plans and preserve identity and history across A-B-A', async () => {
+  const now = new Date('2030-01-15T12:00:00.000Z');
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(now) });
+  const workflowService = createEquipmentRoutineWorkflowService({ clock: () => new Date(now) });
+  const teamAdmin = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const orgA = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const orgB = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA2,
+    userId: fixture.userA2,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const major = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Organization move major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Organization move type', parentId: major._id }
+  });
+  const primary = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Organization move primary', parentId: type._id }
+  });
+  const asset = await equipment(registryService, teamAdmin, {
+    assetCode: 'ORG-MOVE-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: primary._id
+  });
+  const rule = await routineService.createRule({
+    authContext: teamAdmin,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primary._id,
+      name: 'Organization move inspection',
+      checklistItems: [{ name: 'Confirm organization ownership' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  });
+  const createPlan = ({ suffix, status, scheduledFor, dueAt, ...metadata }) => (
+    EquipmentRoutinePlan.create({
+      teamId: fixture.teamA,
+      orgUnitId: fixture.orgA1,
+      equipmentId: asset._id,
+      categoryId: primary._id,
+      ruleId: rule._id,
+      ruleVersion: rule.version,
+      ruleSnapshot: { name: rule.name },
+      routineType: 'INSPECTION',
+      cycleKey: `organization-move:${suffix}`,
+      windowKey: suffix.toUpperCase(),
+      windowName: suffix,
+      scheduledFor: new Date(scheduledFor),
+      dueAt: new Date(dueAt),
+      status,
+      ...metadata
+    })
+  );
+  const [planned, inWindow, overdue, completed, cancelled] = await Promise.all([
+    createPlan({
+      suffix: 'planned',
+      status: 'PLANNED',
+      scheduledFor: '2030-01-16T08:00:00.000Z',
+      dueAt: '2030-01-16T16:00:00.000Z'
+    }),
+    createPlan({
+      suffix: 'in-window',
+      status: 'IN_WINDOW',
+      scheduledFor: '2030-01-15T08:00:00.000Z',
+      dueAt: '2030-01-15T16:00:00.000Z'
+    }),
+    createPlan({
+      suffix: 'overdue',
+      status: 'OVERDUE',
+      scheduledFor: '2030-01-14T08:00:00.000Z',
+      dueAt: '2030-01-14T16:00:00.000Z'
+    }),
+    createPlan({
+      suffix: 'completed-history',
+      status: 'COMPLETED',
+      scheduledFor: '2030-01-12T08:00:00.000Z',
+      dueAt: '2030-01-12T16:00:00.000Z',
+      completedRecordId: objectId(),
+      completedAt: new Date('2030-01-12T10:00:00.000Z'),
+      completedBy: fixture.userA1
+    }),
+    createPlan({
+      suffix: 'cancelled-history',
+      status: 'CANCELLED',
+      scheduledFor: '2030-01-13T08:00:00.000Z',
+      dueAt: '2030-01-13T16:00:00.000Z',
+      cancellationReason: 'RULE_UPDATED',
+      cancelledAt: new Date('2030-01-13T09:00:00.000Z'),
+      cancelledBy: fixture.userA1
+    })
+  ]);
+  const identity = (plan) => ({
+    _id: String(plan._id),
+    cycleKey: plan.cycleKey,
+    windowKey: plan.windowKey,
+    scheduledFor: new Date(plan.scheduledFor).toISOString(),
+    dueAt: new Date(plan.dueAt).toISOString()
+  });
+  const history = (plan) => ({
+    orgUnitId: String(plan.orgUnitId),
+    status: plan.status,
+    completedRecordId: plan.completedRecordId ? String(plan.completedRecordId) : null,
+    completedAt: plan.completedAt ? new Date(plan.completedAt).toISOString() : null,
+    completedBy: plan.completedBy ? String(plan.completedBy) : null,
+    cancellationReason: plan.cancellationReason || null,
+    cancelledAt: plan.cancelledAt ? new Date(plan.cancelledAt).toISOString() : null,
+    cancelledBy: plan.cancelledBy ? String(plan.cancelledBy) : null
+  });
+  const originalOpenIdentities = new Map(
+    [planned, inWindow, overdue].map((plan) => [String(plan._id), identity(plan)])
+  );
+  const completedHistory = history(completed);
+  const cancelledHistory = history(cancelled);
+
+  await registryService.updateAsset({
+    authContext: teamAdmin,
+    equipmentId: asset._id,
+    input: { orgUnitId: String(fixture.orgA2), reason: 'Move to organization B' }
+  });
+
+  for (const original of [planned, inWindow, overdue]) {
+    const movedPlan = await EquipmentRoutinePlan.findById(original._id).lean();
+    assert.equal(String(movedPlan.orgUnitId), String(fixture.orgA2));
+    assert.deepEqual(identity(movedPlan), originalOpenIdentities.get(String(original._id)));
+    assert.equal((await workflowService.getPlan({
+      authContext: orgB,
+      planId: original._id
+    }))._id, String(original._id));
+    await assert.rejects(workflowService.getPlan({
+      authContext: orgA,
+      planId: original._id
+    }), (error) => error.status === 404);
+  }
+  assert.deepEqual(history(await EquipmentRoutinePlan.findById(completed._id).lean()), completedHistory);
+  assert.deepEqual(history(await EquipmentRoutinePlan.findById(cancelled._id).lean()), cancelledHistory);
+
+  const inWindowSubmission = {
+    ruleId: rule._id,
+    planId: inWindow._id,
+    itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }]
+  };
+  await assert.rejects(routineService.createRecord({
+    authContext: orgA,
+    equipmentId: asset._id,
+    input: inWindowSubmission
+  }), (error) => error.status === 404);
+  const completedInB = await routineService.createRecord({
+    authContext: orgB,
+    equipmentId: asset._id,
+    input: inWindowSubmission
+  });
+  assert.equal(completedInB.orgUnitId, String(fixture.orgA2));
+  const executedInBPlan = await EquipmentRoutinePlan.findById(inWindow._id).lean();
+  assert.equal(executedInBPlan.status, 'COMPLETED');
+  assert.equal(String(executedInBPlan.orgUnitId), String(fixture.orgA2));
+
+  await registryService.updateAsset({
+    authContext: teamAdmin,
+    equipmentId: asset._id,
+    input: { orgUnitId: String(fixture.orgA1), reason: 'Return to organization A' }
+  });
+
+  for (const original of [planned, overdue]) {
+    const returnedPlan = await EquipmentRoutinePlan.findById(original._id).lean();
+    assert.equal(String(returnedPlan.orgUnitId), String(fixture.orgA1));
+    assert.deepEqual(identity(returnedPlan), originalOpenIdentities.get(String(original._id)));
+    assert.equal((await workflowService.getPlan({
+      authContext: orgA,
+      planId: original._id
+    }))._id, String(original._id));
+    await assert.rejects(workflowService.getPlan({
+      authContext: orgB,
+      planId: original._id
+    }), (error) => error.status === 404);
+  }
+  const retainedInB = await EquipmentRoutinePlan.findById(inWindow._id).lean();
+  assert.equal(retainedInB.status, 'COMPLETED');
+  assert.equal(String(retainedInB.orgUnitId), String(fixture.orgA2));
+  assert.deepEqual(history(await EquipmentRoutinePlan.findById(completed._id).lean()), completedHistory);
+  assert.deepEqual(history(await EquipmentRoutinePlan.findById(cancelled._id).lean()), cancelledHistory);
+
+  const completedInA = await routineService.createRecord({
+    authContext: orgA,
+    equipmentId: asset._id,
+    input: {
+      ruleId: rule._id,
+      planId: overdue._id,
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }]
+    }
+  });
+  assert.equal(completedInA.orgUnitId, String(fixture.orgA1));
+  const executedInAPlan = await EquipmentRoutinePlan.findById(overdue._id).lean();
+  assert.equal(executedInAPlan.status, 'COMPLETED');
+  assert.equal(String(executedInAPlan.orgUnitId), String(fixture.orgA1));
+});
+
+test('combined category and organization moves rebase recoverable plans before A-B-A worker recovery', async () => {
+  const now = new Date('2030-01-15T12:00:00.000Z');
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(now) });
+  const workflowService = createEquipmentRoutineWorkflowService({ clock: () => new Date(now) });
+  const worker = createEquipmentRoutineWorkerService({
+    routineService,
+    clock: () => new Date(now)
+  });
+  const teamAdmin = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const orgA = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const orgB = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA2,
+    userId: fixture.userA2,
+    scope: permissions.DATA_SCOPES.ORG_UNIT
+  });
+  const majorA = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move major A' }
+  });
+  const typeA = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move type A', parentId: majorA._id }
+  });
+  const primaryA = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move primary A', parentId: typeA._id }
+  });
+  const secondaryA = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move secondary A', parentId: primaryA._id }
+  });
+  const majorB = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move major B' }
+  });
+  const typeB = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move type B', parentId: majorB._id }
+  });
+  const primaryB = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move primary B', parentId: typeB._id }
+  });
+  const secondaryB = await registryService.createCategory({
+    authContext: teamAdmin,
+    input: { name: 'Combined move secondary B', parentId: primaryB._id }
+  });
+  const asset = await equipment(registryService, teamAdmin, {
+    assetCode: 'COMBINED-MOVE-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: secondaryA._id
+  });
+  const rule = await routineService.createRule({
+    authContext: teamAdmin,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primaryA._id,
+      name: 'Combined move inspection',
+      checklistItems: [{ name: 'Check combined move' }],
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: {
+          unit: 'DAY',
+          interval: 1,
+          firstDueAt: '2030-01-15T00:00:00.000Z'
+        }
+      },
+      executionConfig: {
+        timeZone: 'Asia/Shanghai',
+        windows: [{
+          key: 'DAY_SHIFT',
+          name: 'Day shift',
+          startTime: '07:00',
+          endTime: '09:00',
+          enabled: true
+        }],
+        weeklyDay: 1,
+        monthlyDay: 1,
+        inspectionEscalationMinutes: 60,
+        locationPolicy: 'OPTIONAL',
+        locationPrecisionMeters: null
+      }
+    }
+  });
+
+  await worker.runOnce({ now, teamId: fixture.teamA });
+  const original = await EquipmentRoutinePlan.findOne({
+    teamId: fixture.teamA,
+    ruleId: rule._id,
+    equipmentId: asset._id
+  }).sort({ scheduledFor: 1, _id: 1 }).lean();
+  assert.ok(original);
+  assert.equal(original.status, 'OVERDUE');
+  assert.equal(String(original.orgUnitId), String(fixture.orgA1));
+
+  await registryService.updateAsset({
+    authContext: teamAdmin,
+    equipmentId: asset._id,
+    input: {
+      categoryId: secondaryB._id,
+      orgUnitId: String(fixture.orgA2),
+      reason: 'Move category and organization together'
+    }
+  });
+  const cancelled = await EquipmentRoutinePlan.findById(original._id).lean();
+  assert.equal(cancelled.status, 'CANCELLED');
+  assert.equal(cancelled.cancellationReason, 'EQUIPMENT_CATEGORY_CHANGED');
+  assert.equal(String(cancelled.orgUnitId), String(fixture.orgA2));
+
+  await registryService.updateAsset({
+    authContext: teamAdmin,
+    equipmentId: asset._id,
+    input: { categoryId: secondaryA._id, reason: 'Return category to the original rule' }
+  });
+  await worker.runOnce({ now, teamId: fixture.teamA });
+  const recovered = await EquipmentRoutinePlan.findById(original._id).lean();
+  assert.equal(recovered.status, 'OVERDUE');
+  assert.equal(String(recovered.orgUnitId), String(fixture.orgA2));
+  assert.equal((await workflowService.getPlan({
+    authContext: orgB,
+    planId: original._id
+  })).orgUnitId, String(fixture.orgA2));
+  await assert.rejects(workflowService.getPlan({
+    authContext: orgA,
+    planId: original._id
+  }), (error) => error.status === 404);
+});
+
+test('category moves and renames refresh subtree snapshots, cancel only changed primary plans, and roll back atomically', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const [majorA, majorB] = await Promise.all([
+    service.createCategory({ authContext: context, input: { name: '搬运设备大类 A' } }),
+    service.createCategory({ authContext: context, input: { name: '搬运设备大类 B' } })
+  ]);
+  const type = await service.createCategory({
+    authContext: context,
+    input: { name: '叉车类型', parentId: majorA._id }
+  });
+  const [primaryA, primaryB] = await Promise.all([
+    service.createCategory({
+      authContext: context,
+      input: { name: '铅酸叉车一级名称', parentId: type._id }
+    }),
+    service.createCategory({
+      authContext: context,
+      input: { name: '锂电叉车一级名称', parentId: type._id }
+    })
+  ]);
+  const [secondary, rollbackSecondary] = await Promise.all([
+    service.createCategory({
+      authContext: context,
+      input: { name: '待移动二级名称', parentId: primaryA._id }
+    }),
+    service.createCategory({
+      authContext: context,
+      input: { name: '回滚验证二级名称', parentId: primaryA._id }
+    })
+  ]);
+  const [firstAsset, secondAsset, rollbackAsset] = await Promise.all([
+    equipment(service, context, {
+      assetCode: 'CATEGORY-MOVE-001', orgUnitId: fixture.orgA1, categoryId: secondary._id
+    }),
+    equipment(service, context, {
+      assetCode: 'CATEGORY-MOVE-002', orgUnitId: fixture.orgA1, categoryId: secondary._id
+    }),
+    equipment(service, context, {
+      assetCode: 'CATEGORY-MOVE-ROLLBACK', orgUnitId: fixture.orgA1, categoryId: rollbackSecondary._id
+    })
+  ]);
+
+  async function createPlan(asset, categoryId, cycleKey, status = 'PLANNED') {
+    return EquipmentRoutinePlan.create({
+      teamId: fixture.teamA,
+      orgUnitId: fixture.orgA1,
+      equipmentId: asset._id,
+      categoryId,
+      ruleId: objectId(),
+      ruleVersion: 1,
+      ruleSnapshot: { name: '分类移动点检' },
+      routineType: 'INSPECTION',
+      cycleKey,
+      windowKey: 'DAY_SHIFT',
+      windowName: '白班',
+      scheduledFor: new Date('2030-01-01T00:00:00.000Z'),
+      dueAt: new Date('2030-01-01T01:00:00.000Z'),
+      status,
+      ...(status === 'COMPLETED' ? {
+        completedRecordId: objectId(),
+        completedAt: new Date('2030-01-01T00:30:00.000Z'),
+        completedBy: fixture.userA1
+      } : {})
+    });
+  }
+
+  const [firstOpen, secondOpen, completed, rollbackOpen] = await Promise.all([
+    createPlan(firstAsset, secondary._id, 'category-move-first'),
+    createPlan(secondAsset, secondary._id, 'category-move-second'),
+    createPlan(firstAsset, secondary._id, 'category-move-completed', 'COMPLETED'),
+    createPlan(rollbackAsset, rollbackSecondary._id, 'category-move-rollback')
+  ]);
+
+  await service.updateCategory({
+    authContext: context,
+    categoryId: type._id,
+    input: { parentId: majorB._id, reason: '类型移动但一级名称节点不变' }
+  });
+  assert.equal((await EquipmentRoutinePlan.findById(firstOpen._id).lean()).status, 'PLANNED');
+  assert.equal((await EquipmentRoutinePlan.findById(rollbackOpen._id).lean()).status, 'PLANNED');
+  for (const [assetId, primaryName, secondaryName] of [
+    [firstAsset._id, primaryA.name, secondary.name],
+    [secondAsset._id, primaryA.name, secondary.name],
+    [rollbackAsset._id, primaryA.name, rollbackSecondary.name]
+  ]) {
+    const refreshed = await EquipmentAsset.findById(assetId).lean();
+    assert.deepEqual([
+      refreshed.majorCategoryName,
+      refreshed.equipmentTypeName,
+      refreshed.primaryName,
+      refreshed.secondaryName
+    ], [majorB.name, type.name, primaryName, secondaryName]);
+  }
+
+  await service.updateCategory({
+    authContext: context,
+    categoryId: secondary._id,
+    input: { parentId: primaryB._id, reason: '二级名称移动到另一个一级名称' }
+  });
+  for (const planId of [firstOpen._id, secondOpen._id]) {
+    const plan = await EquipmentRoutinePlan.findById(planId).lean();
+    assert.equal(plan.status, 'CANCELLED');
+    assert.equal(plan.cancellationReason, 'EQUIPMENT_CATEGORY_CHANGED');
+    assert.equal(String(plan.cancelledBy), String(fixture.userA1));
+  }
+  assert.equal((await EquipmentRoutinePlan.findById(completed._id).lean()).status, 'COMPLETED');
+  for (const assetId of [firstAsset._id, secondAsset._id]) {
+    const refreshed = await EquipmentAsset.findById(assetId).lean();
+    assert.deepEqual([
+      refreshed.majorCategoryName,
+      refreshed.equipmentTypeName,
+      refreshed.primaryName,
+      refreshed.secondaryName
+    ], [majorB.name, type.name, primaryB.name, secondary.name]);
+  }
+
+  const renamedPrimaryName = '锂电叉车一级名称（已重命名）';
+  await service.updateCategory({
+    authContext: context,
+    categoryId: primaryB._id,
+    input: { name: renamedPrimaryName, reason: '验证一级名称重命名同步设备快照' }
+  });
+  for (const assetId of [firstAsset._id, secondAsset._id]) {
+    const refreshed = await EquipmentAsset.findById(assetId).lean();
+    assert.equal(refreshed.primaryName, renamedPrimaryName);
+    assert.equal(refreshed.secondaryName, secondary.name);
+  }
+
+  const rollbackAssetBefore = await EquipmentAsset.findById(rollbackAsset._id).lean();
+
+  const failingService = createEquipmentRegistryService({
+    auditService: {
+      record: async () => {
+        throw new Error('forced category audit failure');
+      }
+    }
+  });
+  await assert.rejects(failingService.updateCategory({
+    authContext: context,
+    categoryId: rollbackSecondary._id,
+    input: {
+      name: '不应保留的二级名称',
+      parentId: primaryB._id,
+      reason: '验证事务回滚'
+    }
+  }), /forced category audit failure/);
+  const rolledBackCategory = await EquipmentCategory.findById(rollbackSecondary._id).lean();
+  assert.equal(String(rolledBackCategory.parentId), primaryA._id);
+  assert.equal(rolledBackCategory.name, rollbackSecondary.name);
+  assert.equal((await EquipmentRoutinePlan.findById(rollbackOpen._id).lean()).status, 'PLANNED');
+  const rollbackAssetAfter = await EquipmentAsset.findById(rollbackAsset._id).lean();
+  assert.deepEqual({
+    majorCategoryName: rollbackAssetAfter.majorCategoryName,
+    equipmentTypeName: rollbackAssetAfter.equipmentTypeName,
+    primaryName: rollbackAssetAfter.primaryName,
+    secondaryName: rollbackAssetAfter.secondaryName
+  }, {
+    majorCategoryName: rollbackAssetBefore.majorCategoryName,
+    equipmentTypeName: rollbackAssetBefore.equipmentTypeName,
+    primaryName: rollbackAssetBefore.primaryName,
+    secondaryName: rollbackAssetBefore.secondaryName
+  });
+});
+
+test('a concurrent category rename and asset create share a real write lock and retry with fresh snapshots', async () => {
+  const setupService = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await setupService.createCategory({
+    authContext: context,
+    input: { name: '并发测试大类' }
+  });
+  const type = await setupService.createCategory({
+    authContext: context,
+    input: { name: '并发测试类型', parentId: major._id }
+  });
+  const primary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '改名前一级名称', parentId: type._id }
+  });
+  const secondary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '并发测试二级名称', parentId: primary._id }
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const renameService = createEquipmentRegistryService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const createService = createEquipmentRegistryService();
+  const conflict = observeNextMongoWriteConflict();
+  const renamedPrimaryName = '重试后一级名称';
+  let createPromise;
+  const renamePromise = renameService.updateCategory({
+    authContext: context,
+    categoryId: primary._id,
+    input: { name: renamedPrimaryName }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for the category rename to acquire the structure lock'
+    );
+    createPromise = equipment(createService, context, {
+      assetCode: 'CONCURRENT-CREATE-001',
+      orgUnitId: fixture.orgA1,
+      categoryId: secondary._id
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    const [, created] = await Promise.all([renamePromise, createPromise]);
+    assert.equal(created.primaryName, renamedPrimaryName);
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([renamePromise, createPromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  const persisted = await EquipmentAsset.findOne({ assetCode: 'CONCURRENT-CREATE-001' }).lean();
+  assert.deepEqual([
+    persisted.majorCategoryName,
+    persisted.equipmentTypeName,
+    persisted.primaryName,
+    persisted.secondaryName
+  ], [major.name, type.name, renamedPrimaryName, secondary.name]);
+  const finalRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  assert.equal(finalRevision, baselineRevision + 2);
+});
+
+test('a concurrent category move and asset move share a real write lock and retry with the latest path', async () => {
+  const setupService = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await setupService.createCategory({
+    authContext: context,
+    input: { name: '并发移动大类' }
+  });
+  const oldType = await setupService.createCategory({
+    authContext: context,
+    input: { name: '移动前设备类型', parentId: major._id }
+  });
+  const newType = await setupService.createCategory({
+    authContext: context,
+    input: { name: '移动后设备类型', parentId: major._id }
+  });
+  const sourcePrimary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '来源一级名称', parentId: oldType._id }
+  });
+  const sourceSecondary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '来源二级名称', parentId: sourcePrimary._id }
+  });
+  const targetPrimary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '目标一级名称', parentId: oldType._id }
+  });
+  const targetSecondary = await setupService.createCategory({
+    authContext: context,
+    input: { name: '目标二级名称', parentId: targetPrimary._id }
+  });
+  const asset = await equipment(setupService, context, {
+    assetCode: 'CONCURRENT-MOVE-001',
+    orgUnitId: fixture.orgA1,
+    categoryId: sourceSecondary._id
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const categoryMoveService = createEquipmentRegistryService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const assetMoveService = createEquipmentRegistryService();
+  const conflict = observeNextMongoWriteConflict();
+  let assetMovePromise;
+  const categoryMovePromise = categoryMoveService.updateCategory({
+    authContext: context,
+    categoryId: targetPrimary._id,
+    input: { parentId: newType._id }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for the category move to acquire the structure lock'
+    );
+    assetMovePromise = assetMoveService.updateAsset({
+      authContext: context,
+      equipmentId: asset._id,
+      input: { categoryId: targetSecondary._id }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await Promise.all([categoryMovePromise, assetMovePromise]);
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([categoryMovePromise, assetMovePromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  const persisted = await EquipmentAsset.findById(asset._id).lean();
+  assert.equal(String(persisted.categoryId), targetSecondary._id);
+  assert.deepEqual([
+    persisted.majorCategoryName,
+    persisted.equipmentTypeName,
+    persisted.primaryName,
+    persisted.secondaryName
+  ], [major.name, newType.name, targetPrimary.name, targetSecondary.name]);
+  const finalRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  assert.equal(finalRevision, baselineRevision + 2);
+});
+
+test('category disable and rule activation require an active level-3 path without blocking disabled history edits', async () => {
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Active path major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Active path type', parentId: major._id }
+  });
+  const primary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Active path primary', parentId: type._id }
+  });
+  const rule = await routineService.createRule({
+    authContext: context,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primary._id,
+      name: 'Active path rule',
+      checklistItems: [{ name: 'Check active path' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  });
+
+  await assert.rejects(registryService.disableCategory({
+    authContext: context,
+    categoryId: primary._id,
+    input: { reason: 'Must retain an active rule binding' }
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_IN_USE');
+  assert.equal((await EquipmentCategory.findById(primary._id).lean()).status, 'ACTIVE');
+  assert.equal((await EquipmentRoutineRule.findById(rule._id).lean()).status, 'ACTIVE');
+
+  await routineService.disableRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { reason: 'Prepare category disable' }
+  });
+  const disabledCategory = await registryService.disableCategory({
+    authContext: context,
+    categoryId: primary._id,
+    input: { reason: 'No active rule remains' }
+  });
+  assert.equal(disabledCategory.status, 'DISABLED');
+  const historicalEdit = await routineService.updateRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { name: 'Disabled historical rule' }
+  });
+  assert.equal(historicalEdit.name, 'Disabled historical rule');
+  assert.equal(historicalEdit.status, 'DISABLED');
+  await assert.rejects(routineService.updateRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { status: 'ACTIVE' }
+  }), (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED');
+
+  await registryService.updateCategory({
+    authContext: context,
+    categoryId: primary._id,
+    input: { status: 'ACTIVE' }
+  });
+  await EquipmentCategory.updateOne(
+    { _id: type._id },
+    { $set: { status: 'DISABLED' } }
+  );
+  await assert.rejects(routineService.updateRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { status: 'ACTIVE' }
+  }), (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED');
+  await assert.rejects(routineService.createRule({
+    authContext: context,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primary._id,
+      name: 'Must reject disabled ancestor',
+      checklistItems: [{ name: 'Check disabled ancestor' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  }), (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED');
+});
+
+test('a category move commits before a concurrent rule create retries and rejects the new level-4 binding', async () => {
+  const registryService = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule create race major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule create race type', parentId: major._id }
+  });
+  const movingPrimary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule create race source primary', parentId: type._id }
+  });
+  const targetPrimary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule create race target primary', parentId: type._id }
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const moveService = createEquipmentRegistryService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const routineService = createEquipmentRoutineService();
+  const conflict = observeNextMongoWriteConflict();
+  let createPromise;
+  const movePromise = moveService.updateCategory({
+    authContext: context,
+    categoryId: movingPrimary._id,
+    input: { parentId: targetPrimary._id }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for the category move to acquire the shared structure lock'
+    );
+    createPromise = routineService.createRule({
+      authContext: context,
+      input: {
+        routineType: 'INSPECTION',
+        categoryId: movingPrimary._id,
+        name: 'Must not bind after concurrent move',
+        checklistItems: [{ name: 'Check shared lock' }],
+        schedule: { mode: 'MANUAL' }
+      }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await movePromise;
+    await assert.rejects(
+      createPromise,
+      (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED'
+    );
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([movePromise, createPromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  assert.equal(
+    String((await EquipmentCategory.findById(movingPrimary._id).lean()).parentId),
+    targetPrimary._id
+  );
+  assert.equal(await EquipmentRoutineRule.countDocuments({ categoryId: movingPrimary._id }), 0);
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    baselineRevision + 1
+  );
+});
+
+test('a rule activation commits before a concurrent category move retries and preserves the level-3 binding', async () => {
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule activation race major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule activation race type', parentId: major._id }
+  });
+  const movingPrimary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule activation race source primary', parentId: type._id }
+  });
+  const targetPrimary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Rule activation race target primary', parentId: type._id }
+  });
+  const rule = await routineService.createRule({
+    authContext: context,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: movingPrimary._id,
+      name: 'Concurrent activation rule',
+      checklistItems: [{ name: 'Check activation lock' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  });
+  await routineService.disableRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { reason: 'Prepare concurrent activation' }
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const activationService = createEquipmentRoutineService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const conflict = observeNextMongoWriteConflict();
+  let movePromise;
+  const activationPromise = activationService.updateRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { status: 'ACTIVE' }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for rule activation to acquire the shared structure lock'
+    );
+    movePromise = registryService.updateCategory({
+      authContext: context,
+      categoryId: movingPrimary._id,
+      input: { parentId: targetPrimary._id }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await activationPromise;
+    await assert.rejects(
+      movePromise,
+      (error) => error.code === 'EQUIPMENT_CATEGORY_ACTIVE_RULE_DEPTH_CONFLICT'
+    );
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([activationPromise, movePromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  assert.equal((await EquipmentRoutineRule.findById(rule._id).lean()).status, 'ACTIVE');
+  assert.equal(
+    String((await EquipmentCategory.findById(movingPrimary._id).lean()).parentId),
+    type._id
+  );
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    baselineRevision + 1
+  );
+});
+
+test('rule activation commits before a concurrent category disable retries and rejects the disable', async () => {
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Activation before disable major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Activation before disable type', parentId: major._id }
+  });
+  const primary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Activation before disable primary', parentId: type._id }
+  });
+  const rule = await routineService.createRule({
+    authContext: context,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primary._id,
+      name: 'Activation before disable rule',
+      checklistItems: [{ name: 'Check serialization' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  });
+  await routineService.disableRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { reason: 'Prepare activation race' }
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const activationService = createEquipmentRoutineService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const conflict = observeNextMongoWriteConflict();
+  let disablePromise;
+  const activationPromise = activationService.updateRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { status: 'ACTIVE' }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for rule activation to acquire the shared structure lock'
+    );
+    disablePromise = registryService.disableCategory({
+      authContext: context,
+      categoryId: primary._id,
+      input: { reason: 'Must lose to concurrent activation' }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await activationPromise;
+    await assert.rejects(
+      disablePromise,
+      (error) => error.code === 'EQUIPMENT_CATEGORY_IN_USE'
+    );
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([activationPromise, disablePromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  assert.equal((await EquipmentRoutineRule.findById(rule._id).lean()).status, 'ACTIVE');
+  assert.equal((await EquipmentCategory.findById(primary._id).lean()).status, 'ACTIVE');
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    baselineRevision + 1
+  );
+});
+
+test('category disable commits before a concurrent rule activation retries and rejects the activation', async () => {
+  const registryService = createEquipmentRegistryService();
+  const routineService = createEquipmentRoutineService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Disable before activation major' }
+  });
+  const type = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Disable before activation type', parentId: major._id }
+  });
+  const primary = await registryService.createCategory({
+    authContext: context,
+    input: { name: 'Disable before activation primary', parentId: type._id }
+  });
+  const rule = await routineService.createRule({
+    authContext: context,
+    input: {
+      routineType: 'INSPECTION',
+      categoryId: primary._id,
+      name: 'Disable before activation rule',
+      checklistItems: [{ name: 'Check serialization' }],
+      schedule: { mode: 'MANUAL' }
+    }
+  });
+  await routineService.disableRule({
+    authContext: context,
+    ruleId: rule._id,
+    input: { reason: 'Prepare disable race' }
+  });
+  const baselineRevision = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  const gate = pauseFirstEquipmentCategoryStructureLock();
+  const disableService = createEquipmentRegistryService({
+    ProjectTeamModel: gate.ProjectTeamModel
+  });
+  const conflict = observeNextMongoWriteConflict();
+  let activationPromise;
+  const disablePromise = disableService.disableCategory({
+    authContext: context,
+    categoryId: primary._id,
+    input: { reason: 'Disable before concurrent activation' }
+  });
+
+  try {
+    await withTimeout(
+      gate.locked,
+      'Timed out waiting for category disable to acquire the shared structure lock'
+    );
+    activationPromise = routineService.updateRule({
+      authContext: context,
+      ruleId: rule._id,
+      input: { status: 'ACTIVE' }
+    });
+    const conflictEvent = await conflict.promise;
+    assert.equal(conflictEvent.commandName, 'findAndModify');
+    gate.release();
+    await disablePromise;
+    await assert.rejects(
+      activationPromise,
+      (error) => error.code === 'EQUIPMENT_ROUTINE_PRIMARY_CATEGORY_REQUIRED'
+    );
+  } catch (error) {
+    gate.release();
+    await Promise.allSettled([disablePromise, activationPromise].filter(Boolean));
+    throw error;
+  } finally {
+    gate.release();
+    conflict.dispose();
+  }
+
+  assert.equal((await EquipmentCategory.findById(primary._id).lean()).status, 'DISABLED');
+  assert.equal((await EquipmentRoutineRule.findById(rule._id).lean()).status, 'DISABLED');
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    baselineRevision + 1
+  );
+});
+
+test('an exhausted category structure write conflict has a stable retryable response', async () => {
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const writeConflict = Object.assign(new Error('simulated exhausted write conflict'), {
+    code: 112,
+    codeName: 'WriteConflict'
+  });
+  const service = createEquipmentRegistryService({
+    ProjectTeamModel: {
+      async findOneAndUpdate() {
+        throw writeConflict;
+      }
+    }
+  });
+
+  await assert.rejects(service.createCategory({
+    authContext: context,
+    input: { name: '不应创建的分类' }
+  }), (error) => {
+    assert.equal(error.status, 409);
+    assert.equal(error.code, 'EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT');
+    assert.equal(
+      error.message,
+      'Equipment category structure changed concurrently; retry the operation'
+    );
+    return true;
+  });
+});
+
 test('interactive equipment photos bind and remove real FileAsset records transactionally', async () => {
   const service = createEquipmentRegistryService();
   const context = teamContext({
@@ -928,6 +2262,45 @@ test('assetCode is unique inside a team but reusable by another team', async () 
     assetCode: 'SHARED-001', orgUnitId: fixture.orgB1, categoryId: categoryB._id
   });
   assert.equal(otherTeam.teamId, String(fixture.teamB));
+});
+
+test('category names are unique only under the same parent so secondary names can repeat across primary names', async () => {
+  const service = createEquipmentRegistryService();
+  const context = teamContext({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const major = await service.createCategory({
+    authContext: context,
+    input: { name: '装卸搬运设备' }
+  });
+  const type = await service.createCategory({
+    authContext: context,
+    input: { name: '叉车', parentId: major._id }
+  });
+  const leadAcid = await service.createCategory({
+    authContext: context,
+    input: { name: '电动叉车（分类：铅酸电池）', parentId: type._id }
+  });
+  const lithium = await service.createCategory({
+    authContext: context,
+    input: { name: '电动叉车（分类：锂离子电池）', parentId: type._id }
+  });
+  const first = await service.createCategory({
+    authContext: context,
+    input: { name: '电动叉车', parentId: leadAcid._id }
+  });
+  const repeatedUnderAnotherPrimary = await service.createCategory({
+    authContext: context,
+    input: { name: '电动叉车', parentId: lithium._id }
+  });
+
+  assert.notEqual(first._id, repeatedUnderAnotherPrimary._id);
+  await assert.rejects(service.createCategory({
+    authContext: context,
+    input: { name: '电动叉车', parentId: leadAcid._id }
+  }), (error) => error.code === 'EQUIPMENT_CATEGORY_DUPLICATE');
 });
 
 test('Excel export is re-filtered by organization scope and neutralizes formulas', async () => {
@@ -1104,6 +2477,9 @@ test('category deletion requires a disabled unused leaf and keeps audit evidence
     authContext: context,
     input: { name: 'Delete child', parentId: parent._id }
   });
+  const revisionAfterCreate = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
+  assert.equal(revisionAfterCreate, 2);
 
   await assert.rejects(service.deleteCategory({
     authContext: context,
@@ -1112,6 +2488,10 @@ test('category deletion requires a disabled unused leaf and keeps audit evidence
   }), (error) => (
     error.status === 409 && error.code === 'EQUIPMENT_CATEGORY_DELETE_REQUIRES_DISABLED'
   ));
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    revisionAfterCreate
+  );
 
   await service.disableCategory({
     authContext: context,
@@ -1123,6 +2503,8 @@ test('category deletion requires a disabled unused leaf and keeps audit evidence
     categoryId: parent._id,
     input: { reason: 'Prepare parent deletion' }
   });
+  const revisionAfterDisable = (await ProjectTeam.findById(fixture.teamA).lean())
+    .equipmentCategoryStructureRevision;
   await assert.rejects(service.deleteCategory({
     authContext: context,
     categoryId: parent._id,
@@ -1130,6 +2512,10 @@ test('category deletion requires a disabled unused leaf and keeps audit evidence
   }), (error) => (
     error.status === 409 && error.code === 'EQUIPMENT_CATEGORY_DELETE_HAS_CHILDREN'
   ));
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    revisionAfterDisable
+  );
 
   const deletedChild = await service.deleteCategory({
     authContext: context,
@@ -1150,6 +2536,10 @@ test('category deletion requires a disabled unused leaf and keeps audit evidence
     resourceId: { $in: [child._id, parent._id] },
     action: permissions.AUDIT_ACTIONS.DELETE
   }), 2);
+  assert.equal(
+    (await ProjectTeam.findById(fixture.teamA).lean()).equipmentCategoryStructureRevision,
+    revisionAfterDisable + 2
+  );
 });
 
 test('category deletion rejects equipment and routine-rule references', async () => {

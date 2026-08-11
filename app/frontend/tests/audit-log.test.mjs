@@ -17,6 +17,9 @@ test('audit option catalogs are unique and include backend workflow values', () 
   assert.ok(actions.includes('IMPORT_EXCEPTION_CONFIRM'))
   assert.ok(resources.includes('ATTENDANCE_MONTHLY_SUMMARY'))
   assert.ok(resources.includes('GENERATED_DAILY_REPORT'))
+  assert.ok(resources.includes('SUPPLIER'))
+  assert.ok(resources.includes('SUPPLIER_CONTRACT_RECORD'))
+  assert.ok(resources.includes('SUPPLIER_SETTLEMENT_FEE'))
 })
 
 test('audit visibility requires an administrator role and audit.view', () => {

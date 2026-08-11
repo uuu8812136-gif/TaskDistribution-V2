@@ -6,6 +6,7 @@ const XLSX = require('../../../app/node_modules/xlsx');
 const {
   JPEG_TRAILING_DATA_SANITIZATION,
   MAX_JPEG_TRAILING_BYTES,
+  drawingAnchorCell,
   extractEquipmentWorkbookMedia,
   relationshipMap,
   resolveRelationshipTarget,
@@ -68,6 +69,18 @@ test('workbook media relationships resolve package-relative paths', () => {
   assert.equal(
     resolveRelationshipTarget('xl/drawings/drawing1.xml', relationships.get('rId1')),
     'xl/media/image1.jpeg'
+  );
+});
+
+test('drawing anchors retain their exact source column and cell address', () => {
+  assert.deepEqual(drawingAnchorCell({ from: { row: '2', col: '5' } }, '设备'), {
+    rowNumber: 3,
+    columnNumber: 6,
+    cellAddress: 'F3'
+  });
+  assert.throws(
+    () => drawingAnchorCell({ from: { row: '2' } }, '设备'),
+    /Drawing anchor is incomplete/
   );
 });
 

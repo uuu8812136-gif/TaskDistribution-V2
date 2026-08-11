@@ -110,12 +110,18 @@ test('planned-attendance correction has a dedicated backup-gated activation path
 })
 
 test('the packaged staging launcher starts only the isolated API behind the existing Nginx Web listener', () => {
-  assert.match(stagingLauncher, /mongoose\.connect\(config\.mongodbUri\)/)
+  assert.match(stagingLauncher, /connectDatabaseForServer\(config/)
+  assert.match(stagingLauncher, /requiredSchemaCapabilities: SCHEMA_CAPABILITY/)
+  assert.doesNotMatch(stagingLauncher, /mongoose\.connect\(config\.mongodbUri\)/)
   assert.match(stagingLauncher, /createApp\(config\)/)
   assert.match(stagingLauncher, /app\.listen\(config\.port, '127\.0\.0\.1'/)
   assert.doesNotMatch(stagingLauncher, /http\.createServer|const port = 18130|V2 test Web/)
   assert.match(common, /v2_assert_staging_api_launcher/)
   assert.match(common, /Staging API launcher mismatch/)
+  assert.match(common, /value\.schemaCapabilities\[0\] !== 'equipment-category-parent-name-index-v1'/)
+  assert.match(common, /manifest\.pathComparison !== 'windows-ordinal-ignore-case'/)
+  assert.match(common, /manifest\.setSemantics !== 'exact-package-files-excluding-manifest'/)
+  assert.match(common, /Duplicate Windows-insensitive release path/)
 })
 
 test('transport history repair has a dedicated backup-gated activation path', () => {

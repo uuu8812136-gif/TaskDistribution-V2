@@ -23,15 +23,19 @@ test('fixed functional roles expose the transport administrator separately from 
   )
 })
 
-test('fixed permission catalog exposes the 32 backend permission keys without duplicates', () => {
+test('fixed permission catalog exposes the 42 backend permission keys without duplicates', () => {
   const keys = PERMISSION_GROUPS.flatMap((group) => group.options.map((option) => option.value))
-  assert.equal(keys.length, 32)
-  assert.equal(new Set(keys).size, 32)
+  assert.equal(keys.length, 42)
+  assert.equal(new Set(keys).size, 42)
   assert.ok(keys.includes('report.transport.master.manage'))
+  assert.ok(keys.includes('contract.supplier.view'))
+  assert.ok(keys.includes('contract.expiry.export'))
+  assert.ok(keys.includes('contract.settlement.manage'))
   assert.deepEqual(PERMISSION_GROUPS.map((group) => group.key), [
     'task',
     'equipment',
     'report',
+    'contract',
     'team',
     'audit'
   ])

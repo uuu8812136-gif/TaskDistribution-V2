@@ -201,6 +201,22 @@ function worksheetDrawingParts(zip) {
   return results;
 }
 
+function drawingAnchorCell(anchor, sheetName) {
+  const zeroBasedRow = Number(anchor?.from?.row);
+  const zeroBasedColumn = Number(anchor?.from?.col);
+  if (
+    !Number.isInteger(zeroBasedRow) || zeroBasedRow < 0 ||
+    !Number.isInteger(zeroBasedColumn) || zeroBasedColumn < 0
+  ) {
+    throw new TypeError(`Drawing anchor is incomplete: ${sheetName}`);
+  }
+  return {
+    rowNumber: zeroBasedRow + 1,
+    columnNumber: zeroBasedColumn + 1,
+    cellAddress: XLSX.utils.encode_cell({ r: zeroBasedRow, c: zeroBasedColumn })
+  };
+}
+
 function drawingImages(zip, referencedBytes) {
   const images = [];
   for (const { sheetName, drawingPart } of worksheetDrawingParts(zip)) {
@@ -210,16 +226,16 @@ function drawingImages(zip, referencedBytes) {
       `drawing relationships ${sheetName}`
     );
     for (const anchor of asArray(drawing.wsDr?.twoCellAnchor)) {
-      const zeroBasedRow = Number(anchor.from?.row);
+      const anchorCell = drawingAnchorCell(anchor, sheetName);
       const relationshipId = anchor.pic?.blipFill?.blip?.embed;
       const target = relationships.get(String(relationshipId || ''));
-      if (!Number.isInteger(zeroBasedRow) || zeroBasedRow < 0 || !target) {
+      if (!target) {
         throw new TypeError(`Drawing anchor is incomplete: ${sheetName}`);
       }
       const mediaPath = resolveRelationshipTarget(drawingPart, target);
       images.push({
         sheetName,
-        rowNumber: zeroBasedRow + 1,
+        ...anchorCell,
         imageRef: `DRAWING:${drawingPart}:${relationshipId}`,
         relationshipId: String(relationshipId),
         mediaPath,
@@ -333,6 +349,7 @@ module.exports = {
   MAX_JPEG_TRAILING_BYTES,
   MAX_REFERENCED_MEDIA_BYTES,
   asArray,
+  drawingAnchorCell,
   extractEquipmentWorkbookMedia,
   relationshipMap,
   resolveRelationshipTarget,

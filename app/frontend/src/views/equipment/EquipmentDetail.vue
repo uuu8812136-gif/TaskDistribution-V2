@@ -405,7 +405,9 @@ import {
   ROUTINE_ITEM_RESULT_OPTIONS,
   ROUTINE_TYPE_OPTIONS,
   entityName,
+  equipmentPrimaryCategoryId,
   effectiveRoutineDueState,
+  fetchAllEquipmentCategories,
   isRoutineScheduleExecutable,
   optionForValue,
   routineExecutionStatusLabel,
@@ -582,12 +584,17 @@ function canExecuteRoutine(entry) {
 }
 
 function openRoutineRules() {
-  const categoryId = equipment.value?.categoryId?._id || equipment.value?.categoryId
+  const assetCategoryId = equipment.value?.categoryId?._id || equipment.value?.categoryId
+  const categoryId = equipmentPrimaryCategoryId(categories.value, assetCategoryId)
+  if (!categoryId) {
+    ElMessage.error('设备分类路径无效，请刷新设备台账后重试')
+    return
+  }
   router.push({
     name: 'EquipmentRules',
     query: {
       ...requestParams.value,
-      categoryId: categoryId ? String(categoryId) : undefined
+      categoryId: String(categoryId)
     }
   })
 }
@@ -746,13 +753,13 @@ async function initialize() {
   }
   loading.value = true
   try {
-    const [detailResult, categoryResult, optionResult] = await Promise.all([
+    const [detailResult, loadedCategories, optionResult] = await Promise.all([
       getEquipmentDetail(route.params.id, requestParams.value),
-      getEquipmentCategories({ ...requestParams.value, pageSize: 200 }),
+      fetchAllEquipmentCategories(getEquipmentCategories, requestParams.value),
       getEquipmentOptions(requestParams.value)
     ])
     equipment.value = detailResult.equipment
-    categories.value = categoryResult.categories || []
+    categories.value = loadedCategories
     options.value = optionResult
     await Promise.all([
       loadHistory(),

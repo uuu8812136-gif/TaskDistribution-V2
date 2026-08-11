@@ -166,3 +166,10 @@ test('audit query APIs are mounted read-only behind authentication', async () =>
     assert.ok(response.body.code || response.body.message);
   }
 });
+
+test('contract management APIs are mounted behind authentication', async () => {
+  const app = createTestApp();
+  await request(app).get('/api/contracts/suppliers').expect(401);
+  await request(app).get('/api/contracts/expiry-alerts').expect(401);
+  await request(app).get('/api/contracts/settlements').expect(401);
+});

@@ -11,6 +11,7 @@ const FileAsset = require('../models/FileAsset');
 const ImportException = require('../models/ImportException');
 const ImportJob = require('../models/ImportJob');
 const OrgUnit = require('../models/OrgUnit');
+const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
 const User = require('../models/User');
 const {
@@ -20,7 +21,8 @@ const {
   DATA_SCOPE_MODULES,
   MEMBERSHIP_STATUSES,
   ORG_UNIT_TYPES,
-  ORG_UNIT_STATUSES
+  ORG_UNIT_STATUSES,
+  TEAM_STATUSES
 } = require('../config/permissions');
 const { createAuditService } = require('./auditService');
 const { normalizeId } = require('./authSessionService');
@@ -52,7 +54,10 @@ const {
   resolveModuleDataScope,
   sameId
 } = require('./teamContextService');
-const { runWithOptionalTransaction } = require('./transactionService');
+const {
+  runWithOptionalTransaction,
+  runWithRequiredTransaction
+} = require('./transactionService');
 const { lockActiveOrgUnitReferences } = require('./orgUnitReferenceService');
 const {
   createEquipmentImportStagingCleanupService
@@ -63,6 +68,15 @@ const MAX_STAGED_MEDIA_BYTES = 256 * 1024 * 1024;
 const EXCEL_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const DEFAULT_PAGE_SIZE = 50;
 const MAX_PAGE_SIZE = 200;
+const MAX_EQUIPMENT_CATEGORY_DEPTH = 4;
+const EQUIPMENT_REGISTRY_TRANSACTION_OPTIONS = Object.freeze({
+  code: 'EQUIPMENT_REGISTRY_TRANSACTIONS_REQUIRED',
+  message: 'Equipment category and asset snapshot writes require MongoDB replica-set transaction support'
+});
+const EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT = Object.freeze({
+  code: 'EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT',
+  message: 'Equipment category structure changed concurrently; retry the operation'
+});
 
 const { EQUIPMENT_CHANGE_TYPES } = EquipmentChangeRecord;
 const { FILE_OWNER_TYPES, FILE_STATUSES } = FileAsset;
@@ -130,6 +144,15 @@ function importNotFound() {
 
 function confirmationInvalid(message) {
   return importError(409, 'EQUIPMENT_IMPORT_CONFIRMATION_INVALID', message);
+}
+
+function categoryStructureConflict(error) {
+  return (
+    error?.code === 112 ||
+    error?.codeName === 'WriteConflict' ||
+    error?.hasErrorLabel?.('TransientTransactionError') ||
+    error?.errorLabels?.includes?.('TransientTransactionError')
+  );
 }
 
 function normalizeImportId(value) {
@@ -386,6 +409,7 @@ function createEquipmentImportService({
   ImportExceptionModel = ImportException,
   ImportJobModel = ImportJob,
   OrgUnitModel = OrgUnit,
+  ProjectTeamModel = ProjectTeam,
   TeamMembershipModel = TeamMembership,
   UserModel = User,
   auditService = createAuditService(),
@@ -417,6 +441,33 @@ function createEquipmentImportService({
     connection,
     storageRoot
   });
+  const runRegistryWriteTransaction = (work) => runWithRequiredTransaction(
+    work,
+    connection,
+    EQUIPMENT_REGISTRY_TRANSACTION_OPTIONS
+  );
+
+  async function lockEquipmentCategoryStructure(context, session) {
+    const team = await ProjectTeamModel.findOneAndUpdate({
+      _id: context.activeTeamId,
+      status: TEAM_STATUSES.ACTIVE
+    }, {
+      $inc: { equipmentCategoryStructureRevision: 1 }
+    }, {
+      new: true,
+      projection: { _id: 1, equipmentCategoryStructureRevision: 1 },
+      session
+    });
+    if (!team) {
+      throw importError(
+        409,
+        'EQUIPMENT_TEAM_CONTEXT_STALE',
+        'The active equipment team is no longer available'
+      );
+    }
+    return team;
+  }
+
   function contextAndScope(authContext) {
     const context = assertTeamContext(authContext);
     assertPermission(context, 'equipment.import');
@@ -1334,11 +1385,41 @@ function createEquipmentImportService({
     return ids;
   }
 
+  function currentCategorySnapshots(category, categoriesById) {
+    const path = [];
+    const visited = new Set();
+    let cursor = category;
+    while (cursor) {
+      const categoryId = String(cursor._id || '');
+      if (!categoryId || visited.has(categoryId)) {
+        throw confirmationInvalid('A confirmed category path is invalid');
+      }
+      visited.add(categoryId);
+      path.unshift(cursor);
+      if (!cursor.parentId) break;
+      cursor = categoriesById.get(String(cursor.parentId));
+      if (!cursor) {
+        throw confirmationInvalid('A confirmed category path is no longer complete');
+      }
+    }
+    if (path.length > MAX_EQUIPMENT_CATEGORY_DEPTH) {
+      throw confirmationInvalid(
+        `Equipment categories support at most ${MAX_EQUIPMENT_CATEGORY_DEPTH} levels`
+      );
+    }
+    const names = path.map(({ name }) => name || '');
+    return {
+      majorCategoryName: names[0] || '',
+      equipmentTypeName: names[1] || '',
+      primaryName: names[2] || '',
+      secondaryName: names[3] || ''
+    };
+  }
+
   async function finalAssetPayloads({ context, scope, rows, skippedRowIds, job, session }) {
     const activeRows = [...rows.entries()].filter(([rowId]) => !skippedRowIds.has(rowId));
     const codes = new Set();
     const orgIds = new Set();
-    const categoryIds = new Set();
     const custodianIds = new Set();
     const normalized = activeRows.map(([rowId, state]) => {
       const candidate = state.candidate;
@@ -1356,7 +1437,6 @@ function createEquipmentImportService({
         throw confirmationInvalid('A confirmed row is outside the importer organization scope');
       }
       orgIds.add(String(orgUnitId));
-      categoryIds.add(String(categoryId));
       if (custodianUserId) custodianIds.add(String(custodianUserId));
       const quantity = Number(candidate.quantity);
       if (!Number.isFinite(quantity) || quantity < 0) {
@@ -1385,18 +1465,6 @@ function createEquipmentImportService({
           sourceAssetCode: optionalText(candidate.sourceAssetCode, 'sourceAssetCode', 500),
           sourceSequence: optionalText(candidate.sourceSequence, 'sourceSequence', 100),
           assetType: optionalText(candidate.assetType, 'assetType', 100),
-          majorCategoryName: optionalText(
-            candidate.majorCategoryName,
-            'majorCategoryName',
-            100
-          ),
-          equipmentTypeName: optionalText(
-            candidate.equipmentTypeName,
-            'equipmentTypeName',
-            100
-          ),
-          primaryName: optionalText(candidate.primaryName, 'primaryName', 200),
-          secondaryName: optionalText(candidate.secondaryName, 'secondaryName', 200),
           sourceSheetName: optionalText(state.row.sheetName, 'sourceSheetName', 100),
           sourceRowNumber: state.row.rowNumber,
           sourceRawValues: state.row.rawValues || null,
@@ -1494,54 +1562,48 @@ function createEquipmentImportService({
       };
     });
 
-    const [
-      orgUnits,
-      categories,
-      memberships,
-      activeCustodians,
-      existingAssets,
-      activeTeamOrgUnits
-    ] = await Promise.all([
-      lockActiveOrgUnitReferences({
-        OrgUnitModel,
+    const orgUnits = await lockActiveOrgUnitReferences({
+      OrgUnitModel,
+      teamId: context.activeTeamId,
+      orgUnitIds: [...orgIds],
+      session
+    });
+    const categories = await execute(EquipmentCategoryModel.find({
+      teamId: context.activeTeamId
+    }).select('_id name parentId status').lean(), session);
+    const memberships = custodianIds.size === 0
+      ? []
+      : await execute(TeamMembershipModel.find({
         teamId: context.activeTeamId,
-        orgUnitIds: [...orgIds],
-        session
-      }),
-      execute(EquipmentCategoryModel.find({
-        _id: { $in: [...categoryIds] },
+        userId: { $in: [...custodianIds] },
+        status: MEMBERSHIP_STATUSES.ACTIVE
+      }).select('userId orgUnitId').lean(), session);
+    const activeCustodians = custodianIds.size === 0
+      ? []
+      : await execute(UserModel.find({
+        _id: { $in: [...custodianIds] },
+        status: 'active'
+      }).select('_id').lean(), session);
+    const existingAssets = codes.size === 0
+      ? []
+      : await execute(EquipmentAssetModel.find({
         teamId: context.activeTeamId,
-        status: EquipmentCategory.EQUIPMENT_CATEGORY_STATUSES.ACTIVE
-      }).select('_id').lean(), session),
-      custodianIds.size === 0
-        ? []
-        : execute(TeamMembershipModel.find({
-          teamId: context.activeTeamId,
-          userId: { $in: [...custodianIds] },
-          status: MEMBERSHIP_STATUSES.ACTIVE
-        }).select('userId orgUnitId').lean(), session),
-      custodianIds.size === 0
-        ? []
-        : execute(UserModel.find({
-          _id: { $in: [...custodianIds] },
-          status: 'active'
-        }).select('_id').lean(), session),
-      codes.size === 0
-        ? []
-        : execute(EquipmentAssetModel.find({
-            teamId: context.activeTeamId,
-            assetCode: { $in: [...codes] }
-          }).select('assetCode').lean(), session),
-      execute(OrgUnitModel.find({
-        teamId: context.activeTeamId,
-        status: ORG_UNIT_STATUSES.ACTIVE
-      }).select('_id type level path').lean(), session)
-    ]);
+        assetCode: { $in: [...codes] }
+      }).select('assetCode').lean(), session);
+    const activeTeamOrgUnits = await execute(OrgUnitModel.find({
+      teamId: context.activeTeamId,
+      status: ORG_UNIT_STATUSES.ACTIVE
+    }).select('_id type level path').lean(), session);
     if (!orgUnits || orgUnits.length !== orgIds.size) {
       throw confirmationInvalid('One or more organization units are no longer active in this team');
     }
-    if (categories.length !== categoryIds.size) {
-      throw confirmationInvalid('One or more categories are no longer active in this team');
+    const categoriesById = new Map(categories.map((category) => [String(category._id), category]));
+    for (const { payload } of normalized) {
+      const category = categoriesById.get(String(payload.categoryId));
+      if (category?.status !== EquipmentCategory.EQUIPMENT_CATEGORY_STATUSES.ACTIVE) {
+        throw confirmationInvalid('One or more categories are no longer active in this team');
+      }
+      Object.assign(payload, currentCategorySnapshots(category, categoriesById));
     }
     if (existingAssets.length > 0) {
       throw confirmationInvalid(`assetCode ${existingAssets[0].assetCode} already exists in this team`);
@@ -1679,9 +1741,11 @@ function createEquipmentImportService({
       );
     }
     const reason = input.reason.trim();
+    const { context: transactionContext } = contextAndScope(authContext);
 
     try {
-      return await runWithOptionalTransaction(async (session) => {
+      return await runRegistryWriteTransaction(async (session) => {
+        await lockEquipmentCategoryStructure(transactionContext, session);
         let visible;
         try {
           visible = await findVisibleJob({
@@ -1730,6 +1794,9 @@ function createEquipmentImportService({
           job,
           session
         });
+        const canonicalPayloadByRowId = new Map(
+          payloads.map(({ rowId, payload }) => [String(rowId), payload])
+        );
         const created = payloads.length === 0
           ? []
           : await EquipmentAssetModel.insertMany(
@@ -1804,6 +1871,16 @@ function createEquipmentImportService({
             continue;
           }
           const equipment = createdByRowId.get(rowId);
+          const canonicalPayload = canonicalPayloadByRowId.get(rowId);
+          if (!canonicalPayload) {
+            throw confirmationInvalid('Published equipment lost its canonical category snapshot');
+          }
+          Object.assign(stagedRow.candidate, {
+            majorCategoryName: canonicalPayload.majorCategoryName,
+            equipmentTypeName: canonicalPayload.equipmentTypeName,
+            primaryName: canonicalPayload.primaryName,
+            secondaryName: canonicalPayload.secondaryName
+          });
           stagedRow.validationStatus = IMPORT_ROW_STATUSES.PUBLISHED;
           stagedRow.publishedEquipmentId = equipment._id;
         }
@@ -1845,10 +1922,17 @@ function createEquipmentImportService({
           importJob: serializeJob(job),
           equipmentIds: created.map(({ _id }) => normalizeId(_id))
         };
-      }, connection);
+      });
     } catch (error) {
       if (error?.code === 11000) {
         throw confirmationInvalid('An asset code or import exception became duplicated during confirmation');
+      }
+      if (categoryStructureConflict(error)) {
+        throw importError(
+          409,
+          EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT.code,
+          EQUIPMENT_CATEGORY_STRUCTURE_CONFLICT.message
+        );
       }
       throw error;
     }

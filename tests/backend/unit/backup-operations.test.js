@@ -8,16 +8,42 @@ const { EventEmitter } = require('node:events');
 const test = require('node:test');
 
 const {
+  BACKUP_CAPTURE_MODE,
   BACKUP_FORMAT,
   OperationsError,
   assertBackupPathPolicy,
   assertRestoreDatabaseEmpty,
   assertRestoreTarget,
+  backupConsistencyMetadata,
   computeRetentionPlan,
   mongoServerUri,
+  parseMongoUri,
   restoreBackup,
   verifyBackupSet
 } = require('../../../ops/lib/backupCore');
+
+test('official backups publish the stopped-release consistency contract', () => {
+  assert.equal(BACKUP_CAPTURE_MODE, 'BEST_EFFORT_ONLINE_MONGODUMP');
+  assert.deepEqual(backupConsistencyMetadata(), {
+    restoreSet: 'database-and-uploads',
+    databaseFileAssetsVerifiedAgainstUploadBytes: true,
+    captureMode: 'BEST_EFFORT_ONLINE_MONGODUMP',
+    databaseAndUploadsAtomic: false
+  });
+});
+
+test('backup manifests can bind the exact Mongo server and replica set', () => {
+  assert.deepEqual(parseMongoUri(
+    'mongodb://127.0.0.1:27150/customer_acceptance_v2_test?replicaSet=customer_acceptance_v2_rs'
+  ), {
+    databaseName: 'customer_acceptance_v2_test',
+    hosts: ['127.0.0.1'],
+    servers: ['127.0.0.1:27150'],
+    replicaSet: 'customer_acceptance_v2_rs',
+    isSrv: false,
+    loopbackOnly: true
+  });
+});
 
 const testRoot = path.resolve(__dirname, '../../../.test-data/backup-operations-tests');
 
