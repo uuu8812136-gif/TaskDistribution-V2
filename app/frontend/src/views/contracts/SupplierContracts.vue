@@ -3,20 +3,20 @@
     <header class="page-heading">
       <div>
         <h1>供应商合同管理</h1>
-        <p>按供应商统一维护基本资料和各类合同历史 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
+        <p>主表只读汇总三级明细，签订状态和有效性由系统自动计算 · {{ session.activeTeam?.name || '跨团队只读查询' }}</p>
       </div>
       <div class="heading-actions">
         <el-button v-if="canImport" @click="openImport">
           <el-icon><Upload /></el-icon>
-          导入 Excel
+          导入三级细表
         </el-button>
         <el-button v-if="canExport" :loading="exporting" @click="handleExport">
           <el-icon><Download /></el-icon>
-          导出当前结果
+          导出主表汇总
         </el-button>
-        <el-button v-if="canManage" type="primary" @click="openCreate">
+        <el-button v-if="canManage" type="primary" @click="openFirstRecord">
           <el-icon><Plus /></el-icon>
-          新建供应商
+          新增三级明细
         </el-button>
       </div>
     </header>
@@ -81,14 +81,14 @@
         <el-table-column label="托管属性" min-width="100">
           <template #default="{ row }">{{ optionLabel(SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS, row.trusteeAttribute) }}</template>
         </el-table-column>
-        <el-table-column label="主合同" min-width="110" align="center">
+        <el-table-column label="是否签订合同" min-width="126" align="center">
           <template #default="{ row }">
             <el-tag :type="row.hasSignedContract ? 'success' : 'info'" effect="plain">
               {{ row.hasSignedContract ? '已签订' : '未签订' }}
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="合同有效性" min-width="118" align="center">
+        <el-table-column label="合同是否有效" min-width="118" align="center">
           <template #default="{ row }">
             <el-tag :type="contractValidityType(row)" effect="plain">
               {{ contractValidityLabel(row) }}
@@ -99,19 +99,10 @@
         <el-table-column prop="latestContractExpiryDate" label="最新截止日期" min-width="120">
           <template #default="{ row }">{{ formatDate(row.latestContractExpiryDate) }}</template>
         </el-table-column>
-        <el-table-column label="操作" min-width="210" align="right">
+        <el-table-column label="操作" min-width="150" align="right">
           <template #default="{ row }">
             <div class="table-actions table-actions--right">
-              <el-button text type="primary" :icon="View" @click="openDetail(row)">查看</el-button>
-              <el-button v-if="canManage" text :icon="Edit" @click="openEdit(row)">编辑</el-button>
-              <el-button
-                v-if="canManage"
-                text
-                type="danger"
-                :icon="Delete"
-                :loading="deletingId === row._id"
-                @click="handleDelete(row)"
-              >删除</el-button>
+              <el-button text type="primary" :icon="View" @click="openDetail(row)">进入三级细表</el-button>
             </div>
           </template>
         </el-table-column>
@@ -127,22 +118,13 @@
         </div>
         <p class="supplier-code">{{ row.code }}</p>
         <dl class="mobile-info-grid">
-          <div><dt>主合同</dt><dd>{{ row.hasSignedContract ? '已签订' : '未签订' }}</dd></div>
-          <div><dt>合同有效性</dt><dd>{{ contractValidityLabel(row) }}</dd></div>
+          <div><dt>是否签订合同</dt><dd>{{ row.hasSignedContract ? '已签订' : '未签订' }}</dd></div>
+          <div><dt>合同是否有效</dt><dd>{{ contractValidityLabel(row) }}</dd></div>
           <div><dt>最新合同编号</dt><dd>{{ row.latestContractNumber || '-' }}</dd></div>
           <div><dt>最新截止日期</dt><dd>{{ formatDate(row.latestContractExpiryDate) }}</dd></div>
         </dl>
         <div class="record-actions">
-          <el-button text type="primary" :icon="View" @click="openDetail(row)">查看</el-button>
-          <el-button v-if="canManage" text :icon="Edit" @click="openEdit(row)">编辑</el-button>
-          <el-button
-            v-if="canManage"
-            text
-            type="danger"
-            :icon="Delete"
-            :loading="deletingId === row._id"
-            @click="handleDelete(row)"
-          >删除</el-button>
+          <el-button text type="primary" :icon="View" @click="openDetail(row)">进入三级细表</el-button>
         </div>
       </article>
     </section>
@@ -162,33 +144,100 @@
     </footer>
 
     <el-dialog
-      v-model="formVisible"
-      :title="editingId ? '编辑供应商' : '新建供应商'"
-      width="min(620px, 94vw)"
-      :close-on-click-modal="!submitting"
-      :close-on-press-escape="!submitting"
-      :show-close="!submitting"
+      v-model="firstRecordVisible"
+      title="新增三级细表记录"
+      width="min(940px, 96vw)"
+      append-to-body
+      :close-on-click-modal="!submittingFirstRecord"
+      :close-on-press-escape="!submittingFirstRecord"
+      :show-close="!submittingFirstRecord"
     >
-      <el-form ref="formRef" :model="form" :rules="rules" label-width="112px">
-        <el-form-item label="供应商名称" prop="name">
-          <el-input v-model="form.name" maxlength="200" show-word-limit />
-        </el-form-item>
-        <el-form-item label="供应商编码" prop="code">
-          <el-input v-model="form.code" maxlength="100" placeholder="按文本保存，可保留前导零" />
-        </el-form-item>
-        <el-form-item label="托管属性" prop="trusteeAttribute">
-          <el-segmented v-model="form.trusteeAttribute" :options="SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS" />
-        </el-form-item>
-        <el-form-item label="是否签订合同">
-          <el-input :model-value="editingSupplier?.hasSignedContract ? '已签订' : '由主合同自动计算'" disabled />
-        </el-form-item>
-        <el-form-item label="合同是否有效">
-          <el-input :model-value="editingSupplier ? contractValidityLabel(editingSupplier) : '由主合同自动计算'" disabled />
-        </el-form-item>
+      <el-form
+        ref="firstRecordFormRef"
+        :model="firstRecordForm"
+        :rules="firstRecordRules"
+        :disabled="submittingFirstRecord"
+        label-position="top"
+      >
+        <section class="record-context-grid">
+          <el-form-item label="供应商名称" prop="supplierName">
+            <el-input v-model="firstRecordForm.supplierName" maxlength="200" />
+          </el-form-item>
+          <el-form-item label="供应商编码" prop="supplierCode">
+            <el-input v-model="firstRecordForm.supplierCode" maxlength="100" placeholder="按文本保存，可保留前导零" />
+          </el-form-item>
+          <el-form-item label="托管属性" prop="trusteeAttribute">
+            <el-segmented v-model="firstRecordForm.trusteeAttribute" :options="SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS" />
+          </el-form-item>
+          <el-form-item label="明细类别" prop="category">
+            <el-select v-model="firstRecordForm.category" class="full-width" @change="resetFirstRecordFields">
+              <el-option v-for="config in CONTRACT_CATEGORY_CONFIGS" :key="config.value" :label="config.label" :value="config.value" />
+            </el-select>
+          </el-form-item>
+        </section>
+        <el-alert
+          title="供应商主表、二级汇总、是否签订合同和合同是否有效均由三级明细关联生成"
+          type="info"
+          :closable="false"
+          show-icon
+          class="derived-alert"
+        />
+        <div class="record-form-grid">
+          <el-form-item
+            v-for="item in firstRecordConfig.fields"
+            :key="item.key"
+            :label="item.label"
+            :class="{ 'form-field--wide': item.span === 2 }"
+          >
+            <el-select v-if="item.type === 'signingStatus'" v-model="firstRecordForm[item.key]" class="full-width">
+              <el-option v-for="option in SIGNING_STATUS_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+            <el-segmented v-else-if="item.type === 'boolean'" v-model="firstRecordForm[item.key]" :options="YES_NO_OPTIONS" />
+            <el-date-picker v-else-if="item.type === 'date'" v-model="firstRecordForm[item.key]" type="date" value-format="YYYY-MM-DD" class="full-width" />
+            <el-select v-else-if="item.type === 'select'" v-model="firstRecordForm[item.key]" clearable class="full-width">
+              <el-option v-for="option in item.options" :key="option.value" :label="option.label" :value="option.value" />
+            </el-select>
+            <el-select
+              v-else-if="item.type === 'tags'"
+              v-model="firstRecordForm[item.key]"
+              multiple
+              filterable
+              allow-create
+              default-first-option
+              :placeholder="item.placeholder"
+              class="full-width"
+            />
+            <div v-else-if="item.type === 'contacts'" class="contacts-editor">
+              <div v-for="(contact, index) in firstRecordForm.contacts" :key="index" class="contact-row">
+                <el-input v-model="contact.name" maxlength="100" placeholder="联系人姓名" />
+                <el-input v-model="contact.phone" maxlength="100" placeholder="联系电话" />
+                <el-tooltip content="删除联系人" placement="top">
+                  <el-button circle :icon="Delete" aria-label="删除联系人" @click="removeFirstRecordContact(index)" />
+                </el-tooltip>
+              </div>
+              <el-button :icon="Plus" @click="addFirstRecordContact">添加联系人</el-button>
+            </div>
+            <el-input
+              v-else-if="item.type === 'textarea'"
+              v-model="firstRecordForm[item.key]"
+              type="textarea"
+              :rows="3"
+              :maxlength="item.maxlength || 2000"
+              show-word-limit
+            />
+            <el-input v-else v-model="firstRecordForm[item.key]" maxlength="500" />
+          </el-form-item>
+        </div>
+        <section class="attachment-editor">
+          <div v-for="group in firstRecordConfig.attachmentGroups" :key="group.purpose" class="attachment-field">
+            <h3>{{ group.label }}</h3>
+            <ContractFileUpload v-model="firstRecordAttachmentFiles[group.purpose]" :accept="group.accept" />
+          </div>
+        </section>
       </el-form>
       <template #footer>
-        <el-button :disabled="submitting" @click="formVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitForm">保存</el-button>
+        <el-button :disabled="submittingFirstRecord" @click="firstRecordVisible = false">取消</el-button>
+        <el-button type="primary" :loading="submittingFirstRecord" @click="submitFirstRecord">保存三级明细</el-button>
       </template>
     </el-dialog>
 
@@ -196,11 +245,12 @@
       v-model="importVisible"
       title="导入供应商合同"
       width="min(620px, 94vw)"
+      append-to-body
       :close-on-click-modal="!importing"
       :show-close="!importing"
     >
       <el-alert
-        title="请使用供应商合同管理模板，系统将按供应商编码导入五类合同资料"
+        title="请使用57列三级细表模板（D列为托管属性）；导入后主表和二级汇总按供应商编码自动关联"
         type="info"
         :closable="false"
         show-icon
@@ -229,20 +279,25 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { Delete, Edit, View } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { Delete, View } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import ContractFileUpload from './components/ContractFileUpload.vue'
 import {
-  createSupplier,
-  deleteSupplier,
+  createSupplierFirstRecord,
   exportSuppliers,
   getSuppliers,
-  importSuppliers,
-  updateSupplier
+  importSuppliers
 } from '@/api/contract'
+import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
+import { cleanupTemporaryFiles, prepareAttachmentReferences } from '@/utils/attachments'
 import {
+  CONTRACT_CATEGORY_CONFIGS,
   SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS,
+  SIGNING_STATUS_OPTIONS,
   YES_NO_OPTIONS,
+  buildRecordPayload,
+  emptyRecordDetails,
   optionLabel,
   saveContractBlob
 } from '@/utils/contract'
@@ -253,14 +308,12 @@ const session = useSessionStore()
 const loading = ref(false)
 const loadError = ref('')
 const exporting = ref(false)
-const submitting = ref(false)
 const importing = ref(false)
-const deletingId = ref('')
-const formVisible = ref(false)
 const importVisible = ref(false)
-const editingId = ref('')
-const editingSupplier = ref(null)
-const formRef = ref(null)
+const firstRecordVisible = ref(false)
+const firstRecordFormRef = ref(null)
+const submittingFirstRecord = ref(false)
+const firstRecordAttachmentFiles = reactive({})
 const importFiles = ref([])
 const importFile = ref(null)
 const suppliers = ref([])
@@ -277,11 +330,12 @@ const filters = reactive({
   page: 1,
   pageSize: 20
 })
-const form = reactive(emptyForm())
-const rules = {
-  name: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }],
-  code: [{ required: true, message: '请输入供应商编码', trigger: 'blur' }],
-  trusteeAttribute: [{ required: true, message: '请选择托管属性', trigger: 'change' }]
+const firstRecordForm = reactive({})
+const firstRecordRules = {
+  supplierName: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }],
+  supplierCode: [{ required: true, message: '请输入供应商编码', trigger: 'blur' }],
+  trusteeAttribute: [{ required: true, message: '请选择托管属性', trigger: 'change' }],
+  category: [{ required: true, message: '请选择明细类别', trigger: 'change' }]
 }
 
 const canManage = computed(() => session.can('contract.supplier.manage', { write: true, teamRequired: true }))
@@ -290,10 +344,10 @@ const canExport = computed(() => session.hasPermission('contract.supplier.export
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
-
-function emptyForm() {
-  return { name: '', code: '', trusteeAttribute: 'NON_HOSTED' }
-}
+const firstRecordConfig = computed(() => (
+  CONTRACT_CATEGORY_CONFIGS.find((config) => config.value === firstRecordForm.category)
+  || CONTRACT_CATEGORY_CONFIGS[0]
+))
 
 function queryParams() {
   return {
@@ -313,13 +367,11 @@ function formatDate(value) {
 }
 
 function contractValidityLabel(row) {
-  if (!row?.hasSignedContract) return '无主合同'
-  return row.contractValid ? '有效' : '无效'
+  return row?.contractValid ? '有效' : '到期'
 }
 
 function contractValidityType(row) {
-  if (!row?.hasSignedContract) return 'info'
-  return row.contractValid ? 'success' : 'danger'
+  return row?.contractValid ? 'success' : 'danger'
 }
 
 async function loadSuppliers() {
@@ -365,50 +417,117 @@ async function handleTeamChange(teamId) {
   resetFilters()
 }
 
-function resetForm() {
-  editingId.value = ''
-  editingSupplier.value = null
-  Object.assign(form, emptyForm())
-  formRef.value?.clearValidate()
+function resetFirstRecordFields() {
+  const identity = {
+    supplierName: firstRecordForm.supplierName || '',
+    supplierCode: firstRecordForm.supplierCode || '',
+    trusteeAttribute: firstRecordForm.trusteeAttribute || 'NON_HOSTED',
+    category: firstRecordForm.category || CONTRACT_CATEGORY_CONFIGS[0].value
+  }
+  for (const key of Object.keys(firstRecordForm)) delete firstRecordForm[key]
+  Object.assign(firstRecordForm, identity, emptyRecordDetails(firstRecordConfig.value))
+  firstRecordForm.signingStatus ||= 'UNSIGNED'
+  if (firstRecordForm.category === 'SUPPLIER_INFO') firstRecordForm.supplyStatus ||= 'NORMAL'
+  if (firstRecordConfig.value.fields.some((item) => item.key === 'contacts')) {
+    firstRecordForm.contacts = [{ name: '', phone: '' }]
+  }
+  for (const key of Object.keys(firstRecordAttachmentFiles)) delete firstRecordAttachmentFiles[key]
+  for (const group of firstRecordConfig.value.attachmentGroups) firstRecordAttachmentFiles[group.purpose] = []
+  firstRecordFormRef.value?.clearValidate()
 }
 
-function openCreate() {
-  resetForm()
-  formVisible.value = true
-}
-
-function openEdit(row) {
-  editingId.value = row._id
-  editingSupplier.value = row
-  Object.assign(form, {
-    name: row.name || '',
-    code: String(row.code || ''),
-    trusteeAttribute: row.trusteeAttribute || 'NON_HOSTED'
+function openFirstRecord() {
+  for (const key of Object.keys(firstRecordForm)) delete firstRecordForm[key]
+  Object.assign(firstRecordForm, {
+    supplierName: '',
+    supplierCode: '',
+    trusteeAttribute: 'NON_HOSTED',
+    category: CONTRACT_CATEGORY_CONFIGS[0].value
   })
-  formVisible.value = true
+  resetFirstRecordFields()
+  firstRecordVisible.value = true
 }
 
-async function submitForm() {
-  const valid = await formRef.value?.validate().catch(() => false)
+function addFirstRecordContact() {
+  if (!Array.isArray(firstRecordForm.contacts)) firstRecordForm.contacts = []
+  firstRecordForm.contacts.push({ name: '', phone: '' })
+}
+
+function removeFirstRecordContact(index) {
+  firstRecordForm.contacts.splice(index, 1)
+  if (!firstRecordForm.contacts.length) addFirstRecordContact()
+}
+
+async function submitFirstRecord() {
+  if (submittingFirstRecord.value) return
+  const valid = await firstRecordFormRef.value?.validate().catch(() => false)
   if (!valid) return
-  if (!form.name.trim() || !String(form.code).trim()) {
+  const supplierName = String(firstRecordForm.supplierName || '').trim()
+  const supplierCode = String(firstRecordForm.supplierCode || '').trim()
+  if (!supplierName || !supplierCode) {
     ElMessage.warning('供应商名称和供应商编码不能只填写空格')
     return
   }
-  submitting.value = true
-  try {
-    const payload = {
-      name: form.name.trim(),
-      code: String(form.code).trim(),
-      trusteeAttribute: form.trusteeAttribute
+  if (firstRecordForm.effectiveDate && firstRecordForm.expiryDate && dayjs(firstRecordForm.expiryDate).isBefore(firstRecordForm.effectiveDate, 'day')) {
+    ElMessage.warning('截止日期不能早于生效日期')
+    return
+  }
+  if (Array.isArray(firstRecordForm.reconciliationEmails)) {
+    const invalidEmail = firstRecordForm.reconciliationEmails.find((value) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value).trim()))
+    if (invalidEmail) {
+      ElMessage.warning(`对账邮箱“${invalidEmail}”格式不正确`)
+      return
     }
-    if (editingId.value) await updateSupplier(editingId.value, payload)
-    else await createSupplier(payload)
-    ElMessage.success(editingId.value ? '供应商已更新' : '供应商已创建')
-    formVisible.value = false
+  }
+  const config = firstRecordConfig.value
+  const attachmentFiles = new Map(config.attachmentGroups.map((group) => [
+    group.purpose,
+    [...(firstRecordAttachmentFiles[group.purpose] || [])]
+  ]))
+  const totalAttachments = config.attachmentGroups.reduce(
+    (sum, group) => sum + (attachmentFiles.get(group.purpose)?.length || 0),
+    0
+  )
+  if (totalAttachments > 10) {
+    ElMessage.warning('同一条记录最多上传 10 个附件，请删除多余附件后再保存')
+    return
+  }
+
+  submittingFirstRecord.value = true
+  const uploadedFileIds = []
+  try {
+    const attachments = []
+    for (const group of config.attachmentGroups) {
+      const prepared = await prepareAttachmentReferences(attachmentFiles.get(group.purpose) || [], uploadTemporaryFile)
+      uploadedFileIds.push(...prepared.uploadedFileIds)
+      attachments.push(...prepared.references.map(({ fileId }) => ({ fileId, purpose: group.purpose })))
+    }
+    const payload = {
+      ...buildRecordPayload(config, firstRecordForm, attachments),
+      supplierIdentity: { name: supplierName, code: supplierCode },
+      trusteeAttribute: firstRecordForm.trusteeAttribute
+    }
+    const result = await createSupplierFirstRecord(payload)
+    uploadedFileIds.length = 0
+    firstRecordVisible.value = false
+    ElMessage.success('三级明细已新增，主表和二级汇总已自动更新')
     await loadSuppliers()
+    const createdSupplierId = result?.supplier?._id
+    if (createdSupplierId) {
+      router.push({
+        name: 'SupplierContractDetail',
+        params: { supplierId: createdSupplierId },
+        query: requestTeamParams.value
+      })
+    }
+  } catch (error) {
+    await cleanupTemporaryFiles(
+      [...uploadedFileIds, ...(error.uploadedFileIds || [])],
+      deleteFile
+    )
+    throw error
   } finally {
-    submitting.value = false
+    submittingFirstRecord.value = false
   }
 }
 
@@ -418,27 +537,6 @@ function openDetail(row) {
     params: { supplierId: row._id },
     query: requestTeamParams.value
   })
-}
-
-async function handleDelete(row) {
-  try {
-    await ElMessageBox.confirm(
-      `确定删除空供应商“${row.name}”吗？已有合同或结算费用时系统会阻止删除。`,
-      '删除供应商',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消', confirmButtonClass: 'el-button--danger' }
-    )
-  } catch {
-    return
-  }
-  deletingId.value = row._id
-  try {
-    await deleteSupplier(row._id, { reason: '后台供应商合同管理删除' })
-    ElMessage.success('供应商已删除')
-    if (suppliers.value.length === 1 && filters.page > 1) filters.page -= 1
-    await loadSuppliers()
-  } finally {
-    deletingId.value = ''
-  }
 }
 
 async function handleExport() {
@@ -474,7 +572,7 @@ async function submitImport() {
   try {
     const result = await importSuppliers(importFile.value, requestTeamParams.value)
     const count = Number(result.importedCount ?? result.createdCount ?? result.totalImported)
-    ElMessage.success(Number.isFinite(count) ? `已导入 ${count} 条供应商合同数据` : '供应商合同导入完成')
+    ElMessage.success(Number.isFinite(count) ? `已导入 ${count} 条三级明细数据` : '三级细表导入完成')
     importVisible.value = false
     filters.page = 1
     await loadSuppliers()
@@ -508,6 +606,15 @@ onMounted(initialize)
 .table-actions--right { justify-content: flex-end; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--el-text-color-secondary); }
 .import-upload { margin-top: 18px; }
+.record-context-grid, .record-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
+.derived-alert { margin-bottom: 16px; }
+.form-field--wide { grid-column: 1 / -1; }
+.full-width { width: 100%; }
+.contacts-editor { display: grid; width: 100%; gap: 8px; }
+.contact-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: 8px; }
+.attachment-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-top: 16px; border-top: 1px solid var(--zl-border-soft); }
+.attachment-field { min-width: 0; }
+.attachment-field h3 { margin: 0 0 10px; font-size: 15px; letter-spacing: 0; }
 @media (max-width: 900px) {
   .contract-toolbar > *,
   .contract-toolbar .team-select,
@@ -517,6 +624,10 @@ onMounted(initialize)
   .pagination-row { align-items: flex-start; flex-direction: column; }
   .pagination-row :deep(.el-pagination__sizes),
   .pagination-row :deep(.el-pagination__jump) { display: none; }
+  .record-context-grid, .record-form-grid, .attachment-editor { grid-template-columns: 1fr; }
+  .form-field--wide { grid-column: auto; }
+  .contact-row { grid-template-columns: 1fr auto; }
+  .contact-row .el-input:first-child { grid-column: 1 / -1; }
 }
 @media (max-width: 1180px) {
   .desktop-supplier-table { display: none; }

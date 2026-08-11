@@ -8,23 +8,27 @@
         <h1>{{ supplier?.name || '供应商合同详情' }}</h1>
         <div class="supplier-meta">
           <span>供应商编码：<strong>{{ supplier?.code || '-' }}</strong></span>
-          <el-tag effect="plain">{{ optionLabel(SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS, supplier?.trusteeAttribute) }}</el-tag>
+          <el-tag effect="plain">托管属性：{{ optionLabel(SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS, supplier?.trusteeAttribute) }}</el-tag>
           <el-tag :type="supplier?.hasSignedContract ? 'success' : 'info'" effect="plain">
-            {{ supplier?.hasSignedContract ? '已签订主合同' : '未签订主合同' }}
+            是否签订合同：{{ supplier?.hasSignedContract ? '是' : '否' }}（系统派生）
           </el-tag>
-          <el-tag :type="!supplier?.hasSignedContract ? 'info' : supplier?.contractValid ? 'success' : 'danger'" effect="plain">
-            {{ supplier?.hasSignedContract ? (supplier?.contractValid ? '合同有效' : '合同无效') : '无有效性数据' }}
+          <el-tag :type="supplier?.contractValid ? 'success' : 'danger'" effect="plain">
+            合同是否有效：{{ supplier?.contractValid ? '有效' : '到期' }}（系统派生）
           </el-tag>
         </div>
       </div>
       <div class="heading-actions">
+        <el-button v-if="canManage" :disabled="!supplier" @click="openSupplierIdentity">
+          <el-icon><Edit /></el-icon>
+          维护供应商信息
+        </el-button>
         <el-button v-if="canImport" @click="openImport">
           <el-icon><Upload /></el-icon>
-          导入更新
+          导入三级细表
         </el-button>
         <el-button v-if="canExport" :loading="exportingScope === 'supplier'" @click="handleExport()">
           <el-icon><Download /></el-icon>
-          导出供应商汇总
+          导出二级汇总
         </el-button>
       </div>
     </header>
@@ -65,7 +69,7 @@
       <section class="records-toolbar">
         <div>
           <h2>{{ activeConfig.label }}</h2>
-          <p>同一供应商可保留多条历史记录，最新数据不会覆盖旧记录。</p>
+          <p>本区域为二级只读汇总；新增、修改和删除均进入三级细表完成。</p>
         </div>
         <div class="heading-actions">
           <el-button
@@ -74,11 +78,11 @@
             @click="handleExport(activeCategory)"
           >
             <el-icon><Download /></el-icon>
-            导出本页签
+            导出三级明细
           </el-button>
           <el-button v-if="canManage" type="primary" @click="openCreateRecord">
             <el-icon><Plus /></el-icon>
-            新增记录
+            新增三级明细
           </el-button>
         </div>
       </section>
@@ -119,16 +123,8 @@
             </dl>
           </div>
           <div class="record-actions">
-            <el-button text type="primary" :icon="View" @click="openViewRecord(record)">查看</el-button>
-            <el-button v-if="canManage" text :icon="Edit" @click="openEditRecord(record)">编辑</el-button>
-            <el-button
-              v-if="canManage"
-              text
-              type="danger"
-              :icon="Delete"
-              :loading="deletingId === record._id"
-              @click="handleDeleteRecord(record)"
-            >删除</el-button>
+            <el-button text type="primary" :icon="View" @click="openViewRecord(record)">查看明细</el-button>
+            <el-button v-if="canManage" text :icon="Edit" @click="openEditRecord(record)">维护明细</el-button>
           </div>
         </article>
       </section>
@@ -146,7 +142,45 @@
       </footer>
     </template>
 
-    <el-dialog v-model="viewVisible" :title="`${activeConfig.label}详情`" width="min(860px, 95vw)">
+    <el-dialog
+      v-model="supplierIdentityVisible"
+      title="三级页面 · 维护供应商信息"
+      width="min(620px, 94vw)"
+      append-to-body
+      :close-on-click-modal="!savingSupplierIdentity"
+      :close-on-press-escape="!savingSupplierIdentity"
+      :show-close="!savingSupplierIdentity"
+    >
+      <el-alert
+        title="此处是供应商名称、编码和托管属性的唯一人工维护入口，保存后主表与二级汇总自动刷新"
+        type="info"
+        :closable="false"
+        show-icon
+        class="derived-alert"
+      />
+      <el-form ref="supplierIdentityFormRef" :model="supplierIdentityForm" :rules="supplierIdentityRules" label-width="112px">
+        <el-form-item label="供应商名称" prop="name">
+          <el-input v-model="supplierIdentityForm.name" maxlength="200" />
+        </el-form-item>
+        <el-form-item label="供应商编码" prop="code">
+          <el-input v-model="supplierIdentityForm.code" maxlength="100" placeholder="按文本保存，可保留前导零" />
+        </el-form-item>
+        <el-form-item label="托管属性" prop="trusteeAttribute">
+          <el-segmented v-model="supplierIdentityForm.trusteeAttribute" :options="SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button :disabled="savingSupplierIdentity" @click="supplierIdentityVisible = false">取消</el-button>
+        <el-button type="primary" :loading="savingSupplierIdentity" @click="saveSupplierIdentity">保存供应商信息</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="viewVisible" :title="`三级细表 · ${activeConfig.label}详情`" width="min(860px, 95vw)" append-to-body>
+      <dl v-if="viewRecord" class="record-context-view">
+        <div><dt>供应商名称</dt><dd>{{ supplier?.name || '-' }}</dd></div>
+        <div><dt>供应商编码</dt><dd>{{ supplier?.code || '-' }}</dd></div>
+        <div><dt>托管属性</dt><dd>{{ optionLabel(SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS, viewRecord.trusteeAttribute || supplier?.trusteeAttribute) }}</dd></div>
+      </dl>
       <dl v-if="viewRecord" class="detail-grid">
         <div v-for="item in activeConfig.fields" :key="item.key" :class="{ 'detail-field--wide': item.span === 2 }">
           <dt>{{ item.label }}</dt>
@@ -167,13 +201,39 @@
 
     <el-dialog
       v-model="formVisible"
-      :title="editingRecordId ? `编辑${activeConfig.label}` : `新增${activeConfig.label}`"
+      :title="editingRecordId ? `三级细表 · 维护${activeConfig.label}` : `三级细表 · 新增${activeConfig.label}`"
       width="min(940px, 96vw)"
-      :close-on-click-modal="!submitting"
-      :close-on-press-escape="!submitting"
-      :show-close="!submitting"
+      append-to-body
+      :close-on-click-modal="!formBusy"
+      :close-on-press-escape="!formBusy"
+      :show-close="!formBusy"
     >
-      <el-form ref="recordFormRef" :model="recordForm" label-position="top" class="record-form">
+      <el-form
+        ref="recordFormRef"
+        :model="recordForm"
+        :rules="recordRules"
+        :disabled="formBusy"
+        label-position="top"
+        class="record-form"
+      >
+        <section class="record-context-grid">
+          <el-form-item label="供应商名称">
+            <el-input :model-value="supplier?.name || '-'" disabled />
+          </el-form-item>
+          <el-form-item label="供应商编码">
+            <el-input :model-value="supplier?.code || '-'" disabled />
+          </el-form-item>
+          <el-form-item label="托管属性" prop="trusteeAttribute">
+            <el-segmented v-model="recordForm.trusteeAttribute" :options="SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS" />
+          </el-form-item>
+        </section>
+        <el-alert
+          title="保存三级明细后，供应商主表和二级汇总会自动重新关联"
+          type="info"
+          :closable="false"
+          show-icon
+          class="derived-alert"
+        />
         <div class="record-form-grid">
           <el-form-item
             v-for="item in activeConfig.fields"
@@ -248,14 +308,27 @@
         </section>
       </el-form>
       <template #footer>
-        <el-button :disabled="submitting" @click="formVisible = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="submitRecord">保存</el-button>
+        <div class="dialog-footer-row">
+          <el-button
+            v-if="editingRecordId && canManage"
+            type="danger"
+            plain
+            :loading="deletingId === editingRecordId"
+            :disabled="submitting || (Boolean(deletingId) && deletingId !== editingRecordId)"
+            @click="deleteEditingRecord"
+          >删除本条三级明细</el-button>
+          <span v-else />
+          <div class="dialog-footer-actions">
+            <el-button :disabled="formBusy" @click="formVisible = false">取消</el-button>
+            <el-button type="primary" :loading="submitting" :disabled="Boolean(deletingId)" @click="submitRecord">保存三级明细</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="导入供应商合同" width="min(620px, 94vw)" :show-close="!importing">
+    <el-dialog v-model="importVisible" title="导入供应商合同" width="min(620px, 94vw)" append-to-body :show-close="!importing">
       <el-alert
-        :title="`导入文件将按供应商编码更新五类合同资料；当前供应商：${supplier?.name || '-'}`"
+        :title="`请使用57列三级细表模板（D列为托管属性），系统将按供应商编码更新只读汇总；当前供应商：${supplier?.name || '-'}`"
         type="info"
         :closable="false"
         show-icon
@@ -296,6 +369,7 @@ import {
   getSupplierRecord,
   getSupplierRecords,
   importSuppliers,
+  updateSupplier,
   updateSupplierRecord
 } from '@/api/contract'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
@@ -325,6 +399,15 @@ const requestTeamParams = computed(() => (
 const supplier = ref(null)
 const supplierLoading = ref(false)
 const supplierError = ref('')
+const supplierIdentityVisible = ref(false)
+const supplierIdentityFormRef = ref(null)
+const supplierIdentityForm = reactive({ name: '', code: '', trusteeAttribute: 'NON_HOSTED' })
+const supplierIdentityRules = {
+  name: [{ required: true, message: '请输入供应商名称', trigger: 'blur' }],
+  code: [{ required: true, message: '请输入供应商编码', trigger: 'blur' }],
+  trusteeAttribute: [{ required: true, message: '请选择托管属性', trigger: 'change' }]
+}
+const savingSupplierIdentity = ref(false)
 const activeCategory = ref(CONTRACT_CATEGORY_CONFIGS[0].value)
 const recordState = reactive(Object.fromEntries(CONTRACT_CATEGORY_CONFIGS.map((config) => [
   config.value,
@@ -337,10 +420,14 @@ const viewRecord = ref(null)
 const formVisible = ref(false)
 const recordFormRef = ref(null)
 const recordForm = reactive({})
+const recordRules = {
+  trusteeAttribute: [{ required: true, message: '请选择托管属性', trigger: 'change' }]
+}
 const attachmentFiles = reactive({})
 const editingRecordId = ref('')
 const submitting = ref(false)
 const deletingId = ref('')
+const formBusy = computed(() => submitting.value || Boolean(deletingId.value))
 const exportingScope = ref('')
 const importVisible = ref(false)
 const importFiles = ref([])
@@ -353,6 +440,40 @@ const canExport = computed(() => session.hasPermission('contract.supplier.export
 
 function goBack() {
   router.push({ name: 'SupplierContracts', query: requestTeamParams.value })
+}
+
+function openSupplierIdentity() {
+  Object.assign(supplierIdentityForm, {
+    name: supplier.value?.name || '',
+    code: String(supplier.value?.code || ''),
+    trusteeAttribute: supplier.value?.trusteeAttribute || 'NON_HOSTED'
+  })
+  supplierIdentityFormRef.value?.clearValidate()
+  supplierIdentityVisible.value = true
+}
+
+async function saveSupplierIdentity() {
+  const valid = await supplierIdentityFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  const name = supplierIdentityForm.name.trim()
+  const code = String(supplierIdentityForm.code).trim()
+  if (!name || !code) {
+    ElMessage.warning('供应商名称和供应商编码不能只填写空格')
+    return
+  }
+  savingSupplierIdentity.value = true
+  try {
+    await updateSupplier(supplierId.value, {
+      name,
+      code,
+      trusteeAttribute: supplierIdentityForm.trusteeAttribute
+    })
+    supplierIdentityVisible.value = false
+    await loadSupplier()
+    ElMessage.success('供应商信息已更新，主表与二级汇总已自动刷新')
+  } finally {
+    savingSupplierIdentity.value = false
+  }
 }
 
 function formatDateTime(value) {
@@ -433,6 +554,7 @@ function handleTabChange(category) {
 function resetRecordForm(source = {}) {
   for (const key of Object.keys(recordForm)) delete recordForm[key]
   Object.assign(recordForm, emptyRecordDetails(activeConfig.value), normalizeRecord(source))
+  recordForm.trusteeAttribute = source.trusteeAttribute || supplier.value?.trusteeAttribute || 'NON_HOSTED'
   recordForm.signingStatus ||= 'UNSIGNED'
   if (activeCategory.value === 'SUPPLIER_INFO') recordForm.supplyStatus ||= 'NORMAL'
   if (activeConfig.value.fields.some((item) => item.key === 'contacts')) {
@@ -483,6 +605,7 @@ function removeContact(index) {
 }
 
 async function submitRecord() {
+  if (submitting.value || deletingId.value) return
   const valid = await recordFormRef.value?.validate().catch(() => false)
   if (valid === false) return
   if (recordForm.effectiveDate && recordForm.expiryDate && dayjs(recordForm.expiryDate).isBefore(recordForm.effectiveDate, 'day')) {
@@ -517,7 +640,7 @@ async function submitRecord() {
     if (editingRecordId.value) await updateSupplierRecord(editingRecordId.value, payload)
     else await createSupplierRecord(supplierId.value, payload)
     uploadedFileIds.length = 0
-    ElMessage.success(editingRecordId.value ? '合同记录已更新' : '合同记录已新增')
+    ElMessage.success(editingRecordId.value ? '三级明细已更新，汇总已自动刷新' : '三级明细已新增，汇总已自动刷新')
     formVisible.value = false
     activeState.value.loaded = false
     await Promise.all([loadSupplier(), loadActiveRecords()])
@@ -533,8 +656,9 @@ async function submitRecord() {
 }
 
 async function handleDeleteRecord(record) {
+  if (submitting.value || deletingId.value) return
   try {
-    await ElMessageBox.confirm('确定删除这条合同记录吗？删除后不可恢复。', '删除合同记录', {
+    await ElMessageBox.confirm('确定删除这条三级明细吗？删除后主表和二级汇总会自动更新。', '删除三级明细', {
       type: 'warning',
       confirmButtonText: '删除',
       cancelButtonText: '取消',
@@ -545,14 +669,30 @@ async function handleDeleteRecord(record) {
   }
   deletingId.value = record._id
   try {
-    await deleteSupplierRecord(record._id, { reason: '后台供应商合同管理删除记录' })
-    ElMessage.success('合同记录已删除')
+    const result = await deleteSupplierRecord(record._id, { reason: '后台供应商合同管理删除记录' })
+    const supplierDeleted = Boolean(result?.record?.supplierDeleted)
+    ElMessage.success(supplierDeleted
+      ? '最后一条三级明细及其派生供应商已删除'
+      : '三级明细已删除，主表和二级汇总已自动更新')
+    if (record._id === editingRecordId.value) {
+      formVisible.value = false
+      editingRecordId.value = ''
+    }
+    if (supplierDeleted) {
+      await router.replace({ name: 'SupplierContracts', query: requestTeamParams.value })
+      return
+    }
     if (activeState.value.items.length === 1 && activeState.value.page > 1) activeState.value.page -= 1
     activeState.value.loaded = false
     await Promise.all([loadSupplier(), loadActiveRecords()])
   } finally {
     deletingId.value = ''
   }
+}
+
+function deleteEditingRecord() {
+  if (!editingRecordId.value) return
+  return handleDeleteRecord({ _id: editingRecordId.value })
 }
 
 async function handleExport(category = '') {
@@ -635,6 +775,12 @@ onMounted(async () => {
 .record-summary dd, .detail-grid dd { margin-top: 4px; overflow-wrap: anywhere; }
 .record-actions { justify-content: flex-end; flex-wrap: wrap; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--el-text-color-secondary); }
+.record-context-view, .record-context-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }
+.record-context-view { margin-bottom: 16px; border-top: 1px solid var(--zl-border-soft); border-left: 1px solid var(--zl-border-soft); }
+.record-context-view > div { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--zl-border-soft); border-bottom: 1px solid var(--zl-border-soft); }
+.record-context-view dt { color: var(--el-text-color-secondary); font-size: 12px; }
+.record-context-view dd { margin-top: 4px; overflow-wrap: anywhere; }
+.derived-alert { margin-bottom: 16px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--zl-border-soft); border-left: 1px solid var(--zl-border-soft); }
 .detail-grid > div { min-width: 0; padding: 12px 14px; border-right: 1px solid var(--zl-border-soft); border-bottom: 1px solid var(--zl-border-soft); }
 .detail-field--wide { grid-column: 1 / -1; }
@@ -649,7 +795,9 @@ onMounted(async () => {
 .attachment-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-top: 16px; border-top: 1px solid var(--zl-border-soft); }
 .attachment-field { min-width: 0; }
 .import-upload { margin-top: 18px; }
-@media (max-width: 760px) {
+.dialog-footer-row, .dialog-footer-actions { display: flex; align-items: center; gap: 10px; }
+.dialog-footer-row { justify-content: space-between; }
+@media (max-width: 1024px) {
   .detail-heading { grid-template-columns: auto minmax(0, 1fr); }
   .detail-heading > .heading-actions { grid-column: 1 / -1; width: 100%; }
   .detail-heading > .heading-actions .el-button { flex: 1 1 150px; }
@@ -661,10 +809,12 @@ onMounted(async () => {
   .record-item { grid-template-columns: 1fr; gap: 10px; }
   .record-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .record-actions { justify-content: flex-start; }
-  .detail-grid, .record-form-grid, .attachment-editor { grid-template-columns: 1fr; }
+  .detail-grid, .record-context-view, .record-context-grid, .record-form-grid, .attachment-editor { grid-template-columns: 1fr; }
   .detail-field--wide, .form-field--wide { grid-column: auto; }
   .contact-row { grid-template-columns: 1fr auto; }
   .contact-row .el-input:first-child { grid-column: 1 / -1; }
   .pagination-row { align-items: flex-start; flex-direction: column; }
+  .dialog-footer-row { align-items: stretch; flex-direction: column; }
+  .dialog-footer-actions, .dialog-footer-actions .el-button { width: 100%; }
 }
 </style>

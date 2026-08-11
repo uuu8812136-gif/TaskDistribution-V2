@@ -99,11 +99,11 @@ function createContractsRouter({ storageRoot, service } = {}) {
     contractController.listSuppliers
   );
   router.post(
-    '/suppliers',
+    '/records',
     requireTeamContext,
     requirePermission('contract.supplier.manage'),
     rejectWriteTeamId,
-    contractController.createSupplier
+    contractController.createFirstRecord
   );
   router.get(
     '/suppliers/:supplierId/records',
@@ -129,14 +129,6 @@ function createContractsRouter({ storageRoot, service } = {}) {
     rejectWriteTeamId,
     contractController.updateSupplier
   );
-  router.delete(
-    '/suppliers/:supplierId',
-    requireTeamContext,
-    requirePermission('contract.supplier.manage'),
-    rejectWriteTeamId,
-    contractController.deleteSupplier
-  );
-
   router.get(
     '/records/:recordId',
     requirePermission('contract.supplier.view'),

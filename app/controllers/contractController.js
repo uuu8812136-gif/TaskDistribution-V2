@@ -47,19 +47,6 @@ function createContractController({
       }
     },
 
-    async createSupplier(req, res, next) {
-      try {
-        const supplier = await service.createSupplier({
-          authContext: req.authContext,
-          req,
-          input: req.body || {}
-        });
-        return res.status(201).json({ supplier });
-      } catch (error) {
-        return next(error);
-      }
-    },
-
     async updateSupplier(req, res, next) {
       try {
         const supplier = await service.updateSupplier({
@@ -67,19 +54,6 @@ function createContractController({
           req,
           supplierId: req.params.supplierId,
           input: req.body || {}
-        });
-        return res.json({ supplier });
-      } catch (error) {
-        return next(error);
-      }
-    },
-
-    async deleteSupplier(req, res, next) {
-      try {
-        const supplier = await service.deleteSupplier({
-          authContext: req.authContext,
-          req,
-          supplierId: req.params.supplierId
         });
         return res.json({ supplier });
       } catch (error) {
@@ -157,6 +131,19 @@ function createContractController({
           input: req.body || {}
         });
         return res.status(201).json({ record });
+      } catch (error) {
+        return next(error);
+      }
+    },
+
+    async createFirstRecord(req, res, next) {
+      try {
+        const result = await service.createFirstRecord({
+          authContext: req.authContext,
+          req,
+          input: req.body || {}
+        });
+        return res.status(201).json(result);
       } catch (error) {
         return next(error);
       }

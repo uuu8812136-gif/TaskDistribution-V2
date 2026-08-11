@@ -19,12 +19,11 @@ const ROUTES = Object.freeze([
   ['get', '/suppliers/export', 'contract.supplier.export'],
   ['post', '/suppliers/import', 'contract.supplier.import'],
   ['get', '/suppliers', 'contract.supplier.view'],
-  ['post', '/suppliers', 'contract.supplier.manage'],
+  ['post', '/records', 'contract.supplier.manage'],
   ['get', '/suppliers/:supplierId/records', 'contract.supplier.view'],
   ['post', '/suppliers/:supplierId/records', 'contract.supplier.manage'],
   ['get', '/suppliers/:supplierId', 'contract.supplier.view'],
   ['patch', '/suppliers/:supplierId', 'contract.supplier.manage'],
-  ['delete', '/suppliers/:supplierId', 'contract.supplier.manage'],
   ['get', '/records/:recordId', 'contract.supplier.view'],
   ['patch', '/records/:recordId', 'contract.supplier.manage'],
   ['delete', '/records/:recordId', 'contract.supplier.manage'],
@@ -102,5 +101,14 @@ test('every contract write requires team context and rejects client teamId', () 
 test('app injects the validated private upload root into the contract router', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../../app/app.js'), 'utf8');
   assert.match(source, /createContractsRouter\(\{\s*storageRoot:\s*config\.uploadPath\s*\}\)/);
-  assert.equal(ROUTES.length, 21);
+  assert.equal(ROUTES.length, 20);
+});
+
+test('supplier overview has no independent create or delete route', () => {
+  assert.equal(router.stack.some((candidate) => (
+    candidate.route?.path === '/suppliers' && candidate.route.methods?.post
+  )), false);
+  assert.equal(router.stack.some((candidate) => (
+    candidate.route?.path === '/suppliers/:supplierId' && candidate.route.methods?.delete
+  )), false);
 });

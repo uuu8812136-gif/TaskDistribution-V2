@@ -16,26 +16,10 @@ export function getSupplier(supplierId, params) {
   })
 }
 
-export function createSupplier(data) {
-  return request({
-    url: '/contracts/suppliers',
-    method: 'post',
-    data
-  })
-}
-
 export function updateSupplier(supplierId, data) {
   return request({
     url: `/contracts/suppliers/${supplierId}`,
     method: 'patch',
-    data
-  })
-}
-
-export function deleteSupplier(supplierId, data = {}) {
-  return request({
-    url: `/contracts/suppliers/${supplierId}`,
-    method: 'delete',
     data
   })
 }
@@ -66,6 +50,14 @@ export function getSupplierRecords(supplierId, params) {
     url: `/contracts/suppliers/${supplierId}/records`,
     method: 'get',
     params
+  })
+}
+
+export function createSupplierFirstRecord(data) {
+  return request({
+    url: '/contracts/records',
+    method: 'post',
+    data
   })
 }
 

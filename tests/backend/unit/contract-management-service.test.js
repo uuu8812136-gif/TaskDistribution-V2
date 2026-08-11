@@ -35,7 +35,7 @@ function context() {
   });
 }
 
-test('Shanghai date-only contract validity includes expiry day and renews only after expiry', () => {
+test('Shanghai date-only contract validity uses only expiry day and auto-renew', () => {
   const today = todayShanghai(new Date('2026-08-11T02:00:00.000Z'));
   assert.equal(today.toISOString(), '2026-08-11T00:00:00.000Z');
   const base = {
@@ -50,8 +50,17 @@ test('Shanghai date-only contract validity includes expiry day and renews only a
   });
   assert.equal(derivedContractState({ ...base, expiryDate: new Date('2026-08-10'), autoRenew: false }, today).contractValid, false);
   assert.equal(derivedContractState({ ...base, expiryDate: new Date('2026-08-10'), autoRenew: true }, today).contractValid, true);
-  assert.equal(derivedContractState({ ...base, effectiveDate: new Date('2026-08-12'), autoRenew: true }, today).contractValid, false);
-  assert.equal(derivedContractState({ ...base, signingStatus: 'UNSIGNED' }, today).contractValid, false);
+  assert.equal(derivedContractState({ ...base, effectiveDate: new Date('2026-08-12') }, today).contractValid, true);
+  assert.equal(derivedContractState({ ...base, signingStatus: 'UNSIGNED' }, today).contractValid, true);
+  assert.deepEqual(derivedContractState({ ...base, signingStatus: 'UNSIGNED' }, today), {
+    hasSignedContract: false,
+    contractValid: true
+  });
+  assert.equal(derivedContractState({ ...base, expiryDate: null, autoRenew: true }, today).contractValid, false);
+  assert.deepEqual(derivedContractState(null, today), {
+    hasSignedContract: false,
+    contractValid: false
+  });
 });
 
 test('record input accepts nullable contract dates and nullable detail dates', () => {
@@ -128,13 +137,18 @@ test('standalone MongoDB rejects contract writes before any model mutation', asy
     fileAssetService: { reconcileOwnerFiles() { throw new Error('must not bind'); } },
     connection: { client: { topology: { description: { type: 'Single' } } } }
   });
-  await assert.rejects(service.createSupplier({
+  await assert.rejects(service.createFirstRecord({
     authContext: context(),
-    input: { name: 'Supplier', code: '0001', trusteeAttribute: 'HOSTED' }
+    input: {
+      supplierIdentity: { name: 'Supplier', code: '0001' },
+      trusteeAttribute: 'HOSTED',
+      category: 'SUPPLIER_INFO',
+      details: {},
+      attachments: []
+    }
   }), {
     status: 503,
     code: 'CONTRACT_TRANSACTIONS_REQUIRED'
   });
   assert.equal(createCalled, false);
 });
-

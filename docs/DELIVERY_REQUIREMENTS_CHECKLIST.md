@@ -23,8 +23,8 @@ If any source conflicts with another, use the least-complete status and keep the
 
 ## 2026-08-11 Current Runtime Blocker
 
-- [x] The latest authoritative observation is an outage: both the V2 and legacy `/health` endpoints return HTTP 502, while edge management port `23224` and V2 business port `38130` are not listening.
-- [ ] Restore the customer management tunnel, then inventory the edge listeners, business tunnel, customer runtime release, MongoDB/uploads, backup state, and legacy boundary before reopening customer testing.
+- [x] The latest authoritative observation on 2026-08-11 is a partial recovery: public V2 `/health` returns HTTP 200 with instance `task-distribution-v2-customer-test-recovery`, the Web root returns HTTP 200, and edge loopback ports `23224` and `38130` are listening. However, the `23224` management route accepts TCP but does not return the customer SSH banner, while the legacy `38080` edge listener is absent.
+- [ ] Restore an operable customer management SSH session and the legacy boundary, then inventory the running release, MongoDB/uploads, backups, scheduled tasks and legacy production isolation before deploying this candidate or reopening write/real-device testing.
 - [ ] Keep public Web and real-device testing paused until the fresh inventory proves both sites healthy and the required isolated services are running.
 - [ ] Commit and push the current source changes, build an immutable release from a clean commit, and deploy it through the approved gate. The current worktree changes have not been committed, pushed, packaged, or deployed.
 - [x] All HTTP 200, active-release, stable-PID, worker, backup, and mini-program upload statements dated 2026-08-10 or earlier are historical checkpoints only. They do not override this section or prove current availability.
@@ -161,25 +161,25 @@ The checked items in this section record what was true at that checkpoint. They 
 
 ## Supplier Contracts And Settlement
 
-The authoritative source for this module is `合同管理开发需求(1)(1).xlsx` received on 2026-08-11. The source workbook is excluded from Git; this section records the auditable field and behavior contract without copying customer data into the repository. This delivery iteration adds the contract module to the PC Web application only. It does not add contract menus, pages or workflows to the Mini Program. The module is not deployed and has not been accepted against a customer runtime.
+The original source for this module is `合同管理开发需求(1)(1).xlsx` received on 2026-08-11. The customer's later 2026-08-11 clarification overrides its annotations: the tertiary detail is the only maintenance/import source, the overview and secondary summary are read-only projections, and trustee attribute is maintained from the tertiary flow. The source workbook is excluded from Git; this section records the auditable contract without copying customer data into the repository. This delivery iteration adds the contract module to the PC Web application only. It does not add contract menus, pages or workflows to the Mini Program. The module is not deployed and has not been accepted against a customer runtime.
 
 ### Excel Column Mapping
 
 | Excel range | Page/group | Persisted or derived fields |
 | --- | --- | --- |
-| Main `B:D` | Supplier overview | `name`, string `code`, `trusteeAttribute` (`HOSTED`/`NON_HOSTED`) |
+| Main `B:D` | Supplier overview | read-only projection of tertiary `name`, string `code`, `trusteeAttribute` (`HOSTED`/`NON_HOSTED`) |
 | Main `E:F` | Supplier overview | derived `hasSignedContract` and derived `contractValid`; neither accepts a client write |
-| Detail `B:C` | Every detail row | inherited supplier code/name; the record must resolve a supplier in the same team |
-| Detail `D:K` | Supplier basic information | supply situation, invoice-information flag/text/private image-or-PDF evidence, multiple contacts, multiple phones, reconciliation email, unsigned reason, remark; WPS `DISPIMG` in column F is imported as private invoice evidence, never as formula text |
-| Detail `L:W` | Main service agreement | signing status, contract number, effective/expiry dates, supplier/carrier signature dates, return date/tracking number, two delivery dates, private contract PDF, automatic renewal |
-| Detail `X:AE` | Logistics fee agreement | signing status, effective/expiry dates, warehousing/overstorage rates, overstorage days, settlement cycle, remark |
-| Detail `AF:AR` | Turnover-equipment service | signing status, contract number, effective/expiry dates, equipment type/service price, signature/return/tracking/delivery dates, remark |
-| Detail `AS:BD` | Equipment rental | signing status, contract number, effective/expiry dates, type/specification/batch/color/quantity, private contract PDF, private payment receipt, remark |
+| Detail `B:D` | Every tertiary row | canonical supplier code/name/trustee source; same-code rows must agree and resolve one team supplier |
+| Detail `E:L` | Supplier basic information | supply situation, invoice-information flag/text/private image-or-PDF evidence, multiple contacts, multiple phones, reconciliation email, unsigned reason, remark; WPS `DISPIMG` in column G is imported as private invoice evidence, never as formula text |
+| Detail `M:X` | Main service agreement | signing status, contract number, effective/expiry dates, supplier/carrier signature dates, return date/tracking number, two delivery dates, private contract PDF, automatic renewal |
+| Detail `Y:AF` | Logistics fee agreement | signing status, effective/expiry dates, warehousing/overstorage rates, overstorage days, settlement cycle, remark |
+| Detail `AG:AS` | Turnover-equipment service | signing status, contract number, effective/expiry dates, equipment type/service price, signature/return/tracking/delivery dates, remark |
+| Detail `AT:BE` | Equipment rental | signing status, contract number, effective/expiry dates, type/specification/batch/color/quantity, private contract PDF, private payment receipt, remark |
 | Settlement `B:D` | Monthly settlement identity | month, supplier name, string supplier code |
 | Settlement `E:H` | Monthly settlement amounts | product launch amount, warehousing logistics fee, overstorage product amount, overstorage logistics fee |
 | Settlement `I:K` | Monthly settlement derived/display | derived `hasSignedContract`/`contractValid` plus editable `remarks` |
 
-### Detail 56-Column Source And Test Matrix
+### Detail 57-Column Source And Test Matrix
 
 Status meaning: `Mapped locally` means the exact customer header, parser mapping, canonical model/UI field and workbook export position have local source/test evidence; it does not mean deployed or customer-accepted. `Partial` identifies a real remaining attachment-import gap. The independent workbook test copies the customer headers rather than importing the implementation constant, so a changed or missing header cannot pass by circular self-validation.
 
@@ -187,73 +187,76 @@ Status meaning: `Mapped locally` means the exact customer header, parser mapping
 | --- | --- | --- | --- |
 | A | 序号 | display/import `rowNumber`; export sequence | Display-only; locally covered |
 | B | 供应商编码 | inherited string `Supplier.code` / `supplierCode` | Mapped locally; leading-zero and repeated-history tests pass |
-| C | 供应商名称 | inherited `Supplier.name` | Mapped locally; main/detail mismatch is rejected |
-| D | 供方供货情况（正常供货/已停供） | `details.supplyStatus` | Mapped locally (`NORMAL`/`STOPPED`) |
-| E | 是否已有开票信息 | `details.hasInvoiceInfo` | Mapped locally as nullable Boolean |
-| F | 开票信息（支持文字或上传图片或PDF） | `details.invoiceInfoText` or private `INVOICE_INFO` attachment | Mapped locally; WPS `DISPIMG`, `#NAME?`, media association and missing-media rejection are tested; atomic API binding still belongs to module-level acceptance |
-| G | 厂家联系人（支持增加多人） | `details.contacts[].name` | Mapped locally; paired multi-contact normalization tested |
-| H | 联系电话（支持增加多人） | `details.contacts[].phone` | Mapped locally; paired multi-contact normalization tested |
-| I | 对账邮箱 | `details.reconciliationEmails[]` | Mapped locally; multi-value normalization and Web validation exist |
-| J | 未签合同原因批注（批注文字） | `details.unsignedReason` | Mapped locally |
-| K | 备注（批注文字） | `details.remarks` | Mapped locally |
-| L | 供应商物流服务协议 | main `signingStatus` | Mapped locally; missing/invalid status is rejected |
-| M | 合同编号 | main `contractNumber` | Mapped locally |
-| N | 合同生效日期 | main `effectiveDate` | Mapped locally as date |
-| O | 合同截止日期 | main `expiryDate` | Mapped locally as date |
-| P | 供应商签署合同日期 | main `details.supplierSignedDate` | Mapped locally as date |
-| Q | 载信签署合同日期 | main `details.companySignedDate` | Mapped locally as date |
-| R | 载信给供应商回寄合同的日期 | main `details.returnDate` | Mapped locally as date |
-| S | 载信给供应商回寄合同的快递单号 | main `details.courierNumber` | Mapped locally as text |
-| T | 合同交付给载信商务部的日期 | main `details.deliveredBusinessDate` | Mapped locally as date |
-| U | 合同交付给济南变速箱厂的日期 | main `details.deliveredFactoryDate` | Mapped locally as date |
-| V | 合同PDF（上传） | main private `CONTRACT_PDF` attachment | **Partial:** model, Web manual upload and export-name position exist; unresolved non-empty import cells now fail closed, but customer-workbook attachment bytes/binding are not implemented or proved end to end |
-| W | 合同是否自动顺延 | main `autoRenew` | Mapped locally; import/export and Boolean normalization tested |
-| X | 物流服务费用及支付方式协定 | logistics `signingStatus` | Mapped locally; missing/invalid status is rejected |
-| Y | 合同生效日期 | logistics `effectiveDate` | Mapped locally as date |
-| Z | 合同截止日期 | logistics `expiryDate` | Mapped locally as date |
-| AA | 仓储服务费率 | logistics `details.warehouseServiceRate` | Mapped locally as source text |
-| AB | 超储服务费率 | logistics `details.overstorageServiceRate` | Mapped locally as source text |
-| AC | 超储天数（无超储/30+15/60+15/90+15） | logistics `details.overstorageDays` | Mapped locally to `NONE`/`30+15`/`60+15`/`90+15` |
-| AD | 结算周期 | logistics `details.settlementCycle` | Mapped locally as text |
-| AE | 备注 | logistics `details.remarks` | Mapped locally |
-| AF | 周转器具服务协议 | turnover `signingStatus` | Mapped locally; missing/invalid status is rejected |
-| AG | 合同编号 | turnover `contractNumber` | Mapped locally |
-| AH | 合同生效日期 | turnover `effectiveDate` | Mapped locally as date |
-| AI | 合同截止日期 | turnover `expiryDate` | Mapped locally as date |
-| AJ | 器具类型 | turnover `details.equipmentType` | Mapped locally |
-| AK | 器具服务价格（元/个/次） | turnover `details.equipmentServicePrice` | Mapped locally as source text; `10元/个/次` is preserved |
-| AL | 供应商签署合同日期 | turnover `details.supplierSignedDate` | Mapped locally as date |
-| AM | 载信签署合同日期 | turnover `details.companySignedDate` | Mapped locally as date |
-| AN | 载信给供应商回寄合同的日期 | turnover `details.returnDate` | Mapped locally as date |
-| AO | 载信给供应商回寄合同的快递单号 | turnover `details.courierNumber` | Mapped locally as text |
-| AP | 合同交付给载信商务部的日期 | turnover `details.deliveredBusinessDate` | Mapped locally as date |
-| AQ | 合同交付给济南变速箱厂的日期 | turnover `details.deliveredFactoryDate` | Mapped locally as date |
-| AR | 备注 | turnover `details.remarks` | Mapped locally |
-| AS | 器具租赁合同签订 | rental `signingStatus` | Mapped locally; missing/invalid status is rejected |
-| AT | 合同编号 | rental `contractNumber` | Mapped locally |
-| AU | 合同生效日期 | rental `effectiveDate` | Mapped locally as date |
-| AV | 合同截止日期 | rental `expiryDate` | Mapped locally as date |
-| AW | 租赁器具类型 | rental `details.equipmentType` | Mapped locally |
-| AX | 租赁器具规格 | rental `details.specification` | Mapped locally |
-| AY | 租赁器具生产批次 | rental `details.productionBatch` | Mapped locally |
-| AZ | 租赁器具颜色 | rental `details.color` | Mapped locally |
-| BA | 租赁数量 | rental `details.quantity` | Mapped locally as source text; `30个` is preserved |
-| BB | 合同PDF（上传） | rental private `CONTRACT_PDF` attachment | **Partial:** model, Web manual upload and export-name position exist; unresolved non-empty import cells now fail closed, but customer-workbook attachment bytes/binding are not implemented or proved end to end |
-| BC | 打款凭证（上传） | rental private `PAYMENT_RECEIPT` attachment | **Partial:** model, Web manual upload and export-name position exist; unresolved non-empty import cells now fail closed, but customer-workbook attachment bytes/binding are not implemented or proved end to end |
-| BD | 备注 | rental `details.remarks` | Mapped locally |
+| C | 供应商名称 | canonical `Supplier.name` source | Mapped locally; same-code tertiary rows with different names are rejected |
+| D | 托管属性 | canonical `Supplier.trusteeAttribute` source | Mapped locally (`HOSTED`/`NON_HOSTED`); conflicting repeated rows reject the batch |
+| E | 供方供货情况（正常供货/已停供） | `details.supplyStatus` | Mapped locally (`NORMAL`/`STOPPED`) |
+| F | 是否已有开票信息 | `details.hasInvoiceInfo` | Mapped locally as nullable Boolean |
+| G | 开票信息（支持文字或上传图片或PDF） | `details.invoiceInfoText` or private `INVOICE_INFO` attachment | Mapped locally; WPS `DISPIMG`, `#NAME?`, media association and missing-media rejection are tested; atomic API binding still belongs to module-level acceptance |
+| H | 厂家联系人（支持增加多人） | `details.contacts[].name` | Mapped locally; paired multi-contact normalization tested |
+| I | 联系电话（支持增加多人） | `details.contacts[].phone` | Mapped locally; paired multi-contact normalization tested |
+| J | 对账邮箱 | `details.reconciliationEmails[]` | Mapped locally; multi-value normalization and Web validation exist |
+| K | 未签合同原因批注（批注文字） | `details.unsignedReason` | Mapped locally |
+| L | 备注（批注文字） | `details.remarks` | Mapped locally |
+| M | 供应商物流服务协议 | main `signingStatus` | Mapped locally; missing/invalid status is rejected |
+| N | 合同编号 | main `contractNumber` | Mapped locally |
+| O | 合同生效日期 | main `effectiveDate` | Mapped locally as date |
+| P | 合同截止日期 | main `expiryDate` | Mapped locally as date |
+| Q | 供应商签署合同日期 | main `details.supplierSignedDate` | Mapped locally as date |
+| R | 载信签署合同日期 | main `details.companySignedDate` | Mapped locally as date |
+| S | 载信给供应商回寄合同的日期 | main `details.returnDate` | Mapped locally as date |
+| T | 载信给供应商回寄合同的快递单号 | main `details.courierNumber` | Mapped locally as text |
+| U | 合同交付给载信商务部的日期 | main `details.deliveredBusinessDate` | Mapped locally as date |
+| V | 合同交付给济南变速箱厂的日期 | main `details.deliveredFactoryDate` | Mapped locally as date |
+| W | 合同PDF（上传） | main private `CONTRACT_PDF` attachment | **Partial:** model and Web manual upload exist; canonical export leaves the attachment cell empty and lists its filename on `附件清单（不可回导）`; unresolved non-empty import cells fail closed because workbook attachment bytes cannot be safely rebound |
+| X | 合同是否自动顺延 | main `autoRenew` | Mapped locally; import/export and Boolean normalization tested |
+| Y | 物流服务费用及支付方式协定 | logistics `signingStatus` | Mapped locally; missing/invalid status is rejected |
+| Z | 合同生效日期 | logistics `effectiveDate` | Mapped locally as date |
+| AA | 合同截止日期 | logistics `expiryDate` | Mapped locally as date |
+| AB | 仓储服务费率 | logistics `details.warehouseServiceRate` | Mapped locally as source text |
+| AC | 超储服务费率 | logistics `details.overstorageServiceRate` | Mapped locally as source text |
+| AD | 超储天数（无超储/30+15/60+15/90+15） | logistics `details.overstorageDays` | Mapped locally to `NONE`/`30+15`/`60+15`/`90+15` |
+| AE | 结算周期 | logistics `details.settlementCycle` | Mapped locally as text |
+| AF | 备注 | logistics `details.remarks` | Mapped locally |
+| AG | 周转器具服务协议 | turnover `signingStatus` | Mapped locally; missing/invalid status is rejected |
+| AH | 合同编号 | turnover `contractNumber` | Mapped locally |
+| AI | 合同生效日期 | turnover `effectiveDate` | Mapped locally as date |
+| AJ | 合同截止日期 | turnover `expiryDate` | Mapped locally as date |
+| AK | 器具类型 | turnover `details.equipmentType` | Mapped locally |
+| AL | 器具服务价格（元/个/次） | turnover `details.equipmentServicePrice` | Mapped locally as source text; `10元/个/次` is preserved |
+| AM | 供应商签署合同日期 | turnover `details.supplierSignedDate` | Mapped locally as date |
+| AN | 载信签署合同日期 | turnover `details.companySignedDate` | Mapped locally as date |
+| AO | 载信给供应商回寄合同的日期 | turnover `details.returnDate` | Mapped locally as date |
+| AP | 载信给供应商回寄合同的快递单号 | turnover `details.courierNumber` | Mapped locally as text |
+| AQ | 合同交付给载信商务部的日期 | turnover `details.deliveredBusinessDate` | Mapped locally as date |
+| AR | 合同交付给济南变速箱厂的日期 | turnover `details.deliveredFactoryDate` | Mapped locally as date |
+| AS | 备注 | turnover `details.remarks` | Mapped locally |
+| AT | 器具租赁合同签订 | rental `signingStatus` | Mapped locally; missing/invalid status is rejected |
+| AU | 合同编号 | rental `contractNumber` | Mapped locally |
+| AV | 合同生效日期 | rental `effectiveDate` | Mapped locally as date |
+| AW | 合同截止日期 | rental `expiryDate` | Mapped locally as date |
+| AX | 租赁器具类型 | rental `details.equipmentType` | Mapped locally |
+| AY | 租赁器具规格 | rental `details.specification` | Mapped locally |
+| AZ | 租赁器具生产批次 | rental `details.productionBatch` | Mapped locally |
+| BA | 租赁器具颜色 | rental `details.color` | Mapped locally |
+| BB | 租赁数量 | rental `details.quantity` | Mapped locally as source text; `30个` is preserved |
+| BC | 合同PDF（上传） | rental private `CONTRACT_PDF` attachment | **Partial:** model and Web manual upload exist; canonical export leaves the attachment cell empty and lists its filename on `附件清单（不可回导）`; unresolved non-empty import cells fail closed because workbook attachment bytes cannot be safely rebound |
+| BD | 打款凭证（上传） | rental private `PAYMENT_RECEIPT` attachment | **Partial:** model and Web manual upload exist; canonical export leaves the attachment cell empty and lists its filename on `附件清单（不可回导）`; unresolved non-empty import cells fail closed because workbook attachment bytes cannot be safely rebound |
+| BE | 备注 | rental `details.remarks` | Mapped locally |
 
-Current local mapping evidence: `contract-workbook.test.js` includes an independent exact 56-header assertion, one populated customer-shape row covering every non-attachment column, every-column missing/renamed header rejection, WPS image handling, unresolved V/BB/BC attachment-cell rejection, date/month normalization and export labels. It also covers the source workbook's trailing main-sheet annotation and rejects real incomplete supplier rows. Drawing media now retains its anchor column: only column F can become invoice evidence, while drawings anchored at V/BB/BC fail closed for manual upload. Production startup explicitly creates and verifies all six contract indexes before accepting requests, including the two uniqueness indexes; incompatible or duplicate data prevents startup. The release builder requires all contract runtime files and syntax-checks the backend files. The full Web suite passes 209/209 and the production Web build passes. These are local implementation results only; browser interaction, customer-data import, customer-server deployment and customer acceptance remain separate gates.
+Current local mapping evidence: `contract-workbook.test.js` includes an independent exact 57-header assertion, one populated customer-shape row covering every non-attachment column, every-column missing/renamed header rejection, WPS image handling, unresolved W/BC/BD attachment-cell rejection, identity-only row rejection, date/month normalization, export labels and canonical export/reimport tests. It proves that stale/mismatched overview rows are ignored and that repeated tertiary codes with inconsistent names or trustee values are rejected. Drawing media retains its anchor column: only column G can become invoice evidence, while drawings anchored at W/BC/BD fail closed for manual upload. Canonical export keeps G/W/BC/BD attachment-only cells empty so business rows remain reimportable and writes readable filenames to a separate `附件清单（不可回导）`; attachment files remain authoritative in the private Web detail and are not restored by Excel. The transaction suite also proves that deleting the last tertiary row removes the derived supplier, settlement references block that deletion, and supplier mutation locking serializes concurrent detail creation/deletion plus settlement creation/import without leaving orphan suppliers, records or settlements. Historical `Supplier` rows with no tertiary record are excluded from all three projections, exports and settlement creation. Production startup explicitly creates and verifies all six contract indexes before accepting requests, including the two uniqueness indexes; incompatible or duplicate data prevents startup. The release builder requires all contract runtime files and syntax-checks the backend files. With locked Node `22.23.1`, the six-file focused contract backend suite passes 56/56 and the focused Web contract suite passes 15/15. Full backend 641/641, Web 211/211, Mini Program 128/128, release guards 74/74, Windows operations Pester 5/5, the Web production build, 46 Mini Program SFC checks and Mini Program isolation all pass. A mocked authenticated browser run covers the four contract pages at 1920, 1366, 900 and 390 pixels: 16 page checks plus 4 import-dialog screenshots have no horizontal overflow, off-screen/overlapping buttons, console errors or failed HTTP responses. Customer-data import, customer-server deployment and customer acceptance remain separate gates.
 
-Workbook annotations in parentheses are not persisted as business field names, but both importers require the complete original 56-column and 11-column header text, including annotations such as `（上传）`, `（含税）`, `（元）` and the AK unit line. The sequence column is display-only. Supplier codes are identifiers, not numbers: trim surrounding whitespace, preserve leading zeros, and apply uniqueness after normalization.
+Workbook annotations in parentheses are not persisted as business field names, but both importers require the complete canonical 57-column and 11-column header text, including annotations such as `（上传）`, `（含税）`, `（元）` and the AL unit line. The sequence column is display-only. Supplier codes are identifiers, not numbers: trim surrounding whitespace, preserve leading zeros, and apply uniqueness after normalization.
 
 ### Resolved Workbook Ambiguities
 
-- The main-sheet sample calls `是否签订合同` selectable, but the workbook-wide requirement says detail saves automatically write back both upper levels. The accepted design therefore derives both overview status fields from the latest main-contract record; only `托管属性` is directly editable on the supplier row.
-- “Latest” means the main-contract record with the greatest effective date, followed by expiry date, creation time and record id as stable tie-breakers. Validity is evaluated by Shanghai calendar day: the start and end dates are inclusive; an expired latest record with automatic renewal remains valid; a future, unsigned or absent latest record is not valid.
+- The customer's later clarification makes tertiary detail the only maintenance entry. First detail creation atomically creates its normalized supplier; existing identity/trustee maintenance is available only from the tertiary page. The overview and secondary summary expose no independent create/edit/delete supplier entry.
+- `是否签订合同` is derived from the signing status of the latest main contract. `合同是否有效` is separate: choose the main contract with the greatest expiry date (then creation time and id as stable tie-breakers), and mark it valid when expiry is today/later or when an expired contract has automatic renewal. Signing status, effective date and future-start state do not participate in F-column validity.
 - Four contract categories participate in expiry warning, while the source detail table contains automatic renewal only for the main contract. The normalized record contract keeps `autoRenew` for all four categories; legacy/imported non-main rows default to `false` unless explicitly maintained.
 - The workbook requires every one/two/three-level contract page to export. This means supplier overview export, single-supplier summary export and each selected detail-category export are acceptance items in addition to expiry-warning and settlement exports.
 - Each of the five detail groups, including supplier basic information, can hold multiple rows. The workbook explicitly requires single-row add, edit and import; physical deletion of contract history is not required by the workbook and must not be treated as accepted unless implemented as an audited protected operation.
-- Repeated supplier codes in the 56-column contract detail import identify one supplier with multiple historical detail rows. The importer must upsert/resolve the one team supplier and retain every valid non-empty category row; this is different from the settlement template, where a repeated normalized `(month, supplierCode)` inside the file invalidates the whole batch.
+- Repeated supplier codes in the 57-column tertiary import identify one supplier with multiple historical detail rows. The importer must require the same name and trustee attribute, upsert/resolve the one team supplier and retain every valid non-empty category row. The overview sheet is ignored as input and is rebuilt on export. This differs from the settlement template, where a repeated normalized `(month, supplierCode)` inside the file invalidates the whole batch.
+- A tertiary row containing only supplier code/name/trustee but no supplier-information or contract group is rejected. Deleting the last tertiary record atomically removes the derived supplier when no settlement references exist; settlement references block the deletion. Supplier-row serialization covers concurrent detail creation/deletion, settlement creation and settlement import, so no race can leave an orphan supplier, contract record or settlement. Historical suppliers without any tertiary record are not projected or accepted by settlement/export flows.
+- Private attachments are maintained, previewed and downloaded from the Web tertiary detail. Excel export lists attachment names on `附件清单（不可回导）`, but does not export attachment bytes or permit those names to be rebound on import; after reimport, any missing attachment must be uploaded again from the Web page.
 - Logistics-fee and turnover-service blocks have no dedicated attachment column, but the workbook-wide requirement includes attachments. Supporting private agreement attachments for those two groups is an additive capability; it must use the same managed private-file authorization and binding path.
 
 ### Acceptance Matrix
@@ -261,17 +264,17 @@ Workbook annotations in parentheses are not persisted as business field names, b
 - [ ] Three independent Web menus exist and are independently permission-gated: supplier contract management, contract expiry warning and supplier settlement fees. Direct route/API access must enforce the corresponding view/manage/import/export key; menu hiding alone is insufficient.
 - [ ] Every supplier, contract record, settlement row, import job, export query and private attachment is team-scoped. Cross-team identifiers return not found. Global read-only queries require an explicit active-team `teamId`; global read-only writes are rejected with `TEAM_CONTEXT_REQUIRED`.
 - [ ] `(teamId, supplierCode)` is unique and concurrent duplicate creates/imports cannot persist two supplier entities. Repeated codes in the contract-detail workbook create multiple historical records under that entity. `(teamId, month, supplierCode)` is unique for settlement rows, and duplicate normalized month/code rows within one upload reject the entire batch. A supplier code is stored and exported as text.
-- [ ] Supplier detail exposes five groups and multiple historical rows per group. Supplier identity is inherited, not trusted from a detail write. Date order, supported enumerations, bounded Excel text values, settlement amounts and private file references are validated server-side; contract quantity/price text such as `30个` or `10元/个/次` is preserved.
-- [ ] Overview signed/valid status is recomputed from the deterministic latest main contract and ignores client-supplied status fields. The same derived values are used by settlement list/export rather than copied stale fields.
+- [ ] Supplier detail exposes five groups and multiple historical rows per group. Supplier identity/trustee is written only through the tertiary composite flow, normalized once on `Supplier`, and projected to all levels. Date order, supported enumerations, bounded Excel text values, settlement amounts and private file references are validated server-side; contract quantity/price text such as `30个` or `10元/个/次` is preserved.
+- [ ] Overview signed/valid status is recomputed from the deterministic greatest-expiry main contract and ignores client-supplied status fields. E uses signing status; F uses only expiry and automatic renewal. The same derived values are used by settlement list/export rather than copied stale fields.
 - [ ] Expiry warning returns one row for every dated record in the four contract categories, with supplier, category, effective/expiry date, remaining calendar days and renewal state. Code uses exact match, name uses partial match, remaining-day greater/less filters compose, and exports contain the complete filtered result.
 - [ ] Warning color is yellow for `0..30` remaining days, red for `<0`, and absent for `>30` or automatically renewed rows. The cutoff is tested at `-1`, `0`, `30` and `31`.
 - [ ] Settlement list response includes four totals calculated across the complete filtered result before pagination. The table summary uses those server totals, and export uses the same filters and derived contract status.
-- [ ] The 56-column contract import and 11-column monthly settlement import validate the exact template, normalize identifiers/dates/numbers, report sheet/row/field errors and commit atomically. Contract column-F WPS `DISPIMG`/drawing media is extracted and atomically bound as `INVOICE_INFO`; a formula string or `#NAME?` is never accepted as imported invoice text. Any invalid row, forbidden duplicate, cross-team supplier, media extraction/binding failure or audit failure rolls back all business rows and file ownership changes from that import.
+- [ ] The 57-column tertiary contract import and 11-column monthly settlement import validate the exact template, reject identity-only tertiary rows, normalize identifiers/dates/numbers, report sheet/row/field errors and commit atomically. Contract column-G WPS `DISPIMG`/drawing media is extracted and atomically bound as `INVOICE_INFO`; a formula string or `#NAME?` is never accepted as imported invoice text. Any invalid row, conflicting repeated supplier identity/trustee, forbidden duplicate, cross-team supplier, media extraction/binding failure or audit failure rolls back all business rows and file ownership changes from that import.
 - [ ] Invoice evidence, contract PDFs, payment receipts and additive agreement attachments use temporary upload followed by atomic managed-file binding. They are never served from a public upload URL; metadata, preview and download repeat owner/team/permission checks.
-- [ ] Supplier overview, single-supplier summary, selected category details, expiry warning and settlement lists export all matching rows rather than only the current page. Formula-leading text is escaped and identifiers/dates/amounts retain workbook-safe types and labels.
+- [ ] Supplier overview, single-supplier summary, selected category details, expiry warning and settlement lists export all matching rows rather than only the current page. Supplier exports honor trustee/signed/valid filters; category exports retain full secondary counts while limiting only the tertiary rows. Formula-leading text is escaped and identifiers/dates/amounts retain workbook-safe types and labels. Private attachment filenames appear only in the non-importable attachment inventory sheet.
 - [ ] Create/update/delete/import/export actions that exist in the delivered UI write scoped audit records without storing file bytes, credentials or unrestricted customer rows in snapshots.
 - [ ] Supplier contracts, expiry warning and settlement fees have responsive mobile layouts at 390 pixels with no page-level or table-level horizontal scrolling, clipped fields or off-screen actions. Dense desktop tables switch to readable cards/stacked fields rather than requiring left/right swipes.
-- [ ] Local backend behavior tests, Web contract tests, Web build and source isolation checks pass. Browser, customer-data import, customer-server deployment and customer acceptance remain separate gates and are not implied by local test success.
+- [x] Locked Node local checks pass: focused contract backend 56/56, focused Web contract 15/15, full backend 641/641, Web 211/211, Mini Program 128/128, release guards 74/74, Windows operations Pester 5/5, Web production build, 46 Mini Program SFC checks and Mini Program isolation. Mocked authenticated browser coverage passes 16 page checks and 4 import dialogs across 1920/1366/900/390 with no overflow, button overlap, console error or failed response. Customer-data import, customer-server deployment and customer acceptance remain separate gates and are not implied by this local evidence.
 
 ## Mini-Program
 

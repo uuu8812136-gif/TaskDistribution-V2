@@ -213,6 +213,7 @@ export function buildRecordPayload(config, source = {}, attachments = []) {
   ]))
   return {
     category: config.value,
+    trusteeAttribute: String(source.trusteeAttribute || '').trim(),
     ...root,
     details: buildRecordDetails(config, source),
     attachments

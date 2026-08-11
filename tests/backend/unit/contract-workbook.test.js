@@ -7,6 +7,7 @@ const appRequire = require('../helpers/appRequire');
 const ExcelJS = appRequire('exceljs');
 const XLSX = appRequire('xlsx');
 const {
+  ATTACHMENT_SHEET_NAME,
   DETAIL_HEADERS,
   createExpiryExportWorkbook,
   createSupplierExportWorkbook,
@@ -21,6 +22,7 @@ const CUSTOMER_DETAIL_HEADERS = [
   '序号',
   '供应商编码',
   '供应商名称',
+  '托管属性',
   '供方供货情况（正常供货/已停供）',
   '是否已有开票信息',
   '开票信息（支持文字或上传图片或PDF）',
@@ -101,9 +103,11 @@ function supplierWorkbook({
     ...supplierRows
   ]), SUPPLIER_SHEET);
   const detailSheet = XLSX.utils.aoa_to_sheet([
-    Array(56).fill(''),
+    Array(57).fill(''),
     detailHeaders,
-    ...detailRows
+    ...detailRows.map((row) => row.length === 56
+      ? [...row.slice(0, 3), '托管', ...row.slice(3)]
+      : row)
   ]);
   XLSX.utils.book_append_sheet(workbook, detailSheet, DETAIL_SHEET);
   return { workbook, detailSheet };
@@ -135,12 +139,12 @@ function extractedMedia(imagesByRow = new Map()) {
   };
 }
 
-test('exported detail headers exactly match the 56 headers in the customer workbook', () => {
+test('exported detail headers exactly match the canonical 57-column tertiary workbook', () => {
   assert.deepEqual(DETAIL_HEADERS, CUSTOMER_DETAIL_HEADERS);
 });
 
-test('customer 56-column row maps every non-attachment field to canonical records', () => {
-  const row = [
+test('customer 57-column row maps every non-attachment field to canonical records', () => {
+  const legacyValues = [
     1, '001078', '供应商甲', '正常供货', '是', '开票抬头文字',
     '联系人甲；联系人乙', '13800000001；13800000002', 'a@example.com；b@example.com',
     '未签原因', '基础备注',
@@ -152,7 +156,8 @@ test('customer 56-column row maps every non-attachment field to canonical record
     '已签订', 'ZL-001', '2026-04-01', '2026-09-30', '塑料托盘', '1200x1000',
     '2026-A', '蓝色', '30个', '', '', '租赁备注'
   ];
-  assert.equal(row.length, 56);
+  const row = [...legacyValues.slice(0, 3), '托管', ...legacyValues.slice(3)];
+  assert.equal(row.length, 57);
   const { workbook } = supplierWorkbook({ detailRows: [row] });
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia()
@@ -161,6 +166,7 @@ test('customer 56-column row maps every non-attachment field to canonical record
   const date = (value) => value?.toISOString().slice(0, 10);
 
   assert.equal(parsed.rows[0].supplierCode, '001078');
+  assert.equal(parsed.suppliers[0].trusteeAttribute, 'HOSTED');
   assert.deepEqual(records.get('SUPPLIER_INFO').details, {
     supplyStatus: 'NORMAL',
     hasInvoiceInfo: true,
@@ -247,6 +253,19 @@ test('customer 56-column row maps every non-attachment field to canonical record
   });
 });
 
+test('tertiary import rejects an identity-only row instead of creating an orphan supplier', () => {
+  const row = Array(57).fill('');
+  row[0] = 1;
+  row[1] = 'IDENTITY-ONLY';
+  row[2] = '只有身份信息';
+  row[3] = '托管';
+  const { workbook } = supplierWorkbook({ detailRows: [row] });
+
+  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  }), (error) => error.code === 'CONTRACT_IMPORT_DETAIL_EMPTY');
+});
+
 test('supplier workbook keeps repeated supplier codes as separate history rows', () => {
   const rowA = Array(56).fill('');
   rowA[1] = '001078';
@@ -270,7 +289,7 @@ test('supplier workbook keeps repeated supplier codes as separate history rows',
   assert.deepEqual(parsed.rows.map(({ records }) => records[0].contractNumber), ['HT-001', 'HT-002']);
 });
 
-test('customer main-sheet trailing annotation is ignored while incomplete supplier rows still fail', () => {
+test('tertiary sheet is the canonical supplier source and stale main-sheet rows are ignored', () => {
   const annotation = [
     '',
     '',
@@ -279,8 +298,12 @@ test('customer main-sheet trailing annotation is ignored while incomplete suppli
     '',
     ''
   ];
-  const { workbook } = supplierWorkbook({ supplierRows: [
-    [1, '供应商甲', '001078', '托管', '', ''],
+  const detailRow = Array(56).fill('');
+  detailRow[1] = '001078';
+  detailRow[2] = '供应商甲';
+  detailRow[3] = '正常供货';
+  const { workbook } = supplierWorkbook({ detailRows: [detailRow], supplierRows: [
+    [1, '过期主表名称', 'OLD-CODE', '非托', '', ''],
     [], [], [],
     annotation
   ] });
@@ -289,16 +312,11 @@ test('customer main-sheet trailing annotation is ignored while incomplete suppli
   });
   assert.equal(parsed.suppliers.length, 1);
   assert.equal(parsed.suppliers[0].code, '001078');
-
-  const invalid = supplierWorkbook({ supplierRows: [
-    [1, '', 'SHORT-CODE', '', '', '']
-  ] });
-  assert.throws(() => parseSupplierWorkbook(workbookBuffer(invalid.workbook), {
-    extractWorkbookMedia: () => extractedMedia()
-  }), (error) => error.code === 'CONTRACT_IMPORT_SUPPLIER_INVALID');
+  assert.equal(parsed.suppliers[0].name, '供应商甲');
+  assert.equal(parsed.suppliers[0].trusteeAttribute, 'HOSTED');
 });
 
-test('WPS DISPIMG with #NAME? display in detail column F becomes invoice media instead of text', () => {
+test('WPS DISPIMG with #NAME? display in detail column G becomes invoice media instead of text', () => {
   const row = Array(56).fill('');
   row[1] = '001078';
   row[2] = '供应商甲';
@@ -306,7 +324,7 @@ test('WPS DISPIMG with #NAME? display in detail column F becomes invoice media i
   row[4] = '是';
   row[5] = '=DISPIMG("ID_INVOICE",1)';
   const { workbook, detailSheet } = supplierWorkbook({ detailRows: [row] });
-  detailSheet.F3 = {
+  detailSheet.G3 = {
     t: 's',
     v: '#NAME?',
     w: '#NAME?',
@@ -315,7 +333,7 @@ test('WPS DISPIMG with #NAME? display in detail column F becomes invoice media i
   const image = {
     isValid: true,
     sourceKind: 'WPS_CELL_IMAGE',
-    cellAddress: 'F3',
+    cellAddress: 'G3',
     imageRef: 'ID_INVOICE',
     mediaPath: 'xl/media/invoice.png',
     mimeType: 'image/png',
@@ -339,7 +357,7 @@ test('DISPIMG formula without its media is rejected instead of silently imported
   row[2] = '供应商甲';
   row[5] = '=DISPIMG("ID_MISSING",1)';
   const { workbook, detailSheet } = supplierWorkbook({ detailRows: [row] });
-  detailSheet.F3 = {
+  detailSheet.G3 = {
     t: 's',
     v: '#NAME?',
     w: '#NAME?',
@@ -351,7 +369,7 @@ test('DISPIMG formula without its media is rejected instead of silently imported
   }), (error) => error.code === 'CONTRACT_IMPORT_MEDIA_MISSING');
 });
 
-test('drawing images are accepted only from invoice column F and attachment columns fail closed', () => {
+test('drawing images are accepted only from invoice column G and attachment columns fail closed', () => {
   const row = Array(56).fill('');
   row[1] = '001078';
   row[2] = '供应商甲';
@@ -360,14 +378,14 @@ test('drawing images are accepted only from invoice column F and attachment colu
   const invoice = {
     isValid: true,
     sourceKind: 'DRAWING',
-    cellAddress: 'F3',
-    imageRef: 'DRAWING:F3',
+    cellAddress: 'G3',
+    imageRef: 'DRAWING:G3',
     mediaPath: 'xl/media/invoice.png',
     mimeType: 'image/png',
     extension: '.png',
     buffer: Buffer.from('invoice')
   };
-  const unrelated = { ...invoice, cellAddress: 'G3', imageRef: 'DRAWING:G3' };
+  const unrelated = { ...invoice, cellAddress: 'H3', imageRef: 'DRAWING:H3' };
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia(new Map([[
       `${DETAIL_SHEET}\u00003`, [invoice, unrelated]
@@ -376,7 +394,7 @@ test('drawing images are accepted only from invoice column F and attachment colu
   const info = parsed.rows[0].records.find(({ category }) => category === 'SUPPLIER_INFO');
   assert.deepEqual(info.importedMedia, [invoice]);
 
-  const unsupported = { ...invoice, cellAddress: 'V3', imageRef: 'DRAWING:V3' };
+  const unsupported = { ...invoice, cellAddress: 'W3', imageRef: 'DRAWING:W3' };
   assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia(new Map([[
       `${DETAIL_SHEET}\u00003`, [unsupported]
@@ -384,7 +402,7 @@ test('drawing images are accepted only from invoice column F and attachment colu
   }), (error) => error.code === 'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED');
 });
 
-test('contract workbook rejects a missing or renamed header in any of its 56 columns', () => {
+test('contract workbook rejects a missing or renamed header in any of its 57 columns', () => {
   for (let columnIndex = 0; columnIndex < CUSTOMER_DETAIL_HEADERS.length; columnIndex += 1) {
     for (const invalidHeader of ['', `错误列-${columnIndex + 1}`]) {
       const headers = [...CUSTOMER_DETAIL_HEADERS];
@@ -447,16 +465,18 @@ test('settlement Excel serial 45870 normalizes to month 2025-08', () => {
   assert.equal(rows[0].month, '2025-08');
 });
 
-test('detail supplier must already exist in the supplier main sheet', () => {
+test('detail supplier is imported without a matching supplier main-sheet row', () => {
   const row = Array(56).fill('');
   row[1] = '009999';
   row[2] = '明细独有供应商';
   row[3] = '正常供货';
-  const { workbook } = supplierWorkbook({ detailRows: [row] });
+  const { workbook } = supplierWorkbook({ detailRows: [row], supplierRows: [] });
 
-  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+  const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia()
-  }), (error) => error.code === 'CONTRACT_IMPORT_SUPPLIER_NOT_IN_MAIN');
+  });
+  assert.equal(parsed.suppliers[0].code, '009999');
+  assert.equal(parsed.suppliers[0].name, '明细独有供应商');
 });
 
 test('every populated contract group requires an explicit signing status', () => {
@@ -474,7 +494,7 @@ test('every populated contract group requires an explicit signing status', () =>
   }
 });
 
-test('unresolved attachment cells V, BB and BC are rejected instead of silently discarded', () => {
+test('unresolved attachment cells W, BC and BD are rejected instead of silently discarded', () => {
   for (const columnIndex of [21, 53, 54]) {
     const row = Array(56).fill('');
     row[1] = '001078';
@@ -509,7 +529,7 @@ test('expiry export localizes category and alert enums for customers', async () 
   assert.equal(row.getCell(10).value, '已过期');
 });
 
-test('filtered supplier export preserves auto-renew for non-main contract categories', async () => {
+test('filtered supplier export stays canonical and writes trustee attribute in column D', async () => {
   const supplier = {
     _id: 'supplier-1',
     code: '001078',
@@ -535,8 +555,94 @@ test('filtered supplier export preserves auto-renew for non-main contract catego
   });
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
-  const sheet = workbook.getWorksheet('合同明细');
+  const sheet = workbook.getWorksheet(DETAIL_SHEET);
 
-  assert.equal(sheet.getRow(1).getCell(57).value, '当前记录是否自动顺延（扩展）');
-  assert.equal(sheet.getRow(2).getCell(57).value, '是');
+  assert.equal(sheet.columnCount, 57);
+  assert.equal(sheet.getRow(2).getCell(4).value, '托管属性');
+  assert.equal(sheet.getRow(3).getCell(4).value, '托管');
+  assert.equal(sheet.getRow(2).getCell(57).value, '备注');
+});
+
+test('canonical 57-column supplier export can be imported back without identity or contract drift', async () => {
+  const supplier = {
+    _id: 'supplier-roundtrip',
+    code: '000178',
+    name: '往返供应商',
+    trusteeAttribute: 'NON_HOSTED',
+    hasSignedContract: false,
+    contractValid: true
+  };
+  const sourceRecord = {
+    supplierId: supplier._id,
+    category: 'MAIN_SERVICE_AGREEMENT',
+    signingStatus: 'UNSIGNED',
+    contractNumber: 'ROUNDTRIP-001',
+    effectiveDate: new Date('2026-01-01T00:00:00.000Z'),
+    expiryDate: new Date('2027-12-31T00:00:00.000Z'),
+    autoRenew: true,
+    details: {
+      supplierSignedDate: new Date('2025-12-20T00:00:00.000Z'),
+      courierNumber: 'SF-ROUNDTRIP'
+    },
+    attachments: []
+  };
+  const buffer = await createSupplierExportWorkbook({
+    suppliers: [supplier],
+    records: [sourceRecord]
+  });
+  const parsed = parseSupplierWorkbook(buffer, {
+    extractWorkbookMedia: () => extractedMedia()
+  });
+
+  assert.deepEqual(parsed.suppliers, [{
+    code: supplier.code,
+    name: supplier.name,
+    trusteeAttribute: supplier.trusteeAttribute
+  }]);
+  assert.equal(parsed.rows.length, 1);
+  const [record] = parsed.rows[0].records;
+  assert.equal(record.category, sourceRecord.category);
+  assert.equal(record.signingStatus, sourceRecord.signingStatus);
+  assert.equal(record.contractNumber, sourceRecord.contractNumber);
+  assert.equal(record.effectiveDate.toISOString().slice(0, 10), '2026-01-01');
+  assert.equal(record.expiryDate.toISOString().slice(0, 10), '2027-12-31');
+  assert.equal(record.autoRenew, true);
+  assert.equal(record.details.courierNumber, 'SF-ROUNDTRIP');
+});
+
+test('canonical detail remains reimportable when attachments are listed on a separate non-import sheet', async () => {
+  const supplier = {
+    _id: 'supplier-attachment-roundtrip',
+    code: '000179',
+    name: '附件往返供应商',
+    trusteeAttribute: 'HOSTED',
+    hasSignedContract: true,
+    contractValid: true
+  };
+  const sourceRecord = {
+    supplierId: supplier._id,
+    category: 'MAIN_SERVICE_AGREEMENT',
+    signingStatus: 'SIGNED',
+    contractNumber: 'ATTACHMENT-001',
+    effectiveDate: new Date('2026-01-01T00:00:00.000Z'),
+    expiryDate: new Date('2027-12-31T00:00:00.000Z'),
+    autoRenew: false,
+    details: {},
+    attachments: [{ purpose: 'CONTRACT_PDF', originalName: 'main-contract.pdf' }]
+  };
+  const buffer = await createSupplierExportWorkbook({ suppliers: [supplier], records: [sourceRecord] });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+
+  assert.equal(workbook.getWorksheet(DETAIL_SHEET).getRow(3).getCell(23).value, '');
+  const attachmentSheet = workbook.getWorksheet(ATTACHMENT_SHEET_NAME);
+  assert.equal(attachmentSheet.getRow(2).getCell(1).value, supplier.code);
+  assert.equal(attachmentSheet.getRow(2).getCell(6).value, 'main-contract.pdf');
+
+  const parsed = parseSupplierWorkbook(buffer, {
+    extractWorkbookMedia: () => extractedMedia()
+  });
+  assert.equal(parsed.rows.length, 1);
+  assert.equal(parsed.rows[0].records[0].contractNumber, sourceRecord.contractNumber);
+  assert.deepEqual(parsed.rows[0].records[0].importedMedia, []);
 });

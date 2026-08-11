@@ -212,15 +212,11 @@ function todayShanghai(now = new Date()) {
 
 function derivedContractState(latestMain, today = todayShanghai()) {
   const signed = latestMain?.signingStatus === CONTRACT_SIGNING_STATUSES.SIGNED;
-  const effective = latestMain?.effectiveDate ? new Date(latestMain.effectiveDate) : null;
   const expiry = latestMain?.expiryDate ? new Date(latestMain.expiryDate) : null;
-  const dateReady = effective && expiry && Number.isFinite(effective.getTime()) && Number.isFinite(expiry.getTime());
-  const activeStarted = Boolean(dateReady && today >= effective);
-  const inRange = Boolean(activeStarted && today <= expiry);
-  const renewedAfterExpiry = Boolean(activeStarted && today > expiry && latestMain.autoRenew === true);
+  const expiryReady = Boolean(expiry && Number.isFinite(expiry.getTime()));
   return {
     hasSignedContract: signed,
-    contractValid: Boolean(signed && (inRange || renewedAfterExpiry))
+    contractValid: Boolean(expiryReady && (today <= expiry || latestMain.autoRenew === true))
   };
 }
 
@@ -232,6 +228,13 @@ function assertNoFields(input, fields, code = 'CONTRACT_COMPUTED_FIELD_READ_ONLY
   }
 }
 
+function normalizeTrusteeAttribute(value) {
+  if (!['HOSTED', 'NON_HOSTED'].includes(value)) {
+    throw contractError(400, 'CONTRACT_INPUT_INVALID', '托管属性必须是HOSTED或NON_HOSTED');
+  }
+  return value;
+}
+
 function normalizeSupplierInput(input, { partial = false, current = null } = {}) {
   assertNoFields(input, ['teamId', 'hasSignedContract', 'contractValid']);
   const allowed = new Set(['name', 'code', 'trusteeAttribute']);
@@ -239,10 +242,7 @@ function normalizeSupplierInput(input, { partial = false, current = null } = {})
     throw contractError(400, 'CONTRACT_INPUT_INVALID', '供应商包含不支持的字段');
   }
   const source = { ...(current || {}), ...(input || {}) };
-  const trusteeAttribute = source.trusteeAttribute;
-  if (!['HOSTED', 'NON_HOSTED'].includes(trusteeAttribute)) {
-    throw contractError(400, 'CONTRACT_INPUT_INVALID', '托管属性必须是HOSTED或NON_HOSTED');
-  }
+  const trusteeAttribute = normalizeTrusteeAttribute(source.trusteeAttribute);
   const result = {
     name: requiredText(source.name, '供应商名称'),
     code: requiredText(source.code, '供应商编码', 100),
@@ -334,7 +334,7 @@ function normalizeRecordInput(input, { current = null, partial = false } = {}) {
   assertNoFields(input, ['teamId', 'supplierId', 'hasSignedContract', 'contractValid']);
   const allowed = new Set([
     'category', 'signingStatus', 'contractNumber', 'effectiveDate', 'expiryDate',
-    'autoRenew', 'details', 'attachments'
+    'autoRenew', 'details', 'attachments', 'trusteeAttribute'
   ]);
   if (Object.keys(input || {}).some((key) => !allowed.has(key))) {
     throw contractError(400, 'CONTRACT_INPUT_INVALID', '合同记录包含不支持的字段');
@@ -363,6 +363,9 @@ function normalizeRecordInput(input, { current = null, partial = false } = {}) {
     : {};
   return {
     category,
+    trusteeAttribute: Object.prototype.hasOwnProperty.call(input || {}, 'trusteeAttribute')
+      ? normalizeTrusteeAttribute(input.trusteeAttribute)
+      : null,
     signingStatus,
     contractNumber: isInfo ? '' : optionalText(source.contractNumber, '合同编号', 200),
     effectiveDate,
@@ -431,13 +434,21 @@ function createContractManagementService({
     return { context, teamId: normalizeObjectId(context.activeTeamId, 'activeTeamId') };
   }
 
+  async function lockSupplierForMutation({ teamId, filter, context, session }) {
+    return execute(SupplierModel.findOneAndUpdate(
+      { teamId, ...filter },
+      { $set: { updatedBy: context.userId }, $currentDate: { updatedAt: true } },
+      { new: true }
+    ), session);
+  }
+
   async function latestMainBySupplier(teamId, supplierIds) {
     if (!supplierIds.length) return new Map();
     const records = await ContractRecordModel.find({
       teamId,
       supplierId: { $in: supplierIds },
       category: CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT
-    }).sort({ effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 }).lean();
+    }).sort({ expiryDate: -1, createdAt: -1, _id: -1 }).lean();
     const result = new Map();
     for (const record of records) {
       const key = String(record.supplierId);
@@ -468,6 +479,8 @@ function createContractManagementService({
       if (!['HOSTED', 'NON_HOSTED'].includes(query.trusteeAttribute)) throw contractError(400, 'CONTRACT_FILTER_INVALID', '托管属性筛选值不正确');
       filter.trusteeAttribute = query.trusteeAttribute;
     }
+    const linkedSupplierIds = await ContractRecordModel.distinct('supplierId', { teamId });
+    filter._id = { $in: linkedSupplierIds };
     const suppliers = await SupplierModel.find(filter).sort({ name: 1, code: 1, _id: 1 }).lean();
     const withStates = await attachDerivedStates(teamId, suppliers);
     const hasSigned = queryBoolean(query.hasSignedContract, '是否签订合同');
@@ -489,9 +502,12 @@ function createContractManagementService({
     const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
     const supplier = await SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }).lean();
     if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
-    const [withState] = await attachDerivedStates(teamId, [supplier]);
     const records = await ContractRecordModel.find({ teamId, supplierId: supplier._id })
-      .sort({ category: 1, effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 }).lean();
+      .sort({ category: 1, expiryDate: -1, createdAt: -1, _id: -1 }).lean();
+    if (records.length === 0) {
+      throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    }
+    const [withState] = await attachDerivedStates(teamId, [supplier]);
     const summaries = {};
     for (const category of CATEGORY_VALUES) {
       const categoryRecords = records.filter((record) => record.category === category);
@@ -503,28 +519,28 @@ function createContractManagementService({
     return { ...withState, categorySummaries: summaries };
   }
 
-  async function createSupplier({ authContext, req, input }) {
-    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
-    const values = normalizeSupplierInput(input);
-    try {
-      return await runWrite(async (session) => {
-        const supplier = await createOne(SupplierModel, {
-          teamId, ...values, createdBy: context.userId, updatedBy: context.userId
-        }, session);
-        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
-          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
-          after: plain(supplier), targetTeamId: teamId, session });
-        return { ...plain(supplier), hasSignedContract: false, contractValid: false };
-      });
-    } catch (error) { throw normalizePersistenceError(error); }
-  }
-
   async function updateSupplier({ authContext, req, supplierId, input }) {
     const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
     try {
       return await runWrite(async (session) => {
-        const supplier = await execute(SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }), session);
+        const supplier = await lockSupplierForMutation({
+          teamId,
+          filter: { _id: normalizeId(supplierId, '供应商') },
+          context,
+          session
+        });
         if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const hasTertiaryRecord = await execute(ContractRecordModel.exists({
+          teamId,
+          supplierId: supplier._id
+        }), session);
+        if (!hasTertiaryRecord) {
+          throw contractError(
+            409,
+            'CONTRACT_SUPPLIER_TERTIARY_RECORD_REQUIRED',
+            '供应商必须先通过三级明细创建，不能从一级总览单独维护'
+          );
+        }
         const before = plain(supplier);
         const values = normalizeSupplierInput(input, { partial: true, current: before });
         Object.assign(supplier, values, { updatedBy: context.userId });
@@ -537,29 +553,6 @@ function createContractManagementService({
           before, after: plain(supplier), targetTeamId: teamId, session });
         const [result] = await attachDerivedStates(teamId, [plain(supplier)]);
         return result;
-      });
-    } catch (error) { throw normalizePersistenceError(error); }
-  }
-
-  async function deleteSupplier({ authContext, req, supplierId }) {
-    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
-    try {
-      return await runWrite(async (session) => {
-        const supplier = await execute(SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }), session);
-        if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
-        const [recordExists, settlementExists] = await Promise.all([
-          execute(ContractRecordModel.exists({ teamId, supplierId: supplier._id }), session),
-          execute(SettlementModel.exists({ teamId, supplierId: supplier._id }), session)
-        ]);
-        if (recordExists || settlementExists) {
-          throw contractError(409, 'CONTRACT_SUPPLIER_HAS_DEPENDENCIES', '该供应商已有合同记录或结算数据，不能删除');
-        }
-        const before = plain(supplier);
-        await supplier.deleteOne({ session });
-        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
-          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
-          before, targetTeamId: teamId, session });
-        return before;
       });
     } catch (error) { throw normalizePersistenceError(error); }
   }
@@ -593,6 +586,9 @@ function createContractManagementService({
     const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.view');
     const normalizedSupplierId = normalizeId(supplierId, '供应商');
     if (!await SupplierModel.exists({ _id: normalizedSupplierId, teamId })) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    if (!await ContractRecordModel.exists({ teamId, supplierId: normalizedSupplierId })) {
+      throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    }
     const filter = { teamId, supplierId: normalizedSupplierId };
     if (query.category) {
       if (!CATEGORY_VALUES.includes(query.category)) throw contractError(400, 'CONTRACT_CATEGORY_INVALID', '合同类型不正确');
@@ -600,7 +596,7 @@ function createContractManagementService({
     }
     const { page, pageSize } = pagination(query);
     const [records, total] = await Promise.all([
-      ContractRecordModel.find(filter).sort({ effectiveDate: -1, expiryDate: -1, createdAt: -1, _id: -1 })
+      ContractRecordModel.find(filter).sort({ expiryDate: -1, createdAt: -1, _id: -1 })
         .skip((page - 1) * pageSize).limit(pageSize).lean(),
       ContractRecordModel.countDocuments(filter)
     ]);
@@ -614,26 +610,80 @@ function createContractManagementService({
     return record;
   }
 
+  async function createRecordDocument({ context, req, teamId, supplier, values, session }) {
+    if (values.trusteeAttribute && supplier.trusteeAttribute !== values.trusteeAttribute) {
+      const beforeSupplier = plain(supplier);
+      supplier.trusteeAttribute = values.trusteeAttribute;
+      supplier.updatedBy = context.userId;
+      await supplier.save({ session });
+      await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+        resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+        before: beforeSupplier, after: plain(supplier), targetTeamId: teamId, session });
+    }
+    const record = await createOne(ContractRecordModel, {
+      teamId, supplierId: supplier._id, category: values.category,
+      signingStatus: values.signingStatus, contractNumber: values.contractNumber,
+      effectiveDate: values.effectiveDate, expiryDate: values.expiryDate,
+      autoRenew: values.autoRenew, details: values.details, attachments: [],
+      createdBy: context.userId, updatedBy: context.userId
+    }, session);
+    record.attachments = await reconcileRecordAttachments({ context, req, record,
+      requested: values.attachments || [], previous: [], session });
+    await record.save({ session });
+    await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+      resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+      after: plain(record), targetTeamId: teamId, session });
+    return record;
+  }
+
+  async function createFirstRecord({ authContext, req, input }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
+    const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+    const { supplierIdentity, ...recordInput } = source;
+    if (!supplierIdentity || typeof supplierIdentity !== 'object' || Array.isArray(supplierIdentity)) {
+      throw contractError(400, 'CONTRACT_SUPPLIER_IDENTITY_REQUIRED', '新增三级明细必须填写供应商名称和编码');
+    }
+    const supplierValues = normalizeSupplierInput({
+      name: supplierIdentity.name,
+      code: supplierIdentity.code,
+      trusteeAttribute: source.trusteeAttribute
+    });
+    const values = normalizeRecordInput(recordInput);
+    try {
+      return await runWrite(async (session) => {
+        const existing = await execute(SupplierModel.findOne({ teamId, code: supplierValues.code }), session);
+        if (existing) {
+          throw contractError(409, 'CONTRACT_SUPPLIER_ALREADY_EXISTS', '该供应商编码已存在，请进入三级详情新增明细');
+        }
+        const supplier = await createOne(SupplierModel, {
+          teamId, ...supplierValues, createdBy: context.userId, updatedBy: context.userId
+        }, session);
+        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+          after: plain(supplier), targetTeamId: teamId, session });
+        const record = await createRecordDocument({ context, req, teamId, supplier, values, session });
+        return {
+          supplier: { ...plain(supplier), hasSignedContract: false, contractValid: false },
+          record: plain(record)
+        };
+      });
+    } catch (error) { throw normalizePersistenceError(error); }
+  }
+
   async function createRecord({ authContext, req, supplierId, input }) {
     const { context, teamId } = teamForWrite(authContext, 'contract.supplier.manage');
     const normalizedSupplierId = normalizeId(supplierId, '供应商');
     const values = normalizeRecordInput(input);
     try {
       return await runWrite(async (session) => {
-        if (!await execute(SupplierModel.exists({ _id: normalizedSupplierId, teamId }), session)) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
-        const record = await createOne(ContractRecordModel, {
-          teamId, supplierId: normalizedSupplierId, category: values.category,
-          signingStatus: values.signingStatus, contractNumber: values.contractNumber,
-          effectiveDate: values.effectiveDate, expiryDate: values.expiryDate,
-          autoRenew: values.autoRenew, details: values.details, attachments: [],
-          createdBy: context.userId, updatedBy: context.userId
-        }, session);
-        record.attachments = await reconcileRecordAttachments({ context, req, record,
-          requested: values.attachments || [], previous: [], session });
-        await record.save({ session });
-        await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
-          resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
-          after: plain(record), targetTeamId: teamId, session });
+        const supplier = await lockSupplierForMutation({
+          teamId,
+          filter: { _id: normalizedSupplierId },
+          context,
+          session
+        });
+        if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const record = await createRecordDocument({ context, req, teamId, supplier, values, session });
         return plain(record);
       });
     } catch (error) { throw normalizePersistenceError(error); }
@@ -647,6 +697,19 @@ function createContractManagementService({
         if (!record) throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', '合同记录不存在');
         const before = plain(record);
         const values = normalizeRecordInput(input, { current: before, partial: true });
+        if (values.trusteeAttribute) {
+          const supplier = await execute(SupplierModel.findOne({ _id: record.supplierId, teamId }), session);
+          if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+          if (supplier.trusteeAttribute !== values.trusteeAttribute) {
+            const beforeSupplier = plain(supplier);
+            supplier.trusteeAttribute = values.trusteeAttribute;
+            supplier.updatedBy = context.userId;
+            await supplier.save({ session });
+            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+              before: beforeSupplier, after: plain(supplier), targetTeamId: teamId, session });
+          }
+        }
         Object.assign(record, {
           signingStatus: values.signingStatus, contractNumber: values.contractNumber,
           effectiveDate: values.effectiveDate, expiryDate: values.expiryDate,
@@ -670,13 +733,47 @@ function createContractManagementService({
       return await runWrite(async (session) => {
         const record = await execute(ContractRecordModel.findOne({ _id: normalizeId(recordId, '合同记录'), teamId }), session);
         if (!record) throw contractError(404, 'CONTRACT_RECORD_NOT_FOUND', '合同记录不存在');
+        const lockedSupplier = await lockSupplierForMutation({
+          teamId,
+          filter: { _id: record.supplierId },
+          context,
+          session
+        });
+        if (!lockedSupplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        const isLastRecord = await execute(ContractRecordModel.countDocuments({
+          teamId,
+          supplierId: record.supplierId
+        }), session) === 1;
+        if (isLastRecord) {
+          const settlementExists = await execute(SettlementModel.exists({
+            teamId,
+            supplierId: record.supplierId
+          }), session);
+          if (settlementExists) {
+            throw contractError(
+              409,
+              'CONTRACT_SUPPLIER_LAST_RECORD_HAS_SETTLEMENTS',
+              '该供应商已有结算数据，不能删除最后一条三级明细'
+            );
+          }
+        }
         const before = plain(record);
         await reconcileRecordAttachments({ context, req, record, requested: [], previous: before.attachments, session });
         await record.deleteOne({ session });
         await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
           resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
           before, targetTeamId: teamId, session });
-        return before;
+        if (isLastRecord) {
+          const supplier = await execute(SupplierModel.findOne({ _id: record.supplierId, teamId }), session);
+          if (supplier) {
+            const beforeSupplier = plain(supplier);
+            await supplier.deleteOne({ session });
+            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.DELETE,
+              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
+              before: beforeSupplier, targetTeamId: teamId, session });
+          }
+        }
+        return { ...before, supplierDeleted: isLastRecord };
       });
     } catch (error) { throw normalizePersistenceError(error); }
   }
@@ -684,26 +781,53 @@ function createContractManagementService({
   async function supplierExport({ authContext, req, requestedTeamId, query = {} }) {
     const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.export');
     const supplierFilter = { teamId };
-    if (query.supplierId) supplierFilter._id = normalizeId(query.supplierId, '供应商');
+    const linkedSupplierIds = await ContractRecordModel.distinct('supplierId', { teamId });
+    if (query.supplierId) {
+      const requestedSupplierId = normalizeId(query.supplierId, '供应商');
+      if (!linkedSupplierIds.some((item) => String(item) === requestedSupplierId)) {
+        throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+      }
+      supplierFilter._id = requestedSupplierId;
+    } else {
+      supplierFilter._id = { $in: linkedSupplierIds };
+    }
     if (query.code) supplierFilter.code = requiredText(query.code, '供应商编码', 100);
     if (query.name) supplierFilter.name = { $regex: escapeRegex(requiredText(query.name, '供应商名称')), $options: 'i' };
+    if (query.trusteeAttribute) {
+      if (!['HOSTED', 'NON_HOSTED'].includes(query.trusteeAttribute)) {
+        throw contractError(400, 'CONTRACT_FILTER_INVALID', '托管属性筛选值不正确');
+      }
+      supplierFilter.trusteeAttribute = query.trusteeAttribute;
+    }
     if (query.category && !CATEGORY_VALUES.includes(query.category)) {
       throw contractError(400, 'CONTRACT_CATEGORY_INVALID', '合同类型不正确');
     }
     const suppliers = await SupplierModel.find(supplierFilter).sort({ name: 1, code: 1, _id: 1 }).lean();
     if (query.supplierId && suppliers.length === 0) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
     const withStates = await attachDerivedStates(teamId, suppliers);
-    const recordFilter = { teamId, supplierId: { $in: suppliers.map((supplier) => supplier._id) } };
-    if (query.category) recordFilter.category = query.category;
-    const records = suppliers.length
+    const hasSigned = queryBoolean(query.hasSignedContract, '是否签订合同');
+    const contractValid = queryBoolean(query.contractValid, '合同是否有效');
+    const filteredSuppliers = withStates.filter((supplier) => (
+      (hasSigned === null || supplier.hasSignedContract === hasSigned) &&
+      (contractValid === null || supplier.contractValid === contractValid)
+    ));
+    const recordFilter = { teamId, supplierId: { $in: filteredSuppliers.map((supplier) => supplier._id) } };
+    const records = filteredSuppliers.length
       ? await ContractRecordModel.find(recordFilter).sort({ supplierId: 1, category: 1, effectiveDate: -1, createdAt: -1 }).lean()
       : [];
-    const buffer = await createSupplierExportWorkbook({ suppliers: withStates, records, category: query.category || null });
+    const exportedRecordCount = query.category
+      ? records.filter((record) => record.category === query.category).length
+      : records.length;
+    const buffer = await createSupplierExportWorkbook({
+      suppliers: filteredSuppliers,
+      records,
+      category: query.category || null
+    });
     await auditService.record({ req, authContext, action: AUDIT_ACTIONS.EXPORT,
       resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
-      targetTeamId: teamId, after: { supplierCount: suppliers.length, recordCount: records.length,
+      targetTeamId: teamId, after: { supplierCount: filteredSuppliers.length, recordCount: exportedRecordCount,
         supplierId: query.supplierId || null, category: query.category || null } });
-    return { buffer, supplierCount: suppliers.length, recordCount: records.length };
+    return { buffer, supplierCount: filteredSuppliers.length, recordCount: exportedRecordCount };
   }
 
   function importedMediaStorageRoot() {
@@ -799,7 +923,12 @@ function createContractManagementService({
         let createdSuppliers = 0;
         let updatedSuppliers = 0;
         for (const input of parsed.suppliers) {
-          let supplier = await execute(SupplierModel.findOne({ teamId, code: input.code }), session);
+          let supplier = await lockSupplierForMutation({
+            teamId,
+            filter: { code: input.code },
+            context,
+            session
+          });
           if (supplier) {
             const before = plain(supplier);
             supplier.name = input.name;
@@ -925,14 +1054,30 @@ function createContractManagementService({
     return resolved;
   }
 
-  async function resolveSettlementSupplier({ teamId, input, current = null, session = null }) {
+  async function resolveSettlementSupplier({
+    teamId,
+    input,
+    current = null,
+    session = null,
+    context = null,
+    lock = false,
+    requireTertiary = false
+  }) {
     let filter;
     if (input.supplierId) filter = { _id: normalizeId(input.supplierId, '供应商'), teamId };
     else if (input.supplierCode) filter = { code: requiredText(input.supplierCode, '供应商编码', 100), teamId };
     else if (current) filter = { _id: current.supplierId, teamId };
     else throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_REQUIRED', '请选择供应商');
-    const supplier = await execute(SupplierModel.findOne(filter), session);
+    const supplier = lock
+      ? await lockSupplierForMutation({ teamId, filter, context, session })
+      : await execute(SupplierModel.findOne(filter), session);
     if (!supplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+    if (requireTertiary && !await execute(ContractRecordModel.exists({
+      teamId,
+      supplierId: supplier._id
+    }), session)) {
+      throw contractError(409, 'CONTRACT_SUPPLIER_TERTIARY_RECORD_REQUIRED', '供应商必须先通过三级明细创建');
+    }
     if (current && String(current.supplierId) !== String(supplier._id)) {
       throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_IMMUTABLE', '结算记录创建后不能更换供应商');
     }
@@ -1004,7 +1149,14 @@ function createContractManagementService({
     const values = normalizeSettlementValues(input);
     try {
       return await runWrite(async (session) => {
-        const supplier = await resolveSettlementSupplier({ teamId, input, session });
+        const supplier = await resolveSettlementSupplier({
+          teamId,
+          input,
+          session,
+          context,
+          lock: true,
+          requireTertiary: true
+        });
         const settlement = await createOne(SettlementModel, { teamId, supplierId: supplier._id,
           supplierName: supplier.name, supplierCode: supplier.code, ...values,
           createdBy: context.userId, updatedBy: context.userId }, session);
@@ -1024,7 +1176,14 @@ function createContractManagementService({
         const settlement = await execute(SettlementModel.findOne({ _id: normalizeId(settlementId, '结算记录'), teamId }), session);
         if (!settlement) throw contractError(404, 'CONTRACT_SETTLEMENT_NOT_FOUND', '结算记录不存在');
         const before = plain(settlement);
-        const supplier = await resolveSettlementSupplier({ teamId, input, current: before, session });
+        const supplier = await resolveSettlementSupplier({
+          teamId,
+          input,
+          current: before,
+          session,
+          context,
+          lock: true
+        });
         Object.assign(settlement, normalizeSettlementValues(input, before), {
           supplierName: supplier.name, supplierCode: supplier.code, updatedBy: context.userId
         });
@@ -1076,12 +1235,23 @@ function createContractManagementService({
     }
     try {
       return await runWrite(async (session) => {
-        const lockedSuppliers = await execute(SupplierModel.find({ teamId, code: { $in: codes } }), session);
-        const lockedByCode = new Map(lockedSuppliers.map((supplier) => [supplier.code, supplier]));
+        const lockedByCode = new Map();
+        for (const code of [...codes].sort()) {
+          const supplier = await lockSupplierForMutation({
+            teamId,
+            filter: { code },
+            context,
+            session
+          });
+          if (supplier) lockedByCode.set(supplier.code, supplier);
+        }
         for (const row of rows) {
           const supplier = lockedByCode.get(row.supplierCode);
           if (!supplier) throw contractError(400, 'CONTRACT_SETTLEMENT_SUPPLIER_NOT_FOUND', `结算表第${row.rowNumber}行供应商编码不存在`);
           if (supplier.name !== row.supplierName) throw contractError(409, 'CONTRACT_SETTLEMENT_SUPPLIER_MISMATCH', `结算表第${row.rowNumber}行供应商名称与编码不匹配`);
+          if (!await execute(ContractRecordModel.exists({ teamId, supplierId: supplier._id }), session)) {
+            throw contractError(409, 'CONTRACT_SUPPLIER_TERTIARY_RECORD_REQUIRED', `结算表第${row.rowNumber}行供应商没有三级明细`);
+          }
         }
         const created = [];
         for (const row of rows) {
@@ -1114,12 +1284,11 @@ function createContractManagementService({
   }
 
   return Object.freeze({
+    createFirstRecord,
     createRecord,
     createSettlement,
-    createSupplier,
     deleteRecord,
     deleteSettlement,
-    deleteSupplier,
     expiryExport,
     getRecord,
     getSettlement,

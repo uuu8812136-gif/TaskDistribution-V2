@@ -108,8 +108,8 @@
           </el-table-column>
           <el-table-column label="合同有效" min-width="92" align="center">
             <template #default="{ row }">
-              <el-tag :type="!row.hasSignedContract ? 'info' : row.contractValid ? 'success' : 'danger'" effect="plain">
-                {{ row.hasSignedContract ? booleanLabel(row.contractValid) : '无主合同' }}
+              <el-tag :type="row.contractValid ? 'success' : 'danger'" effect="plain">
+                {{ row.contractValid ? '有效' : '到期' }}
               </el-tag>
             </template>
           </el-table-column>
@@ -151,8 +151,8 @@
             <el-tag :type="row.hasSignedContract ? 'success' : 'info'" effect="plain" size="small">
               {{ row.hasSignedContract ? '已签合同' : '未签合同' }}
             </el-tag>
-            <el-tag :type="!row.hasSignedContract ? 'info' : row.contractValid ? 'success' : 'danger'" effect="plain" size="small">
-              {{ !row.hasSignedContract ? '无主合同' : row.contractValid ? '合同有效' : '合同无效' }}
+            <el-tag :type="row.contractValid ? 'success' : 'danger'" effect="plain" size="small">
+              {{ row.contractValid ? '合同有效' : '合同到期' }}
             </el-tag>
           </div>
           <p v-if="row.remarks" class="mobile-remarks">{{ row.remarks }}</p>
@@ -182,6 +182,7 @@
       v-model="formVisible"
       :title="editingId ? '编辑供应商结算费用' : '新增供应商结算费用'"
       width="min(760px, 95vw)"
+      append-to-body
       :close-on-click-modal="!submitting"
       :close-on-press-escape="!submitting"
       :show-close="!submitting"
@@ -228,7 +229,7 @@
       </template>
     </el-dialog>
 
-    <el-dialog v-model="importVisible" title="导入供应商结算费用" width="min(620px, 94vw)" :show-close="!importing">
+    <el-dialog v-model="importVisible" title="导入供应商结算费用" width="min(620px, 94vw)" append-to-body :show-close="!importing">
       <el-alert title="请使用供应商结算费用月度模板，月份与供应商编码重复时系统会提示" type="info" :closable="false" show-icon />
       <el-upload
         v-model:file-list="importFiles"
@@ -326,7 +327,7 @@ const selectedSupplierStatus = computed(() => {
   if (!option) return { hasSignedContract: '选择供应商后自动关联', contractValid: '选择供应商后自动关联' }
   return {
     hasSignedContract: option.hasSignedContract ? '已签订' : '未签订',
-    contractValid: option.hasSignedContract ? (option.contractValid ? '有效' : '无效') : '无主合同'
+    contractValid: option.contractValid ? '有效' : '到期'
   }
 })
 

@@ -142,6 +142,7 @@ test('record payload normalization keeps paired contacts and Excel text values',
 test('contract status fields stay at the record root and are not duplicated in details', () => {
   const mainContract = categoryByValue.get(CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT)
   const payload = buildRecordPayload(mainContract, {
+    trusteeAttribute: 'HOSTED',
     signingStatus: 'SIGNED',
     contractNumber: ' HT-001 ',
     effectiveDate: '2026-08-01',
@@ -150,6 +151,7 @@ test('contract status fields stay at the record root and are not duplicated in d
     companySignedDate: '2026-07-30'
   })
 
+  assert.equal(payload.trusteeAttribute, 'HOSTED')
   assert.equal(payload.signingStatus, 'SIGNED')
   assert.equal(payload.contractNumber, 'HT-001')
   assert.equal(payload.effectiveDate, '2026-08-01')
@@ -159,6 +161,35 @@ test('contract status fields stay at the record root and are not duplicated in d
   for (const key of ['signingStatus', 'contractNumber', 'effectiveDate', 'expiryDate', 'autoRenew']) {
     assert.equal(Object.hasOwn(payload.details, key), false)
   }
+})
+
+test('third-level details are the only supplier maintenance surface', () => {
+  const apiSource = readFileSync(new URL('../src/api/contract.js', import.meta.url), 'utf8')
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  const detailSource = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+
+  assert.match(apiSource, /url: '\/contracts\/records'[\s\S]*method: 'post'/)
+  assert.doesNotMatch(apiSource, /export function createSupplier\(/)
+  assert.doesNotMatch(apiSource, /export function deleteSupplier\(/)
+
+  assert.match(supplierSource, /新增三级明细/)
+  assert.match(supplierSource, /createSupplierFirstRecord\(payload\)/)
+  assert.match(supplierSource, /supplierIdentity: \{ name: supplierName, code: supplierCode \}/)
+  assert.match(supplierSource, /请使用57列三级细表模板（D列为托管属性）/)
+  assert.match(supplierSource, /return row\?\.contractValid \? '有效' : '到期'/)
+  assert.doesNotMatch(supplierSource, /if \(!row\?\.hasSignedContract\) return '无主合同'/)
+  assert.doesNotMatch(supplierSource, /新建供应商|编辑供应商|删除供应商/)
+  assert.doesNotMatch(supplierSource, /\bcreateSupplier\(|\bupdateSupplier\(|\bdeleteSupplier\(/)
+
+  assert.match(detailSource, /维护供应商信息/)
+  assert.match(detailSource, /await updateSupplier\(supplierId\.value/)
+  assert.match(detailSource, /v-model="recordForm\.trusteeAttribute"/)
+  assert.match(detailSource, /合同是否有效：\{\{ supplier\?\.contractValid \? '有效' : '到期' \}\}/)
+  assert.match(detailSource, /请使用57列三级细表模板（D列为托管属性）/)
+  assert.match(detailSource, /const formBusy = computed\(\(\) => submitting\.value \|\| Boolean\(deletingId\.value\)\)/)
+  assert.match(detailSource, /维护明细/)
+  assert.doesNotMatch(detailSource, /@click="handleDeleteRecord\(record\)"/)
+  assert.match(detailSource, /删除本条三级明细/)
 })
 
 test('expiry row classes implement the workbook colors and automatic-renewal exception', () => {
@@ -176,6 +207,21 @@ test('settlement totals use the four exact Excel amount columns', () => {
     { key: 'overstorageProductAmount', label: '超储产品金额（含税）' },
     { key: 'overstorageLogisticsFee', label: '超储物流费' }
   ])
+})
+
+test('contract validity display stays independent from signing status in every contract view', () => {
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  const detailSource = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+  const settlementSource = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+
+  assert.match(supplierSource, /return row\?\.contractValid \? '有效' : '到期'/)
+  assert.match(detailSource, /supplier\?\.contractValid \? '有效' : '到期'/)
+  assert.match(settlementSource, /row\.contractValid \? '有效' : '到期'/)
+  assert.match(settlementSource, /contractValid: option\.contractValid \? '有效' : '到期'/)
+  for (const source of [supplierSource, detailSource, settlementSource]) {
+    assert.doesNotMatch(source, /!row\.hasSignedContract\s*\?[^\n]*(?:contractValid|无主合同)/)
+    assert.doesNotMatch(source, /option\.hasSignedContract\s*\?\s*\(option\.contractValid/)
+  }
 })
 
 test('contract API keeps the three independent menu exports and private file transport', () => {
@@ -211,7 +257,12 @@ test('contract pages replace wide tables and tabs with complete narrow-screen co
   assert.match(settlementSource, /class="mobile-settlement-list"/)
   assert.match(settlementSource, /@media \(max-width: 1180px\)[\s\S]*?\.desktop-settlement-table \{ display: none; \}/)
   assert.match(detailSource, /class="mobile-category-select"/)
-  assert.match(detailSource, /@media \(max-width: 760px\)[\s\S]*?\.contract-tabs \{ display: none; \}/)
+  assert.match(detailSource, /@media \(max-width: 1024px\)[\s\S]*?\.contract-tabs \{ display: none; \}/)
+  for (const source of [supplierSource, detailSource, settlementSource]) {
+    const dialogCount = source.match(/<el-dialog\b/g)?.length || 0
+    const bodyDialogCount = source.match(/\bappend-to-body\b/g)?.length || 0
+    assert.equal(bodyDialogCount, dialogCount)
+  }
   for (const source of [supplierSource, detailSource, expirySource, settlementSource]) {
     assert.doesNotMatch(source, /overflow-x:\s*auto/)
   }
