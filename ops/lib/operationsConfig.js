@@ -28,7 +28,7 @@ function parseArgs(argv, { values = [], flags = [] } = {}) {
 
 function parseEnvText(contents) {
   const values = {};
-  for (const rawLine of contents.split(/\r?\n/)) {
+  for (const rawLine of contents.split(/\r\n?|\n/)) {
     const line = rawLine.trim();
     if (!line || line.startsWith('#')) continue;
     const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/.exec(line);

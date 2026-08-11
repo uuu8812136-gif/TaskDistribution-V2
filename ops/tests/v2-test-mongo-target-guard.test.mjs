@@ -59,6 +59,21 @@ test('reads MONGODB_URI from an environment file without shell evaluation', () =
   }
 })
 
+test('reads legacy CR-only environment lines without merging adjacent settings', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'v2-mongo-guard-'))
+  try {
+    const environmentFile = path.join(directory, 'app.env')
+    fs.writeFileSync(
+      environmentFile,
+      `ENABLE_LEGACY_PUBLIC_UPLOADS=false\rMONGODB_URI=${validUri}\rEQUIPMENT_ROUTINE_WORKER_ENABLED=true\r`,
+      'utf8'
+    )
+    assert.equal(readMongoUriFromEnvironmentFile(environmentFile), validUri)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('the guard CLI accepts the exact target from app.env or operations.env', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'v2-mongo-guard-'))
   try {
