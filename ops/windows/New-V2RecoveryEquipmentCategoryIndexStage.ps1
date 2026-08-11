@@ -375,18 +375,39 @@ function Assert-ReleaseFileManifest {
   Assert-NoReparsePointTree -Root $Root -Label $Label
   $manifestPath = Join-Path $Root 'deploy\FILE-MANIFEST.json'
   $manifest = Read-JsonFile $manifestPath "$Label file manifest"
-  Assert-ExactPropertyOrder $manifest @(
-    'format', 'releaseId', 'commit', 'generatedAt', 'pathComparison',
-    'setSemantics', 'selfPath', 'fileCount', 'files'
-  ) "$Label file manifest"
+  $propertyNames = @($manifest.PSObject.Properties | ForEach-Object { [string]$_.Name })
+  $isLegacyManifest = (
+    $propertyNames.Count -eq 5 -and
+    $propertyNames[0] -ceq 'format' -and
+    $propertyNames[1] -ceq 'releaseId' -and
+    $propertyNames[2] -ceq 'commit' -and
+    $propertyNames[3] -ceq 'generatedAt' -and
+    $propertyNames[4] -ceq 'files'
+  )
+  if ($isLegacyManifest) {
+    Assert-ExactPropertyOrder $manifest @(
+      'format', 'releaseId', 'commit', 'generatedAt', 'files'
+    ) "$Label legacy file manifest"
+  }
+  else {
+    Assert-ExactPropertyOrder $manifest @(
+      'format', 'releaseId', 'commit', 'generatedAt', 'pathComparison',
+      'setSemantics', 'selfPath', 'fileCount', 'files'
+    ) "$Label file manifest"
+  }
+  $null = Assert-UtcTimestamp ([string]$manifest.generatedAt) "$Label file manifest generatedAt"
   if (
     $manifest.format -cne 'task-distribution-v2-release-files/v1' -or
     $manifest.releaseId -cne $ExpectedReleaseId -or
     $manifest.commit -cne $ExpectedCommit -or
-    $manifest.pathComparison -cne 'windows-ordinal-ignore-case' -or
-    $manifest.setSemantics -cne 'exact-package-files-excluding-manifest' -or
-    $manifest.selfPath -cne 'deploy/FILE-MANIFEST.json' -or
-    [int]$manifest.fileCount -ne @($manifest.files).Count
+    (
+      -not $isLegacyManifest -and (
+        $manifest.pathComparison -cne 'windows-ordinal-ignore-case' -or
+        $manifest.setSemantics -cne 'exact-package-files-excluding-manifest' -or
+        $manifest.selfPath -cne 'deploy/FILE-MANIFEST.json' -or
+        [int]$manifest.fileCount -ne @($manifest.files).Count
+      )
+    )
   ) { throw "$Label file manifest identity mismatch" }
   $prefix = (Get-FullPath $Root) + '\'
   $declared = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -429,7 +450,8 @@ function Assert-ReleaseFileManifest {
   return [pscustomobject][ordered]@{
     manifestPath = $manifestPath
     manifestSha256 = Get-Sha256 $manifestPath
-    fileCount = [int]$manifest.fileCount
+    fileCount = [int]@($manifest.files).Count
+    legacyManifestAccepted = $isLegacyManifest
   }
 }
 
@@ -461,6 +483,7 @@ function Assert-PreviousRelease {
     manifestPath = [string]$manifestIdentity.manifestPath
     manifestSha256 = [string]$manifestIdentity.manifestSha256
     manifestFileCount = [int]$manifestIdentity.fileCount
+    legacyManifestAccepted = [bool]$manifestIdentity.legacyManifestAccepted
     activeMarkerPath = $ActiveMarkerPath
     activeMarkerSha256 = Get-Sha256 $ActiveMarkerPath
   }
@@ -670,6 +693,7 @@ $previousReleaseEvidence = [ordered]@{
   manifestPath = [string]$previousIdentity.manifestPath
   manifestSha256 = [string]$previousIdentity.manifestSha256
   manifestFileCount = [int]$previousIdentity.manifestFileCount
+  legacyManifestAccepted = [bool]$previousIdentity.legacyManifestAccepted
   activeMarkerPath = [string]$previousIdentity.activeMarkerPath
   activeMarkerSha256 = [string]$previousIdentity.activeMarkerSha256
 }
@@ -735,7 +759,9 @@ function Assert-StageInputsUnchanged {
     -ExpectedReleaseId $PreviousReleaseId -ExpectedCommit $PreviousCommit -Label 'Previous release'
   if (
     [string]$currentPreviousManifest.manifestSha256 -cne [string]$previousReleaseEvidence.manifestSha256 -or
-    [int]$currentPreviousManifest.fileCount -ne [int]$previousReleaseEvidence.manifestFileCount
+    [int]$currentPreviousManifest.fileCount -ne [int]$previousReleaseEvidence.manifestFileCount -or
+    [bool]$currentPreviousManifest.legacyManifestAccepted -ne
+      [bool]$previousReleaseEvidence.legacyManifestAccepted
   ) { throw 'Previous release file tree changed during staging' }
   $currentCandidate = Assert-CandidateManifest $candidate
   if (

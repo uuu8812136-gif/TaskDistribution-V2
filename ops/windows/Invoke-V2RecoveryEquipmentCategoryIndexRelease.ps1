@@ -717,17 +717,44 @@ function Assert-PreviousReleaseTree {
   ) { throw 'Previous release metadata or file manifest differs from staged evidence' }
   $metadata = Read-JsonFile $metadataPath 'Previous release metadata'
   $manifest = Read-JsonFile $manifestPath 'Previous release file manifest'
+  $propertyNames = @($manifest.PSObject.Properties | ForEach-Object { [string]$_.Name })
+  $isLegacyManifest = (
+    $propertyNames.Count -eq 5 -and
+    $propertyNames[0] -ceq 'format' -and
+    $propertyNames[1] -ceq 'releaseId' -and
+    $propertyNames[2] -ceq 'commit' -and
+    $propertyNames[3] -ceq 'generatedAt' -and
+    $propertyNames[4] -ceq 'files'
+  )
+  $isCurrentManifest = (
+    $propertyNames.Count -eq 9 -and
+    $propertyNames[0] -ceq 'format' -and
+    $propertyNames[1] -ceq 'releaseId' -and
+    $propertyNames[2] -ceq 'commit' -and
+    $propertyNames[3] -ceq 'generatedAt' -and
+    $propertyNames[4] -ceq 'pathComparison' -and
+    $propertyNames[5] -ceq 'setSemantics' -and
+    $propertyNames[6] -ceq 'selfPath' -and
+    $propertyNames[7] -ceq 'fileCount' -and
+    $propertyNames[8] -ceq 'files'
+  )
   if (
+    (-not $isLegacyManifest -and -not $isCurrentManifest) -or
     $metadata.releaseId -cne $PreviousReleaseId -or
     $metadata.commit -cne $PreviousCommit -or
     $manifest.format -cne 'task-distribution-v2-release-files/v1' -or
     $manifest.releaseId -cne $PreviousReleaseId -or
     $manifest.commit -cne $PreviousCommit -or
-    $manifest.pathComparison -cne 'windows-ordinal-ignore-case' -or
-    $manifest.setSemantics -cne 'exact-package-files-excluding-manifest' -or
-    $manifest.selfPath -cne 'deploy/FILE-MANIFEST.json' -or
-    [int]$manifest.fileCount -ne @($manifest.files).Count -or
-    [int]$manifest.fileCount -ne [int]$Staged.previousRelease.manifestFileCount
+    [bool]$Staged.previousRelease.legacyManifestAccepted -ne $isLegacyManifest -or
+    @($manifest.files).Count -ne [int]$Staged.previousRelease.manifestFileCount -or
+    (
+      $isCurrentManifest -and (
+        $manifest.pathComparison -cne 'windows-ordinal-ignore-case' -or
+        $manifest.setSemantics -cne 'exact-package-files-excluding-manifest' -or
+        $manifest.selfPath -cne 'deploy/FILE-MANIFEST.json' -or
+        [int]$manifest.fileCount -ne @($manifest.files).Count
+      )
+    )
   ) { throw 'Previous release manifest identity mismatch' }
   $prefix = (Get-FullPath $Previous) + '\'
   $declared = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)

@@ -446,9 +446,13 @@ test('staging Execute and PostAudit verify the previous release exact manifest t
   assert.match(staging, /function Assert-ReleaseFileManifest/)
   assert.match(staging, /\$Label exact file set mismatch/)
   assert.match(staging, /manifestSha256 = \[string\]\$previousIdentity\.manifestSha256/)
+  assert.match(staging, /legacyManifestAccepted = \[bool\]\$previousIdentity\.legacyManifestAccepted/)
   for (const consumer of [activate, audit]) {
     assert.match(consumer, /function Assert-PreviousReleaseTree/)
     assert.match(consumer, /previousRelease\.manifestSha256/)
+    assert.match(consumer, /previousRelease\.legacyManifestAccepted/)
+    assert.match(consumer, /\$isLegacyManifest/)
+    assert.match(consumer, /\$isCurrentManifest/)
     assert.match(consumer, /Previous release exact file set mismatch/)
   }
 })

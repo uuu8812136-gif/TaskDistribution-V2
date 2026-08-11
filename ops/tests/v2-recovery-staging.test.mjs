@@ -304,6 +304,8 @@ process.stdout.write(JSON.stringify({ status: 'V2_TEST_MONGODB_TARGET_OK', targe
     sourceCommit,
     previousReleaseId,
     previousCommit,
+    previous,
+    builtAt,
     archive,
     artifactManifest,
     predeployReceipt,
@@ -422,6 +424,73 @@ test('Windows Recovery staging is deterministic, fail closed, and never overwrit
     const tampered = invokePowerShell(common, { expectFailure: true })
     assert.match(`${tampered.stderr}\n${tampered.stdout}`, /Candidate file (size|hash) mismatch/)
     assert.equal(sha256File(stagedPath), stagedSha256)
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true })
+  }
+})
+
+test('Windows Recovery staging strictly accepts the deployed legacy previous manifest shape', {
+  timeout: 120_000
+}, () => {
+  assert.equal(fs.existsSync(fixedNode), true, `fixed Node runtime missing: ${fixedNode}`)
+  const workRoot = path.join(repositoryRoot, 'work')
+  fs.mkdirSync(workRoot, { recursive: true })
+  const fixtureRoot = fs.mkdtempSync(path.join(workRoot, '.recovery-legacy-stage-test-'))
+  try {
+    const fixture = buildFixture(fixtureRoot)
+    const previousMetadataPath = path.join(fixture.previous, 'deploy/RELEASE.json')
+    const previousManifestPath = path.join(fixture.previous, 'deploy/FILE-MANIFEST.json')
+    const legacyManifest = {
+      format: 'task-distribution-v2-release-files/v1',
+      releaseId: fixture.previousReleaseId,
+      commit: fixture.previousCommit,
+      generatedAt: fixture.builtAt,
+      files: [{
+        file: 'deploy/RELEASE.json',
+        bytes: fs.statSync(previousMetadataPath).size,
+        sha256: sha256File(previousMetadataPath)
+      }]
+    }
+    writeJson(previousManifestPath, legacyManifest)
+
+    const common = [
+      '-ReleaseId', fixture.releaseId,
+      '-SourceCommit', fixture.sourceCommit,
+      '-PreviousReleaseId', fixture.previousReleaseId,
+      '-PreviousCommit', fixture.previousCommit,
+      '-ReleaseArchivePath', fixture.archive,
+      '-ExpectedReleaseArchiveSha256', sha256File(fixture.archive),
+      '-ArtifactManifestPath', fixture.artifactManifest,
+      '-ExpectedArtifactManifestSha256', sha256File(fixture.artifactManifest),
+      '-PredeployBackupReceiptPath', fixture.predeployReceipt,
+      '-ExpectedPredeployBackupReceiptSha256', sha256File(fixture.predeployReceipt),
+      '-OperationsEnvPath', fixture.operationsEnv,
+      '-RecoveryRoot', fixtureRoot
+    ]
+    const plan = invokePowerShell(common)
+    assert.equal(plan.status, 'WINDOWS_RECOVERY_CANDIDATE_STAGE_PLAN_READY')
+    const created = invokePowerShell([
+      ...common,
+      '-ConfirmInstance', 'task-distribution-v2-customer-test',
+      '-ConfirmReleaseId', fixture.releaseId,
+      '-ConfirmPreviousReleaseId', fixture.previousReleaseId,
+      '-Apply',
+      '-Confirm:$false'
+    ])
+    assert.equal(created.status, 'WINDOWS_RECOVERY_CANDIDATE_STAGED')
+    const staged = JSON.parse(fs.readFileSync(
+      path.join(fixtureRoot, 'evidence', `release-${fixture.releaseId}`, 'staged.json'),
+      'utf8'
+    ))
+    assert.equal(staged.previousRelease.legacyManifestAccepted, true)
+    assert.equal(staged.previousRelease.manifestFileCount, 1)
+
+    writeJson(previousManifestPath, { ...legacyManifest, unexpected: true })
+    const rejected = invokePowerShell(common, { expectFailure: true })
+    assert.match(
+      `${rejected.stderr}\n${rejected.stdout}`,
+      /Previous release file manifest property count mismatch/
+    )
   } finally {
     fs.rmSync(fixtureRoot, { recursive: true, force: true })
   }
