@@ -21,6 +21,14 @@ Completion wording is evidence-based:
 
 If any source conflicts with another, use the least-complete status and keep the item open. After each meaningful task, update this file before giving the user the completion report.
 
+## 2026-08-12 Mini-program Login Signature
+
+- [x] The mini-program login footer now matches the website signature: `沟通、协作、持续进步` and `欢迎你，我的朋友。 -马延浩`; the former plural welcome, Horselink-growth line, and project-team signature are absent from the compiled login page.
+- [x] The change is limited to `miniprogram/pages/login/index.vue` and its focused regression assertions. Login API, team selection, remembered credentials, session restoration, and other business flows were not changed.
+- [x] Mini-program tests pass `130/130`, 46 Vue SFC files compile, environment-isolation checks and `git diff --check` pass. Commit `aac85528eb510d7de53b9345cb89dd8bc2935f8b` is pushed to remote `main`.
+- [x] Formal AppID `wxd8f18985dfd63b89` accepted development version `0.9.20260812.2` from the verified production artifact targeting `https://v2-test.horselink.cn/api`; upload size is 1,381,064 bytes and a 470x470 preview QR code was generated.
+- [ ] Experience-version promotion, real-device visual/login acceptance, WeChat Review, and formal Publish remain separate gates and are not implied by the development-version upload.
+
 ## 2026-08-12 Unified Import Template Download
 
 - [x] PC Web has one independent “模板下载” menu and page; no duplicate mini-program entry or attachment-center behavior was added.
@@ -38,7 +46,7 @@ If any source conflicts with another, use the least-complete status and keep the
 ## 2026-08-12 Verified Release Baseline
 
 - [x] Website business commit `b33dbab749f009d41c779549ce3365032a7a79ac` is active as `v2-20260812-b33dbab` since `2026-08-12T10:28:59.1410769Z`; independent PostAudit returned `POSTDEPLOY_AUDIT_PASSED`, `gate.passed=true`, and no failures. The stopped pre-deployment backup is `backup-20260812T094551Z-f17c9294` with 38 collections, 628 upload files and 389/389 verified FileAsset references.
-- [x] Mini-program development version `0.9.20260812.1` was accepted by the formal AppID and a preview QR code was generated. Promotion to experience version, real-device acceptance, WeChat Review and formal Publish remain separate pending gates.
+- [x] Mini-program development version `0.9.20260812.2` was accepted by the formal AppID and a preview QR code was generated. Its only change over `.1` is the login signature synchronization. Promotion to experience version, real-device acceptance, WeChat Review and formal Publish remain separate pending gates.
 - [x] MongoDB exited at `2026-08-12 18:52:05 CST`; the terminal log records `out of memory`. The existing scheduled task was started without modifying database files or the active release, after which the five V2 tasks, loopback listeners and public endpoints recovered.
 - [x] The final read-only audit at `2026-08-12T12:32:28Z` confirms the active release is still `v2-20260812-b33dbab`, all five recovery tasks are `Running`, `18120/18130/27150` each listen only on `127.0.0.1`, and public `/`, `/health`, and `/api/auth/login-teams` all return HTTP 200. The MongoDB log contains no second `out of memory` after the 18:52 event.
 - [ ] Repair and accept effective MongoDB automatic recovery plus external alert delivery. The Scheduled Task already declares `RestartCount=999` and `RestartInterval=PT1M`, but the OOM still required a manual start; configuration presence alone is not accepted recovery evidence.
@@ -53,7 +61,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] The mini-program repair empty state is compact and distinguishes no todo, no search result, and load failure with retry; permission denial remains an API authorization error rather than an empty result.
 - [x] The inspection calendar uses the final customer legend: green normal completion, red abnormal inspection, blue rest day/no plan, and white missing/overdue; green and red are darkened consistently in cells and the legend.
 - [x] Full backend `646/646`, Web `214/214` plus production build, mini-program `130/130`, 46 Vue SFC checks, isolation checks, syntax checks, and `git diff --check` pass in the local candidate using the H-drive temporary/cache root.
-- [x] The cumulative website code is deployed in `v2-20260812-b33dbab`, and the formal AppID accepted cumulative mini-program development version `0.9.20260812.1`.
+- [x] The cumulative website code is deployed in `v2-20260812-b33dbab`, and the formal AppID accepted cumulative mini-program development version `0.9.20260812.2`.
 - [ ] Complete authenticated customer-role browser flows and customer/real-device acceptance for all eight screenshot scenarios; promotion to an experience version remains separate.
 
 ## 2026-08-12 Routine Plan Completion Semantics
@@ -165,7 +173,7 @@ The checked items in this section record what was true at that checkpoint. They 
 - [x] Authorized super administrators, department managers and equipment administrators can run an immediate plan catch-up from the Web workbench while in a concrete team write context; the API still applies the same idempotent reconciliation and authorization rules as the background worker.
 - [x] Equipment categories and inspection/maintenance rules expose protected permanent deletion. A category must first be disabled and have no children, equipment, or rule references; a rule must first be disabled and have no execution history. Both operations retain audit evidence. The isolated `18099` HTTP flow runtime-verifies active-state 409 rejection and disabled-state 200 deletion for both resource types. Public release `v2-20260729-06043e3` serves both protected `/permanent` endpoints and their Web actions; unauthenticated public DELETE probes return `401 AUTH_TOKEN_REQUIRED`, while destructive success/conflict acceptance remains isolated from customer data.
 - [ ] Inspection worker scheduling, message recipients, abnormal handling, Web workbench/export, and burned-in camera watermark photos are runtime verified against the latest API, browser, and WeChat Developer Tools/device build.
-  - The Web inspection workbench and cumulative server/API code are deployed in public release `v2-20260812-b33dbab`; the formal AppID accepted cumulative mini-program development version `0.9.20260812.1`. Code and replica-set tests cover five-minute/startup reconciliation, immediate catch-up, cancellation reasons and plan-linked execution records, and send every overdue level only to the current equipment branch's manager/deputy with supervisor fallback only when that branch has no active primary leader. Public-data cleanup, real-role workflow acceptance, authenticated export and watermark/device evidence remain pending.
+  - The Web inspection workbench and cumulative server/API code are deployed in public release `v2-20260812-b33dbab`; the formal AppID accepted cumulative mini-program development version `0.9.20260812.2`. Code and replica-set tests cover five-minute/startup reconciliation, immediate catch-up, cancellation reasons and plan-linked execution records, and send every overdue level only to the current equipment branch's manager/deputy with supervisor fallback only when that branch has no active primary leader. Public-data cleanup, real-role workflow acceptance, authenticated export and watermark/device evidence remain pending.
 - [x] Repair supports fault report, parts-required, and no-parts fixed flows with the confirmed fields, evidence, approvals, query, and export in backend, Web, and mini-program automated tests.
   - Implemented and automated tests passed: fixed three-flow state machine, 1-5 private photos from camera or album, dynamic parts, server-recalculated prices, manager-assistant substitution, rejection/void, audit, query/export, maintained team-scoped report locations, readable actor name/Chinese position, copyable completion summary, and compact Web/mini-program actions.
 - [ ] The three repair flows are runtime verified end to end against the latest local API and WeChat Developer Tools/device build.
