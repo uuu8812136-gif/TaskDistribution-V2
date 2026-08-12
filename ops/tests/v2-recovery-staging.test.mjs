@@ -543,7 +543,10 @@ test('release packaging and the Windows Recovery runbook retain the staging cont
   assert.match(postAudit, /runtimeInputsSha256/)
   assert.match(postAudit, /Mongo write anchor/)
   assert.match(postAudit, /writePerformed=false/)
-  assert.match(postAudit, /`6`.*`5`.*`1`/s)
+  assert.match(postAudit, /至少有一台在用设备/)
+  assert.match(postAudit, /每台在用设备必须对每条活动规则都有开放计划/)
+  assert.match(postAudit, /客户后续新增或停用设备不会因为历史固定数量导致误报/)
+  assert.doesNotMatch(postAudit, /`6`.*`5`.*`1`/s)
 
   const evidence = sectionBetween(runbook, '#### 4.5.7', '### 4.6')
   assert.match(evidence, /runtimeInputsSha256/)
