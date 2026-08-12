@@ -738,6 +738,11 @@ $completed = Read-Json $migrationCompletedPath 'Migration-completed evidence'
 $marker = Read-Json $activeMarkerPath 'Active marker'
 $active = Read-Json $activeEvidencePath 'Active evidence'
 $commit = Read-Json $activationCommitPath 'Activation commit'
+$migrationDisposition = [string]$marker.migrationDisposition
+$migrationRequired = $migrationDisposition -ceq 'MIGRATION_REQUIRED'
+if (-not $migrationRequired -and $migrationDisposition -cne 'SCHEMA_ALREADY_APPLIED') {
+  Add-Failure 'active_migration_disposition_invalid'
+}
 $holdMongoAnchor = Read-Json $holdMongoAnchorPath 'Hold Mongo write-anchor report'
 $executeMongoAnchor = Read-Json $executeMongoAnchorPath 'Execute Mongo write-anchor report'
 
@@ -815,10 +820,28 @@ if (
 ) { Add-Failure 'mongo_write_anchor_changed_during_stopped_backup_window' }
 
 $approvedDryRunPath = $null
+$approvedDryRun = $null
 if ([string]$started.approvedDryRunReport) {
   $approvedDryRunPath = Assert-PathBelow $evidence `
     (Join-Path $evidence ([string]$started.approvedDryRunReport)) 'Approved dry-run report'
   $hashes['approvedDryRun'] = Get-Sha256 $approvedDryRunPath
+  $approvedDryRun = Read-Json $approvedDryRunPath 'Approved migration dry-run report'
+}
+if (
+  $null -eq $approvedDryRun -or
+  $approvedDryRun.format -ne 'equipment-category-parent-name-index-migration/v1' -or
+  $approvedDryRun.status -ne $(if ($migrationRequired) { 'DRY_RUN_READY' } else { 'DRY_RUN_ALREADY_APPLIED' }) -or
+  $approvedDryRun.mode -ne 'dry-run' -or
+  $approvedDryRun.database.name -ne $expectedDatabase -or
+  $approvedDryRun.writePerformed -ne $false -or
+  $(if ($migrationRequired) {
+    $approvedDryRun.before.indexes.desiredPresent -ne $false -or
+    @($approvedDryRun.before.indexes.legacy).Count -ne 1 -or
+    @($approvedDryRun.before.indexes.unknownTeamWideUnique).Count -ne 0 -or
+    @($approvedDryRun.before.blockers).Count -ne 0
+  } else { -not (Test-AfterIndexState $approvedDryRun.before) })
+) {
+  Add-Failure 'approved_dry_run_report_mismatch'
 }
 $offhostReceiptPath = Assert-PathBelow $evidence `
   ([string]$started.offhostVerificationReceipt) 'Off-host verification receipt'
@@ -865,6 +888,7 @@ if (
   $handoff.handoffNonce -ne $HandoffNonce -or
   $handoff.stagedEvidenceSha256 -ne $StagedEvidenceSha256 -or
   $handoff.approvedDryRunSha256 -ne $hashes.approvedDryRun -or
+  $handoff.migrationDisposition -cne $migrationDisposition -or
   $handoff.stoppedDryRunSha256 -ne $hashes.stoppedDryRun -or
   $handoff.runtimeInputsSha256 -cne $runtimeInputsSha256 -or
   $handoff.holdMongoAnchorPath -cne $holdMongoAnchorPath -or
@@ -897,6 +921,7 @@ if (
   $executeClaim.executeMongoAnchorPath -cne $executeMongoAnchorPath -or
   $executeClaim.executeMongoAnchorSha256 -cne $hashes.executeMongoAnchor -or
   $executeClaim.approvedDryRunSha256 -ne $hashes.approvedDryRun -or
+  $executeClaim.migrationDisposition -cne $migrationDisposition -or
   $executeClaim.stoppedDryRunSha256 -ne $hashes.stoppedDryRun -or
   $executeClaim.executeDryRunSha256 -ne $hashes.executeDryRun -or
   $executeClaim.backupVerificationSha256 -ne $hashes.backupVerification -or
@@ -1012,8 +1037,8 @@ if (
 ) { Add-Failure 'offhost_receipt_independent_host_mismatch' }
 
 if (
-  $started.format -ne 'task-distribution-v2-windows-equipment-category-index-migration-started/v1' -or
-  $started.status -ne 'MIGRATION_STARTED' -or
+  $started.format -ne 'task-distribution-v2-windows-equipment-category-index-migration-started/v2' -or
+  $started.status -ne 'MIGRATION_EXECUTION_STARTED' -or
   $started.releaseId -ne $ReleaseId -or
   $started.sourceCommit -ne $SourceCommit -or
   $started.previousReleaseId -ne $PreviousReleaseId -or
@@ -1032,10 +1057,12 @@ if (
   $started.executeMongoAnchorSha256 -cne $hashes.executeMongoAnchor -or
   $started.stagedEvidenceSha256 -ne $StagedEvidenceSha256 -or
   $started.approvedDryRunSha256 -ne $hashes.approvedDryRun -or
+  $started.migrationDisposition -cne $migrationDisposition -or
   $started.stoppedDryRunSha256 -ne $hashes.stoppedDryRun -or
   $started.executeDryRunSha256 -ne $hashes.executeDryRun -or
   $started.backupVerificationSha256 -ne $hashes.backupVerification -or
   $started.servicesHeldStopped -ne $true -or
+  $started.databaseMigrationMayHaveStarted -ne $migrationRequired -or
   $started.rollbackReady -ne $false -or
   $started.codeOnlyRollbackAllowed -ne $false -or
   $started.requiredRecovery -ne 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -1083,36 +1110,41 @@ if (
 ) { Add-Failure 'stopped_backup_timestamp_chain_mismatch' }
 if (
   $stoppedDryRun.format -ne 'equipment-category-parent-name-index-migration/v1' -or
-  $stoppedDryRun.status -ne 'DRY_RUN_READY' -or
+  $stoppedDryRun.status -ne $(if ($migrationRequired) { 'DRY_RUN_READY' } else { 'DRY_RUN_ALREADY_APPLIED' }) -or
   $stoppedDryRun.mode -ne 'dry-run' -or
   $stoppedDryRun.database.name -ne $expectedDatabase -or
   $stoppedDryRun.writePerformed -ne $false -or
-  $stoppedDryRun.before.indexes.desiredPresent -ne $false -or
-  @($stoppedDryRun.before.indexes.legacy).Count -ne 1 -or
-  @($stoppedDryRun.before.indexes.unknownTeamWideUnique).Count -ne 0 -or
-  @($stoppedDryRun.before.blockers).Count -ne 0
+  $(if ($migrationRequired) {
+    $stoppedDryRun.before.indexes.desiredPresent -ne $false -or
+    @($stoppedDryRun.before.indexes.legacy).Count -ne 1 -or
+    @($stoppedDryRun.before.indexes.unknownTeamWideUnique).Count -ne 0 -or
+    @($stoppedDryRun.before.blockers).Count -ne 0
+  } else { -not (Test-AfterIndexState $stoppedDryRun.before) })
 ) { Add-Failure 'stopped_dry_run_report_mismatch' }
 if (
   $executeDryRun.format -ne 'equipment-category-parent-name-index-migration/v1' -or
-  $executeDryRun.status -ne 'DRY_RUN_READY' -or
+  $executeDryRun.status -ne $(if ($migrationRequired) { 'DRY_RUN_READY' } else { 'DRY_RUN_ALREADY_APPLIED' }) -or
   $executeDryRun.mode -ne 'dry-run' -or
   $executeDryRun.database.name -ne $expectedDatabase -or
   $executeDryRun.writePerformed -ne $false -or
-  $executeDryRun.before.indexes.desiredPresent -ne $false -or
-  @($executeDryRun.before.indexes.legacy).Count -ne 1 -or
-  @($executeDryRun.before.indexes.unknownTeamWideUnique).Count -ne 0 -or
-  @($executeDryRun.before.blockers).Count -ne 0
+  $(if ($migrationRequired) {
+    $executeDryRun.before.indexes.desiredPresent -ne $false -or
+    @($executeDryRun.before.indexes.legacy).Count -ne 1 -or
+    @($executeDryRun.before.indexes.unknownTeamWideUnique).Count -ne 0 -or
+    @($executeDryRun.before.blockers).Count -ne 0
+  } else { -not (Test-AfterIndexState $executeDryRun.before) })
 ) { Add-Failure 'execute_dry_run_report_mismatch' }
 
 if (
   $executeReport.format -ne 'equipment-category-parent-name-index-migration/v1' -or
-  $executeReport.status -ne 'EXECUTED' -or
+  $executeReport.status -ne $(if ($migrationRequired) { 'EXECUTED' } else { 'ALREADY_APPLIED' }) -or
   $executeReport.mode -ne 'execute' -or
   $executeReport.database.name -ne $expectedDatabase -or
   $executeReport.backup.backupId -ne $BackupId -or
   $executeReport.backup.manifestSha256 -ne $BackupManifestSha256 -or
-  $executeReport.writePerformed -ne $true -or
-  -not (Test-AfterIndexState $executeReport.after)
+  $executeReport.writePerformed -ne $migrationRequired -or
+  -not (Test-AfterIndexState $(if ($migrationRequired) { $executeReport.after } else { $executeReport.before })) -or
+  (-not $migrationRequired -and -not (Test-AfterIndexState $executeReport.after))
 ) { Add-Failure 'migration_execute_report_mismatch' }
 
 if (
@@ -1128,8 +1160,12 @@ if (
 ) { Add-Failure 'migration_idempotency_report_mismatch' }
 
 if (
-  $completed.format -ne 'task-distribution-v2-windows-equipment-category-index-migration-completed/v1' -or
-  $completed.status -ne 'MIGRATION_EXECUTED_AND_IDEMPOTENCY_VERIFIED' -or
+  $completed.format -ne 'task-distribution-v2-windows-equipment-category-index-migration-completed/v2' -or
+  $completed.status -ne $(if ($migrationRequired) {
+    'MIGRATION_EXECUTED_AND_IDEMPOTENCY_VERIFIED'
+  } else {
+    'SCHEMA_ALREADY_APPLIED_AND_IDEMPOTENCY_VERIFIED'
+  }) -or
   $completed.releaseId -ne $ReleaseId -or
   $completed.sourceCommit -ne $SourceCommit -or
   $completed.backupId -ne $BackupId -or
@@ -1145,11 +1181,12 @@ if (
   $completed.executeMongoAnchorSha256 -cne $hashes.executeMongoAnchor -or
   $completed.migrationStartedSha256 -ne $hashes.migrationStarted -or
   $completed.approvedDryRunSha256 -ne $hashes.approvedDryRun -or
+  $completed.migrationDisposition -cne $migrationDisposition -or
   $completed.stoppedDryRunSha256 -ne $hashes.stoppedDryRun -or
   $completed.executeDryRunSha256 -ne $hashes.executeDryRun -or
   $completed.executeReportSha256 -ne $hashes.executeReport -or
   $completed.idempotencyReportSha256 -ne $hashes.idempotencyReport -or
-  $completed.databaseMigrationPerformed -ne $true -or
+  $completed.databaseMigrationPerformed -ne $migrationRequired -or
   $completed.rollbackReady -ne $false -or
   $completed.codeOnlyRollbackAllowed -ne $false -or
   $completed.requiredRecovery -ne 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -1178,11 +1215,12 @@ foreach ($state in @($marker, $active, $commit)) {
     $state.executeMongoAnchorSha256 -cne $hashes.executeMongoAnchor -or
     $state.executeClaimSha256 -ne $hashes.executeClaim -or
     $state.offhostVerificationReceiptSha256 -ne $OffhostVerificationReceiptSha256 -or
+    $state.migrationDisposition -cne $migrationDisposition -or
     $state.migrationStartedSha256 -ne $hashes.migrationStarted -or
     $state.executeReportSha256 -ne $hashes.executeReport -or
     $state.idempotencyReportSha256 -ne $hashes.idempotencyReport -or
     $state.migrationCompletedSha256 -ne $hashes.migrationCompleted -or
-    $state.databaseMigrationPerformed -ne $true -or
+    $state.databaseMigrationPerformed -ne $migrationRequired -or
     $state.rollbackReady -ne $false -or
     $state.codeOnlyRollbackAllowed -ne $false -or
     $state.requiredRecovery -ne 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE' -or

@@ -910,16 +910,29 @@ function Assert-IndexAfterState {
   ) { throw "$Label does not prove the exact post-migration index state" }
 }
 
-function Assert-DryRunReady {
+function Assert-DryRunState {
   param([object]$Report, [string]$Label)
   if (
     $Report.format -ne 'equipment-category-parent-name-index-migration/v1' -or
-    $Report.status -ne 'DRY_RUN_READY' -or
     $Report.mode -ne 'dry-run' -or
     $Report.database.name -ne $expectedDatabase -or
     $Report.writePerformed -ne $false
   ) { throw "$Label identity or status mismatch" }
-  Assert-IndexBeforeState $Report.before $Label
+  if ($Report.status -eq 'DRY_RUN_READY') {
+    Assert-IndexBeforeState $Report.before $Label
+    return 'MIGRATION_REQUIRED'
+  }
+  if ($Report.status -eq 'DRY_RUN_ALREADY_APPLIED') {
+    Assert-IndexAfterState $Report.before $Label
+    return 'SCHEMA_ALREADY_APPLIED'
+  }
+  throw "$Label status is not releasable"
+}
+
+function Assert-DryRunDisposition {
+  param([object]$Report, [string]$Expected, [string]$Label)
+  $actual = Assert-DryRunState $Report $Label
+  if ($actual -cne $Expected) { throw "$Label migration disposition changed" }
 }
 
 function Assert-ExecuteCompleted {
@@ -1402,14 +1415,18 @@ if (
   [string]$staged.runtimeInputsSha256 -cne $runtimeInputsSha256
 ) { throw 'Staged runtime input identity mismatch' }
 $approvedDryRun = Read-JsonFile $MigrationDryRunReport 'Approved migration dry-run report'
-Assert-DryRunReady $approvedDryRun 'Approved migration dry-run report'
+$migrationDisposition = Assert-DryRunState $approvedDryRun 'Approved migration dry-run report'
 $tunnelBoundary = Assert-TunnelBoundary
 
 $plan = [ordered]@{
   format = 'task-distribution-v2-windows-equipment-category-index-release-plan/v2'
   status = 'TWO_PHASE_PLAN_READY'
   mode = $Mode
-  action = 'hold-then-backup-offhost-verify-then-migrate-and-activate'
+  action = if ($migrationDisposition -eq 'MIGRATION_REQUIRED') {
+    'hold-then-backup-offhost-verify-then-migrate-and-activate'
+  } else {
+    'hold-then-backup-offhost-verify-then-idempotency-check-and-activate'
+  }
   releaseId = $ReleaseId
   sourceCommit = $SourceCommit
   previousReleaseId = $PreviousReleaseId
@@ -1423,6 +1440,7 @@ $plan = [ordered]@{
   offhostReceiptSignatureAlgorithm = 'RSA-SHA256-PKCS1-v1_5'
   stagedEvidenceSha256 = $StagedEvidenceSha256
   migrationDryRunReportSha256 = $MigrationDryRunReportSha256
+  migrationDisposition = $migrationDisposition
   runtimeInputs = $runtimeInputs
   runtimeInputsSha256 = $runtimeInputsSha256
   stopOrder = @($businessTunnelTask, $webTask, $apiTask)
@@ -1609,6 +1627,7 @@ else {
     $stoppedHandoff.sourceHost -ne $env:COMPUTERNAME -or
     $stoppedHandoff.stagedEvidenceSha256 -ne $StagedEvidenceSha256 -or
     $stoppedHandoff.approvedDryRunSha256 -ne $MigrationDryRunReportSha256 -or
+    $stoppedHandoff.migrationDisposition -cne $migrationDisposition -or
     $stoppedHandoff.runtimeInputsSha256 -ne $runtimeInputsSha256 -or
     $stoppedHandoff.handoffNonce -ne $HandoffNonce -or
     $stoppedHandoff.rollbackStateSha256 -ne (Get-Sha256 $rollbackStatePath) -or
@@ -2031,7 +2050,8 @@ try {
     Assert-NoRecoveryDatabaseWriters
 
     $stoppedDryRun = Invoke-MigrationCli -Mode dry-run -ReportPath $stoppedDryRunPath
-    Assert-DryRunReady $stoppedDryRun 'Stopped-state migration dry-run report'
+    Assert-DryRunDisposition $stoppedDryRun $migrationDisposition `
+      'Stopped-state migration dry-run report'
     $heldTasks = @(
       Get-TaskState $businessTunnelTask
       Get-TaskState $webTask
@@ -2060,6 +2080,7 @@ try {
       stagedEvidenceSha256 = $StagedEvidenceSha256
       approvedDryRunPath = $MigrationDryRunReport
       approvedDryRunSha256 = $MigrationDryRunReportSha256
+      migrationDisposition = $migrationDisposition
       stoppedDryRunPath = $stoppedDryRunPath
       stoppedDryRunSha256 = Get-Sha256 $stoppedDryRunPath
       runtimeInputsSha256 = $runtimeInputsSha256
@@ -2115,7 +2136,8 @@ try {
     throw 'Stopped-state dry-run SHA256 differs from the sealed handoff'
   }
   $stoppedDryRun = Read-JsonFile $stoppedDryRunPath 'Stopped-state migration dry-run report'
-  Assert-DryRunReady $stoppedDryRun 'Stopped-state migration dry-run report'
+  Assert-DryRunDisposition $stoppedDryRun $migrationDisposition `
+    'Stopped-state migration dry-run report'
   $stoppedDryRunSha256 = Get-Sha256 $stoppedDryRunPath
 
   $BackupDirectory = Assert-PathBelow $ApprovedBackupRoot $BackupDirectory 'BackupDirectory'
@@ -2184,7 +2206,8 @@ try {
   $null = Assert-TaskRunning $mongoTask
 
   $executeDryRun = Invoke-MigrationCli -Mode dry-run -ReportPath $executeDryRunPath
-  Assert-DryRunReady $executeDryRun 'Execute-bound stopped-state migration dry-run report'
+  Assert-DryRunDisposition $executeDryRun $migrationDisposition `
+    'Execute-bound stopped-state migration dry-run report'
   $executeDryRunSha256 = Get-Sha256 $executeDryRunPath
   Assert-HeldTaskContinuity $stoppedHandoff
 
@@ -2264,6 +2287,7 @@ try {
     stagedEvidenceSha256 = $StagedEvidenceSha256
     approvedDryRunPath = $MigrationDryRunReport
     approvedDryRunSha256 = $MigrationDryRunReportSha256
+    migrationDisposition = $migrationDisposition
     stoppedDryRunPath = $stoppedDryRunPath
     stoppedDryRunSha256 = $stoppedDryRunSha256
     executeDryRunPath = $executeDryRunPath
@@ -2281,8 +2305,8 @@ try {
   $executeClaimSha256 = Get-Sha256 $executeClaimPath
 
   $migrationStartedEvidence = [ordered]@{
-    format = 'task-distribution-v2-windows-equipment-category-index-migration-started/v1'
-    status = 'MIGRATION_STARTED'
+    format = 'task-distribution-v2-windows-equipment-category-index-migration-started/v2'
+    status = 'MIGRATION_EXECUTION_STARTED'
     startedAt = (Get-Date).ToUniversalTime().ToString('o')
     releaseId = $ReleaseId
     sourceCommit = $SourceCommit
@@ -2305,6 +2329,7 @@ try {
     executeMongoAnchorSha256 = $executeMongoAnchorSha256
     stagedEvidenceSha256 = $StagedEvidenceSha256
     approvedDryRunSha256 = $MigrationDryRunReportSha256
+    migrationDisposition = $migrationDisposition
     stoppedDryRunSha256 = $stoppedDryRunSha256
     executeDryRunSha256 = $executeDryRunSha256
     backupVerificationSha256 = $backupVerificationSha256
@@ -2314,7 +2339,7 @@ try {
     apiStopped = $true
     managementTunnelPreserved = $true
     mongoPreserved = $true
-    databaseMigrationMayHaveStarted = $true
+    databaseMigrationMayHaveStarted = $migrationDisposition -eq 'MIGRATION_REQUIRED'
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2330,16 +2355,26 @@ try {
   $null = Assert-TaskRunning $managementTunnelTask
   $null = Assert-TaskRunning $mongoTask
   $executeReport = Invoke-MigrationCli -Mode execute -ReportPath $executeReportPath
-  Assert-ExecuteCompleted $executeReport 'Migration execute report'
+  if ($migrationDisposition -eq 'MIGRATION_REQUIRED') {
+    Assert-ExecuteCompleted $executeReport 'Migration execute report'
+  }
+  else {
+    Assert-IdempotencyCompleted $executeReport 'Already-applied schema execute report'
+  }
   $executeReportSha256 = Get-Sha256 $executeReportPath
 
   $idempotencyReport = Invoke-MigrationCli -Mode execute -ReportPath $idempotencyReportPath
   Assert-IdempotencyCompleted $idempotencyReport 'Migration idempotency report'
   $idempotencyReportSha256 = Get-Sha256 $idempotencyReportPath
 
+  $databaseMigrationPerformed = $migrationDisposition -eq 'MIGRATION_REQUIRED'
   $migrationCompleted = [ordered]@{
-    format = 'task-distribution-v2-windows-equipment-category-index-migration-completed/v1'
-    status = 'MIGRATION_EXECUTED_AND_IDEMPOTENCY_VERIFIED'
+    format = 'task-distribution-v2-windows-equipment-category-index-migration-completed/v2'
+    status = if ($databaseMigrationPerformed) {
+      'MIGRATION_EXECUTED_AND_IDEMPOTENCY_VERIFIED'
+    } else {
+      'SCHEMA_ALREADY_APPLIED_AND_IDEMPOTENCY_VERIFIED'
+    }
     completedAt = (Get-Date).ToUniversalTime().ToString('o')
     releaseId = $ReleaseId
     sourceCommit = $SourceCommit
@@ -2359,13 +2394,14 @@ try {
     executeMongoAnchorSha256 = $executeMongoAnchorSha256
     migrationStartedSha256 = $migrationStartedSha256
     approvedDryRunSha256 = $MigrationDryRunReportSha256
+    migrationDisposition = $migrationDisposition
     stoppedDryRunSha256 = $stoppedDryRunSha256
     executeDryRunSha256 = $executeDryRunSha256
     executeReportSha256 = $executeReportSha256
     idempotencyReportSha256 = $idempotencyReportSha256
     desiredIndex = 'uq_equipment_category_team_parent_name'
     legacyIndexRemoved = 'uq_equipment_category_team_name'
-    databaseMigrationPerformed = $true
+    databaseMigrationPerformed = $databaseMigrationPerformed
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2413,11 +2449,12 @@ try {
     executeMongoAnchorSha256 = $executeMongoAnchorSha256
     executeClaimSha256 = $executeClaimSha256
     offhostVerificationReceiptSha256 = $OffhostVerificationReceiptSha256
+    migrationDisposition = $migrationDisposition
     migrationStartedSha256 = $migrationStartedSha256
     migrationCompletedSha256 = $migrationCompletedSha256
     executeReportSha256 = $executeReportSha256
     idempotencyReportSha256 = $idempotencyReportSha256
-    databaseMigrationPerformed = $true
+    databaseMigrationPerformed = $databaseMigrationPerformed
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2518,13 +2555,14 @@ try {
     executeClaimSha256 = $executeClaimSha256
     offhostVerificationReceiptSha256 = $OffhostVerificationReceiptSha256
     approvedDryRunSha256 = $MigrationDryRunReportSha256
+    migrationDisposition = $migrationDisposition
     stoppedDryRunSha256 = $stoppedDryRunSha256
     executeDryRunSha256 = $executeDryRunSha256
     migrationStartedSha256 = $migrationStartedSha256
     executeReportSha256 = $executeReportSha256
     idempotencyReportSha256 = $idempotencyReportSha256
     migrationCompletedSha256 = $migrationCompletedSha256
-    databaseMigrationPerformed = $true
+    databaseMigrationPerformed = $databaseMigrationPerformed
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2565,12 +2603,13 @@ try {
     executeMongoAnchorSha256 = $executeMongoAnchorSha256
     executeClaimSha256 = $executeClaimSha256
     offhostVerificationReceiptSha256 = $OffhostVerificationReceiptSha256
+    migrationDisposition = $migrationDisposition
     migrationStartedSha256 = $migrationStartedSha256
     executeReportSha256 = $executeReportSha256
     idempotencyReportSha256 = $idempotencyReportSha256
     migrationCompletedSha256 = $migrationCompletedSha256
     activeEvidenceSha256 = $activeEvidenceSha256
-    databaseMigrationPerformed = $true
+    databaseMigrationPerformed = $databaseMigrationPerformed
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2609,13 +2648,14 @@ try {
     executeMongoAnchorSha256 = $executeMongoAnchorSha256
     executeClaimSha256 = $executeClaimSha256
     offhostVerificationReceiptSha256 = $OffhostVerificationReceiptSha256
+    migrationDisposition = $migrationDisposition
     migrationStartedSha256 = $migrationStartedSha256
     executeReportSha256 = $executeReportSha256
     idempotencyReportSha256 = $idempotencyReportSha256
     migrationCompletedSha256 = $migrationCompletedSha256
     activeEvidenceSha256 = $activeEvidenceSha256
     activeMarkerSha256 = $activeMarkerSha256
-    databaseMigrationPerformed = $true
+    databaseMigrationPerformed = $databaseMigrationPerformed
     rollbackReady = $false
     codeOnlyRollbackAllowed = $false
     requiredRecovery = 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'
@@ -2630,7 +2670,9 @@ try {
 }
 catch {
   $originalError = $_
-  $migrationMayHaveStarted = $migrationStarted -or (Test-Path -LiteralPath $migrationStartedPath -PathType Leaf)
+  $migrationMayHaveStarted = $migrationDisposition -eq 'MIGRATION_REQUIRED' -and (
+    $migrationStarted -or (Test-Path -LiteralPath $migrationStartedPath -PathType Leaf)
+  )
   try {
     if ($Mode -eq 'Execute') {
       Hold-ExecuteFailure -Failure $originalError.Exception.Message -MigrationMayHaveStarted $migrationMayHaveStarted

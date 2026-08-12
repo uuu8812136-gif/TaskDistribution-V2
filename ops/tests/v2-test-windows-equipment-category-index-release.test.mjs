@@ -331,11 +331,31 @@ test('Execute rejects task restarts index drift nonce reuse and report overwrite
   assert.match(activate, /HANDOFF_NONCE_CONSUMED/)
   assert.match(activate, /Protected execute evidence already exists or nonce was consumed/)
   assert.match(activate, /Migration report path already exists/)
-  assert.match(activate, /Assert-DryRunReady \$executeDryRun/)
+  assert.match(activate, /Assert-DryRunDisposition \$executeDryRun \$migrationDisposition/)
   assert.match(activate, /status -ne 'EXECUTED'/)
   assert.match(activate, /status -ne 'ALREADY_APPLIED'/)
   assert.match(activate, /writePerformed -ne \$true/)
   assert.match(activate, /writePerformed -ne \$false/)
+})
+
+test('already-applied schema releases remain zero-write and hash-bound through activation', () => {
+  assert.match(activate, /DRY_RUN_ALREADY_APPLIED/)
+  assert.match(activate, /return 'SCHEMA_ALREADY_APPLIED'/)
+  assert.match(activate, /Assert-DryRunDisposition \$stoppedDryRun \$migrationDisposition/)
+  assert.match(activate, /Assert-DryRunDisposition \$executeDryRun \$migrationDisposition/)
+  assert.match(activate, /Assert-IdempotencyCompleted \$executeReport 'Already-applied schema execute report'/)
+  assert.match(activate, /\$databaseMigrationPerformed = \$migrationDisposition -eq 'MIGRATION_REQUIRED'/)
+  assert.match(activate, /databaseMigrationMayHaveStarted = \$migrationDisposition -eq 'MIGRATION_REQUIRED'/)
+  assert.match(activate, /\$migrationMayHaveStarted = \$migrationDisposition -eq 'MIGRATION_REQUIRED' -and/)
+  for (const state of [activate, audit]) {
+    assert.match(state, /migrationDisposition/)
+    assert.match(state, /SCHEMA_ALREADY_APPLIED/)
+    assert.match(state, /databaseMigrationPerformed/)
+  }
+  assert.match(audit, /\$executeReport\.writePerformed -ne \$migrationRequired/)
+  assert.match(audit, /approved_dry_run_report_mismatch/)
+  assert.match(audit, /\$completed\.databaseMigrationPerformed -ne \$migrationRequired/)
+  assert.match(audit, /\$state\.databaseMigrationPerformed -ne \$migrationRequired/)
 })
 
 test('migration and activation evidence states declare the unaccepted rollback boundary', () => {
