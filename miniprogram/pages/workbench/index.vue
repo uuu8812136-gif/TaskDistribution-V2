@@ -31,7 +31,7 @@
         </view>
         <text class="module-arrow">〉</text>
       </view>
-      <view v-if="canUseEquipment" class="module-row" @click="openRepairs">
+      <view v-if="canRepair" class="module-row" @click="openRepairs">
         <view class="module-icon repair-icon">修</view>
         <view class="module-copy">
           <text class="module-title">设备维修</text>
@@ -41,7 +41,7 @@
       </view>
     </view>
 
-    <view v-if="!canUseReporting && !canUseEquipment" class="empty-state">
+    <view v-if="!canUseReporting && !canUseEquipment && !canRepair" class="empty-state">
       <text>暂无工作台权限</text>
     </view>
     <CustomTabbar />

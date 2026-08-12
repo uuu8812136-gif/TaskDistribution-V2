@@ -38,7 +38,7 @@ const EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCE_VALUES = Object.freeze(
   Object.values(EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES)
 );
 const EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASON_LABELS = Object.freeze({
-  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY]: '本日休班，设备不需点检',
+  [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY]: '该计划日期休班，设备不需点检',
   [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SCHEDULE_CHANGED]: '规则执行周期或时间已调整，原未执行计划已作废',
   [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_UPDATED]: '点检或保养规则已调整，原未执行计划已作废',
   [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.RULE_DEACTIVATED]: '点检或保养规则已停用，原未执行计划已作废',
@@ -131,7 +131,10 @@ function isRoutinePlanRestDayEligible(plan, now = new Date()) {
   ].includes(plan?.status)) {
     return false;
   }
-  return isRoutinePlanCurrentBusinessDate(plan, now);
+  return (
+    isRoutinePlanCurrentBusinessDate(plan, now) ||
+    effectiveRoutinePlanStatus(plan, now) === EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
+  );
 }
 
 function routinePlanWindowName(plan) {

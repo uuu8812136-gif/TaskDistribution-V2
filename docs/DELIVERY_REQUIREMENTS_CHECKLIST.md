@@ -21,12 +21,24 @@ Completion wording is evidence-based:
 
 If any source conflicts with another, use the least-complete status and keep the item open. After each meaningful task, update this file before giving the user the completion report.
 
+## 2026-08-12 Customer Screenshot Regression
+
+- [x] PC routine workbench keeps the same component mounted while switching plans, records, and exceptions. Current API failures retain the page controls and show a Chinese error with a retry action; stale requests remain discarded.
+- [x] An open overdue inspection plan is selectable on PC and in both mini-program equipment entry pages for execution or for marking that exact plan as a rest-day plan. Completed, cancelled, maintenance, and future plans remain ineligible for the rest-day action.
+- [x] Marking yesterday's overdue inspection plan as rest day updates only the submitted `planId`; automated workflow coverage proves that today's plan and future plans stay unchanged, while the existing independent-window coverage protects the other day/night window.
+- [x] Today's rest-day state does not hide or disable yesterday's open overdue inspection or maintenance plan in the mini-program scan result; execution and rest-day selection are separate per-plan decisions.
+- [x] Repair todo notification recipients, list, detail, and transition use the same workflow-node eligibility, including repair-only manager-assistant and department-manager accounts with `ORG_UNIT` equipment scope.
+- [x] The mini-program repair empty state is compact and distinguishes no todo, no search result, and load failure with retry; permission denial remains an API authorization error rather than an empty result.
+- [x] The inspection calendar uses the final customer legend: green normal completion, red abnormal inspection, blue rest day/no plan, and white missing/overdue; green and red are darkened consistently in cells and the legend.
+- [x] Full backend `646/646`, Web `214/214` plus production build, mini-program `130/130`, 46 Vue SFC checks, isolation checks, syntax checks, and `git diff --check` pass in the local candidate using the H-drive temporary/cache root.
+- [ ] The same commit is deployed to the V2 website, passes authenticated browser acceptance, is compiled and uploaded as a new mini-program test version, and passes customer/real-device acceptance for all eight screenshot scenarios.
+
 ## 2026-08-12 Routine Plan Completion Semantics
 
 - [x] The customer-confirmed rule is implemented in the local candidate: every generated plan may be completed once; an overdue plan remains executable on a later day; a newer plan does not replace or close the overdue plan; and day/night windows remain independent.
 - [x] Completion and worker reconciliation now identify a requirement by rule version, `cycleKey`, and `windowKey`. A completed day-shift plan does not cancel the night-shift plan, and inspection cadence advances only after all enabled windows in that cycle are completed or explicitly marked as a rest day.
 - [x] Focused routine workflow, isolation, and worker API tests pass `62/62`, including concurrent submissions for one explicit `planId`, next-day completion of an overdue plan, preservation of the newer day's plans, and independent day/night completion. The full backend passes `646/646`; Web passes `211/211` plus its production build; the mini-program passes `128/128`, 46 SFC checks, and isolation checks; syntax and `git diff --check` pass.
-- [x] The existing mini-program execution flow sends the selected concrete `planId`; no mini-program source or package change is required for this server-side correction.
+- [x] The mini-program execution and rest-day flows send selected concrete `planId` values. The 2026-08-12 screenshot corrections do change mini-program source and therefore require a newly compiled and uploaded test version.
 - [ ] Activate the candidate in the V2 test environment and authenticate the four customer-confirmed runtime scenarios before describing this change as runtime verified.
 
 ## 2026-08-12 Current Runtime Gate

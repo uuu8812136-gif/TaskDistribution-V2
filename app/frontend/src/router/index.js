@@ -110,7 +110,8 @@ const router = createRouter({
             title: '点检保养工作台',
             permission: 'equipment.view',
             teamRequired: true,
-            readOnlyAllowed: true
+            readOnlyAllowed: true,
+            reuseQueryKeys: ['tab']
           }
         },
         {

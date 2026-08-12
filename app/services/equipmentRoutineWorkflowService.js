@@ -60,7 +60,6 @@ const {
   EQUIPMENT_ROUTINE_PLAN_STATUS_VALUES,
   EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS,
   effectiveRoutinePlanStatus,
-  isRoutinePlanCurrentBusinessDate,
   isRoutinePlanRestDayEligible,
   routinePlanCancellationReason,
   routinePlanCancellationReasonLabel,
@@ -802,7 +801,7 @@ function createEquipmentRoutineWorkflowService({
     });
     const uniqueIds = [...new Map(planIds.map((planId) => [String(planId), planId])).values()];
     if (uniqueIds.length !== planIds.length) throw inputInvalid('planIds must be unique');
-    const reason = optionalString(input.reason, 'reason', 500) || '本日休班，设备不需点检';
+    const reason = optionalString(input.reason, 'reason', 500) || '所选计划日期休班，设备不需点检';
 
     try {
       return await runWorkflowTransaction(async (session) => {
@@ -825,13 +824,6 @@ function createEquipmentRoutineWorkflowService({
               409,
               'EQUIPMENT_ROUTINE_REST_DAY_INSPECTION_ONLY',
               'Only inspection plans can be marked as an equipment rest day'
-            );
-          }
-          if (!isRoutinePlanCurrentBusinessDate(plan, now)) {
-            throw workflowError(
-              409,
-              'EQUIPMENT_ROUTINE_REST_DAY_CURRENT_DATE_ONLY',
-              'Only inspection plans for the current business date can be marked as a rest day'
             );
           }
           const alreadyCancelled = (

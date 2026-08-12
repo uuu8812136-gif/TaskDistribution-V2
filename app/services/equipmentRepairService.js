@@ -871,6 +871,11 @@ function createEquipmentRepairService({
 
   async function listRepairs({ authContext, requestedTeamId, method = 'GET', query = {} }) {
     const context = assertBusinessContext(authContext);
+    const todoOnly = query.todo === 'true' || query.todo === true;
+    if (todoOnly && context.mode !== SESSION_MODES.TEAM) {
+      throw repairError(403, 'EQUIPMENT_REPAIR_TEAM_CONTEXT_REQUIRED', 'Select a team before viewing repair todos');
+    }
+    const permissionKey = todoOnly ? 'equipment.repair' : 'equipment.view';
     const { page, pageSize, skip } = pagination(query);
     const baseFilter = queryFilters(query);
     const userFilter = query.todo === 'true' || query.todo === true
@@ -880,10 +885,10 @@ function createEquipmentRepairService({
       authContext: context,
       requestedTeamId,
       method,
-      userFilter
+      userFilter,
+      permissionKey
     });
     let filter = scopedFilter;
-    const todoOnly = query.todo === 'true' || query.todo === true;
     if (todoOnly) {
       const todoClauses = [];
       if (context.isSuperAdmin === true) {
@@ -945,14 +950,25 @@ function createEquipmentRepairService({
     ]);
     const repairs = documents.map((document, index) => (
       serializeRepair(document, availableActions[index], names)
-    )).filter((repair) => !todoOnly || repair.availableActions.length > 0);
+    ));
     return { repairs, total, page, pageSize };
   }
 
   async function getRepair({ authContext, requestedTeamId, method = 'GET', repairId }) {
     const context = assertBusinessContext(authContext);
-    const { filter } = await readFilter({ authContext: context, requestedTeamId, method, repairId });
+    const canViewEquipment = context.permissionKeys.includes('equipment.view');
+    const permissionKey = canViewEquipment ? 'equipment.view' : 'equipment.repair';
+    const { filter } = await readFilter({
+      authContext: context,
+      requestedTeamId,
+      method,
+      repairId,
+      permissionKey
+    });
     let document = await EquipmentRepairOrderModel.findOne(filter).lean();
+    if (document && !canViewEquipment && (await resolveAllowedActions(context, document)).length === 0) {
+      document = null;
+    }
     if (!document && context.mode === SESSION_MODES.TEAM) {
       const candidate = await EquipmentRepairOrderModel.findOne({
         _id: normalizeDetailId(repairId),
@@ -1254,7 +1270,8 @@ function createEquipmentRepairService({
     const { filter } = await readFilter({
       authContext: context,
       method: 'POST',
-      repairId
+      repairId,
+      permissionKey: 'equipment.repair'
     });
     const normalizedRepairId = normalizeDetailId(repairId);
     const noteRequired = [

@@ -256,6 +256,14 @@ export function isRoutineScheduleExecutable(entry = {}) {
   return Boolean(selectExecutableRoutinePlan(entry?.plans))
 }
 
+export function isRoutinePlanRestDaySelectable(entry = {}) {
+  return (
+    entry?.routineType === ROUTINE_TYPES.INSPECTION &&
+    entry?.restDayEligible === true &&
+    Boolean(entry?.planId)
+  )
+}
+
 export function routineExecutionStatusLabel(entry = {}) {
   const status = entry?.executionStatus || ''
   if (status === 'REST_DAY' || entry?.plan?.cancellationReason === 'REST_DAY') return '本日休班'

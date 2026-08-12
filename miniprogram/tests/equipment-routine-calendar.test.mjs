@@ -48,7 +48,7 @@ test('scan page places the calendar in the open grid slot and refreshes after ex
   assert.match(apiSource, /equipment\/\$\{equipmentId\}\/routine-calendar/)
   const maintenanceIndex = scanSource.indexOf('>保养记录</button>')
   const calendarIndex = scanSource.indexOf('>点检日历</button>')
-  const restDayIndex = scanSource.indexOf('>本日休班，设备不需点检</button>')
+  const restDayIndex = scanSource.indexOf('>所选计划设为休班</button>')
   assert.ok(maintenanceIndex >= 0 && maintenanceIndex < calendarIndex)
   assert.ok(calendarIndex < restDayIndex)
   assert.match(scanSource, /pages\/equipment\/routine-calendar\?\$\{query\}/)
@@ -74,4 +74,15 @@ test('calendar page includes month navigation, Monday-first headings, retry, and
   }
   assert.match(calendarSource, /@click="loadCalendar">重新加载<\/button>/)
   assert.match(calendarSource, /teamId\.value \? \{ teamId: teamId\.value \}/)
+})
+
+test('calendar uses the final customer colors with stronger green and red contrast', () => {
+  assert.match(calendarSource, /\.day-normal \{ border-color: #2f9e5b; background: #c8ead4; \}/)
+  assert.match(calendarSource, /\.day-abnormal \{ border-color: #d94a42; background: #ffd6d2; \}/)
+  assert.match(calendarSource, /\.day-rest \{ border-color: #3b82f6; background: #dbeafe; \}/)
+  assert.match(calendarSource, /\.day-pending \{ border-color: #cbd5e1; background: #fff; \}/)
+  assert.match(calendarSource, /\.legend-dot\.day-normal \{ background: #c8ead4; border-color: #2f9e5b; \}/)
+  assert.match(calendarSource, /\.legend-dot\.day-abnormal \{ background: #ffd6d2; border-color: #d94a42; \}/)
+  assert.match(calendarSource, /\.legend-dot\.day-rest \{ background: #dbeafe; border-color: #3b82f6; \}/)
+  assert.match(calendarSource, /\.legend-dot\.day-pending \{ background: #fff; border-color: #cbd5e1; \}/)
 })

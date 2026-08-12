@@ -182,7 +182,7 @@ router.put(
   equipmentEdit,
   equipmentRepairController.updateLocations
 );
-router.get('/repairs', equipmentView, equipmentRepairController.list);
+router.get('/repairs', equipmentRepairController.list);
 router.post(
   '/repairs',
   requireTeamContext,
@@ -190,7 +190,7 @@ router.post(
   equipmentRepair,
   equipmentRepairController.create
 );
-router.get('/repairs/:repairId', equipmentView, equipmentRepairController.get);
+router.get('/repairs/:repairId', equipmentRepairController.get);
 router.post(
   '/repairs/:repairId/actions',
   requireTeamContext,

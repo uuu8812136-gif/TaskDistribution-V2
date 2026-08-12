@@ -25,7 +25,7 @@
           :disabled="selectedRestDayPlanIds.length === 0"
           @click="markSelectedPlansRestDay"
         >
-          本日休班，设备不需点检
+          所选计划设为休班
         </el-button>
         <el-button
           v-if="activeTab === 'records' && canExport"
@@ -107,6 +107,19 @@
       <el-tab-pane label="执行记录" name="records" />
       <el-tab-pane label="异常处理" name="exceptions" />
     </el-tabs>
+
+    <el-alert
+      v-if="loadError"
+      :title="loadError"
+      type="error"
+      :closable="false"
+      show-icon
+      class="load-error-alert"
+    >
+      <template #default>
+        <el-button type="primary" plain :loading="loading" @click="loadActiveTab">重新加载</el-button>
+      </template>
+    </el-alert>
 
     <section v-if="activeTab === 'plans'" class="table-shell">
       <el-table
@@ -397,7 +410,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -417,6 +430,7 @@ import {
 import { downloadFileBlob } from '@/api/file'
 import {
   createRoutineRecordPhotoRequestGuard,
+  isRoutinePlanRestDaySelectable,
   loadRoutineRecordPhotoPreview,
   routinePlanCancellationReasonLabel,
   routineRecordChecklistItems,
@@ -435,6 +449,7 @@ const router = useRouter()
 const ROUTINE_TABS = new Set(['plans', 'records', 'exceptions'])
 const requestedTab = String(route.query.tab || '')
 const loading = ref(false)
+const loadError = ref('')
 const exporting = ref(false)
 const submitting = ref(false)
 const restDaySubmitting = ref(false)
@@ -545,7 +560,9 @@ const recordPlanWindow = (row) => routineRecordPlanWindow(row)
 const recordPlateNumber = (row) => routineRecordPlateNumber(row)
 const recordPerformerName = (row) => routineRecordPerformerName(row)
 const stageLabel = (value) => stages[value] || value || '-'
-const canSelectRestDayPlan = (row) => canMarkRestDay.value && row?.restDayEligible === true
+const canSelectRestDayPlan = (row) => (
+  canMarkRestDay.value && isRoutinePlanRestDaySelectable(row)
+)
 const displayWatermark = (row, photo) => {
   const existing = String(photo?.watermarkText || '').trim()
   const location = String(photo?.address || row?.equipment?.location || '').trim()
@@ -695,6 +712,7 @@ async function loadActiveTab() {
   const requestedPlanId = focusedPlanId.value
   const requestedExceptionId = focusedExceptionId.value
   loading.value = true
+  loadError.value = ''
   try {
     const result = tab === 'plans'
       ? await getEquipmentRoutinePlans(params)
@@ -755,6 +773,16 @@ async function loadActiveTab() {
     }
     if (requestId !== activeTabRequestId) return
     total.value = Number(result.total || 0)
+  } catch (error) {
+    if (
+      requestId !== activeTabRequestId ||
+      requestedTeamId !== String(requestTeam.value.teamId || '')
+    ) return
+    if (tab === 'plans') plans.value = []
+    if (tab === 'records') records.value = []
+    if (tab === 'exceptions') exceptions.value = []
+    total.value = 0
+    loadError.value = requestErrorMessage(error, '工作台数据加载失败，请重试')
   } finally {
     if (requestId === activeTabRequestId) loading.value = false
   }
@@ -770,8 +798,8 @@ async function markSelectedPlansRestDay() {
   if (!selectedRestDayPlanIds.value.length || restDaySubmitting.value) return
   try {
     await ElMessageBox.confirm(
-      `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划设为“休班”吗？`,
-      '本日休班，设备不需点检',
+      `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划按各自计划日期设为“休班”吗？`,
+      '所选计划设为休班',
       {
         confirmButtonText: '确认休班',
         cancelButtonText: '取消',
@@ -869,6 +897,7 @@ async function changeTab() {
   records.value = []
   exceptions.value = []
   total.value = 0
+  loadError.value = ''
   filters.page = 1
   focusedExceptionId.value = activeTab.value === 'exceptions' ? focusedExceptionId.value : ''
   focusedPlanId.value = activeTab.value === 'plans' ? focusedPlanId.value : ''
@@ -883,6 +912,25 @@ async function changeTab() {
   await loadActiveTab()
 }
 
+watch(() => route.query.tab, async (requestedRouteTab) => {
+  const routedTab = String(requestedRouteTab || '')
+  const nextTab = ROUTINE_TABS.has(routedTab) ? routedTab : 'plans'
+  if (nextTab === activeTab.value) return
+  closeRecordDetail()
+  ++activeTabRequestId
+  loading.value = false
+  activeTab.value = nextTab
+  plans.value = []
+  records.value = []
+  exceptions.value = []
+  total.value = 0
+  loadError.value = ''
+  filters.page = 1
+  focusedExceptionId.value = nextTab === 'exceptions' ? String(route.query.exceptionId || '') : ''
+  focusedPlanId.value = nextTab === 'plans' ? String(route.query.planId || '') : ''
+  await loadActiveTab()
+})
+
 async function changeTeam() {
   closeRecordDetail()
   ++activeTabRequestId
@@ -894,6 +942,7 @@ async function changeTeam() {
   equipmentOptions.value = []
   orgUnitOptions.value = []
   total.value = 0
+  loadError.value = ''
   filters.equipmentId = ''
   filters.orgUnitId = ''
   filters.page = 1

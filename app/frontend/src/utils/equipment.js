@@ -104,6 +104,15 @@ export function isRoutineScheduleExecutable(entry = {}) {
   return Boolean(selectExecutableRoutinePlan(entry?.plans))
 }
 
+const OPEN_ROUTINE_PLAN_STATUSES = new Set(['PLANNED', 'IN_WINDOW', 'OVERDUE'])
+
+export function isRoutinePlanRestDaySelectable(plan = {}) {
+  return (
+    plan?.restDayEligible === true &&
+    OPEN_ROUTINE_PLAN_STATUSES.has(String(plan?.status || '').toUpperCase())
+  )
+}
+
 export function routineExecutionStatusLabel(entry = {}) {
   if (entry?.executionStatus === 'REST_DAY') return '本日休班'
   if (entry?.executionStatus === 'NOT_STARTED') return '未到开始时间'
@@ -114,8 +123,8 @@ export function routineExecutionStatusLabel(entry = {}) {
 }
 
 const ROUTINE_PLAN_CANCELLATION_REASON_LABELS = Object.freeze({
-  REST_DAY: '本日休班，设备不需点检',
-  OFF_DUTY_TODAY: '本日休班，设备不需点检',
+  REST_DAY: '该计划日期休班，设备不需点检',
+  OFF_DUTY_TODAY: '该计划日期休班，设备不需点检',
   RULE_CHANGED: '点检或保养规则已调整，原未执行计划已作废',
   RULE_UPDATED: '点检或保养规则已调整，原未执行计划已作废',
   RULE_VERSION_CHANGED: '点检或保养规则已调整，原未执行计划已作废',

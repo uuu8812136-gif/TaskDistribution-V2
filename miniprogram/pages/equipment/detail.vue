@@ -24,7 +24,7 @@
           :loading="restDaySubmitting"
           :disabled="restDaySubmitting || selectedRestDayPlanIds.length === 0"
           @click="markRestDay"
-        >本日休班，设备不需点检</button>
+        >所选计划设为休班</button>
       </view>
       <view class="record-actions">
         <button class="inspection-record-button" @click="openRoutineRecords('INSPECTION')">点检记录</button>
@@ -116,6 +116,7 @@ import {
   dueStateTone,
   expandRoutineScheduleTasks,
   groupRoutineSchedules,
+  isRoutinePlanRestDaySelectable,
   isRoutineScheduleExecutable,
   loadEquipmentMonthlyActivity,
   normalizeRoutineSchedules,
@@ -165,9 +166,7 @@ export default {
     const canExecute = (entry) => hasExecutionPermission(entry) && isRoutineScheduleExecutable(entry)
     const canMarkRestDay = (entry) => (
       canUseRestDay.value &&
-      entry?.routineType === 'INSPECTION' &&
-      entry?.restDayEligible === true &&
-      Boolean(entry?.planId)
+      isRoutinePlanRestDaySelectable(entry)
     )
     const isRestDaySelected = (entry) => selectedRestDayPlanIds.value.includes(entry?.planId)
     const toggleRestDay = (entry) => {
@@ -179,8 +178,8 @@ export default {
     }
     const confirmRestDay = () => new Promise((resolve) => {
       uni.showModal({
-        title: '本日休班，设备不需点检',
-        content: `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划设为休班吗？`,
+        title: '所选计划设为休班',
+        content: `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划按各自计划日期设为休班吗？`,
         confirmText: '确认休班',
         success: ({ confirm }) => resolve(confirm),
         fail: () => resolve(false)

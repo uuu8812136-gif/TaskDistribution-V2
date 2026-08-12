@@ -201,7 +201,7 @@
         <div class="main-content">
           <router-view v-slot="{ Component }">
             <transition name="fade" mode="out-in">
-              <component :is="Component" :key="`${route.fullPath}:${session.contextEpoch}`" />
+              <component :is="Component" :key="routedComponentKey" />
             </transition>
           </router-view>
         </div>
@@ -254,6 +254,7 @@ import { useSessionStore } from '@/stores/session'
 import { canViewAudit } from '@/utils/auditLog'
 import { synchronizeRememberedPassword } from '@/utils/rememberedLogin'
 import { isTaskLeadershipCandidateContext } from '@/utils/taskPolicy'
+import { routeComponentKey } from '@/utils/routeComponentKey'
 
 const route = useRoute()
 const router = useRouter()
@@ -268,6 +269,7 @@ const canAccessContractModule = computed(() => session.hasPermission([
   'contract.expiry.view',
   'contract.settlement.view'
 ], 'any'))
+const routedComponentKey = computed(() => routeComponentKey(route, session.contextEpoch))
 const canManageOrganization = computed(() => (
   session.isTeamMode &&
   session.hasPermission('org.manage') &&

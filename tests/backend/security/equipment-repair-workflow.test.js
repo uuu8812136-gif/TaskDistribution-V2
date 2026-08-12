@@ -517,6 +517,8 @@ test('concurrent leader restoration serializes before supervisor repair approval
 test('parts repair allows dynamic rows, server-side amount calculation, and assistant substitute', async () => {
   const service = createService();
   const role = actors();
+  await persistActorMembership(role.assistant, { permissionKeys: ['equipment.repair'] });
+  await persistActorMembership(role.manager, { permissionKeys: ['equipment.repair'] });
   let repair = await service.createRepair({
     authContext: role.creator,
     input: {
@@ -548,42 +550,68 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
   });
   assert.equal(repair.totalAmount, 27.68);
   assert.deepEqual(repair.partItems.map((item) => item.amount), [24.68, 3]);
-  await persistActorMembership(role.assistant);
-  await persistActorMembership(role.manager);
   const assistantWithOrgScope = authContext({
     teamId: fixtures.teamA._id,
     orgUnitId: fixtures.orgA2._id,
     userId: role.assistant.userId,
     positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT,
-    scope: permissions.DATA_SCOPES.ORG_UNIT
+    scope: permissions.DATA_SCOPES.ORG_UNIT,
+    permissionKeys: ['equipment.repair']
   });
   const assistantTodo = await service.listRepairs({
     authContext: assistantWithOrgScope,
     query: { todo: true }
   });
   assert.equal(assistantTodo.total, 1);
+  assert.equal(assistantTodo.total, assistantTodo.repairs.length);
   assert.equal(assistantTodo.repairs[0]._id, repair._id);
   assert.ok(assistantTodo.repairs[0].availableActions.includes('DEPUTY_APPROVE'));
+  assert.ok(await Message.exists({
+    recipient: role.assistant.userId,
+    'extraData.repairId': repair._id,
+    'extraData.status': 'DEPUTY_APPROVAL_PENDING'
+  }));
   assert.equal((await service.getRepair({
     authContext: assistantWithOrgScope,
     repairId: repair._id
   }))._id, repair._id);
-  repair = await action(service, role.assistant, repair, 'DEPUTY_APPROVE', { note: '同意价格' });
+  await assert.rejects(service.listRepairs({
+    authContext: authContext({
+      teamId: fixtures.teamA._id,
+      orgUnitId: fixtures.orgA2._id,
+      userId: role.assistant.userId,
+      positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT,
+      permissionKeys: ['equipment.view']
+    }),
+    query: { todo: true }
+  }), (error) => error.status === 403);
+  await assert.rejects(service.listRepairs({
+    authContext: assistantWithOrgScope,
+    query: {}
+  }), (error) => error.status === 403);
+  repair = await action(service, assistantWithOrgScope, repair, 'DEPUTY_APPROVE', { note: '同意价格' });
   assert.equal(repair.status, 'MANAGER_APPROVAL_PENDING');
   const managerWithOrgScope = authContext({
     teamId: fixtures.teamA._id,
     orgUnitId: fixtures.orgA2._id,
     userId: role.manager.userId,
     positionKey: permissions.POSITION_KEYS.DEPARTMENT_MANAGER,
-    scope: permissions.DATA_SCOPES.ORG_UNIT
+    scope: permissions.DATA_SCOPES.ORG_UNIT,
+    permissionKeys: ['equipment.repair']
   });
   const managerTodo = await service.listRepairs({
     authContext: managerWithOrgScope,
     query: { todo: true }
   });
   assert.equal(managerTodo.total, 1);
+  assert.equal(managerTodo.total, managerTodo.repairs.length);
   assert.equal(managerTodo.repairs[0]._id, repair._id);
-  repair = await action(service, role.manager, repair, 'MANAGER_APPROVE', { note: '同意结案' });
+  assert.ok(await Message.exists({
+    recipient: role.manager.userId,
+    'extraData.repairId': repair._id,
+    'extraData.status': 'MANAGER_APPROVAL_PENDING'
+  }));
+  repair = await action(service, managerWithOrgScope, repair, 'MANAGER_APPROVE', { note: '同意结案' });
   assert.equal(repair.status, 'COMPLETED');
   assert.match(repair.summaryText, /设备编码：FC-A1-001/);
   assert.match(repair.summaryText, /维修金额：27\.68元/);

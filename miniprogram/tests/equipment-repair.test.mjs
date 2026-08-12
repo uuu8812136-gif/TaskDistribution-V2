@@ -33,6 +33,8 @@ test('mini program part rows and preview amounts are deterministic', () => {
 test('mini program repair controls stay compact and expose locations, album photos, and readable history', () => {
   const form = readFileSync(new URL('../pages/equipment/repair-form.vue', import.meta.url), 'utf8')
   const detail = readFileSync(new URL('../pages/equipment/repair-detail.vue', import.meta.url), 'utf8')
+  const list = readFileSync(new URL('../pages/equipment/repair-list.vue', import.meta.url), 'utf8')
+  const workbench = readFileSync(new URL('../pages/workbench/index.vue', import.meta.url), 'utf8')
 
   assert.deepEqual(REPAIR_TYPES.map((item) => item.shortLabel), [
     '故障报修',
@@ -48,6 +50,12 @@ test('mini program repair controls stay compact and expose locations, album phot
   assert.match(detail, /grid-column: 1 \/ -1/)
   assert.match(detail, /item\.actorName \|\| '未知操作人'/)
   assert.match(detail, /repairPositionLabel\(item\.actorPositionKey\)/)
+  assert.match(list, /class="empty-icon">修<\/text>/)
+  assert.match(list, /新的审批任务会显示在这里/)
+  assert.match(list, /维修记录加载失败/)
+  assert.match(list, /未找到匹配记录/)
+  assert.match(list, /class="retry-button" @click="refresh"/)
+  assert.match(workbench, /v-if="canRepair" class="module-row" @click="openRepairs"/)
 })
 
 test('global read-only repair navigation carries an explicit team through list, detail, and files', () => {

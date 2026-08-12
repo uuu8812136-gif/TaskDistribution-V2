@@ -3505,7 +3505,7 @@ test('future plans stay blocked and a stale PLANNED status becomes executable on
   assert.equal((await EquipmentRoutinePlan.findById(plan._id).lean()).status, 'COMPLETED');
 });
 
-test('rest day cancellation is current-day inspection only, scoped, idempotent, and audited', async () => {
+test('rest day cancellation accepts current or overdue inspection plans, stays scoped, idempotent, and audited', async () => {
   const now = new Date('2030-01-15T02:00:00.000Z');
   const inspectionRule = await createRule(
     createEquipmentRoutineService({ clock: () => new Date(now) }),
@@ -3553,7 +3553,8 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
       ruleSnapshot: inspectionRule,
       routineType: 'INSPECTION',
       cycleKey: 'rest-day-overdue',
-      dueAt: new Date('2030-01-15T01:00:00.000Z'),
+      scheduledFor: new Date('2030-01-14T00:00:00.000Z'),
+      dueAt: new Date('2030-01-14T04:00:00.000Z'),
       status: 'OVERDUE'
     },
     {
@@ -3600,7 +3601,7 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
   await assert.rejects(workflow.markPlansRestDay({
     authContext: fixture.contexts.manager,
     input: { planIds: [String(futurePlan._id)] }
-  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_REST_DAY_CURRENT_DATE_ONLY');
+  }), (error) => error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN');
   await assert.rejects(workflow.markPlansRestDay({
     authContext: fixture.contexts.employee,
     input: { planIds: [String(hiddenPlan._id)] }
@@ -3621,6 +3622,8 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
   assert.equal(overdueCancelled.cancelledCount, 1);
   assert.equal(overdueCancelled.plans[0].status, 'CANCELLED');
   assert.equal(overdueCancelled.plans[0].cancellationReason, 'REST_DAY');
+  assert.equal((await EquipmentRoutinePlan.findById(inspectionPlan._id).lean()).status, 'PLANNED');
+  assert.equal((await EquipmentRoutinePlan.findById(futurePlan._id).lean()).status, 'PLANNED');
 
   const cancelled = await workflow.markPlansRestDay({
     authContext: fixture.contexts.employee,
@@ -3632,7 +3635,7 @@ test('rest day cancellation is current-day inspection only, scoped, idempotent, 
   assert.equal(cancelled.plans[0].windowName, '休班');
   assert.equal(cancelled.plans[0].originalWindowName, '白班');
   assert.equal(cancelled.plans[0].cancellationReason, 'REST_DAY');
-  assert.equal(cancelled.plans[0].cancellationReasonLabel, '本日休班，设备不需点检');
+  assert.equal(cancelled.plans[0].cancellationReasonLabel, '该计划日期休班，设备不需点检');
   assert.equal(cancelled.plans[0].cancelledBy, String(fixture.ids.employee));
   const persisted = await EquipmentRoutinePlan.findById(inspectionPlan._id).lean();
   assert.equal(persisted.windowName, '白班');

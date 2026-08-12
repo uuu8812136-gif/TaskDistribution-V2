@@ -20,7 +20,7 @@
       <button @click="applySearch">查询</button>
     </view>
 
-    <view class="repair-list">
+    <view v-if="!loadError && repairs.length" class="repair-list">
       <view v-for="item in repairs" :key="item._id" class="repair-row" @click="openDetail(item)">
         <view class="row-heading">
           <view class="asset-copy">
@@ -44,8 +44,20 @@
       </view>
     </view>
 
-    <view v-if="!loading && repairs.length === 0" class="empty-state">
-      {{ mode === 'todo' ? '当前没有维修待办' : '暂无维修记录' }}
+    <view v-if="!loading && loadError" class="empty-state error-state">
+      <text class="empty-icon error-icon">!</text>
+      <text class="empty-title">维修记录加载失败</text>
+      <text class="empty-description">{{ loadError }}</text>
+      <button class="retry-button" @click="refresh">重新加载</button>
+    </view>
+    <view v-else-if="!loading && repairs.length === 0" class="empty-state">
+      <text class="empty-icon">修</text>
+      <text class="empty-title">
+        {{ keyword.trim() ? '未找到匹配记录' : (mode === 'todo' ? '当前没有维修待办' : '暂无维修记录') }}
+      </text>
+      <text class="empty-description">
+        {{ keyword.trim() ? '请更换关键词后重新查询' : (mode === 'todo' ? '新的审批任务会显示在这里' : '可调整查询条件或扫码发起维修') }}
+      </text>
     </view>
     <button v-if="hasMore" class="load-more" :loading="loading" @click="loadMore">
       {{ loading ? '加载中' : '加载更多' }}
@@ -83,6 +95,7 @@ export default {
     const pageSize = 20
     const total = ref(0)
     const loading = ref(false)
+    const loadError = ref('')
     const requestGate = createLatestRequestGate()
     const teamId = ref('')
     const teamOptions = computed(() => userStore.teams || [])
@@ -116,6 +129,7 @@ export default {
         teamId: teamId.value
       })
       loading.value = true
+      loadError.value = ''
       try {
         const result = await getEquipmentRepairs({
           todo: request.mode === 'todo' ? true : undefined,
@@ -130,10 +144,12 @@ export default {
           : (result.repairs || [])
         total.value = Number(result.total) || 0
       } catch (error) {
-        if (requestGate.isCurrent(request) && request.append && page.value === request.page) {
-          page.value = Math.max(1, request.page - 1)
+        if (requestGate.isCurrent(request)) {
+          if (request.append && page.value === request.page) {
+            page.value = Math.max(1, request.page - 1)
+          }
+          loadError.value = requestErrorMessage(error, '无法加载维修记录')
         }
-        throw error
       } finally {
         if (requestGate.isCurrent(request)) loading.value = false
       }
@@ -210,6 +226,7 @@ export default {
       keyword,
       repairs,
       loading,
+      loadError,
       hasMore,
       canCreate,
       teamOptions,
@@ -221,6 +238,7 @@ export default {
       openDetail,
       onTeamChange,
       scanToCreate,
+      refresh,
       repairStatusLabel,
       repairStatusTone,
       repairTypeLabel,
@@ -260,6 +278,11 @@ export default {
 .row-meta { display: flex; flex-wrap: wrap; gap: 10rpx 24rpx; margin-top: 16rpx; color: #52606d; font-size: 22rpx; }
 .row-footer { display: flex; align-items: center; justify-content: space-between; gap: 18rpx; margin-top: 16rpx; padding-top: 14rpx; border-top: 1px dashed #dce4ee; color: #667085; font-size: 22rpx; }
 .detail-link { color: #1677ff; }
-.empty-state { padding: 180rpx 20rpx; color: #909399; text-align: center; font-size: 25rpx; }
+.empty-state { display: flex; flex-direction: column; align-items: center; padding: 88rpx 20rpx 96rpx; text-align: center; }
+.empty-icon { display: flex; align-items: center; justify-content: center; width: 76rpx; height: 76rpx; border: 1px solid #c9d7e8; border-radius: 50%; color: #356a55; background: #f2f8f5; font-size: 30rpx; font-weight: 600; line-height: 76rpx; }
+.empty-title { margin-top: 22rpx; color: #344054; font-size: 27rpx; font-weight: 600; }
+.empty-description { margin-top: 10rpx; color: #7b8794; font-size: 23rpx; line-height: 1.55; }
+.error-icon { color: #b42318; border-color: #f2c2bd; background: #fff5f4; }
+.retry-button { width: 180rpx; height: 64rpx; margin: 24rpx 0 0; border: 1px solid #b8c7d9; border-radius: 8rpx; color: #245d3f; background: #fff; font-size: 23rpx; line-height: 62rpx; }
 .load-more { height: 72rpx; margin: 22rpx 0; border-radius: 8rpx; color: #52606d; background: #fff; font-size: 24rpx; line-height: 72rpx; }
 </style>

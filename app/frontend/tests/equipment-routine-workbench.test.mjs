@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   buildRoutineRulePayload,
   createRoutineRecordPhotoRequestGuard,
+  isRoutinePlanRestDaySelectable,
   loadRoutineRecordPhotoPreview,
   routinePlanCancellationReasonLabel,
   routineRecordChecklistItems,
@@ -12,6 +13,7 @@ import {
   routineRecordPlanWindow,
   routineRecordPlateNumber
 } from '../src/utils/equipment.js'
+import { routeComponentKey } from '../src/utils/routeComponentKey.js'
 
 const workbenchSource = readFileSync(
   new URL('../src/views/equipment/EquipmentRoutineWorkbench.vue', import.meta.url),
@@ -31,6 +33,10 @@ const detailSource = readFileSync(
 )
 const routerSource = readFileSync(
   new URL('../src/router/index.js', import.meta.url),
+  'utf8'
+)
+const mainLayoutSource = readFileSync(
+  new URL('../src/layouts/MainLayout.vue', import.meta.url),
   'utf8'
 )
 
@@ -89,6 +95,61 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /添加窗口/)
   assert.match(ruleDialogSource, /inspectionEscalationMinutes/)
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
+})
+
+test('routine workbench keeps its component mounted while tab query parameters change', () => {
+  assert.match(routerSource, /path:\s*'equipment\/routines'[\s\S]*reuseQueryKeys:\s*\['tab'\]/)
+  assert.match(mainLayoutSource, /const routedComponentKey = computed/)
+  assert.match(mainLayoutSource, /routeComponentKey\(route, session\.contextEpoch\)/)
+  assert.match(workbenchSource, /watch\(\(\) => route\.query\.tab/)
+  assert.match(workbenchSource, /const nextTab = ROUTINE_TABS\.has\(routedTab\) \? routedTab : 'plans'/)
+  assert.match(workbenchSource, /if \(nextTab === activeTab\.value\) return/)
+
+  const base = {
+    path: '/equipment/routines',
+    meta: { reuseQueryKeys: ['tab'] },
+    query: { tab: 'plans', teamId: 'team-a', planId: 'plan-a' },
+    hash: ''
+  }
+  assert.equal(
+    routeComponentKey(base, 3),
+    routeComponentKey({ ...base, query: { ...base.query, tab: 'records' } }, 3)
+  )
+  assert.notEqual(
+    routeComponentKey(base, 3),
+    routeComponentKey({ ...base, query: { ...base.query, teamId: 'team-b' } }, 3)
+  )
+  assert.notEqual(
+    routeComponentKey(base, 3),
+    routeComponentKey({ ...base, query: { ...base.query, planId: 'plan-b' } }, 3)
+  )
+  assert.notEqual(routeComponentKey(base, 3), routeComponentKey(base, 4))
+})
+
+test('routine workbench keeps an actionable page when an active API request fails', () => {
+  assert.match(workbenchSource, /v-if="loadError"/)
+  assert.match(workbenchSource, />重新加载<\/el-button>/)
+  assert.match(workbenchSource, /const loadError = ref\(''\)/)
+  assert.match(workbenchSource, /catch \(error\) \{[\s\S]*requestId !== activeTabRequestId/)
+  assert.match(workbenchSource, /loadError\.value = requestErrorMessage\(error, '工作台数据加载失败，请重试'\)/)
+  assert.match(workbenchSource, /if \(tab === 'plans'\) plans\.value = \[\]/)
+  assert.match(workbenchSource, /if \(tab === 'records'\) records\.value = \[\]/)
+  assert.match(workbenchSource, /if \(tab === 'exceptions'\) exceptions\.value = \[\]/)
+})
+
+test('only open routine plans approved by the server can be selected for rest day', () => {
+  for (const status of ['PLANNED', 'IN_WINDOW', 'OVERDUE']) {
+    assert.equal(isRoutinePlanRestDaySelectable({ status, restDayEligible: true }), true)
+  }
+  for (const status of ['COMPLETED', 'CANCELLED']) {
+    assert.equal(isRoutinePlanRestDaySelectable({ status, restDayEligible: true }), false)
+  }
+  assert.equal(isRoutinePlanRestDaySelectable({ status: 'OVERDUE', restDayEligible: false }), false)
+  assert.equal(isRoutinePlanRestDaySelectable({ status: 'OVERDUE' }), false)
+  assert.match(workbenchSource, /canMarkRestDay\.value && isRoutinePlanRestDaySelectable\(row\)/)
+  assert.match(workbenchSource, /planIds:\s*\[\.\.\.selectedRestDayPlanIds\.value\]/)
+  assert.match(workbenchSource, />\s*所选计划设为休班\s*</)
+  assert.match(workbenchSource, /按各自计划日期设为“休班”/)
 })
 
 test('authorized routine managers can run an immediate plan catch-up without restarting the server', () => {
@@ -161,7 +222,7 @@ test('routine record layout fits a 1366px desktop and keeps a compact narrow-scr
 test('routine plan cancellation labels explain known causes and do not guess missing history', () => {
   assert.equal(
     routinePlanCancellationReasonLabel({ status: 'CANCELLED', cancellationReason: 'REST_DAY' }),
-    '本日休班，设备不需点检'
+    '该计划日期休班，设备不需点检'
   )
   assert.equal(
     routinePlanCancellationReasonLabel({ status: 'CANCELLED', cancelReason: 'RULE_UPDATED' }),

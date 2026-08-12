@@ -12,6 +12,7 @@ import {
   effectiveRoutineDueState,
   expandRoutineScheduleTasks,
   groupRoutineSchedules,
+  isRoutinePlanRestDaySelectable,
   isRoutineScheduleExecutable,
   lookupEquipmentFromQr,
   loadEquipmentMonthlyActivity,
@@ -365,6 +366,50 @@ test('mobile routine lists expand every plan into one dated task and keep rest-d
   assert.equal(tasks[1].executable, false)
 })
 
+test('mobile keeps yesterday overdue plans executable and applies rest day only to selected plan ids', () => {
+  const now = new Date()
+  const hour = 60 * 60 * 1000
+  const rule = {
+    _id: '507f1f77bcf86cd799439311',
+    routineType: 'INSPECTION',
+    name: '叉车点检',
+    schedule: { mode: 'CALENDAR', calendar: { unit: 'DAY', interval: 1 } }
+  }
+  const tasks = expandRoutineScheduleTasks([{
+    rule,
+    ruleId: rule._id,
+    routineType: 'INSPECTION',
+    plans: [
+      {
+        _id: '507f1f77bcf86cd799439312',
+        status: 'OVERDUE',
+        scheduledFor: new Date(now.getTime() - (26 * hour)).toISOString(),
+        dueAt: new Date(now.getTime() - (24 * hour)).toISOString(),
+        restDayEligible: true
+      },
+      {
+        _id: '507f1f77bcf86cd799439313',
+        status: 'IN_WINDOW',
+        scheduledFor: new Date(now.getTime() - hour).toISOString(),
+        dueAt: new Date(now.getTime() + hour).toISOString(),
+        restDayEligible: true
+      }
+    ]
+  }], now)
+
+  assert.equal(tasks.length, 2)
+  assert.equal(tasks[0].dueState, 'OVERDUE')
+  assert.equal(tasks[0].executable, true)
+  assert.equal(isRoutineScheduleExecutable(tasks[0]), true)
+  assert.equal(isRoutinePlanRestDaySelectable(tasks[0]), true)
+  assert.equal(tasks[1].dueState, 'DUE')
+  assert.equal(tasks[1].executable, true)
+  assert.equal(isRoutinePlanRestDaySelectable(tasks[1]), true)
+  assert.match(equipmentScanSource, /isRoutinePlanRestDaySelectable\(entry\)/)
+  assert.match(equipmentScanSource, /planIds: \[\.\.\.selectedRestDayPlanIds\.value\]/)
+  assert.doesNotMatch(equipmentScanSource, /planIds:\s*scheduleTasks\.value/)
+})
+
 test('mini-program surfaces schedule periods and the authoritative runtime reading history', () => {
   assert.match(equipmentScanSource, /scheduleDescription\(entry\.rule\.schedule\)/)
   assert.match(equipmentScanSource, /expandRoutineScheduleTasks\(schedules\.value\)/)
@@ -553,8 +598,10 @@ test('routine camera photos are burned into a canvas file before upload without 
   assert.doesNotMatch(executePageSource, /path:\s*file\.tempFilePath/)
   assert.match(executePageSource, /title:\s*'水印照片生成失败'/)
   assert.match(executePageSource, /if \(!photo\.fileId\) photo\.fileId = await uploadEquipmentRoutinePhoto\(photo\)/)
-  assert.match(equipmentScanSource, /本日休班，设备不需点检/)
-  assert.match(equipmentDetailSource, /本日休班，设备不需点检/)
+  assert.match(equipmentScanSource, /所选计划设为休班/)
+  assert.match(equipmentDetailSource, /所选计划设为休班/)
+  assert.match(equipmentScanSource, /按各自计划日期设为休班/)
+  assert.match(equipmentDetailSource, /按各自计划日期设为休班/)
   assert.match(equipmentScanSource, /markEquipmentRoutinePlansRestDay/)
 })
 

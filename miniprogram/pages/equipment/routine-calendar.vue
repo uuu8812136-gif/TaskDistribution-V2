@@ -155,10 +155,10 @@ export default {
 .week-label { padding: 8rpx 0; color: #64748b; text-align: center; font-size: 22rpx; }
 .day-cell { min-height: 86rpx; padding: 10rpx 4rpx; box-sizing: border-box; border: 1px solid #dce4ee; border-radius: 6rpx; text-align: center; }
 .day-blank { border-color: transparent; background: transparent; }
-.day-normal { border-color: #a9d6bb; background: #eaf7ef; }
+.day-normal { border-color: #2f9e5b; background: #c8ead4; }
 .day-pending { border-color: #cbd5e1; background: #fff; }
-.day-abnormal { border-color: #efb4af; background: #fff0ef; }
-.day-rest { border-color: #d7dde5; background: #eef1f4; }
+.day-abnormal { border-color: #d94a42; background: #ffd6d2; }
+.day-rest { border-color: #3b82f6; background: #dbeafe; }
 .day-number, .day-count { display: block; }
 .day-number { color: #1f2733; font-size: 25rpx; font-weight: 600; }
 .day-count { margin-top: 5rpx; color: #64748b; font-size: 18rpx; }
@@ -166,10 +166,10 @@ export default {
 .legend-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14rpx 22rpx; margin-top: 22rpx; padding-top: 18rpx; border-top: 1px solid #e8edf3; }
 .legend-item { display: flex; align-items: center; gap: 10rpx; color: #52606d; font-size: 21rpx; }
 .legend-dot { width: 24rpx; height: 24rpx; border: 1px solid #dce4ee; border-radius: 4rpx; box-sizing: border-box; }
-.legend-dot.day-normal { background: #eaf7ef; border-color: #a9d6bb; }
+.legend-dot.day-normal { background: #c8ead4; border-color: #2f9e5b; }
 .legend-dot.day-pending { background: #fff; border-color: #cbd5e1; }
-.legend-dot.day-abnormal { background: #fff0ef; border-color: #efb4af; }
-.legend-dot.day-rest { background: #eef1f4; border-color: #d7dde5; }
+.legend-dot.day-abnormal { background: #ffd6d2; border-color: #d94a42; }
+.legend-dot.day-rest { background: #dbeafe; border-color: #3b82f6; }
 .state-band { margin-top: 20rpx; padding: 80rpx 30rpx; text-align: center; }
 .state-title, .state-copy { display: block; }
 .state-title { color: #1f2733; font-size: 29rpx; font-weight: 600; }
