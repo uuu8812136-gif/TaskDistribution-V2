@@ -854,7 +854,8 @@ test('concurrent submissions without a pre-generated plan create only one record
   assert.equal(submissions.filter(({ status }) => status === 'rejected').length, 1);
   assert.ok([
     'EQUIPMENT_ROUTINE_PERIOD_COMPLETED',
-    'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+    'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN',
+    'EQUIPMENT_ROUTINE_NOT_DUE'
   ].includes(submissions.find(({ status }) => status === 'rejected').reason.code));
   assert.equal(await EquipmentRoutineRecord.countDocuments({
     equipmentId: fixture.assetA1._id,

@@ -31,7 +31,7 @@ function runtimeCycleKey(nextDueRuntimeHours, ruleVersion = null) {
 }
 
 function combinedAnyCycleKey(schedule, triggerKey, ruleVersion = null) {
-  const recordKey = schedule.latestRecordId || 'initial';
+  const recordKey = schedule.materializationRecordKey || schedule.latestRecordId || 'initial';
   const calendarKey = schedule.nextDueAt
     ? validDate(schedule.nextDueAt, 'nextDueAt').toISOString()
     : 'none';

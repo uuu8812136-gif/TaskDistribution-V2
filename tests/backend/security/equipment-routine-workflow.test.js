@@ -871,13 +871,28 @@ test('worker reconciles missing current calendar plans in and after the window w
     windowKey: currentDayPlan.windowKey
   }), 1);
 
+  await EquipmentRoutinePlan.collection.updateOne({ _id: currentNightPlan._id }, {
+    $set: {
+      status: 'OVERDUE',
+      cancellationReason: null,
+      cancelledAt: null,
+      cancelledBy: null
+    }
+  });
+  const completedDayPlan = await EquipmentRoutinePlan.findById(restoredOverdue._id).lean();
+  const openNightPlan = await EquipmentRoutinePlan.findById(currentNightPlan._id).lean();
+  assert.equal(completedDayPlan.status, 'COMPLETED');
+  assert.equal(openNightPlan.status, 'OVERDUE');
+
   await EquipmentRoutinePlan.collection.deleteOne({ _id: currentNightPlan._id });
   await worker.runOnce({ now: afterWindow, teamId: fixture.ids.team });
-  assert.equal(await EquipmentRoutinePlan.countDocuments({
+  const rebuiltNight = await EquipmentRoutinePlan.findOne({
     ruleId: rule._id,
     cycleKey: currentDayPlan.cycleKey,
     windowKey: 'NIGHT_SHIFT'
-  }), 0, 'a missing sibling must not be rebuilt after the cycle has a completed plan');
+  }).lean();
+  assert.ok(rebuiltNight, 'a missing window must be rebuilt when only another window is completed');
+  assert.equal(rebuiltNight.status, 'PLANNED');
 });
 
 test('planless submission creates the canonical worker window and never creates a future window early', async () => {
@@ -928,7 +943,7 @@ test('planless submission creates the canonical worker window and never creates 
   assert.notEqual(plan.windowKey, 'PERIOD');
 });
 
-test('planless overdue completion prevents worker from rebuilding same-cycle windows', async () => {
+test('planless overdue completion preserves the other same-cycle window', async () => {
   const now = new Date('2030-01-17T02:30:00.000Z');
   const routineService = createEquipmentRoutineService({ clock: () => new Date(now) });
   const rule = await createRule(routineService, 'INSPECTION', {
@@ -957,13 +972,13 @@ test('planless overdue completion prevents worker from rebuilding same-cycle win
     ruleId: rule._id,
     cycleKey: completedPlan.cycleKey
   }).lean();
-  assert.deepEqual(
-    sameCyclePlans.map(({ _id, status }) => [String(_id), status]),
-    [[String(completedPlan._id), 'COMPLETED']]
-  );
+  assert.equal(sameCyclePlans.length, 2);
+  assert.equal(sameCyclePlans.find(({ windowKey }) => windowKey === 'DAY_SHIFT').status, 'COMPLETED');
+  assert.equal(sameCyclePlans.find(({ windowKey }) => windowKey === 'NIGHT_SHIFT').status, 'PLANNED');
   assert.equal(await EquipmentRoutinePlan.countDocuments({
     ruleId: rule._id,
     cycleKey: completedPlan.cycleKey,
+    windowKey: 'DAY_SHIFT',
     status: { $in: ['PLANNED', 'IN_WINDOW', 'OVERDUE'] }
   }), 0);
   assert.ok((await EquipmentRoutinePlan.find({ ruleId: rule._id }).lean()).every(({ cycleKey, windowKey }) => (
@@ -2331,9 +2346,9 @@ test('record detail resolves legacy plan windows without mutating append-only hi
   }), (error) => error.status === 404 && error.code === 'EQUIPMENT_ROUTINE_NOT_FOUND');
 });
 
-test('completing a daily inspection leaves weekly and monthly plans unchanged', async () => {
-  const now = new Date('2030-01-15T02:30:00.000Z');
-  const routineService = createEquipmentRoutineService({ clock: () => now });
+test('daily inspection windows complete independently without changing other rules', async () => {
+  let currentTime = new Date('2030-01-15T02:30:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(currentTime) });
   const oneWindow = [{
     key: 'DAY_SHIFT',
     name: 'Day shift',
@@ -2366,8 +2381,11 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
       }
     });
   }
-  const worker = createEquipmentRoutineWorkerService({ routineService, clock: () => now });
-  await worker.runOnce({ now, teamId: fixture.ids.team });
+  const worker = createEquipmentRoutineWorkerService({
+    routineService,
+    clock: () => new Date(currentTime)
+  });
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
 
   const dailyPlan = await EquipmentRoutinePlan.findOne({
     ruleId: rules.DAY._id,
@@ -2394,11 +2412,13 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
   });
   assert.equal(String(record.planId), String(dailyPlan._id));
   assert.equal((await EquipmentRoutinePlan.findById(dailyPlan._id).lean()).status, 'COMPLETED');
-  assert.ok((await EquipmentRoutinePlan.find({
+  const dailySibling = await EquipmentRoutinePlan.findOne({
     ruleId: rules.DAY._id,
     cycleKey: dailyPlan.cycleKey,
-    _id: { $ne: dailyPlan._id }
-  }).lean()).every(({ status }) => status === 'CANCELLED'));
+    windowKey: { $ne: dailyPlan.windowKey }
+  }).lean();
+  assert.ok(dailySibling);
+  assert.equal(dailySibling.status, 'PLANNED');
 
   const completedSchedule = await routineService.getSchedule({
     authContext: fixture.contexts.manager,
@@ -2407,9 +2427,9 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
   const completedDaily = completedSchedule.schedules.find(({ rule }) => (
     String(rule._id) === String(rules.DAY._id)
   ));
-  assert.equal(new Date(completedDaily.nextDueAt).toISOString(), '2030-01-16T00:00:00.000Z');
+  assert.equal(new Date(completedDaily.nextDueAt).toISOString(), '2030-01-15T00:00:00.000Z');
   assert.equal(completedDaily.executable, false);
-  assert.equal(completedDaily.executionStatus, 'PERIOD_COMPLETED');
+  assert.equal(completedDaily.executionStatus, 'NOT_STARTED');
 
   await assert.rejects(routineService.createRecord({
     authContext: fixture.contexts.manager,
@@ -2423,7 +2443,7 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
       idempotencyKey: 'daily-period-second-submission'
     }
   }), (error) => (
-    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PERIOD_COMPLETED'
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_NOT_DUE'
   ));
   await assert.rejects(routineService.createRecord({
     authContext: fixture.contexts.manager,
@@ -2440,10 +2460,33 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
   }), (error) => (
     error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
   ));
+  currentTime = new Date('2030-01-15T12:30:00.000Z');
+  const nightRecord = await routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rules.DAY._id),
+      planId: String(dailySibling._id),
+      itemResults: [{
+        itemKey: rules.DAY.checklistItems[0].key,
+        result: 'NORMAL'
+      }],
+      idempotencyKey: 'daily-night-shift-independent-completion'
+    }
+  });
+  assert.equal(String(nightRecord.planId), String(dailySibling._id));
+  const fullyCompletedSchedule = await routineService.getSchedule({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id)
+  });
+  const fullyCompletedDaily = fullyCompletedSchedule.schedules.find(({ rule }) => (
+    String(rule._id) === String(rules.DAY._id)
+  ));
+  assert.equal(new Date(fullyCompletedDaily.nextDueAt).toISOString(), '2030-01-16T00:00:00.000Z');
   assert.equal(await EquipmentRoutineRecord.countDocuments({
     equipmentId: fixture.asset._id,
     ruleId: rules.DAY._id
-  }), 1);
+  }), 2);
 
   const unrelatedAfter = await EquipmentRoutinePlan.find({
     ruleId: { $in: unrelatedRuleIds }
@@ -2452,6 +2495,130 @@ test('completing a daily inspection leaves weekly and monthly plans unchanged', 
     unrelatedAfter.map(({ _id, status }) => [String(_id), status]),
     unrelatedBefore.map(({ _id, status }) => [String(_id), status])
   );
+});
+
+test('an overdue plan remains executable on the next day without closing newer plans', async () => {
+  let currentTime = new Date('2030-01-15T12:30:00.000Z');
+  const routineService = createEquipmentRoutineService({
+    clock: () => new Date(currentTime)
+  });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: {
+        unit: 'DAY',
+        interval: 1,
+        firstDueAt: '2030-01-15T00:00:00.000Z'
+      }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({
+    routineService,
+    clock: () => new Date(currentTime)
+  });
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+
+  const yesterdayDay = await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    cycleKey: 'calendar:2030-01-15T00:00:00.000Z',
+    windowKey: 'DAY_SHIFT'
+  }).lean();
+  assert.equal(yesterdayDay.status, 'OVERDUE');
+
+  currentTime = new Date('2030-01-16T02:30:00.000Z');
+  await worker.runOnce({ now: currentTime, teamId: fixture.ids.team });
+  const newerPlanIds = (await EquipmentRoutinePlan.find({
+    ruleId: rule._id,
+    cycleKey: 'calendar:2030-01-16T00:00:00.000Z'
+  }).lean()).map(({ _id }) => _id);
+  assert.equal(newerPlanIds.length, 2);
+
+  const record = await routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rule._id),
+      planId: String(yesterdayDay._id),
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }],
+      idempotencyKey: 'next-day-overdue-plan-completion'
+    }
+  });
+  assert.equal(String(record.planId), String(yesterdayDay._id));
+  assert.equal((await EquipmentRoutinePlan.findById(yesterdayDay._id).lean()).status, 'COMPLETED');
+  assert.deepEqual(
+    (await EquipmentRoutinePlan.find({ _id: { $in: newerPlanIds } })
+      .sort({ windowKey: 1 }).lean()).map(({ status }) => status),
+    ['OVERDUE', 'PLANNED']
+  );
+  await assert.rejects(routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rule._id),
+      planId: String(yesterdayDay._id),
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }],
+      idempotencyKey: 'next-day-overdue-plan-duplicate'
+    }
+  }), (error) => (
+    error.status === 409 && error.code === 'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+  ));
+  assert.equal(await EquipmentRoutineRecord.countDocuments({ planId: yesterdayDay._id }), 1);
+});
+
+test('concurrent submissions for the same generated plan create exactly one record', async () => {
+  const now = new Date('2030-01-15T02:30:00.000Z');
+  const routineService = createEquipmentRoutineService({ clock: () => new Date(now) });
+  const rule = await createRule(routineService, 'INSPECTION', {
+    windows: [{
+      key: 'DAY_SHIFT',
+      name: 'Day shift',
+      startTime: '07:00',
+      endTime: '09:00',
+      enabled: true
+    }],
+    schedule: {
+      mode: 'CALENDAR',
+      calendar: {
+        unit: 'DAY',
+        interval: 1,
+        firstDueAt: '2030-01-15T00:00:00.000Z'
+      }
+    }
+  });
+  const worker = createEquipmentRoutineWorkerService({
+    routineService,
+    clock: () => new Date(now)
+  });
+  await worker.runOnce({ now, teamId: fixture.ids.team });
+  const plan = await EquipmentRoutinePlan.findOne({
+    ruleId: rule._id,
+    windowKey: 'DAY_SHIFT'
+  }).lean();
+  assert.ok(plan);
+
+  const submission = (idempotencyKey) => routineService.createRecord({
+    authContext: fixture.contexts.manager,
+    equipmentId: String(fixture.asset._id),
+    input: {
+      ruleId: String(rule._id),
+      planId: String(plan._id),
+      itemResults: [{ itemKey: rule.checklistItems[0].key, result: 'NORMAL' }],
+      idempotencyKey
+    }
+  });
+  const submissions = await Promise.allSettled([
+    submission('same-plan-concurrent-a'),
+    submission('same-plan-concurrent-b')
+  ]);
+
+  assert.equal(submissions.filter(({ status }) => status === 'fulfilled').length, 1);
+  assert.equal(submissions.filter(({ status }) => status === 'rejected').length, 1);
+  assert.equal(
+    submissions.find(({ status }) => status === 'rejected').reason.code,
+    'EQUIPMENT_ROUTINE_PLAN_NOT_OPEN'
+  );
+  assert.equal(await EquipmentRoutineRecord.countDocuments({ planId: plan._id }), 1);
+  assert.equal((await EquipmentRoutinePlan.findById(plan._id).lean()).status, 'COMPLETED');
 });
 
 test('legacy planless inspection history cannot reopen completed day week or month periods', async () => {
@@ -2992,8 +3159,8 @@ test('COMBINED ANY keeps only the first due dimension and advances idempotently 
   });
   assert.ok(calendarCompletion);
   const cancelledSameCycleSibling = await EquipmentRoutinePlan.findById(sameCalendarCycleSibling._id).lean();
-  assert.equal(cancelledSameCycleSibling.status, 'CANCELLED');
-  assert.equal(cancelledSameCycleSibling.cancellationReason, 'SIBLING_COMPLETED');
+  assert.equal(cancelledSameCycleSibling.status, 'PLANNED');
+  assert.equal(cancelledSameCycleSibling.cancellationReason, null);
   assert.deepEqual(
     (await EquipmentRoutinePlan.find({
       _id: { $in: laterCalendarCyclePlans.map(({ _id }) => _id) }

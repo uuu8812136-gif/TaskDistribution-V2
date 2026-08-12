@@ -146,6 +146,7 @@ function createEquipmentRoutineWorkerService({
       ruleId: rule._id,
       equipmentId: asset._id,
       cycleKey,
+      windowKey: window.key,
       status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
     }).select('_id').lean(), session);
     if (completedCycle) return null;
@@ -177,9 +178,13 @@ function createEquipmentRoutineWorkerService({
       )
         ? [
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
-            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
           ]
-        : [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED],
+        : [
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
+          ],
       session
     });
   }

@@ -380,7 +380,6 @@ function submissionMaterializationTargets(
 
 function submissionPlanTriggerSatisfied(rule, plan, schedule, runtimeHours, performedAt) {
   if (rule.schedule.mode === EQUIPMENT_ROUTINE_SCHEDULE_TYPES.MANUAL) return true;
-  if (!submissionPlanCycleCurrent(plan, schedule)) return false;
   const calendarWindowStarted = Boolean(
     plan &&
     plan.windowKey !== 'RUNTIME' &&
@@ -401,11 +400,13 @@ function submissionPlanTriggerSatisfied(rule, plan, schedule, runtimeHours, perf
   return calendarWindowStarted && runtimeTriggered;
 }
 
-function submissionPlanCycleCurrent(plan, schedule) {
-  if (!plan || plan.windowKey === 'RUNTIME' || !schedule.nextDueAt) return true;
-  const planAnchor = calendarAnchorFromCycleKey(plan.cycleKey);
-  const nextDueAt = new Date(schedule.nextDueAt);
-  return !planAnchor || Number.isNaN(nextDueAt.getTime()) || planAnchor >= nextDueAt;
+function legacyPlanlessRecordCoversPlan(schedule, plan) {
+  if (!schedule?.latestRecord || schedule.latestRecord.planId || !plan) return false;
+  const performedAt = new Date(schedule.latestRecord.performedAt);
+  const scheduledFor = new Date(plan.scheduledFor);
+  return !Number.isNaN(performedAt.getTime()) &&
+    !Number.isNaN(scheduledFor.getTime()) &&
+    scheduledFor <= performedAt;
 }
 
 function normalizeRelatedId(value) {
@@ -1098,16 +1099,21 @@ function createEquipmentRoutineService({
       ruleId: rule._id,
       ruleVersion: rule.version,
       status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED
-    }).select('cycleKey').lean(), session);
-    const completedCycleKeys = new Set(completedPlans.map(({ cycleKey }) => cycleKey));
+    }).select('cycleKey windowKey').lean(), session);
+    const completedRequirementKeys = new Set(completedPlans.map(({ cycleKey, windowKey }) => (
+      `${cycleKey}\u0000${windowKey}`
+    )));
     const completedGenerationPrefixes = new Set(
-      completedPlans.map(({ cycleKey }) => combinedAnyGenerationPrefix(cycleKey)).filter(Boolean)
+      completedPlans.map(({ cycleKey, windowKey }) => {
+        const prefix = combinedAnyGenerationPrefix(cycleKey);
+        return prefix ? `${prefix}\u0000${windowKey}` : null;
+      }).filter(Boolean)
     );
     const sameCompletedRequirement = (candidate) => {
       const generationPrefix = combinedAnyGenerationPrefix(candidate.cycleKey);
       return generationPrefix
-        ? completedGenerationPrefixes.has(generationPrefix)
-        : completedCycleKeys.has(candidate.cycleKey);
+        ? completedGenerationPrefixes.has(`${generationPrefix}\u0000${candidate.windowKey}`)
+        : completedRequirementKeys.has(`${candidate.cycleKey}\u0000${candidate.windowKey}`);
     };
     const startedTargetPlans = targetPlans.filter((candidate) => (
       new Date(candidate.scheduledFor) <= performedAt
@@ -1115,8 +1121,10 @@ function createEquipmentRoutineService({
     const recoverable = startedTargetPlans
       .filter((candidate) => (
         candidate.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
-        candidate.cancellationReason ===
-          EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED &&
+        [
+          EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+          EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
+        ].includes(candidate.cancellationReason) &&
         !sameCompletedRequirement(candidate)
       ))
       .sort((left, right) => {
@@ -1156,6 +1164,10 @@ function createEquipmentRoutineService({
       rematerializedBy,
       source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.SUBMISSION,
       allowInsert: false,
+      recoverableCancellationReasons: [
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
+      ],
       session
     });
     return {
@@ -1710,9 +1722,15 @@ function createEquipmentRoutineService({
     return reading;
   }
 
-  async function nextInspectionCalendarDue(rule, latestRecord, session) {
-    if (!latestRecord) return new Date(rule.schedule.calendar.firstDueAt);
+  async function inspectionCalendarProgress(rule, latestRecord, session) {
+    if (!latestRecord) {
+      return {
+        nextDueAt: new Date(rule.schedule.calendar.firstDueAt),
+        materializationRecordKey: null
+      };
+    }
     let completedAnchor = null;
+    let materializationRecordKey = null;
     if (latestRecord.planId) {
       const completedPlan = await execute(EquipmentRoutinePlanModel.findOne({
         _id: latestRecord.planId,
@@ -1720,15 +1738,46 @@ function createEquipmentRoutineService({
         equipmentId: latestRecord.equipmentId,
         ruleId: rule._id,
         ruleVersion: rule.version
-      }).select('cycleKey').lean(), session);
+      }).select('cycleKey windowKey').lean(), session);
       completedAnchor = calendarAnchorFromCycleKey(completedPlan?.cycleKey);
+      const generationPrefix = combinedAnyGenerationPrefix(completedPlan?.cycleKey);
+      materializationRecordKey = generationPrefix
+        ? generationPrefix.slice('combined:any:'.length, -1)
+        : null;
+      if (completedAnchor && completedPlan?.windowKey !== 'RUNTIME') {
+        const requiredWindowKeys = serializeExecutionConfig(rule.executionConfig).windows
+          .filter(({ enabled }) => enabled !== false)
+          .map(({ key }) => key);
+        const cyclePlans = await execute(EquipmentRoutinePlanModel.find({
+          teamId: rule.teamId,
+          equipmentId: latestRecord.equipmentId,
+          ruleId: rule._id,
+          ruleVersion: rule.version,
+          cycleKey: completedPlan.cycleKey,
+          windowKey: { $in: requiredWindowKeys },
+          $or: [
+            { status: EQUIPMENT_ROUTINE_PLAN_STATUSES.COMPLETED },
+            {
+              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+              cancellationReason: EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.REST_DAY
+            }
+          ]
+        }).select('windowKey').lean(), session);
+        const satisfiedWindowKeys = new Set(cyclePlans.map(({ windowKey }) => windowKey));
+        if (requiredWindowKeys.some((windowKey) => !satisfiedWindowKeys.has(windowKey))) {
+          return { nextDueAt: completedAnchor, materializationRecordKey };
+        }
+      }
     }
-    return nextFixedCalendarAnchor(
-      rule.schedule.calendar,
-      latestRecord.performedAt,
-      completedAnchor,
-      serializeExecutionConfig(rule.executionConfig).timeZone
-    );
+    return {
+      nextDueAt: nextFixedCalendarAnchor(
+        rule.schedule.calendar,
+        latestRecord.performedAt,
+        completedAnchor,
+        serializeExecutionConfig(rule.executionConfig).timeZone
+      ),
+      materializationRecordKey: null
+    };
   }
 
   async function calculateRuleSchedule(ruleDocument, asset, { session = null, now = clock() } = {}) {
@@ -1743,10 +1792,12 @@ function createEquipmentRoutineService({
       calendarStatus: null,
       runtimeStatus: null,
       currentRuntimeHours: asset.currentRuntimeHours ?? null,
+      materializationRecordKey: null,
       latestRecordId: normalizeId(latestRecord?._id),
       latestRecord: latestRecord
         ? {
             _id: normalizeId(latestRecord._id),
+            planId: normalizeId(latestRecord.planId),
             performedAt: latestRecord.performedAt,
             overallResult: latestRecord.overallResult,
             performedRuntimeHours: latestRecord.performedRuntimeHours ?? null
@@ -1757,9 +1808,12 @@ function createEquipmentRoutineService({
 
     let calendarState = null;
     if (schedule.calendar) {
-      result.nextDueAt = rule.routineType === EQUIPMENT_ROUTINE_TYPES.INSPECTION
-        ? await nextInspectionCalendarDue(rule, latestRecord, session)
-        : latestRecord
+      if (rule.routineType === EQUIPMENT_ROUTINE_TYPES.INSPECTION) {
+        const progress = await inspectionCalendarProgress(rule, latestRecord, session);
+        result.nextDueAt = progress.nextDueAt;
+        result.materializationRecordKey = progress.materializationRecordKey;
+      } else {
+        result.nextDueAt = latestRecord
           ? addCalendarInterval(
               latestRecord.performedAt,
               schedule.calendar.unit,
@@ -1767,6 +1821,7 @@ function createEquipmentRoutineService({
               serializeExecutionConfig(rule.executionConfig).timeZone
             )
           : new Date(schedule.calendar.firstDueAt);
+      }
       calendarState = classifyCalendarDue({
         now,
         nextDueAt: result.nextDueAt,
@@ -1906,10 +1961,10 @@ function createEquipmentRoutineService({
         ? 'REST_DAY'
         : schedule.executable
         ? 'READY'
-        : schedule.latestRecord && schedule.status === 'UPCOMING'
-          ? 'PERIOD_COMPLETED'
-          : schedule.plans.some(({ status }) => status === EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED)
+        : schedule.plans.some(({ status }) => status === EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED)
             ? 'NOT_STARTED'
+          : schedule.latestRecord && schedule.status === 'UPCOMING'
+            ? 'PERIOD_COMPLETED'
           : schedule.status === 'WAITING_FOR_READING'
             ? 'WAITING_FOR_READING'
             : 'NOT_DUE';
@@ -2676,7 +2731,7 @@ function createEquipmentRoutineService({
 
         const schedule = await calculateRuleSchedule(rule, asset, { session });
         const performedAt = clock();
-        const completedCurrentPeriod = Boolean(schedule.latestRecord) &&
+        let completedCurrentPeriod = Boolean(schedule.latestRecord) &&
           schedule.status === 'UPCOMING';
         let plan = null;
         let futureOpenPlanExists = false;
@@ -2735,8 +2790,7 @@ function createEquipmentRoutineService({
           const executablePlans = candidatePlans
             .filter((candidate) => (
               OPEN_ROUTINE_PLAN_STATUSES.includes(candidate.status) &&
-              new Date(candidate.scheduledFor) <= performedAt &&
-              submissionPlanCycleCurrent(candidate, schedule)
+              new Date(candidate.scheduledFor) <= performedAt
             ))
             .sort((left, right) => {
               const statusRank = { OVERDUE: 0, IN_WINDOW: 1, PLANNED: 2 };
@@ -2750,8 +2804,7 @@ function createEquipmentRoutineService({
           plan = executablePlans[0] || null;
           futureOpenPlanExists = candidatePlans.some((candidate) => (
             OPEN_ROUTINE_PLAN_STATUSES.includes(candidate.status) &&
-            new Date(candidate.scheduledFor) > performedAt &&
-            submissionPlanCycleCurrent(candidate, schedule)
+            new Date(candidate.scheduledFor) > performedAt
           ));
           if (!plan && restDayCancelled) {
             throw routineError(
@@ -2760,6 +2813,16 @@ function createEquipmentRoutineService({
               'This inspection plan was cancelled because the equipment is off duty today'
             );
           }
+        }
+        if (plan && legacyPlanlessRecordCoversPlan(schedule, plan)) {
+          throw routineError(
+            409,
+            'EQUIPMENT_ROUTINE_PERIOD_COMPLETED',
+            'This routine has already been completed for the current period'
+          );
+        }
+        if (plan || (futureOpenPlanExists && schedule.latestRecord?.planId)) {
+          completedCurrentPeriod = false;
         }
         if (
           !submission.planId &&
@@ -2964,7 +3027,9 @@ function createEquipmentRoutineService({
             teamId: context.activeTeamId,
             equipmentId: asset._id,
             ruleId: rule._id,
+            ruleVersion: rule.version,
             cycleKey: plan.cycleKey,
+            windowKey: plan.windowKey,
             _id: { $ne: plan._id },
             $or: [
               { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
@@ -2994,6 +3059,7 @@ function createEquipmentRoutineService({
             equipmentId: asset._id,
             ruleId: rule._id,
             ruleVersion: rule.version,
+            cycleKey: { $ne: plan.cycleKey },
             _id: { $ne: plan._id },
             status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
           }, {
