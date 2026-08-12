@@ -32,10 +32,11 @@ $leadAcidForkliftPrimaryName = '"\u7535\u52a8\u53c9\u8f66\uff08\u5206\u7c7b\uff1
 $lithiumForkliftPrimaryName = '"\u7535\u52a8\u53c9\u8f66\uff08\u5206\u7c7b\uff1a\u9502\u79bb\u5b50\u7535\u6c60\uff09"' |
   ConvertFrom-Json
 $rollerConveyorPrimaryName = '"\u8f8a\u5b50\u8f93\u9001\u673a"' | ConvertFrom-Json
-$expectedPrimaryInUseCounts = [ordered]@{}
-$expectedPrimaryInUseCounts[$leadAcidForkliftPrimaryName] = 6
-$expectedPrimaryInUseCounts[$lithiumForkliftPrimaryName] = 5
-$expectedPrimaryInUseCounts[$rollerConveyorPrimaryName] = 1
+$requiredPrimaryNames = @(
+  $leadAcidForkliftPrimaryName,
+  $lithiumForkliftPrimaryName,
+  $rollerConveyorPrimaryName
+)
 $apiTask = 'TaskDistribution-V2-Recovery-API'
 $webTask = 'TaskDistribution-V2-Recovery-Web'
 $businessTunnelTask = 'TaskDistribution-V2-Recovery-Tunnel'
@@ -1332,9 +1333,9 @@ try {
 
   $businessAuditOutput = @(& $node $businessAuditCli `
     --team-code 'GEARBOX_LOGISTICS' `
-    --expect-primary "$leadAcidForkliftPrimaryName=6" `
-    --expect-primary "$lithiumForkliftPrimaryName=5" `
-    --expect-primary "$rollerConveyorPrimaryName=1" 2>&1)
+    --primary-name $leadAcidForkliftPrimaryName `
+    --primary-name $lithiumForkliftPrimaryName `
+    --primary-name $rollerConveyorPrimaryName 2>&1)
   $businessAuditExitCode = $LASTEXITCODE
   $businessAuditText = @($businessAuditOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
   Write-Utf8NoBomCreateNew $BusinessAuditReport "$businessAuditText`n"
@@ -1373,22 +1374,33 @@ if (Test-Path -LiteralPath $BusinessAuditReport -PathType Leaf) {
   catch { Add-Failure "postdeploy_business_audit_report_invalid:$($_.Exception.Message)" }
   if ($businessAudit) {
     $reportedPrimaryCounts = @{}
+    $observedPrimaryInUseCounts = [ordered]@{}
     foreach ($target in @($businessAudit.targetPrimaries)) {
       $reportedPrimaryCounts[[string]$target.requestedName] = $target
     }
-    $primaryCoverageValid = @($businessAudit.targetPrimaries).Count -eq $expectedPrimaryInUseCounts.Count
-    foreach ($entry in $expectedPrimaryInUseCounts.GetEnumerator()) {
-      $target = $reportedPrimaryCounts[[string]$entry.Key]
+    $primaryCoverageValid = @($businessAudit.targetPrimaries).Count -eq $requiredPrimaryNames.Count
+    foreach ($requiredName in $requiredPrimaryNames) {
+      $target = $reportedPrimaryCounts[[string]$requiredName]
       if (
         $null -eq $target -or
         $target.status -ne 'PASSED' -or
-        [int]$target.expectedInUseEquipmentCount -ne [int]$entry.Value -or
-        [int]$target.inUseEquipmentCount -ne [int]$entry.Value -or
-        [int]$target.equipmentWithOpenPlanCount -ne [int]$entry.Value -or
+        $null -ne $target.expectedInUseEquipmentCount -or
+        [int]$target.inUseEquipmentCount -le 0 -or
+        [int]$target.equipmentWithOpenPlanCount -ne [int]$target.inUseEquipmentCount -or
+        @($target.activeRules).Count -le 0 -or
+        @($target.missingAssets).Count -ne 0 -or
         $target.gates.expectedInUseMatches -ne $true -or
         $target.gates.hasActiveRules -ne $true -or
         $target.gates.completeOpenPlanCoverage -ne $true
       ) { $primaryCoverageValid = $false }
+      if ($null -ne $target) {
+        $observedPrimaryInUseCounts[[string]$requiredName] = [int]$target.inUseEquipmentCount
+      }
+    }
+    $reportedFilterNames = @($businessAudit.filters.primaryNames | ForEach-Object { [string]$_ })
+    $filterNamesValid = $reportedFilterNames.Count -eq $requiredPrimaryNames.Count
+    foreach ($requiredName in $requiredPrimaryNames) {
+      if (-not ($reportedFilterNames -ccontains [string]$requiredName)) { $filterNamesValid = $false }
     }
     if (
       $businessAudit.format -ne 'taskdistribution-v2-equipment-routine-business-audit-v1' -or
@@ -1397,8 +1409,12 @@ if (Test-Path -LiteralPath $BusinessAuditReport -PathType Leaf) {
       $businessAudit.writePerformed -ne $false -or
       $businessAudit.database.name -ne $expectedDatabase -or
       $businessAudit.filters.teamCode -ne 'GEARBOX_LOGISTICS' -or
+      @($businessAudit.filters.expectedPrimaries).Count -ne 0 -or
+      -not $filterNamesValid -or
       [int]$businessAudit.summary.violationCount -ne 0 -or
+      [int]$businessAudit.summary.duplicateOpenPlanGroupCount -ne 0 -or
       @($businessAudit.violations).Count -ne 0 -or
+      @($businessAudit.duplicateOpenPlanGroups).Count -ne 0 -or
       -not $primaryCoverageValid
     ) { Add-Failure 'postdeploy_equipment_routine_business_gate_failed' }
   }
@@ -1476,7 +1492,8 @@ $result = [ordered]@{
     status = if ($businessAudit) { $businessAudit.status } else { $null }
     writePerformed = if ($businessAudit) { $businessAudit.writePerformed } else { $null }
     teamCode = if ($businessAudit) { $businessAudit.filters.teamCode } else { $null }
-    expectedPrimaryInUseCounts = $expectedPrimaryInUseCounts
+    requiredPrimaryNames = @($requiredPrimaryNames)
+    observedPrimaryInUseCounts = if ($businessAudit) { $observedPrimaryInUseCounts } else { $null }
     targetPrimaries = if ($businessAudit) { @($businessAudit.targetPrimaries) } else { @() }
     violationCount = if ($businessAudit) { [int]$businessAudit.summary.violationCount } else { $null }
   }

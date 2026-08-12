@@ -683,7 +683,7 @@ $BusinessAuditReport = Join-Path $Evidence `
   -BusinessAuditReport $BusinessAuditReport
 ```
 
-只有输出 `POSTDEPLOY_AUDIT_PASSED` 才算发布链通过。post-audit 会重新验证候选精确 `FILE-MANIFEST.json`、固定公钥、`app.env`/`operations.env` 及 `runtimeInputsSha256` 的完整哈希链，复核 Hold/Execute 两份 Mongo write anchor 未漂移，并执行只读设备点检/保养业务审计。业务审计要求 `GEARBOX_LOGISTICS` 下三种在用一级设备名称的数量门禁分别为铅酸电池电动叉车 `6`、锂离子电池电动叉车 `5`、辊子输送机 `1`，且 `writePerformed=false`、违规数为零。它还验证目标索引存在、旧索引和未知团队级 unique 索引为零、blocker 为零、五个计划任务运行、API/Web 仅监听 loopback、当前进程属于候选 release、本地/公网健康、`ENGINE_LOGISTICS` 和 `GEARBOX_LOGISTICS` 可见。只要 release evidence 中存在 `migration-or-activation-failed.json`，即使同时存在 `active.json` 或 `activation-commit.json`，也必须判失败。post-audit 工具本身只报告并抛错，不会替操作者停止已激活服务；若它失败，应立即按事故流程冻结业务面并保全证据，不能宣告成功或直接回滚代码。
+只有输出 `POSTDEPLOY_AUDIT_PASSED` 才算发布链通过。post-audit 会重新验证候选精确 `FILE-MANIFEST.json`、固定公钥、`app.env`/`operations.env` 及 `runtimeInputsSha256` 的完整哈希链，复核 Hold/Execute 两份 Mongo write anchor 未漂移，并执行只读设备点检/保养业务审计。业务审计要求 `GEARBOX_LOGISTICS` 下铅酸电池电动叉车、锂离子电池电动叉车和辊子输送机三个一级名称都精确存在且至少有一台在用设备，每个一级名称必须配置活动规则，每台在用设备必须对每条活动规则都有开放计划；客户后续新增或停用设备不会因为历史固定数量导致误报。审计同时要求 `writePerformed=false`、违规数为零且不存在重复开放计划，并在回执中记录当次实际在用数量作为证据。它还验证目标索引存在、旧索引和未知团队级 unique 索引为零、blocker 为零、五个计划任务运行、API/Web 仅监听 loopback、当前进程属于候选 release、本地/公网健康、`ENGINE_LOGISTICS` 和 `GEARBOX_LOGISTICS` 可见。只要 release evidence 中存在 `migration-or-activation-failed.json`，即使同时存在 `active.json` 或 `activation-commit.json`，也必须判失败。post-audit 工具本身只报告并抛错，不会替操作者停止已激活服务；若它失败，应立即按事故流程冻结业务面并保全证据，不能宣告成功或直接回滚代码。
 
 #### 4.5.7 固定证据和失败恢复边界
 
