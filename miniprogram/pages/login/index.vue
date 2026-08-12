@@ -86,11 +86,12 @@
       </button>
     </view>
 
-    <view class="login-footer">
-      <text class="tips" style="display: block;">沟通、协作、持续进步</text>
-      <text class="tips" style="display: block;">欢迎你，我的朋友们。</text>
-      <text class="tips" style="display: block;">一起见证Horselink成长。</text>
-	  <text class="tips" style="display: block;">- 项目团队</text>
+    <view class="login-footer" aria-label="签名语录">
+      <text class="motto-title">沟通、协作、持续进步</text>
+      <view class="motto-byline">
+        <text class="motto-welcome">欢迎你，我的朋友。</text>
+        <text class="motto-signature">-马延浩</text>
+      </view>
     </view>
   </view>
 </template>
@@ -476,12 +477,31 @@ export default {
   margin-top: auto;
   padding-top: 84rpx;
   text-align: center;
+  color: rgba(255, 255, 255, 0.86);
 
-  .tips {
+  .motto-title,
+  .motto-welcome,
+  .motto-signature {
     display: block;
     font-size: 24rpx;
-    color: rgba(255, 255, 255, 0.8);
-    line-height: 1.55;
+    line-height: 1.5;
+  }
+
+  .motto-title {
+    font-weight: 600;
+    color: #ffffff;
+  }
+
+  .motto-byline {
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 16rpx;
+    margin-top: 4rpx;
+  }
+
+  .motto-signature {
+    white-space: nowrap;
   }
 }
 </style>
