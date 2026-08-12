@@ -21,6 +21,22 @@ Completion wording is evidence-based:
 
 If any source conflicts with another, use the least-complete status and keep the item open. After each meaningful task, update this file before giving the user the completion report.
 
+## 2026-08-12 Unified Import Template Download
+
+- [x] PC Web has one independent “模板下载” menu and page; no duplicate mini-program entry or attachment-center behavior was added.
+- [x] The catalog contains only the three active imports: equipment ledger, supplier contract tertiary details, and supplier settlement fees. Customer-facing locations use menu paths instead of `/api/...` endpoints.
+- [x] Template headers are parser-owned: equipment uses the equipment header aliases, supplier contracts use the exact 57-column tertiary headers, and settlements use the exact 11-column headers. A populated row from every generated workbook is accepted by the existing parser in automated tests.
+- [x] Catalog and downloads require an authenticated `TEAM` context and derive the team from the session. A client `teamId`, an unknown template id, and an unauthorized template download are rejected.
+- [x] A corresponding view permission or import permission allows template discovery/download, while the existing import endpoints still independently require their `.import` permission. Template download does not grant a write capability.
+- [x] Equipment photo guidance says to insert images into Excel/WPS cells. Text paths and URLs are not advertised as supported, and the system does not claim a per-device ten-image hard limit that the current parser does not enforce.
+- [x] Local verification passes backend `655/655`, Web `218/218`, the production build, strict UTF-8/no-replacement-character checks, syntax checks and `git diff --check`. Three real generated files have valid XLSX MIME/ZIP signatures and sizes of 18,709, 7,671 and 6,889 bytes.
+- [ ] Commit, push, activate a new immutable website release, pass independent PostAudit, and verify the permission-filtered catalog plus all three downloads through the public authenticated API. This PC-only addition does not require a new mini-program upload.
+
+## 2026-08-12 Verified Release Baseline Before Template Download
+
+- [x] Website business commit `94a37e0ad96f6a920e10d80f8447b88aad917918` is active as `v2-20260812-94a37e0`; independent PostAudit returned `POSTDEPLOY_AUDIT_PASSED`, `gate.passed=true`, and no failures. This release does not yet contain the new template center.
+- [x] Mini-program development version `0.9.20260812.1` was accepted by the formal AppID and a preview QR code was generated. Promotion to experience version, real-device acceptance, WeChat Review and formal Publish remain separate pending gates.
+
 ## 2026-08-12 Customer Screenshot Regression
 
 - [x] PC routine workbench keeps the same component mounted while switching plans, records, and exceptions. Current API failures retain the page controls and show a Chinese error with a retry action; stale requests remain discarded.

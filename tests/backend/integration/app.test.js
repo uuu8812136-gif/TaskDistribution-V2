@@ -173,3 +173,9 @@ test('contract management APIs are mounted behind authentication', async () => {
   await request(app).get('/api/contracts/expiry-alerts').expect(401);
   await request(app).get('/api/contracts/settlements').expect(401);
 });
+
+test('import template APIs are mounted behind authentication', async () => {
+  const app = createTestApp();
+  await request(app).get('/api/import-templates').expect(401);
+  await request(app).get('/api/import-templates/equipment-ledger/download').expect(401);
+});

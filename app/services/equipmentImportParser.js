@@ -44,8 +44,47 @@ const HEADER_ALIASES = Object.freeze({
   forkliftPosition: ['高位/低位', '叉车是否高低位', '高低位'],
   environmentalRegistrationCode: ['环保编号', '叉车环保编号'],
   powerType: ['设备动力类型：锂电/铅酸/柴油', '设备动力类型', '动力类型'],
-  emissionStandard: ['排放标准']
+  emissionStandard: ['排放标准'],
+  photo: [
+    '设备照片（请在单元格内插入图片）',
+    '设备照片（支持上传1-10张照片）'
+  ]
 });
+
+const EQUIPMENT_TEMPLATE_FIELD_KEYS = Object.freeze([
+  'sequence',
+  'majorCategoryName',
+  'equipmentTypeName',
+  'primaryName',
+  'secondaryName',
+  'assetCode',
+  'plateNumber',
+  'environmentalRegistrationCode',
+  'productCode',
+  'specification',
+  'unit',
+  'productionDate',
+  'acquisitionDate',
+  'vehicleLength',
+  'ratedCapacityText',
+  'forkliftPosition',
+  'powerType',
+  'emissionStandard',
+  'brand',
+  'manufacturer',
+  'accountQuantity',
+  'quantity',
+  'orgUnit',
+  'custodian',
+  'status',
+  'location',
+  'photo',
+  'remark'
+]);
+
+const EQUIPMENT_TEMPLATE_HEADERS = Object.freeze(
+  EQUIPMENT_TEMPLATE_FIELD_KEYS.map((fieldKey) => HEADER_ALIASES[fieldKey][0])
+);
 
 const HEADER_KEYS = new Set(
   Object.values(HEADER_ALIASES).flat().map((value) => normalizeHeader(value))
@@ -914,11 +953,24 @@ function parseEquipmentWorkbook(buffer) {
   };
 }
 
+function createEquipmentImportTemplateWorkbook() {
+  const workbook = XLSX.utils.book_new();
+  const worksheet = XLSX.utils.aoa_to_sheet([EQUIPMENT_TEMPLATE_HEADERS]);
+  worksheet['!cols'] = EQUIPMENT_TEMPLATE_HEADERS.map((header) => ({
+    wch: Math.min(36, Math.max(12, header.length + 2))
+  }));
+  XLSX.utils.book_append_sheet(workbook, worksheet, '设备台账模板');
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 module.exports = {
+  EQUIPMENT_TEMPLATE_FIELD_KEYS,
+  EQUIPMENT_TEMPLATE_HEADERS,
   HEADER_ALIASES,
   MAX_IMPORT_ROWS,
   buildException,
   canonicalCategory,
+  createEquipmentImportTemplateWorkbook,
   normalizeHeader,
   parseDateValue,
   parseEquipmentWorkbook,

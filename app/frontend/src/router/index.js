@@ -296,6 +296,26 @@ const router = createRouter({
           }
         },
         {
+          path: 'import-templates',
+          name: 'ImportTemplateLibrary',
+          component: () => import('@/views/templates/ImportTemplateLibrary.vue'),
+          meta: {
+            title: '模板下载',
+            permission: [
+              'equipment.view',
+              'equipment.import',
+              'contract.supplier.view',
+              'contract.supplier.import',
+              'contract.settlement.view',
+              'contract.settlement.import'
+            ],
+            permissionMatch: 'any',
+            teamRequired: true,
+            readOnlyAllowed: false,
+            allowedModes: [SESSION_MODES.TEAM]
+          }
+        },
+        {
           path: 'tasks',
           name: 'Tasks',
           component: () => import('@/views/tasks/TaskList.vue'),

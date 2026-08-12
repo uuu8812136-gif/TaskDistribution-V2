@@ -609,13 +609,34 @@ async function createSettlementExportWorkbook(settlements) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
+async function createSupplierImportTemplateWorkbook() {
+  const workbook = new ExcelJS.Workbook();
+  const details = workbook.addWorksheet(DETAIL_SHEET_NAME);
+  details.addRow(['供应商合同三级明细导入模板']);
+  details.addRow(DETAIL_HEADERS);
+  styleWorksheet(details, { headerRow: 2 });
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
+async function createSettlementImportTemplateWorkbook() {
+  const workbook = new ExcelJS.Workbook();
+  const sheet = workbook.addWorksheet(SETTLEMENT_SHEET_NAME);
+  sheet.addRow(SETTLEMENT_HEADERS);
+  styleWorksheet(sheet);
+  return Buffer.from(await workbook.xlsx.writeBuffer());
+}
+
 module.exports = {
   ContractWorkbookError,
   DETAIL_HEADERS,
+  DETAIL_SHEET_NAME,
   ATTACHMENT_SHEET_NAME,
   SETTLEMENT_HEADERS,
+  SETTLEMENT_SHEET_NAME,
   createExpiryExportWorkbook,
+  createSettlementImportTemplateWorkbook,
   createSettlementExportWorkbook,
+  createSupplierImportTemplateWorkbook,
   createSupplierExportWorkbook,
   parseDateOnly,
   parseMonth,

@@ -152,6 +152,11 @@
             <el-menu-item index="/reporting/daily-report">生产日报</el-menu-item>
           </el-sub-menu>
 
+          <el-menu-item v-if="canAccessImportTemplates" index="/import-templates">
+            <el-icon><Download /></el-icon>
+            <template #title>模板下载</template>
+          </el-menu-item>
+
           <el-sub-menu index="/task-management">
             <template #title>
               <el-icon><Document /></el-icon>
@@ -269,6 +274,17 @@ const canAccessContractModule = computed(() => session.hasPermission([
   'contract.expiry.view',
   'contract.settlement.view'
 ], 'any'))
+const canAccessImportTemplates = computed(() => (
+  session.isTeamMode &&
+  session.hasPermission([
+    'equipment.view',
+    'equipment.import',
+    'contract.supplier.view',
+    'contract.supplier.import',
+    'contract.settlement.view',
+    'contract.settlement.import'
+  ], 'any')
+))
 const routedComponentKey = computed(() => routeComponentKey(route, session.contextEpoch))
 const canManageOrganization = computed(() => (
   session.isTeamMode &&

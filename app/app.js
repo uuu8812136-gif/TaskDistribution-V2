@@ -89,6 +89,8 @@ function createApp(config, { databaseConnection = mongoose.connection } = {}) {
   app.use('/api/production-schedules', require('./routes/productionSchedules'));
   app.use('/api/generated-daily-reports', require('./routes/generatedDailyReports'));
   app.use('/api/audit-logs', require('./routes/auditLogs'));
+  const { createImportTemplatesRouter } = require('./routes/importTemplates');
+  app.use('/api/import-templates', createImportTemplatesRouter());
   const { createContractsRouter } = require('./routes/contracts');
   app.use('/api/contracts', createContractsRouter({ storageRoot: config.uploadPath }));
   const { createFilesRouter } = require('./routes/files');
