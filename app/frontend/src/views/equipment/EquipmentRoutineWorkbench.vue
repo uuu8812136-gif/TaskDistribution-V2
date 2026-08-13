@@ -890,26 +890,31 @@ async function changePage() {
   await loadActiveTab()
 }
 
-async function changeTab() {
+async function changeTab(requestedTab = activeTab.value) {
+  const nextTab = ROUTINE_TABS.has(String(requestedTab || ''))
+    ? String(requestedTab)
+    : 'plans'
   ++activeTabRequestId
   loading.value = false
+  activeTab.value = nextTab
   plans.value = []
   records.value = []
   exceptions.value = []
   total.value = 0
   loadError.value = ''
   filters.page = 1
-  focusedExceptionId.value = activeTab.value === 'exceptions' ? focusedExceptionId.value : ''
-  focusedPlanId.value = activeTab.value === 'plans' ? focusedPlanId.value : ''
-  await router.replace({
+  focusedExceptionId.value = nextTab === 'exceptions' ? focusedExceptionId.value : ''
+  focusedPlanId.value = nextTab === 'plans' ? focusedPlanId.value : ''
+  const routeUpdate = router.replace({
     query: {
       ...route.query,
-      tab: activeTab.value,
+      tab: nextTab,
       exceptionId: focusedExceptionId.value || undefined,
       planId: focusedPlanId.value || undefined
     }
   })
-  await loadActiveTab()
+  const dataLoad = loadActiveTab()
+  await Promise.all([routeUpdate, dataLoad])
 }
 
 watch(() => [route.query.tab, route.query.planId, route.query.exceptionId], async ([

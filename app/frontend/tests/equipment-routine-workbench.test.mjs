@@ -138,6 +138,16 @@ test('routine workbench keeps its component mounted while tab query parameters c
   assert.notEqual(routeComponentKey(base, 3), routeComponentKey(base, 4))
 })
 
+test('routine tab changes start the destination request without waiting for route replacement', () => {
+  assert.match(workbenchSource, /async function changeTab\(requestedTab = activeTab\.value\)/)
+  assert.match(workbenchSource, /const nextTab = ROUTINE_TABS\.has\(String\(requestedTab \|\| ''\)\)/)
+  assert.match(workbenchSource, /activeTab\.value = nextTab/)
+  assert.match(workbenchSource, /const routeUpdate = router\.replace\(/)
+  assert.match(workbenchSource, /const dataLoad = loadActiveTab\(\)/)
+  assert.match(workbenchSource, /await Promise\.all\(\[routeUpdate, dataLoad\]\)/)
+  assert.doesNotMatch(workbenchSource, /await router\.replace\([\s\S]*?\)\s+await loadActiveTab\(\)\s+}\s+\n\s*watch/)
+})
+
 test('routine workbench refreshes focus when a new message targets the reused route', () => {
   assert.match(workbenchSource, /const nextPlanId = nextTab === 'plans' \? String\(requestedPlanId \|\| ''\) : ''/)
   assert.match(workbenchSource, /const nextExceptionId = nextTab === 'exceptions' \? String\(requestedExceptionId \|\| ''\) : ''/)
@@ -463,7 +473,7 @@ test('routine workbench discards stale team and tab responses', () => {
   assert.match(workbenchSource, /requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)/)
   assert.match(workbenchSource, /async function changeTeam\(\) \{\s*closeRecordDetail\(\)\s*\+\+activeTabRequestId\s*\+\+referenceRequestId/)
   assert.match(workbenchSource, /changeTeam\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\]/)
-  assert.match(workbenchSource, /async function changeTab\(\) \{\s*\+\+activeTabRequestId\s*loading\.value = false/)
+  assert.match(workbenchSource, /async function changeTab\(requestedTab = activeTab\.value\)[\s\S]*?\+\+activeTabRequestId\s*loading\.value = false/)
   assert.match(workbenchSource, /changeTab\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
 })
 
