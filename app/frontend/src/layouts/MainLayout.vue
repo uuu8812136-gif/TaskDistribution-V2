@@ -72,7 +72,7 @@
           :default-active="activeMenu"
           :collapse="isCollapse"
           :collapse-transition="false"
-          :router="true"
+          @select="handleMenuSelect"
         >
           <el-sub-menu
             v-if="session.isTeamMode && (session.hasPermission('member.view') || canManageOrganization)"
@@ -202,10 +202,16 @@
         </el-menu>
       </el-aside>
 
-      <el-main class="layout-main">
+      <el-main ref="layoutMainRef" class="layout-main" @scroll.passive="handleLayoutMainScroll">
         <div class="main-content">
           <router-view v-slot="{ Component }">
-            <transition name="fade" mode="out-in">
+            <keep-alive :key="listNavigationState.cacheHostKey()">
+              <component
+                :is="isListRoute ? Component : null"
+                :key="listNavigationState.componentKey(route)"
+              />
+            </keep-alive>
+            <transition v-if="!isListRoute" name="fade" mode="out-in">
               <component :is="Component" :key="routedComponentKey" />
             </transition>
           </router-view>
@@ -248,7 +254,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import GlobalReadOnlyBanner from '@/components/GlobalReadOnlyBanner.vue'
@@ -260,6 +266,11 @@ import { canViewAudit } from '@/utils/auditLog'
 import { synchronizeRememberedPassword } from '@/utils/rememberedLogin'
 import { isTaskLeadershipCandidateContext } from '@/utils/taskPolicy'
 import { routeComponentKey } from '@/utils/routeComponentKey'
+import {
+  createListNavigationCoordinator,
+  createListNavigationState,
+  isListStateRoute
+} from '@/utils/listNavigationState'
 
 const route = useRoute()
 const router = useRouter()
@@ -285,6 +296,8 @@ const canAccessImportTemplates = computed(() => (
     'contract.settlement.import'
   ], 'any')
 ))
+const listNavigationState = reactive(createListNavigationState(session.contextEpoch))
+const isListRoute = computed(() => isListStateRoute(route))
 const routedComponentKey = computed(() => routeComponentKey(route, session.contextEpoch))
 const canManageOrganization = computed(() => (
   session.isTeamMode &&
@@ -308,8 +321,10 @@ const passwordSubmitting = ref(false)
 const logoutSubmitting = ref(false)
 const accountActionPending = computed(() => passwordSubmitting.value || logoutSubmitting.value)
 const passwordFormRef = ref(null)
+const layoutMainRef = ref(null)
 const passwordForm = reactive({ oldPassword: '', newPassword: '', confirmPassword: '' })
 let messagePollTimer = null
+let scrollRestoreRequestId = 0
 
 const passwordRules = {
   oldPassword: [{ required: true, message: '请输入旧密码', trigger: 'blur' }],
@@ -332,6 +347,66 @@ const passwordRules = {
 const activeMenu = computed(() => route.meta.activeMenu || route.path)
 const toggleCollapse = () => { isCollapse.value = !isCollapse.value }
 const goToMessages = () => router.push({ name: 'Messages' })
+
+const layoutMainElement = () => {
+  const target = layoutMainRef.value?.$el || layoutMainRef.value
+  return target && typeof target.scrollTop === 'number' ? target : null
+}
+
+const scrollLayoutMain = (scrollTop) => {
+  const target = layoutMainElement()
+  if (!target) return
+  if (typeof target.scrollTo === 'function') {
+    target.scrollTo({ top: scrollTop, behavior: 'auto' })
+  } else {
+    target.scrollTop = scrollTop
+  }
+}
+
+const handleLayoutMainScroll = (event) => {
+  if (!isListRoute.value) return
+  listNavigationState.rememberScroll(route, event?.currentTarget?.scrollTop || 0)
+}
+
+const restoreLayoutMainScroll = (scrollTop, expectedRouteKey) => {
+  const requestId = ++scrollRestoreRequestId
+  const targetScrollTop = Math.max(0, Number(scrollTop) || 0)
+  const maxAttempts = targetScrollTop > 0 ? 12 : 2
+
+  const restore = (attempt = 0) => {
+    if (
+      requestId !== scrollRestoreRequestId ||
+      listNavigationState.renderKey(route) !== expectedRouteKey
+    ) return
+
+    scrollLayoutMain(targetScrollTop)
+    const target = layoutMainElement()
+    if (
+      !target ||
+      Math.abs(target.scrollTop - targetScrollTop) <= 1 ||
+      attempt >= maxAttempts
+    ) return
+
+    window.requestAnimationFrame(() => restore(attempt + 1))
+  }
+
+  window.requestAnimationFrame(() => restore())
+}
+
+const listNavigationCoordinator = createListNavigationCoordinator({
+  router,
+  state: listNavigationState,
+  restoreScroll: restoreLayoutMainScroll,
+  scheduleRestore: (work) => nextTick(work)
+})
+
+const handleMenuSelect = async (index) => {
+  try {
+    await listNavigationCoordinator.navigateFromMenu(index)
+  } catch {
+    // Navigation failures leave the current page and its cached state intact.
+  }
+}
 
 const syncResponsiveLayout = () => {
   const mobile = window.matchMedia('(max-width: 768px)').matches
@@ -423,7 +498,11 @@ const handleLogout = async () => {
   }
 }
 
-watch(() => session.contextEpoch, startMessagePolling)
+watch(() => session.contextEpoch, (contextEpoch) => {
+  startMessagePolling()
+  scrollRestoreRequestId += 1
+  listNavigationCoordinator.synchronizeContext(contextEpoch)
+})
 watch(() => route.fullPath, () => {
   if (isMobile.value) isCollapse.value = true
 })
@@ -431,9 +510,12 @@ onMounted(startMessagePolling)
 onMounted(() => {
   syncResponsiveLayout()
   window.addEventListener('resize', syncResponsiveLayout)
+  listNavigationCoordinator.install()
 })
 onUnmounted(() => {
   stopMessagePolling()
+  scrollRestoreRequestId += 1
+  listNavigationCoordinator.dispose()
   window.removeEventListener('resize', syncResponsiveLayout)
 })
 </script>

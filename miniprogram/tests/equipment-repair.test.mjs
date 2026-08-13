@@ -41,6 +41,11 @@ test('mini program repair controls stay compact and expose locations, album phot
     '更换配件',
     '无需换件'
   ])
+  assert.match(form, /class="type-option"[\s\S]*:class="\{ active: form\.type === item\.value \}"[\s\S]*@click="form\.type = item\.value"/)
+  assert.match(form, /\.type-segment \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\);[^}]*gap: 12rpx;/)
+  assert.match(form, /\.type-option \{[^}]*border: 1px solid #cbd5e1;[^}]*border-radius: 10rpx;[^}]*white-space: nowrap;[^}]*overflow: hidden;/)
+  assert.match(form, /\.type-option\.active \{[^}]*border-color: #1677ff;[^}]*color: #fff;[^}]*background: #1677ff;[^}]*box-shadow:/)
+  assert.doesNotMatch(form, /\.type-option \+ \.type-option/)
   assert.match(form, /sourceType: \['camera', 'album'\]/)
   assert.match(form, /拍照\/相册/)
   assert.match(form, /getEquipmentRepairLocations/)
@@ -55,6 +60,15 @@ test('mini program repair controls stay compact and expose locations, album phot
   assert.match(list, /维修记录加载失败/)
   assert.match(list, /未找到匹配记录/)
   assert.match(list, /class="retry-button" @click="refresh"/)
+  assert.match(list, /<view v-if="mode === 'all'" class="search-band">/)
+  assert.match(list, /todo: request\.mode === 'todo' \? true : undefined/)
+  assert.match(list, /keyword: request\.mode === 'all' \? request\.keyword \|\| undefined : undefined/)
+  assert.match(list, /mode\.value = value\s+if \(value === 'todo'\) keyword\.value = ''\s+refresh\(\)/)
+  assert.match(list, /onShow\(refresh\)/)
+  assert.match(list, /\.mode-segment \{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);[^}]*gap: 12rpx;/)
+  assert.match(list, /\.mode-segment button \{[^}]*border: 1px solid #cbd5e1;[^}]*border-radius: 10rpx;/)
+  assert.match(list, /\.mode-segment button\.active \{[^}]*border-color: #1677ff;[^}]*color: #fff;[^}]*background: #1677ff;[^}]*box-shadow:/)
+  assert.doesNotMatch(list, /\.mode-segment button \+ button/)
   assert.match(workbench, /v-if="canRepair" class="module-row" @click="openRepairs"/)
 })
 

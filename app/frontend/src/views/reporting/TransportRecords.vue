@@ -364,7 +364,16 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -388,6 +397,7 @@ import {
   uploadTemporaryFile
 } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
 import {
   cleanupTemporaryFiles,
   managedFileId,
@@ -435,6 +445,31 @@ const masterEditingId = ref('')
 const masterSaving = ref(false)
 const masterFormRef = ref(null)
 const masterForm = reactive(emptyMasterForm())
+let pageActive = true
+let wasDeactivated = false
+let optionsRequestId = 0
+let masterDataRequestId = 0
+let recordsRequestId = 0
+let editRequestId = 0
+let previewRequestId = 0
+let summaryRequestId = 0
+let exportRequestId = 0
+let optionsRequestPending = false
+let masterDataRequestPending = false
+let resumeOptionsLoad = false
+let resumeMasterDataLoad = false
+let resumeRecordsLoad = false
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
 const masterKinds = Object.freeze([
   { value: 'TRIP', label: '趟次' },
   { value: 'ROUTE', label: '路线' },
@@ -560,32 +595,117 @@ function recordParams(extra = {}) {
 }
 
 async function loadOptions() {
+  const requestId = ++optionsRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getTransportOptions(requestTeamParams.value)
-  orgUnits.value = result.orgUnits || []
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  optionsRequestPending = true
+  try {
+    const result = await getTransportOptions(requestTeamParams.value)
+    if (
+      !pageActive ||
+      requestId !== optionsRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
+    orgUnits.value = result.orgUnits || []
+  } finally {
+    if (requestId === optionsRequestId) optionsRequestPending = false
+  }
 }
 
 async function loadMasterData({ includeDisabled = canManageMasterData.value } = {}) {
+  const requestId = ++masterDataRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getTransportMasterData({
-    ...requestTeamParams.value,
-    includeDisabled
-  })
-  masterData.value = result.masterData || []
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  masterDataRequestPending = true
+  try {
+    const result = await getTransportMasterData({
+      ...requestTeamParams.value,
+      includeDisabled
+    })
+    if (
+      !pageActive ||
+      requestId !== masterDataRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
+    masterData.value = result.masterData || []
+  } finally {
+    if (requestId === masterDataRequestId) masterDataRequestPending = false
+  }
 }
 
 async function loadRecords() {
+  const requestId = ++recordsRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   loading.value = true
   try {
     const result = await getTransportRecords(recordParams({
       page: filters.page,
       pageSize: filters.pageSize
     }))
+    if (
+      !pageActive ||
+      requestId !== recordsRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
     records.value = result.transportRecords || []
     total.value = result.total || 0
   } finally {
-    loading.value = false
+    if (requestId === recordsRequestId) loading.value = false
+  }
+}
+
+function invalidateTransportTeamContext() {
+  confirmationGuard.invalidate()
+  optionsRequestId += 1
+  masterDataRequestId += 1
+  recordsRequestId += 1
+  editRequestId += 1
+  summaryRequestId += 1
+  exportRequestId += 1
+  optionsRequestPending = false
+  masterDataRequestPending = false
+  loading.value = false
+  summaryLoading.value = false
+  exporting.value = false
+  records.value = []
+  orgUnits.value = []
+  masterData.value = []
+  summaryRows.value = []
+  total.value = 0
+  formVisible.value = false
+  masterVisible.value = false
+  masterEditorVisible.value = false
+  summaryVisible.value = false
+  previewVisible.value = false
+  resetForm()
+  resetMasterEditor()
+  clearPreview()
+}
+
+async function syncRouteEditAction() {
+  if (!pageActive || route.name !== 'TransportRecords') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  if (routedTeamId && routedTeamId !== selectedTeamId.value) {
+    invalidateTransportTeamContext()
+    selectedTeamId.value = routedTeamId
+    Object.assign(filters, {
+      dateRange: [], keyword: '', orgUnitId: '', shift: '', dispatchType: '', page: 1
+    })
+    await Promise.all([loadOptions(), loadMasterData(), loadRecords()])
+    if (!pageActive || routedTeamId !== selectedTeamId.value) return
+  }
+  if (!canSubmit.value) return
+  const editId = String(route.query.edit || '')
+  if (!editId || (formVisible.value && editingId.value === editId)) return
+  await openEdit(editId)
+  if (
+    pageActive &&
+    formVisible.value &&
+    editingId.value === editId &&
+    String(route.query.edit || '') === editId
+  ) {
+    await router.replace({ query: { ...route.query, edit: undefined } })
   }
 }
 
@@ -595,7 +715,7 @@ async function initialize() {
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   await Promise.all([loadOptions(), loadMasterData(), loadRecords()])
-  if (route.query.edit && canSubmit.value) await openEdit(String(route.query.edit))
+  await syncRouteEditAction()
 }
 
 function applyFilters() {
@@ -611,10 +731,11 @@ function resetFilters() {
 }
 
 async function handleTeamChange(teamId) {
-  await router.replace({ query: { teamId } })
+  invalidateTransportTeamContext()
   Object.assign(filters, {
     dateRange: [], keyword: '', orgUnitId: '', shift: '', dispatchType: '', page: 1
   })
+  await router.replace({ query: { teamId } })
   await Promise.all([loadOptions(), loadMasterData(), loadRecords()])
 }
 
@@ -638,13 +759,26 @@ function openCreate() {
 }
 
 async function openEdit(transportRecordId) {
+  const requestId = ++editRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   await loadMasterData({ includeDisabled: true })
+  if (!pageActive || requestId !== editRequestId) return
   const result = await getTransportRecord(transportRecordId, requestTeamParams.value)
   const record = result.transportRecord
+  if (
+    !pageActive ||
+    requestId !== editRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return
   const metadata = await Promise.all(record.photoFileIds.map(async (fileId) => {
     const response = await getFileMetadata(fileId, requestTeamParams.value.teamId)
     return response.file
   }))
+  if (
+    !pageActive ||
+    requestId !== editRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return
   editingId.value = record._id
   const masterIdBySnapshot = (kind, field, value) => masterData.value.find((item) => (
     item.kind === kind && item.status === 'ACTIVE' && item[field] === value
@@ -754,21 +888,37 @@ async function saveMasterData() {
 async function toggleMasterStatus(item) {
   const nextStatus = item.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE'
   const action = nextStatus === 'ACTIVE' ? '启用' : '停用'
-  await ElMessageBox.confirm(`确定${action}${masterKindLabel.value}“${masterDisplayName(item)}”吗？`, `${action}确认`, {
-    type: 'warning'
-  })
+  const confirmation = confirmationGuard.capture()
+  try {
+    await ElMessageBox.confirm(`确定${action}${masterKindLabel.value}“${masterDisplayName(item)}”吗？`, `${action}确认`, {
+      type: 'warning'
+    })
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   await setTransportMasterDataStatus(item._id, nextStatus)
+  if (!confirmationGuard.isCurrent(confirmation)) return
   ElMessage.success(`${masterKindLabel.value}已${action}`)
   await loadMasterData({ includeDisabled: true })
 }
 
 async function deleteMaster(item) {
-  await ElMessageBox.confirm(
-    `确定删除装载明细类型“${masterDisplayName(item)}”吗？历史提报仍会保留原名称和数量。`,
-    '删除确认',
-    { type: 'warning', confirmButtonText: '删除' }
-  )
+  const confirmation = confirmationGuard.capture()
+  try {
+    await ElMessageBox.confirm(
+      `确定删除装载明细类型“${masterDisplayName(item)}”吗？历史提报仍会保留原名称和数量。`,
+      '删除确认',
+      { type: 'warning', confirmButtonText: '删除' }
+    )
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   await deleteTransportMasterData(item._id)
+  if (!confirmationGuard.isCurrent(confirmation)) return
   ElMessage.success('装载明细类型已删除')
   await loadMasterData({ includeDisabled: true })
 }
@@ -787,6 +937,7 @@ function handlePhotoExceed() {
 }
 
 function clearPreview() {
+  previewRequestId += 1
   if (previewUrl.value) URL.revokeObjectURL(previewUrl.value)
   previewUrl.value = ''
   previewName.value = ''
@@ -794,14 +945,26 @@ function clearPreview() {
 
 async function previewPhoto(file) {
   clearPreview()
+  const requestId = previewRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   previewName.value = file.name || '现场照片'
-  if (file.raw) previewUrl.value = URL.createObjectURL(file.raw)
-  else {
+  let blob = file.raw
+  if (!blob) {
     const fileId = managedFileId(file)
     if (!fileId) return
-    const blob = await downloadFileBlob(fileId, requestTeamParams.value.teamId)
-    previewUrl.value = URL.createObjectURL(blob)
+    blob = await downloadFileBlob(fileId, requestedTeamId || undefined)
   }
+  if (
+    !pageActive ||
+    requestId !== previewRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return
+  const url = URL.createObjectURL(blob)
+  if (!pageActive || requestId !== previewRequestId) {
+    URL.revokeObjectURL(url)
+    return
+  }
+  previewUrl.value = url
   previewVisible.value = true
 }
 
@@ -853,36 +1016,105 @@ async function openSummary() {
 
 async function loadSummary() {
   if (!summaryMonth.value) return
+  const requestId = ++summaryRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   summaryLoading.value = true
   try {
     const range = naturalMonthRange(summaryMonth.value)
     const base = recordParams({ ...range, dateFrom: range.dateFrom, dateTo: range.dateTo })
     const first = await getTransportRecords({ ...base, page: 1, pageSize: 200 })
+    if (
+      !pageActive ||
+      requestId !== summaryRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
     const all = [...(first.transportRecords || [])]
     const pages = Math.ceil((first.total || 0) / 200)
     for (let page = 2; page <= pages; page += 1) {
       const result = await getTransportRecords({ ...base, page, pageSize: 200 })
+      if (
+        !pageActive ||
+        requestId !== summaryRequestId ||
+        requestedTeamId !== String(requestTeamParams.value.teamId || '')
+      ) return
       all.push(...(result.transportRecords || []))
     }
+    if (
+      !pageActive ||
+      requestId !== summaryRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
     summaryRows.value = aggregateDriverMonthly(all)
   } finally {
-    summaryLoading.value = false
+    if (requestId === summaryRequestId) summaryLoading.value = false
   }
 }
 
 async function handleSummaryExport() {
   if (!summaryMonth.value) return
+  const requestId = ++exportRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   exporting.value = true
   try {
     const blob = await exportTransportSummary(recordParams({ month: summaryMonth.value }))
+    if (
+      !pageActive ||
+      requestId !== exportRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
     saveBlob(blob, `运输司机月汇总-${summaryMonth.value}.xlsx`)
   } finally {
-    exporting.value = false
+    if (requestId === exportRequestId) exporting.value = false
   }
 }
 
+function deactivateTransportRecords() {
+  resumeOptionsLoad = resumeOptionsLoad || optionsRequestPending
+  resumeMasterDataLoad = resumeMasterDataLoad || masterDataRequestPending
+  resumeRecordsLoad = resumeRecordsLoad || loading.value
+  pageActive = false
+  confirmationGuard.invalidate()
+  wasDeactivated = true
+  optionsRequestId += 1
+  masterDataRequestId += 1
+  recordsRequestId += 1
+  editRequestId += 1
+  summaryRequestId += 1
+  exportRequestId += 1
+  loading.value = false
+  summaryLoading.value = false
+  exporting.value = false
+  formVisible.value = false
+  masterVisible.value = false
+  masterEditorVisible.value = false
+  summaryVisible.value = false
+  previewVisible.value = false
+  clearPreview()
+}
+
+watch(() => [route.name, route.query.teamId, route.query.edit], () => {
+  if (pageActive && route.name === 'TransportRecords') void syncRouteEditAction()
+})
+
 onMounted(initialize)
-onBeforeUnmount(clearPreview)
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const reloadOptions = resumeOptionsLoad
+  const reloadMasterData = resumeMasterDataLoad
+  const reloadRecords = resumeRecordsLoad
+  resumeOptionsLoad = false
+  resumeMasterDataLoad = false
+  resumeRecordsLoad = false
+  void syncRouteEditAction().then(() => Promise.all([
+    reloadOptions ? loadOptions() : Promise.resolve(),
+    reloadMasterData ? loadMasterData() : Promise.resolve(),
+    reloadRecords ? loadRecords() : Promise.resolve()
+  ]))
+})
+onDeactivated(deactivateTransportRecords)
+onBeforeUnmount(deactivateTransportRecords)
 </script>
 
 <style scoped lang="scss">

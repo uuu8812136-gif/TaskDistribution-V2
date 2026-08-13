@@ -89,6 +89,7 @@
         <el-table
           v-loading="loading"
           :data="settlements"
+          max-height="clamp(320px, calc(100dvh - 390px), 680px)"
           row-key="_id"
           stripe
           :empty-text="loadError ? '加载失败，请重新加载' : '暂无供应商结算费用'"
@@ -261,7 +262,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { Delete, Edit } from '@element-plus/icons-vue'
@@ -276,6 +286,13 @@ import {
   updateSupplierSettlement
 } from '@/api/contract'
 import { useSessionStore } from '@/stores/session'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import {
+  createPageConfirmationGuard,
+  isSamePageRequestContext,
+  pageRequestContextSnapshot
+} from '@/utils/pageRequestContext'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   SETTLEMENT_AMOUNT_FIELDS,
   YES_NO_OPTIONS,
@@ -305,6 +322,16 @@ const importVisible = ref(false)
 const importFiles = ref([])
 const importFile = ref(null)
 let listRequestId = 0
+let supplierOptionsRequestId = 0
+let exportRequestId = 0
+let importRequestId = 0
+let mutationRequestId = 0
+let activationReady = false
+let pageActive = true
+let resumeListLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.CONTRACT_SETTLEMENTS
+})
 
 const filters = reactive({
   monthRange: [],
@@ -331,6 +358,22 @@ const canExport = computed(() => session.hasPermission('contract.settlement.expo
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+function isCurrentPageContext(context) {
+  return route.name === 'SupplierSettlementFees' &&
+    isSamePageRequestContext(context, currentPageContext())
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
 const selectedSupplierStatus = computed(() => {
   const option = supplierOptions.value.find((item) => item._id === form.supplierId)
   if (!option) return { hasSignedContract: '选择供应商后自动关联', contractValid: '选择供应商后自动关联' }
@@ -379,44 +422,85 @@ function getSummaries({ columns }) {
 }
 
 async function loadSupplierOptions() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++supplierOptionsRequestId
+  const teamParams = { ...requestTeamParams.value }
+  const context = currentPageContext()
+  if (session.isGlobalReadOnly && !selectedTeamId.value) {
+    if (requestId === supplierOptionsRequestId) supplierOptions.value = []
+    return true
+  }
   try {
     const collected = []
     const pageSize = 100
     for (let page = 1; page <= 100; page += 1) {
-      const result = await getSuppliers({ ...requestTeamParams.value, page, pageSize })
+      const result = await getSuppliers({ ...teamParams, page, pageSize })
+      if (requestId !== supplierOptionsRequestId || !isCurrentPageContext(context)) return false
       const batch = result.suppliers || []
       collected.push(...batch)
       const totalSuppliers = Number(result.total)
       if (batch.length < pageSize || Number.isFinite(totalSuppliers) && collected.length >= totalSuppliers) break
     }
+    if (requestId !== supplierOptionsRequestId || !isCurrentPageContext(context)) return false
     supplierOptions.value = collected
+    return true
   } catch {
-    supplierOptions.value = []
+    if (requestId === supplierOptionsRequestId && isCurrentPageContext(context)) supplierOptions.value = []
+    return false
   }
 }
 
-async function loadSettlements() {
+async function loadSettlements({ acknowledgeMutation = true } = {}) {
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     settlements.value = []
     total.value = 0
     Object.keys(totals).forEach((key) => { totals[key] = 0 })
-    return
+    return true
   }
+  const loadStartRevision = mutationRefresh.currentRevision()
   const requestId = ++listRequestId
+  const context = currentPageContext()
   loading.value = true
   loadError.value = ''
   try {
     const result = await getSupplierSettlements(queryParams())
-    if (requestId !== listRequestId) return
+    if (requestId !== listRequestId || !isCurrentPageContext(context)) return false
     settlements.value = result.settlements || []
     total.value = Number(result.total) || 0
     for (const item of SETTLEMENT_AMOUNT_FIELDS) totals[item.key] = Number(result.totals?.[item.key]) || 0
+    if (acknowledgeMutation) mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
-    if (requestId === listRequestId) loadError.value = error?.message || '供应商结算费用加载失败，请稍后重试'
+    if (requestId === listRequestId && isCurrentPageContext(context)) {
+      loadError.value = error?.message || '供应商结算费用加载失败，请稍后重试'
+    }
+    return false
   } finally {
     if (requestId === listRequestId) loading.value = false
   }
+}
+
+function invalidateSettlementResults() {
+  confirmationGuard.invalidate()
+  listRequestId += 1
+  supplierOptionsRequestId += 1
+  exportRequestId += 1
+  importRequestId += 1
+  mutationRequestId += 1
+  settlements.value = []
+  supplierOptions.value = []
+  total.value = 0
+  for (const item of SETTLEMENT_AMOUNT_FIELDS) totals[item.key] = 0
+  loading.value = false
+  exporting.value = false
+  importing.value = false
+  submitting.value = false
+  deletingId.value = ''
+  loadError.value = ''
+  formVisible.value = false
+  importVisible.value = false
+  editingId.value = ''
+  importFiles.value = []
+  importFile.value = null
 }
 
 function applyFilters() {
@@ -424,18 +508,27 @@ function applyFilters() {
   loadSettlements()
 }
 
-function resetFilters() {
+function resetFilterState() {
   Object.assign(filters, {
     monthRange: [], supplierCode: '', supplierName: '', hasSignedContract: '', contractValid: '', page: 1
   })
-  loadSettlements()
+}
+
+function resetFilters() {
+  resetFilterState()
+  return loadSettlements()
 }
 
 async function handleTeamChange(teamId) {
+  invalidateSettlementResults()
+  resetFilterState()
   await router.replace({ query: teamId ? { teamId } : {} })
-  supplierOptions.value = []
-  resetFilters()
-  await loadSupplierOptions()
+  if (
+    String(route.query.teamId || '') !== String(teamId || '') ||
+    String(selectedTeamId.value || '') !== String(teamId || '')
+  ) return
+  const settlementLoad = loadSettlements()
+  await Promise.all([loadSupplierOptions(), settlementLoad])
 }
 
 function resetForm() {
@@ -469,6 +562,8 @@ async function submitForm() {
   if (!valid) return
   syncSelectedSupplier(form.supplierId)
   submitting.value = true
+  const requestId = ++mutationRequestId
+  const context = currentPageContext()
   try {
     const payload = {
       month: form.month,
@@ -479,15 +574,17 @@ async function submitForm() {
     }
     if (editingId.value) await updateSupplierSettlement(editingId.value, payload)
     else await createSupplierSettlement(payload)
+    if (requestId !== mutationRequestId || !isCurrentPageContext(context)) return
     ElMessage.success(editingId.value ? '结算费用已更新' : '结算费用已新增')
     formVisible.value = false
     await loadSettlements()
   } finally {
-    submitting.value = false
+    if (requestId === mutationRequestId) submitting.value = false
   }
 }
 
 async function handleDelete(row) {
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm(
       `确定删除 ${row.month} 的“${row.supplierName}”结算费用吗？`,
@@ -497,25 +594,37 @@ async function handleDelete(row) {
   } catch {
     return
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   deletingId.value = row._id
+  const requestId = ++mutationRequestId
+  const context = currentPageContext()
   try {
     await deleteSupplierSettlement(row._id, { reason: '后台供应商结算费用删除' })
+    if (
+      requestId !== mutationRequestId ||
+      !isCurrentPageContext(context) ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
     ElMessage.success('结算费用已删除')
     if (settlements.value.length === 1 && filters.page > 1) filters.page -= 1
     await loadSettlements()
   } finally {
-    deletingId.value = ''
+    if (requestId === mutationRequestId) deletingId.value = ''
   }
 }
 
 async function handleExport() {
+  if (exporting.value) return
+  const requestId = ++exportRequestId
+  const context = currentPageContext()
   exporting.value = true
   try {
     const blob = await exportSupplierSettlements({ ...queryParams(), page: undefined, pageSize: undefined })
+    if (requestId !== exportRequestId || !isCurrentPageContext(context)) return
     saveContractBlob(blob, `供应商结算费用-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
     ElMessage.success('供应商结算费用已导出')
   } finally {
-    exporting.value = false
+    if (requestId === exportRequestId) exporting.value = false
   }
 }
 
@@ -537,17 +646,35 @@ function handleImportFileChange(file, files) {
 
 async function submitImport() {
   if (!importFile.value) return
+  const requestId = ++importRequestId
+  const context = currentPageContext()
+  const file = importFile.value
+  const teamParams = { ...requestTeamParams.value }
   importing.value = true
   try {
-    const result = await importSupplierSettlements(importFile.value, requestTeamParams.value)
+    const result = await importSupplierSettlements(file, teamParams)
+    if (requestId !== importRequestId || !isCurrentPageContext(context)) return
     const count = Number(result.importedCount ?? result.createdCount ?? result.totalImported)
     ElMessage.success(Number.isFinite(count) ? `已导入 ${count} 条结算费用` : '供应商结算费用导入完成')
     importVisible.value = false
     filters.page = 1
     await loadSettlements()
   } finally {
-    importing.value = false
+    if (requestId === importRequestId) importing.value = false
   }
+}
+
+async function syncRouteTeamContext({ force = false } = {}) {
+  if (!pageActive || route.name !== 'SupplierSettlementFees') return false
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = session.isGlobalReadOnly && routedTeamId !== selectedTeamId.value
+  if (!force && !teamChanged) return false
+  if (teamChanged) selectedTeamId.value = routedTeamId
+  invalidateSettlementResults()
+  resetFilterState()
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return true
+  await Promise.all([loadSupplierOptions(), loadSettlements()])
+  return true
 }
 
 async function initialize() {
@@ -558,7 +685,58 @@ async function initialize() {
   await Promise.all([loadSupplierOptions(), loadSettlements()])
 }
 
-onMounted(initialize)
+onMounted(async () => {
+  try {
+    await initialize()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  pageActive = true
+  if (!activationReady) return
+  const interrupted = resumeListLoad
+  resumeListLoad = false
+  void syncRouteTeamContext().then((changed) => {
+    if (changed) return
+    if (interrupted) return Promise.all([loadSupplierOptions(), loadSettlements()])
+    return mutationRefresh.refreshIfNeeded(() => Promise.all([
+      loadSupplierOptions(),
+      loadSettlements({ acknowledgeMutation: false })
+    ]).then((results) => results.every((result) => result !== false)))
+  }).catch(() => {})
+})
+watch(() => [route.name, route.query.teamId], () => {
+  if (pageActive && activationReady) void syncRouteTeamContext()
+})
+watch(() => session.contextEpoch, () => {
+  if (pageActive && activationReady) void syncRouteTeamContext({ force: true })
+  else invalidateSettlementResults()
+})
+
+function deactivateSupplierSettlementFees() {
+  resumeListLoad = resumeListLoad || loading.value
+  pageActive = false
+  confirmationGuard.invalidate()
+  listRequestId += 1
+  supplierOptionsRequestId += 1
+  exportRequestId += 1
+  importRequestId += 1
+  mutationRequestId += 1
+  loading.value = false
+  exporting.value = false
+  importing.value = false
+  submitting.value = false
+  deletingId.value = ''
+  formVisible.value = false
+  importVisible.value = false
+  editingId.value = ''
+  importFiles.value = []
+  importFile.value = null
+}
+
+onDeactivated(deactivateSupplierSettlementFees)
+onBeforeUnmount(deactivateSupplierSettlementFees)
 </script>
 
 <style scoped lang="scss">

@@ -205,7 +205,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -220,6 +220,7 @@ import {
   updateEquipmentRoutineRule
 } from '@/api/equipment'
 import { useSessionStore } from '@/stores/session'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
 import {
   ROUTINE_PHOTO_POLICY_OPTIONS,
   ROUTINE_RULE_STATUS_OPTIONS,
@@ -271,9 +272,28 @@ const activeRoutineType = ref(
     ? requestedRoutineType
     : availableRoutineTypes.value[0]?.value || 'INSPECTION'
 )
+let pageActive = true
+let wasDeactivated = false
+let categoriesRequestId = 0
+let rulesRequestId = 0
+let ruleDetailRequestId = 0
+let categoriesRequestPending = false
+let resumeCategoriesLoad = false
+let resumeRulesLoad = false
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
 const managerIdentityAllowed = computed(() => {
   const membership = session.context.membership
   return session.isSuperAdmin ||
@@ -316,11 +336,24 @@ function checklistSummary(rule) {
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 
 async function loadCategories() {
+  const requestId = ++categoriesRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  categories.value = await fetchAllEquipmentCategories(
-    getEquipmentCategories,
-    requestTeamParams.value
-  )
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  categoriesRequestPending = true
+  try {
+    const result = await fetchAllEquipmentCategories(
+      getEquipmentCategories,
+      requestTeamParams.value
+    )
+    if (
+      !pageActive ||
+      requestId !== categoriesRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return false
+    categories.value = result
+  } finally {
+    if (requestId === categoriesRequestId) categoriesRequestPending = false
+  }
   if (filters.categoryId) {
     const primaryCategoryId = equipmentPrimaryCategoryId(categories.value, filters.categoryId)
     if (!primaryCategoryId) {
@@ -343,12 +376,15 @@ async function loadCategories() {
 }
 
 async function loadRules() {
+  const requestId = ++rulesRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   if (categoryFilterError.value) {
     rules.value = []
     total.value = 0
     return
   }
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  const requestedType = activeRoutineType.value
   loading.value = true
   try {
     const result = await getEquipmentRoutineRules({
@@ -361,11 +397,34 @@ async function loadRules() {
       page: filters.page,
       pageSize: filters.pageSize
     })
+    if (
+      !pageActive ||
+      requestId !== rulesRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '') ||
+      requestedType !== activeRoutineType.value
+    ) return
     rules.value = result.rules || result.routineRules || []
     total.value = result.total ?? rules.value.length
   } finally {
-    loading.value = false
+    if (requestId === rulesRequestId) loading.value = false
   }
+}
+
+function invalidateRuleTeamContext() {
+  confirmationGuard.invalidate()
+  categoriesRequestId += 1
+  rulesRequestId += 1
+  ruleDetailRequestId += 1
+  categoriesRequestPending = false
+  loading.value = false
+  categories.value = []
+  rules.value = []
+  total.value = 0
+  selectedRule.value = null
+  dialogVisible.value = false
+  viewing.value = false
+  copying.value = false
+  newRuleSchedulePreset.value = ''
 }
 
 async function initialize() {
@@ -374,6 +433,33 @@ async function initialize() {
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   if (await loadCategories() === false) return
+  await loadRules()
+}
+
+async function syncRouteRuleContext() {
+  if (!pageActive || route.name !== 'EquipmentRules') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = Boolean(routedTeamId && routedTeamId !== selectedTeamId.value)
+  if (teamChanged) {
+    invalidateRuleTeamContext()
+    selectedTeamId.value = routedTeamId
+  }
+  const requestedType = String(route.query.routineType || '')
+  const nextType = availableRoutineTypes.value.some((item) => item.value === requestedType)
+    ? requestedType
+    : availableRoutineTypes.value[0]?.value || 'INSPECTION'
+  const nextCategoryId = String(route.query.categoryId || '')
+  const changed = (
+    teamChanged ||
+    nextType !== activeRoutineType.value ||
+    nextCategoryId !== filters.categoryId
+  )
+  if (!changed) return
+  activeRoutineType.value = nextType
+  filters.categoryId = nextCategoryId
+  filters.page = 1
+  categoryFilterError.value = ''
+  if (await loadCategories() === false || !pageActive) return
   await loadRules()
 }
 
@@ -414,9 +500,10 @@ async function handleTypeChange() {
 }
 
 async function handleTeamChange(teamId) {
-  await router.replace({ query: { ...route.query, teamId, categoryId: undefined } })
+  invalidateRuleTeamContext()
   Object.assign(filters, { keyword: '', categoryId: '', scheduleMode: '', status: '', page: 1 })
   categoryFilterError.value = ''
+  await router.replace({ query: { ...route.query, teamId, categoryId: undefined } })
   await Promise.all([loadCategories(), loadRules()])
 }
 
@@ -437,12 +524,21 @@ function openPresetCreate(preset) {
 }
 
 async function fetchRule(row) {
+  const requestId = ++ruleDetailRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   const result = await getEquipmentRoutineRule(row._id, requestTeamParams.value)
+  if (
+    !pageActive ||
+    requestId !== ruleDetailRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return null
   return result.rule || result.routineRule || result
 }
 
 async function openView(row) {
-  selectedRule.value = await fetchRule(row)
+  const rule = await fetchRule(row)
+  if (!rule) return
+  selectedRule.value = rule
   viewing.value = true
   copying.value = false
   newRuleSchedulePreset.value = ''
@@ -450,7 +546,9 @@ async function openView(row) {
 }
 
 async function openEdit(row) {
-  selectedRule.value = await fetchRule(row)
+  const rule = await fetchRule(row)
+  if (!rule) return
+  selectedRule.value = rule
   viewing.value = false
   copying.value = false
   newRuleSchedulePreset.value = ''
@@ -458,7 +556,9 @@ async function openEdit(row) {
 }
 
 async function openCopy(row) {
-  selectedRule.value = await fetchRule(row)
+  const rule = await fetchRule(row)
+  if (!rule) return
+  selectedRule.value = rule
   viewing.value = false
   copying.value = true
   newRuleSchedulePreset.value = ''
@@ -483,6 +583,7 @@ async function saveRule(payload) {
 }
 
 async function disableRule(row) {
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm(`停用规则“${row.name}”？历史执行记录会继续保留。`, '停用规则', {
       type: 'warning',
@@ -493,7 +594,9 @@ async function disableRule(row) {
     if (error === 'cancel' || error === 'close') return
     throw error
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   await disableEquipmentRoutineRule(row._id)
+  if (!confirmationGuard.isCurrent(confirmation)) return
   ElMessage.success('规则已停用')
   await loadRules()
 }
@@ -505,6 +608,7 @@ async function enableRule(row) {
 }
 
 async function deleteRule(row) {
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm(
       `确定永久删除规则“${row.name}”吗？删除后无法恢复。`,
@@ -520,9 +624,11 @@ async function deleteRule(row) {
     if (error === 'cancel' || error === 'close') return
     throw error
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   deletingId.value = row._id
   try {
     await deleteEquipmentRoutineRule(row._id, { reason: '后台规则管理永久删除' })
+    if (!confirmationGuard.isCurrent(confirmation)) return
     ElMessage.success('规则已删除')
     await loadRules()
   } finally {
@@ -538,6 +644,38 @@ async function handleRowCommand(command, row) {
 }
 
 onMounted(initialize)
+watch(() => [route.name, route.query.teamId, route.query.categoryId, route.query.routineType], () => {
+  if (pageActive) void syncRouteRuleContext()
+})
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const reloadCategories = resumeCategoriesLoad
+  const reloadRules = resumeRulesLoad
+  resumeCategoriesLoad = false
+  resumeRulesLoad = false
+  void syncRouteRuleContext().then(() => Promise.all([
+    reloadCategories ? loadCategories() : Promise.resolve(),
+    reloadRules ? loadRules() : Promise.resolve()
+  ]))
+})
+onDeactivated(() => {
+  resumeCategoriesLoad = resumeCategoriesLoad || categoriesRequestPending
+  resumeRulesLoad = resumeRulesLoad || loading.value
+  pageActive = false
+  confirmationGuard.invalidate()
+  wasDeactivated = true
+  categoriesRequestId += 1
+  rulesRequestId += 1
+  ruleDetailRequestId += 1
+  loading.value = false
+  dialogVisible.value = false
+})
+onBeforeUnmount(() => {
+  pageActive = false
+  confirmationGuard.invalidate()
+})
 </script>
 
 <style scoped lang="scss">

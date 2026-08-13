@@ -59,6 +59,10 @@ const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
   EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
   EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
 ]);
+const REACTIVATION_SOURCE_STATUSES = new Set([
+  EquipmentAsset.EQUIPMENT_STATUSES.IDLE,
+  EquipmentAsset.EQUIPMENT_STATUSES.STOPPED
+]);
 
 const DEPUTY_POSITION_KEYS = Object.freeze([
   POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER,
@@ -494,6 +498,7 @@ function createEquipmentStatusApplicationService({
     const recipients = await stageRecipientIds(application, session);
     if (recipients.length === 0) return;
     const typeLabel = {
+      [EQUIPMENT_STATUS_APPLICATION_TYPES.IN_USE]: '恢复在用',
       [EQUIPMENT_STATUS_APPLICATION_TYPES.IDLE]: '闲置',
       [EQUIPMENT_STATUS_APPLICATION_TYPES.STOPPED]: '停用',
       [EQUIPMENT_STATUS_APPLICATION_TYPES.SCRAPPED]: '报废'
@@ -618,7 +623,7 @@ function createEquipmentStatusApplicationService({
       throw invalid('Team, organization, status snapshots, and workflow state are server controlled');
     }
     if (!EQUIPMENT_STATUS_APPLICATION_TYPE_VALUES.includes(input.applicationType)) {
-      throw invalid('applicationType must be IDLE, STOPPED, or SCRAPPED');
+      throw invalid('applicationType must be IN_USE, IDLE, STOPPED, or SCRAPPED');
     }
     const equipmentId = normalizeObjectId(input.equipmentId, 'equipmentId');
     const reason = requiredString(input.reason, 'reason', 5000);
@@ -648,6 +653,12 @@ function createEquipmentStatusApplicationService({
         }
         if (asset.status === input.applicationType) {
           throw conflict('Equipment already has the requested status');
+        }
+        if (
+          input.applicationType === EQUIPMENT_STATUS_APPLICATION_TYPES.IN_USE &&
+          !REACTIVATION_SOURCE_STATUSES.has(asset.status)
+        ) {
+          throw conflict('Only idle or stopped equipment can return to in-use status');
         }
         const existingOpen = await execute(EquipmentStatusApplicationModel.exists({
           teamId: context.activeTeamId,
@@ -853,19 +864,21 @@ function createEquipmentStatusApplicationService({
           if (!updatedAsset) {
             throw conflict('Equipment status changed after the application was submitted');
           }
-          await EquipmentRoutinePlanModel.updateMany({
-            teamId: context.activeTeamId,
-            equipmentId: current.equipmentId,
-            status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
-          }, {
-            $set: {
-              status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
-              cancellationReason:
-                EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
-              cancelledAt: now,
-              cancelledBy: context.userId
-            }
-          }, { session });
+          if (current.targetStatus !== EQUIPMENT_STATUS_APPLICATION_TYPES.IN_USE) {
+            await EquipmentRoutinePlanModel.updateMany({
+              teamId: context.activeTeamId,
+              equipmentId: current.equipmentId,
+              status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+            }, {
+              $set: {
+                status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+                cancellationReason:
+                  EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
+                cancelledAt: now,
+                cancelledBy: context.userId
+              }
+            }, { session });
+          }
         }
 
         const after = serializeApplication(updated, availableActions(context, updated));

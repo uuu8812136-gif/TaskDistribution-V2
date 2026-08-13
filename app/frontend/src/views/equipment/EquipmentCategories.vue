@@ -115,7 +115,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -126,6 +135,7 @@ import {
   updateEquipmentCategory
 } from '@/api/equipment'
 import { useSessionStore } from '@/stores/session'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
 import {
   CATEGORY_STATUS_OPTIONS,
   buildCategoryTree,
@@ -146,8 +156,16 @@ const categories = ref([])
 const keyword = ref('')
 const showDisabled = ref(true)
 const form = reactive(emptyForm())
+let categoriesRequestId = 0
+let categoriesRequestPending = false
+let loadedTeamSnapshot = ''
+let pageActive = true
+let wasDeactivated = false
+let resumeCategoriesLoad = false
 
-const requestParams = computed(() => route.query.teamId ? { teamId: String(route.query.teamId) } : {})
+const requestParams = computed(() => (
+  session.isGlobalReadOnly && route.query.teamId ? { teamId: String(route.query.teamId) } : {}
+))
 const hasTeamCategoryScope = computed(() => (
   session.isSuperAdmin ||
   session.context.membership?.role === 'PROJECT_ADMIN' ||
@@ -204,16 +222,77 @@ const categoryLevelLabel = (depth) => ([
 ][Math.min(Math.max(Number(depth) || 1, 1), 4) - 1])
 const applyFilter = () => undefined
 
+function currentCategoryTeamSnapshot() {
+  const teamId = session.isGlobalReadOnly
+    ? String(route.query.teamId || '')
+    : String(session.activeTeamId || '')
+  return `${session.contextEpoch}:${session.isGlobalReadOnly ? 'GLOBAL_READ_ONLY' : 'TEAM'}:${teamId}`
+}
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: String(route.query.teamId || ''),
+    pageActive
+  })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function categoryRequestContext() {
+  return {
+    teamSnapshot: currentCategoryTeamSnapshot(),
+    teamParams: { ...requestParams.value }
+  }
+}
+
+function isCurrentCategoryRequest(requestId, requestedTeamSnapshot) {
+  return (
+    pageActive &&
+    requestId === categoriesRequestId &&
+    requestedTeamSnapshot === currentCategoryTeamSnapshot()
+  )
+}
+
+function invalidateCategoryResults() {
+  confirmationGuard.invalidate()
+  categoriesRequestId += 1
+  categoriesRequestPending = false
+  loadedTeamSnapshot = ''
+  categories.value = []
+  loading.value = false
+  dialogVisible.value = false
+  resetForm()
+}
+
 async function loadCategories() {
+  const requestId = ++categoriesRequestId
+  if (session.isGlobalReadOnly && !route.query.teamId) {
+    categories.value = []
+    loading.value = false
+    return false
+  }
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = categoryRequestContext()
   loading.value = true
+  categoriesRequestPending = true
   try {
     const result = await getEquipmentCategories({
-      ...requestParams.value,
+      ...teamParams,
       pageSize: 200
     })
+    if (!isCurrentCategoryRequest(requestId, requestedTeamSnapshot)) return false
     categories.value = result.categories || []
+    loadedTeamSnapshot = requestedTeamSnapshot
+    return true
   } finally {
-    loading.value = false
+    if (
+      requestId === categoriesRequestId &&
+      requestedTeamSnapshot === currentCategoryTeamSnapshot()
+    ) {
+      categoriesRequestPending = false
+      if (pageActive) loading.value = false
+    }
   }
 }
 
@@ -263,12 +342,20 @@ async function submitForm() {
 }
 
 async function disableCategory(item) {
-  await ElMessageBox.confirm(`停用分类“${item.name}”？`, '停用分类', {
-    type: 'warning',
-    confirmButtonText: '停用',
-    cancelButtonText: '取消'
-  })
+  const confirmation = confirmationGuard.capture()
+  try {
+    await ElMessageBox.confirm(`停用分类“${item.name}”？`, '停用分类', {
+      type: 'warning',
+      confirmButtonText: '停用',
+      cancelButtonText: '取消'
+    })
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    throw error
+  }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   await disableEquipmentCategory(item._id, { reason: '后台分类管理停用' })
+  if (!confirmationGuard.isCurrent(confirmation)) return
   ElMessage.success('分类已停用')
   await loadCategories()
 }
@@ -283,6 +370,7 @@ async function enableCategory(item) {
 }
 
 async function deleteCategory(item) {
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm(
       `确定永久删除分类“${item.name}”吗？删除后无法恢复。`,
@@ -298,9 +386,11 @@ async function deleteCategory(item) {
     if (error === 'cancel' || error === 'close') return
     throw error
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   deletingId.value = item._id
   try {
     await deleteEquipmentCategory(item._id, { reason: '后台分类管理永久删除' })
+    if (!confirmationGuard.isCurrent(confirmation)) return
     ElMessage.success('分类已删除')
     await loadCategories()
   } finally {
@@ -312,10 +402,43 @@ function goBack() {
   router.push({ name: 'Equipment', query: requestParams.value })
 }
 
-onMounted(() => {
-  if (session.isGlobalReadOnly && !route.query.teamId) router.replace({ name: 'Equipment' })
-  else loadCategories()
+async function syncRouteCategoryContext({ force = false } = {}) {
+  if (!pageActive || route.name !== 'EquipmentCategories') return
+  const teamChanged = loadedTeamSnapshot !== currentCategoryTeamSnapshot()
+  if (!force && !teamChanged) return
+  invalidateCategoryResults()
+  if (session.isGlobalReadOnly && !route.query.teamId) {
+    await router.replace({ name: 'Equipment' })
+    return
+  }
+  await loadCategories()
+}
+
+function deactivateCategoriesPage() {
+  resumeCategoriesLoad = resumeCategoriesLoad || categoriesRequestPending || loading.value
+  pageActive = false
+  confirmationGuard.invalidate()
+  wasDeactivated = true
+  categoriesRequestId += 1
+  categoriesRequestPending = false
+  loading.value = false
+  dialogVisible.value = false
+}
+
+onMounted(() => syncRouteCategoryContext({ force: true }))
+watch(() => [route.name, route.query.teamId, session.contextEpoch], () => {
+  if (pageActive) void syncRouteCategoryContext()
 })
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const force = resumeCategoriesLoad
+  resumeCategoriesLoad = false
+  void syncRouteCategoryContext({ force })
+})
+onDeactivated(deactivateCategoriesPage)
+onBeforeUnmount(deactivateCategoriesPage)
 </script>
 
 <style scoped lang="scss">

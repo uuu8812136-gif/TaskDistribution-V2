@@ -400,13 +400,24 @@
       :org-units="options.orgUnits"
       :categories="categories"
       :custodians="options.custodians"
+      :context-key="equipmentImportContextKey"
+      :context-revision="session.contextEpoch"
       @published="handleImportPublished"
     />
   </div>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -416,6 +427,7 @@ import {
   deleteEquipment,
   exportEquipment,
   getEquipmentCategories,
+  getEquipmentDetail,
   getEquipmentList,
   getEquipmentOptions,
   updateEquipment
@@ -427,6 +439,9 @@ import {
   managedFileId,
   prepareAttachmentReferences
 } from '@/utils/attachments'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   EQUIPMENT_STATUS_OPTIONS,
   buildEquipmentPayload,
@@ -465,6 +480,19 @@ const categories = ref([])
 const total = ref(0)
 const selectedTeamId = ref(String(route.query.teamId || ''))
 const options = reactive({ orgUnits: [], custodians: [] })
+let pageActive = true
+let wasDeactivated = false
+let referenceRequestId = 0
+let assetsRequestId = 0
+let editRequestId = 0
+let photoPreviewRequestId = 0
+let exportRequestId = 0
+let referenceRequestPending = false
+let resumeReferenceLoad = false
+let resumeAssetsLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT
+})
 const filters = reactive({
   keyword: '',
   assetType: '',
@@ -501,10 +529,28 @@ const formStatusOption = computed(() => optionForValue(
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+const currentTeamContextId = () => String(
+  session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
+)
+const equipmentImportContextKey = computed(() => [
+  String(session.user?._id || ''),
+  currentTeamContextId()
+].join(':'))
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
 
 async function handleImportPublished() {
   filters.page = 1
-  await Promise.all([loadAssets(), loadCategories(), loadOptions()])
+  await Promise.all([loadAssets(), loadReferenceData()])
 }
 
 const rules = {
@@ -601,18 +647,33 @@ function equipmentBadgeItems(row) {
 }
 
 async function loadReferenceData() {
+  const requestId = ++referenceRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const [categoryResult, optionResult] = await Promise.all([
-    getEquipmentCategories({ ...requestTeamParams.value, pageSize: 200 }),
-    getEquipmentOptions(requestTeamParams.value)
-  ])
-  categories.value = categoryResult.categories || []
-  options.orgUnits = optionResult.orgUnits || []
-  options.custodians = optionResult.custodians || []
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  referenceRequestPending = true
+  try {
+    const [categoryResult, optionResult] = await Promise.all([
+      getEquipmentCategories({ ...requestTeamParams.value, pageSize: 200 }),
+      getEquipmentOptions(requestTeamParams.value)
+    ])
+    if (
+      !pageActive ||
+      requestId !== referenceRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
+    categories.value = categoryResult.categories || []
+    options.orgUnits = optionResult.orgUnits || []
+    options.custodians = optionResult.custodians || []
+  } finally {
+    if (requestId === referenceRequestId) referenceRequestPending = false
+  }
 }
 
 async function loadAssets() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++assetsRequestId
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return false
+  const loadStartRevision = mutationRefresh.currentRevision()
+  const requestedTeamId = currentTeamContextId()
   loading.value = true
   try {
     const result = await getEquipmentList({
@@ -624,10 +685,76 @@ async function loadAssets() {
       orgUnitId: filters.orgUnitId || undefined,
       categoryId: filters.categoryId || undefined
     })
+    if (
+      !pageActive ||
+      requestId !== assetsRequestId ||
+      requestedTeamId !== currentTeamContextId()
+    ) return false
     assets.value = result.equipment || []
     total.value = result.total || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } finally {
-    loading.value = false
+    if (requestId === assetsRequestId) loading.value = false
+  }
+}
+
+function invalidateEquipmentTeamContext() {
+  confirmationGuard.invalidate()
+  referenceRequestId += 1
+  assetsRequestId += 1
+  editRequestId += 1
+  exportRequestId += 1
+  referenceRequestPending = false
+  loading.value = false
+  exporting.value = false
+  assets.value = []
+  categories.value = []
+  total.value = 0
+  options.orgUnits = []
+  options.custodians = []
+  dialogVisible.value = false
+  importDialogVisible.value = false
+  photoPreviewVisible.value = false
+  resetForm()
+  clearPhotoPreview()
+}
+
+async function syncRouteEditAction() {
+  if (!pageActive || route.name !== 'Equipment') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  if (routedTeamId && routedTeamId !== selectedTeamId.value) {
+    invalidateEquipmentTeamContext()
+    selectedTeamId.value = routedTeamId
+    Object.assign(filters, { keyword: '', assetType: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
+    await Promise.all([loadReferenceData(), loadAssets()])
+    if (!pageActive || routedTeamId !== selectedTeamId.value) return
+  }
+  if (!canEdit.value) return
+  const editId = String(route.query.edit || '')
+  if (!editId || (dialogVisible.value && editingId.value === editId)) return
+  let item = assets.value.find((asset) => String(asset._id) === editId)
+  if (!item) {
+    const requestId = ++editRequestId
+    const requestedTeamId = String(requestTeamParams.value.teamId || '')
+    const result = await getEquipmentDetail(editId, requestTeamParams.value)
+    if (
+      !pageActive ||
+      requestId !== editRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '') ||
+      String(route.query.edit || '') !== editId
+    ) return
+    item = result.equipment
+  }
+  if (!item) return
+  await openEdit(item)
+  if (
+    pageActive &&
+    dialogVisible.value &&
+    editingId.value === editId &&
+    String(route.query.edit || '') === editId
+  ) {
+    await router.replace({ query: { ...route.query, edit: undefined } })
   }
 }
 
@@ -637,10 +764,7 @@ async function initialize() {
   }
   if (!selectedTeamId.value && session.isGlobalReadOnly) return
   await Promise.all([loadReferenceData(), loadAssets()])
-  if (route.query.edit && canEdit.value) {
-    const item = assets.value.find((asset) => asset._id === route.query.edit)
-    if (item) await openEdit(item)
-  }
+  await syncRouteEditAction()
 }
 
 function applyFilters() {
@@ -654,6 +778,7 @@ function resetFilters() {
 }
 
 async function handleTeamChange(teamId) {
+  invalidateEquipmentTeamContext()
   await router.replace({ query: { ...route.query, teamId, edit: undefined } })
   Object.assign(filters, { keyword: '', assetType: '', status: '', orgUnitId: '', categoryId: '', page: 1 })
   await Promise.all([loadReferenceData(), loadAssets()])
@@ -710,6 +835,8 @@ function openCreate() {
 }
 
 async function openEdit(item) {
+  const requestId = ++editRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   editingId.value = item._id
   Object.assign(form, {
     ...emptyForm(),
@@ -729,6 +856,11 @@ async function openEdit(item) {
       getFileMetadata(fileId, requestTeamParams.value.teamId)
     ))
   )
+  if (
+    !pageActive ||
+    requestId !== editRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return
   photoFileList.value = metadataResults.map((result, index) => {
     const fileId = normalizeEquipmentPhotoIds(item.photoFileIds)[index]
     const metadata = result.status === 'fulfilled' ? result.value.file : null
@@ -774,6 +906,7 @@ async function submitForm() {
 }
 
 async function handleDelete(item) {
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm(
       `确定删除设备“${item.name || item.assetCode}”吗？删除后不可恢复。`,
@@ -788,10 +921,12 @@ async function handleDelete(item) {
   } catch {
     return
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
 
   deletingId.value = item._id
   try {
     await deleteEquipment(item._id, { reason: '后台设备台账删除' })
+    if (!confirmationGuard.isCurrent(confirmation)) return
     ElMessage.success('设备已删除')
     if (assets.value.length === 1 && filters.page > 1) filters.page -= 1
     await loadAssets()
@@ -813,6 +948,7 @@ function handlePhotoExceed() {
 }
 
 function clearPhotoPreview() {
+  photoPreviewRequestId += 1
   if (photoPreviewUrl.value) URL.revokeObjectURL(photoPreviewUrl.value)
   photoPreviewUrl.value = ''
   photoPreviewName.value = ''
@@ -820,18 +956,32 @@ function clearPhotoPreview() {
 
 async function previewPhoto(file) {
   clearPhotoPreview()
+  const requestId = photoPreviewRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   photoPreviewName.value = file.name || '设备照片'
-  if (file.raw) photoPreviewUrl.value = URL.createObjectURL(file.raw)
-  else {
+  let blob = file.raw
+  if (!blob) {
     const fileId = managedFileId(file)
     if (!fileId) return
-    const blob = await downloadFileBlob(fileId, requestTeamParams.value.teamId)
-    photoPreviewUrl.value = URL.createObjectURL(blob)
+    blob = await downloadFileBlob(fileId, requestedTeamId || undefined)
   }
+  if (
+    !pageActive ||
+    requestId !== photoPreviewRequestId ||
+    requestedTeamId !== String(requestTeamParams.value.teamId || '')
+  ) return
+  const url = URL.createObjectURL(blob)
+  if (!pageActive || requestId !== photoPreviewRequestId) {
+    URL.revokeObjectURL(url)
+    return
+  }
+  photoPreviewUrl.value = url
   photoPreviewVisible.value = true
 }
 
 async function handleExport() {
+  const requestId = ++exportRequestId
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   exporting.value = true
   try {
     const blob = await exportEquipment({
@@ -842,9 +992,14 @@ async function handleExport() {
       orgUnitId: filters.orgUnitId || undefined,
       categoryId: filters.categoryId || undefined
     })
+    if (
+      !pageActive ||
+      requestId !== exportRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
     saveBlob(blob, `设备台账-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
   } finally {
-    exporting.value = false
+    if (requestId === exportRequestId) exporting.value = false
   }
 }
 
@@ -860,8 +1015,44 @@ function goDetail(item) {
   })
 }
 
+function deactivateEquipmentList() {
+  resumeReferenceLoad = resumeReferenceLoad || referenceRequestPending
+  resumeAssetsLoad = resumeAssetsLoad || loading.value
+  pageActive = false
+  confirmationGuard.invalidate()
+  wasDeactivated = true
+  referenceRequestId += 1
+  assetsRequestId += 1
+  editRequestId += 1
+  exportRequestId += 1
+  loading.value = false
+  exporting.value = false
+  dialogVisible.value = false
+  importDialogVisible.value = false
+  photoPreviewVisible.value = false
+  clearPhotoPreview()
+}
+
+watch(() => [route.name, route.query.teamId, route.query.edit], () => {
+  if (pageActive && route.name === 'Equipment') void syncRouteEditAction()
+})
+
 onMounted(initialize)
-onBeforeUnmount(clearPhotoPreview)
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const reloadReferenceData = resumeReferenceLoad
+  const reloadAssets = resumeAssetsLoad
+  resumeReferenceLoad = false
+  resumeAssetsLoad = false
+  void syncRouteEditAction().then(() => Promise.all([
+    reloadReferenceData ? loadReferenceData() : Promise.resolve(),
+    reloadAssets ? loadAssets() : Promise.resolve()
+  ])).then(() => mutationRefresh.refreshIfNeeded(loadAssets)).catch(() => {})
+})
+onDeactivated(deactivateEquipmentList)
+onBeforeUnmount(deactivateEquipmentList)
 </script>
 
 <style scoped lang="scss">

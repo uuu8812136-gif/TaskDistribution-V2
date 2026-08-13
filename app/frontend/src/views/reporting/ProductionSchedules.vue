@@ -240,7 +240,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -290,6 +299,17 @@ const monthlyEditing = ref(false)
 const monthlySaving = ref(false)
 const monthlyFormRef = ref(null)
 const monthlyForm = reactive(emptyMonthlyForm())
+let optionsRequestId = 0
+let dailyRequestId = 0
+let monthlyRequestId = 0
+let dailySaveRequestId = 0
+let monthlySaveRequestId = 0
+let dailyExportRequestId = 0
+let monthlyExportRequestId = 0
+let optionsRequestPending = false
+let pageActive = true
+let wasDeactivated = false
+let resumeScheduleLoad = false
 
 const dailySlotOptions = [
   { label: '上月', value: 'previous' },
@@ -338,9 +358,58 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function currentScheduleTeamSnapshot() {
+  const teamId = session.isGlobalReadOnly
+    ? selectedTeamId.value
+    : String(session.activeTeamId || '')
+  return `${session.contextEpoch}:${session.isGlobalReadOnly ? 'GLOBAL_READ_ONLY' : 'TEAM'}:${teamId}`
+}
+
+function scheduleRequestContext() {
+  const teamId = session.isGlobalReadOnly ? selectedTeamId.value : ''
+  return {
+    teamSnapshot: currentScheduleTeamSnapshot(),
+    teamParams: teamId ? { teamId } : {}
+  }
+}
+
+function isCurrentScheduleRequest(requestId, latestRequestId, requestedTeamSnapshot) {
+  return (
+    pageActive &&
+    requestId === latestRequestId &&
+    requestedTeamSnapshot === currentScheduleTeamSnapshot()
+  )
+}
+
 function applyDailySchedule(value) {
   Object.assign(dailySchedule, emptyDailySchedule(), clone(value))
   dailyOriginal.value = clone(dailySchedule)
+}
+
+function invalidateScheduleResults() {
+  optionsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  dailySaveRequestId += 1
+  monthlySaveRequestId += 1
+  dailyExportRequestId += 1
+  monthlyExportRequestId += 1
+  optionsRequestPending = false
+  orgUnits.value = []
+  selectedOrgUnitId.value = ''
+  dailyMonth.value = ''
+  applyDailySchedule(emptyDailySchedule())
+  dailyEditing.value = false
+  dailyReason.value = ''
+  monthlySchedules.value = []
+  monthlyTotal.value = 0
+  dailyLoading.value = false
+  monthlyLoading.value = false
+  dailySaving.value = false
+  monthlySaving.value = false
+  dailyExporting.value = false
+  monthlyExporting.value = false
+  monthlyFormVisible.value = false
 }
 
 const displayQuantity = (value) => value === null || value === undefined ? '-' : value
@@ -351,52 +420,76 @@ const dayLabel = (date) => {
 
 async function loadOptions() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getProductionOptions(requestTeamParams.value)
-  orgUnits.value = result.orgUnits || []
-  if (!orgUnits.value.some((item) => item._id === selectedOrgUnitId.value)) {
-    selectedOrgUnitId.value = orgUnits.value[0]?._id || ''
+  const requestId = ++optionsRequestId
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = scheduleRequestContext()
+  optionsRequestPending = true
+  try {
+    const result = await getProductionOptions(teamParams)
+    if (!isCurrentScheduleRequest(requestId, optionsRequestId, requestedTeamSnapshot)) return false
+    orgUnits.value = result.orgUnits || []
+    if (!orgUnits.value.some((item) => item._id === selectedOrgUnitId.value)) {
+      selectedOrgUnitId.value = orgUnits.value[0]?._id || ''
+    }
+    return true
+  } finally {
+    if (requestId === optionsRequestId) optionsRequestPending = false
   }
 }
 
 async function loadDaily() {
+  const requestId = ++dailyRequestId
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = scheduleRequestContext()
+  const requestedOrgUnitId = selectedOrgUnitId.value
+  const requestedSlot = dailySlot.value
   if (!selectedOrgUnitId.value) {
     applyDailySchedule(emptyDailySchedule())
+    dailyMonth.value = ''
+    dailyLoading.value = false
     return
   }
   dailyLoading.value = true
   dailyEditing.value = false
   dailyReason.value = ''
   try {
-    const result = await getDailyProductionSchedule(dailySlot.value, {
-      ...requestTeamParams.value,
-      orgUnitId: selectedOrgUnitId.value
+    const result = await getDailyProductionSchedule(requestedSlot, {
+      ...teamParams,
+      orgUnitId: requestedOrgUnitId
     })
+    if (!isCurrentScheduleRequest(requestId, dailyRequestId, requestedTeamSnapshot)) return false
     dailyMonth.value = result.month
     const found = (result.schedules || [])[0]
     applyDailySchedule(found || {
-      orgUnitId: selectedOrgUnitId.value,
+      orgUnitId: requestedOrgUnitId,
       month: result.month,
       dailyEntries: createDailyTemplate(result.month),
       productionPlanForecast: null
     })
+    return true
   } finally {
-    dailyLoading.value = false
+    if (isCurrentScheduleRequest(requestId, dailyRequestId, requestedTeamSnapshot)) {
+      dailyLoading.value = false
+    }
   }
 }
 
 async function saveDaily() {
+  const requestId = ++dailySaveRequestId
+  const { teamSnapshot: requestedTeamSnapshot } = scheduleRequestContext()
   dailySaving.value = true
   try {
     const result = await maintainDailyProductionSchedule(
       dailySlot.value,
       buildDailySchedulePayload(dailySchedule, dailyReason.value)
     )
+    if (!isCurrentScheduleRequest(requestId, dailySaveRequestId, requestedTeamSnapshot)) return
     applyDailySchedule(result.schedule)
     dailyEditing.value = false
     dailyReason.value = ''
     ElMessage.success('日排产已保存')
   } finally {
-    dailySaving.value = false
+    if (isCurrentScheduleRequest(requestId, dailySaveRequestId, requestedTeamSnapshot)) {
+      dailySaving.value = false
+    }
   }
 }
 
@@ -407,21 +500,28 @@ function cancelDailyEdit() {
 }
 
 async function exportDaily() {
+  const requestId = ++dailyExportRequestId
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = scheduleRequestContext()
+  const requestedOrgUnitId = selectedOrgUnitId.value
+  const requestedSlot = dailySlot.value
   dailyExporting.value = true
   try {
-    const blob = await exportDailyProductionSchedule(dailySlot.value, {
-      ...requestTeamParams.value,
-      orgUnitId: selectedOrgUnitId.value
+    const blob = await exportDailyProductionSchedule(requestedSlot, {
+      ...teamParams,
+      orgUnitId: requestedOrgUnitId
     })
-    saveBlob(blob, `日排产-${dailySlot.value === 'previous' ? '上月' : '当月'}-${dailyMonth.value}.xlsx`)
+    if (!isCurrentScheduleRequest(requestId, dailyExportRequestId, requestedTeamSnapshot)) return
+    saveBlob(blob, `日排产-${requestedSlot === 'previous' ? '上月' : '当月'}-${dailyMonth.value}.xlsx`)
   } finally {
-    dailyExporting.value = false
+    if (isCurrentScheduleRequest(requestId, dailyExportRequestId, requestedTeamSnapshot)) {
+      dailyExporting.value = false
+    }
   }
 }
 
-function monthlyParams(extra = {}) {
+function monthlyParams(extra = {}, teamParams = requestTeamParams.value) {
   return {
-    ...requestTeamParams.value,
+    ...teamParams,
     orgUnitId: monthlyFilters.orgUnitId || undefined,
     fromMonth: monthlyFilters.fromMonth || undefined,
     toMonth: monthlyFilters.toMonth || undefined,
@@ -431,16 +531,22 @@ function monthlyParams(extra = {}) {
 
 async function loadMonthly() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++monthlyRequestId
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = scheduleRequestContext()
   monthlyLoading.value = true
   try {
     const result = await getMonthlyProductionSchedules(monthlyParams({
       page: monthlyFilters.page,
       pageSize: monthlyFilters.pageSize
-    }))
+    }, teamParams))
+    if (!isCurrentScheduleRequest(requestId, monthlyRequestId, requestedTeamSnapshot)) return false
     monthlySchedules.value = result.productionSchedules || []
     monthlyTotal.value = result.total || 0
+    return true
   } finally {
-    monthlyLoading.value = false
+    if (isCurrentScheduleRequest(requestId, monthlyRequestId, requestedTeamSnapshot)) {
+      monthlyLoading.value = false
+    }
   }
 }
 
@@ -483,36 +589,47 @@ function openMonthlyEdit(schedule) {
 async function saveMonthly() {
   const valid = await monthlyFormRef.value?.validate().catch(() => false)
   if (!valid) return
+  const requestId = ++monthlySaveRequestId
+  const { teamSnapshot: requestedTeamSnapshot } = scheduleRequestContext()
   monthlySaving.value = true
   try {
     await maintainMonthlyProductionSchedule(
       monthlyForm.month,
       buildMonthlySchedulePayload(monthlyForm)
     )
+    if (!isCurrentScheduleRequest(requestId, monthlySaveRequestId, requestedTeamSnapshot)) return
     ElMessage.success('月排产已保存')
     monthlyFormVisible.value = false
     await loadMonthly()
   } finally {
-    monthlySaving.value = false
+    if (isCurrentScheduleRequest(requestId, monthlySaveRequestId, requestedTeamSnapshot)) {
+      monthlySaving.value = false
+    }
   }
 }
 
 async function exportMonthly() {
+  const requestId = ++monthlyExportRequestId
+  const { teamSnapshot: requestedTeamSnapshot, teamParams } = scheduleRequestContext()
   monthlyExporting.value = true
   try {
-    const blob = await exportMonthlyProductionSchedules(monthlyParams())
+    const blob = await exportMonthlyProductionSchedules(monthlyParams({}, teamParams))
+    if (!isCurrentScheduleRequest(requestId, monthlyExportRequestId, requestedTeamSnapshot)) return
     saveBlob(blob, `月排产-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
   } finally {
-    monthlyExporting.value = false
+    if (isCurrentScheduleRequest(requestId, monthlyExportRequestId, requestedTeamSnapshot)) {
+      monthlyExporting.value = false
+    }
   }
 }
 
 async function handleTeamChange(teamId) {
-  await router.replace({ query: { teamId } })
+  selectedTeamId.value = String(teamId || '')
+  invalidateScheduleResults()
   Object.assign(monthlyFilters, { orgUnitId: '', fromMonth: '', toMonth: '', page: 1 })
-  selectedOrgUnitId.value = ''
-  await loadOptions()
-  await Promise.all([loadDaily(), loadMonthly()])
+  await router.replace({ query: selectedTeamId.value ? { teamId: selectedTeamId.value } : {} })
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  await loadScheduleContext()
 }
 
 function handleTabChange(name) {
@@ -522,10 +639,55 @@ function handleTabChange(name) {
 async function initialize() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     selectedTeamId.value = session.teams[0]?._id || ''
+    if (selectedTeamId.value) await router.replace({ query: { teamId: selectedTeamId.value } })
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  await loadOptions()
+  await loadScheduleContext()
+}
+
+async function loadScheduleContext() {
+  if (await loadOptions() === false) return
   await Promise.all([loadDaily(), loadMonthly()])
+}
+
+async function syncRouteScheduleContext({ force = false } = {}) {
+  if (!pageActive || route.name !== 'ProductionSchedules') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = session.isGlobalReadOnly && routedTeamId !== selectedTeamId.value
+  if (!force && !teamChanged) return
+  if (teamChanged) selectedTeamId.value = routedTeamId
+  invalidateScheduleResults()
+  Object.assign(monthlyFilters, { orgUnitId: '', fromMonth: '', toMonth: '', page: 1 })
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  await loadScheduleContext()
+}
+
+function deactivateProductionSchedules() {
+  resumeScheduleLoad = (
+    resumeScheduleLoad ||
+    optionsRequestPending ||
+    dailyLoading.value ||
+    monthlyLoading.value ||
+    dailySaving.value ||
+    monthlySaving.value
+  )
+  pageActive = false
+  wasDeactivated = true
+  optionsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  dailySaveRequestId += 1
+  monthlySaveRequestId += 1
+  dailyExportRequestId += 1
+  monthlyExportRequestId += 1
+  optionsRequestPending = false
+  dailyLoading.value = false
+  monthlyLoading.value = false
+  dailySaving.value = false
+  monthlySaving.value = false
+  dailyExporting.value = false
+  monthlyExporting.value = false
+  monthlyFormVisible.value = false
 }
 
 onBeforeRouteLeave(async () => {
@@ -548,6 +710,22 @@ onBeforeRouteLeave(async () => {
 })
 
 onMounted(initialize)
+watch(() => [route.name, route.query.teamId], () => {
+  if (pageActive) void syncRouteScheduleContext()
+})
+watch(() => session.contextEpoch, () => {
+  if (pageActive) void syncRouteScheduleContext({ force: true })
+})
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const force = resumeScheduleLoad
+  resumeScheduleLoad = false
+  void syncRouteScheduleContext({ force })
+})
+onDeactivated(deactivateProductionSchedules)
+onBeforeUnmount(deactivateProductionSchedules)
 </script>
 
 <style scoped lang="scss">

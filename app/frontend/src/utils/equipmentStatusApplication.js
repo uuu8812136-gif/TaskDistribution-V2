@@ -1,4 +1,5 @@
 export const STATUS_APPLICATION_TYPES = Object.freeze([
+  { value: 'IN_USE', label: '在用' },
   { value: 'IDLE', label: '闲置' },
   { value: 'STOPPED', label: '停用' },
   { value: 'SCRAPPED', label: '报废' }

@@ -304,7 +304,7 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   cancelEquipmentImport,
@@ -330,6 +330,12 @@ import {
   equipmentFieldValue,
   equipmentImportCandidate
 } from '@/utils/equipmentAssetDisplay'
+import {
+  LEGACY_EQUIPMENT_IMPORT_STORAGE_KEY,
+  createEquipmentImportAbortManager,
+  createEquipmentImportLifecycleGate,
+  equipmentImportPreviewStorageKey
+} from '@/utils/equipmentImportLifecycle'
 
 const IMPORT_PREVIEW_COLUMNS = Object.freeze([
   { key: 'sourceSequence', label: '序号', width: 72, align: 'center' },
@@ -362,13 +368,13 @@ const IMPORT_PREVIEW_COLUMNS = Object.freeze([
   { key: 'remark', label: '备注', minWidth: 160 },
   { key: 'issueCount', label: '异常', width: 72, align: 'center' }
 ])
-const IMPORT_JOB_STORAGE_KEY = 'equipmentImportPreviewJobId'
-
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   orgUnits: { type: Array, default: () => [] },
   categories: { type: Array, default: () => [] },
-  custodians: { type: Array, default: () => [] }
+  custodians: { type: Array, default: () => [] },
+  contextKey: { type: String, required: true },
+  contextRevision: { type: Number, required: true }
 })
 const emit = defineEmits(['update:modelValue', 'published'])
 
@@ -399,6 +405,29 @@ const exceptionTotal = ref(0)
 const decisionState = reactive({})
 const confirmationReason = ref('')
 const reviewConfirmed = ref(false)
+const storageKey = computed(() => equipmentImportPreviewStorageKey(props.contextKey))
+const lifecycleContextKey = computed(() => `${props.contextKey}:${props.contextRevision}`)
+const lifecycleGate = createEquipmentImportLifecycleGate(lifecycleContextKey.value)
+const previewAbortManager = createEquipmentImportAbortManager()
+
+function currentTicket(kind) {
+  return lifecycleGate.begin(kind)
+}
+
+function isCurrentTicket(ticket) {
+  return lifecycleGate.isCurrent(ticket)
+}
+
+function removeSavedPreview(key = storageKey.value) {
+  if (key) localStorage.removeItem(key)
+  localStorage.removeItem(LEGACY_EQUIPMENT_IMPORT_STORAGE_KEY)
+}
+
+function saveCurrentPreview(jobId) {
+  if (!storageKey.value || !jobId) return
+  localStorage.setItem(storageKey.value, jobId)
+  localStorage.removeItem(LEGACY_EQUIPMENT_IMPORT_STORAGE_KEY)
+}
 
 const completedDecisionCount = computed(() => Object.values(decisionState)
   .filter(isEquipmentImportDecisionComplete).length)
@@ -452,41 +481,57 @@ function handleFileExceed() {
 
 async function createPreview() {
   if (!selectedFile.value) return
+  const ticket = currentTicket('preview')
+  const controller = previewAbortManager.begin()
   previewing.value = true
   uploadPercentage.value = 0
   processingStage.value = 'UPLOADING'
   try {
     const result = await createEquipmentImportPreview(selectedFile.value, {
+      signal: controller.signal,
       onUploadProgress(event) {
+        if (!isCurrentTicket(ticket)) return
         if (!event.total) return
         uploadPercentage.value = Math.min(100, Math.round((event.loaded / event.total) * 100))
         if (event.loaded >= event.total) processingStage.value = 'PARSING'
       }
     })
+    if (!isCurrentTicket(ticket)) return
     processingStage.value = 'WRITING'
     importJob.value = result.importJob
-    localStorage.setItem(IMPORT_JOB_STORAGE_KEY, importJob.value._id)
+    saveCurrentPreview(importJob.value._id)
     rowPage.value = 1
     exceptionPage.value = 1
     await Promise.all([loadRows(), loadExceptions()])
+    if (!isCurrentTicket(ticket)) return
     activeTab.value = result.exceptionCount > 0 ? 'exceptions' : 'rows'
     ElMessage.success('导入预览已生成')
+  } catch (error) {
+    if (controller.signal.aborted || error?.code === 'ERR_CANCELED') return
+    throw error
   } finally {
-    previewing.value = false
-    processingStage.value = 'IDLE'
+    previewAbortManager.clear(controller)
+    if (isCurrentTicket(ticket)) {
+      previewing.value = false
+      processingStage.value = 'IDLE'
+    }
   }
 }
 
 async function loadRows() {
   if (!importJob.value?._id) return
+  const jobId = importJob.value._id
+  const ticket = currentTicket('rows')
   rowsLoading.value = true
   try {
-    importJob.value = (await getEquipmentImportJob(importJob.value._id, {
+    const result = await getEquipmentImportJob(jobId, {
       page: rowPage.value,
       pageSize: rowPageSize
-    })).importJob
+    })
+    if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
+    importJob.value = result.importJob
   } finally {
-    rowsLoading.value = false
+    if (isCurrentTicket(ticket)) rowsLoading.value = false
   }
 }
 
@@ -501,17 +546,20 @@ function ensureDecision(exception) {
 
 async function loadExceptions() {
   if (!importJob.value?._id) return
+  const jobId = importJob.value._id
+  const ticket = currentTicket('exceptions')
   exceptionsLoading.value = true
   try {
-    const result = await getEquipmentImportExceptions(importJob.value._id, {
+    const result = await getEquipmentImportExceptions(jobId, {
       page: exceptionPage.value,
       pageSize: exceptionPageSize
     })
+    if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
     exceptions.value = result.exceptions || []
     exceptionTotal.value = result.total || 0
     exceptions.value.forEach(ensureDecision)
   } finally {
-    exceptionsLoading.value = false
+    if (isCurrentTicket(ticket)) exceptionsLoading.value = false
   }
 }
 
@@ -533,18 +581,22 @@ function scopedCustodians(exception) {
 
 async function refreshJob() {
   if (!importJob.value?._id) return
+  const ticket = currentTicket('refresh')
   refreshing.value = true
   try {
     await Promise.all([loadRows(), loadExceptions()])
+    if (!isCurrentTicket(ticket)) return
     if (importJob.value.status === 'PUBLISHED') emit('published', importJob.value)
     ElMessage.success('导入任务状态已刷新')
   } finally {
-    refreshing.value = false
+    if (isCurrentTicket(ticket)) refreshing.value = false
   }
 }
 
 async function publishImport() {
   if (!canPublish.value) return
+  const ticket = currentTicket('publish')
+  const jobId = importJob.value._id
   const payload = buildEquipmentImportConfirmation(
     importJob.value,
     decisionState,
@@ -560,18 +612,21 @@ async function publishImport() {
     if (error === 'cancel' || error === 'close') return
     throw error
   }
+  if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
 
   publishing.value = true
   try {
-    const result = await confirmEquipmentImport(importJob.value._id, payload)
+    const result = await confirmEquipmentImport(jobId, payload)
+    if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
     importJob.value = result.importJob
-    localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+    removeSavedPreview()
     reviewConfirmed.value = false
     await loadExceptions()
+    if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
     emit('published', importJob.value)
     ElMessage.success(`设备台账已发布 ${importJob.value.publishedRows} 条`)
   } finally {
-    publishing.value = false
+    if (isCurrentTicket(ticket)) publishing.value = false
   }
 }
 
@@ -590,25 +645,29 @@ function resetWorkflow() {
 }
 
 async function cancelCurrentPreview(reason) {
+  previewAbortManager.abort()
   if (importJob.value?.status !== 'PREVIEW_READY') return
+  const ticket = currentTicket('cancel')
+  const jobId = importJob.value._id
   cancelling.value = true
   try {
-    await cancelEquipmentImport(importJob.value._id, {
+    await cancelEquipmentImport(jobId, {
       expectedVersion: importJob.value.version,
       reason
     })
-    localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+    if (!isCurrentTicket(ticket) || importJob.value?._id !== jobId) return
+    removeSavedPreview()
     resetWorkflow()
     ElMessage.success('导入预览已取消，暂存文件已进入清理流程')
   } finally {
-    cancelling.value = false
+    if (isCurrentTicket(ticket)) cancelling.value = false
   }
 }
 
 async function confirmAndCancel(reason) {
   if (previewing.value) {
-    ElMessage.warning('Excel 正在上传或解析，请等待预览任务返回后再关闭')
-    return false
+    invalidateLifecycle(lifecycleContextKey.value)
+    return true
   }
   if (importJob.value?.status !== 'PREVIEW_READY') return true
   try {
@@ -643,33 +702,67 @@ function requestClose(done) {
 
 async function restorePreview() {
   if (restoring.value || importJob.value) return
-  const jobId = localStorage.getItem(IMPORT_JOB_STORAGE_KEY)
+  localStorage.removeItem(LEGACY_EQUIPMENT_IMPORT_STORAGE_KEY)
+  const keyAtStart = storageKey.value
+  const jobId = keyAtStart ? localStorage.getItem(keyAtStart) : ''
   if (!jobId) return
+  const ticket = currentTicket('restore')
   restoring.value = true
   try {
     const result = await getEquipmentImportJob(jobId, { page: 1, pageSize: rowPageSize })
+    if (!isCurrentTicket(ticket) || keyAtStart !== storageKey.value) return
     if (result.importJob?.status !== 'PREVIEW_READY') {
-      localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+      removeSavedPreview(keyAtStart)
       return
     }
     importJob.value = result.importJob
     await loadExceptions()
+    if (!isCurrentTicket(ticket)) return
     activeTab.value = exceptionTotal.value > 0 ? 'exceptions' : 'rows'
     ElMessage.info('已恢复上次未发布的设备导入预览')
   } catch (error) {
-    if (error?.response?.status === 404 || error?.response?.status === 409) {
-      localStorage.removeItem(IMPORT_JOB_STORAGE_KEY)
+    if (!isCurrentTicket(ticket)) return
+    if ([403, 404, 409].includes(error?.response?.status)) {
+      removeSavedPreview(keyAtStart)
       return
     }
     throw error
   } finally {
-    restoring.value = false
+    if (isCurrentTicket(ticket)) restoring.value = false
   }
 }
 
-watch(() => props.modelValue, (value) => {
-  if (value) restorePreview()
+function invalidateLifecycle(nextContextKey = lifecycleContextKey.value) {
+  previewAbortManager.abort()
+  lifecycleGate.invalidate(nextContextKey)
+  previewing.value = false
+  refreshing.value = false
+  rowsLoading.value = false
+  exceptionsLoading.value = false
+  publishing.value = false
+  cancelling.value = false
+  restoring.value = false
+  processingStage.value = 'IDLE'
+  resetWorkflow()
+}
+
+watch(() => props.modelValue, (value, previousValue) => {
+  if (value) {
+    restorePreview()
+    return
+  }
+  if (previousValue) invalidateLifecycle(lifecycleContextKey.value)
 }, { immediate: true })
+
+watch(lifecycleContextKey, (value, previousValue) => {
+  if (value === previousValue) return
+  invalidateLifecycle(value)
+  visible.value = false
+})
+
+onBeforeUnmount(() => {
+  invalidateLifecycle(lifecycleContextKey.value)
+})
 </script>
 
 <style scoped lang="scss">

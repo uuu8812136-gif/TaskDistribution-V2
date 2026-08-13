@@ -57,7 +57,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { onActivated, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Refresh } from '@element-plus/icons-vue'
 import { getTaskList } from '@/api/task'
@@ -65,6 +65,8 @@ import { useSessionStore } from '@/stores/session'
 import { formatDate, priorityMap, priorityType } from '@/utils/format'
 import { taskDetailLocation, taskEntityId, taskTeamId } from '@/utils/taskPolicy'
 import { requestErrorMessage } from '@/utils/request'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 
 const router = useRouter()
 const session = useSessionStore()
@@ -72,6 +74,10 @@ const tasks = ref([])
 const loading = ref(false)
 const loadError = ref('')
 let latestRequestId = 0
+let activationReady = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.TASKS
+})
 
 const TASK_PAGE_SIZE = 500
 
@@ -140,27 +146,39 @@ const loadAllTaskPages = async () => {
   return uniqueTasks
 }
 
-const fetchData = async () => {
+const fetchData = async ({ preserveExisting = false } = {}) => {
+  const loadStartRevision = mutationRefresh.currentRevision()
   const requestId = ++latestRequestId
   loading.value = true
   loadError.value = ''
-  tasks.value = []
+  if (!preserveExisting) tasks.value = []
   try {
     const loadedTasks = await loadAllTaskPages()
     if (requestId !== latestRequestId) return
     tasks.value = loadedTasks
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
     console.error('获取任务失败:', error)
     if (requestId !== latestRequestId) return
-    tasks.value = []
+    if (!preserveExisting) tasks.value = []
     loadError.value = requestErrorMessage(error, '任务看板加载失败，请检查网络连接后重试。')
+    return false
   } finally {
     if (requestId === latestRequestId) loading.value = false
   }
 }
 
-onMounted(() => {
-  fetchData()
+onMounted(async () => {
+  try {
+    await fetchData()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  if (!activationReady) return
+  void mutationRefresh.refreshIfNeeded(() => fetchData({ preserveExisting: true })).catch(() => {})
 })
 </script>
 

@@ -1586,6 +1586,19 @@ test('team and organization scopes hide import jobs and reject out-of-scope conf
     authContext: teamB,
     importJobId: teamPreview.importJob._id
   }), (error) => error.status === 404);
+  await assert.rejects(service.confirmImport({
+    authContext: teamB,
+    importJobId: teamPreview.importJob._id,
+    input: {
+      expectedVersion: teamPreview.importJob.version,
+      reason: 'A different team cannot publish this preview',
+      decisions: []
+    }
+  }), (error) => error.status === 404);
+  assert.equal(await EquipmentAsset.countDocuments({
+    teamId: fixture.teamB,
+    assetCode: 'TEAM-A2'
+  }), 0);
   await assert.rejects(service.getImportJob({
     authContext: orgA1,
     importJobId: teamPreview.importJob._id

@@ -1123,6 +1123,7 @@ function createEquipmentRoutineService({
         candidate.status === EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED &&
         [
           EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+          EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
           EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
         ].includes(candidate.cancellationReason) &&
         !sameCompletedRequirement(candidate)
@@ -1166,6 +1167,7 @@ function createEquipmentRoutineService({
       allowInsert: false,
       recoverableCancellationReasons: [
         EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
         EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
       ],
       session

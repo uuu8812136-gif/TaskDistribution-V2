@@ -544,7 +544,14 @@ Describe 'Copy-V2TestBackupOffHost receipt upload recovery' {
       ConfirmInstance = 'task-distribution-v2-customer-test'
     }
     try {
-      { & $copyScript @parameters -Apply -Confirm:$false } | Should Throw
+      $uploadFailure = $null
+      try {
+        & $copyScript @parameters -Apply -Confirm:$false
+      }
+      catch {
+        $uploadFailure = $_.Exception.Message
+      }
+      $uploadFailure | Should Match '^Receipt upload failed;'
       Test-Path -LiteralPath $receiptPath -PathType Leaf | Should Be $true
       { [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json } | Should Not Throw
       $receipt = [IO.File]::ReadAllText($receiptPath) | ConvertFrom-Json

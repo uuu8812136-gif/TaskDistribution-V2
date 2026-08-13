@@ -280,7 +280,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { Delete, View } from '@element-plus/icons-vue'
@@ -295,6 +304,8 @@ import {
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
 import { cleanupTemporaryFiles, prepareAttachmentReferences } from '@/utils/attachments'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   CONTRACT_CATEGORY_CONFIGS,
   SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS,
@@ -324,6 +335,15 @@ const suppliers = ref([])
 const total = ref(0)
 const selectedTeamId = ref(String(route.query.teamId || ''))
 let listRequestId = 0
+let exportRequestId = 0
+let firstRecordSubmitRequestId = 0
+let importRequestId = 0
+let activationReady = false
+let pageActive = true
+let resumeListLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.CONTRACT_SUPPLIERS
+})
 
 const filters = reactive({
   code: '',
@@ -352,6 +372,29 @@ const firstRecordConfig = computed(() => (
   CONTRACT_CATEGORY_CONFIGS.find((config) => config.value === firstRecordForm.category)
   || CONTRACT_CATEGORY_CONFIGS[0]
 ))
+
+function currentTeamContextId() {
+  return String(session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || '')
+}
+
+function currentPageContext() {
+  return {
+    routeName: String(route.name || ''),
+    routeTeamId: String(route.query.teamId || ''),
+    contextEpoch: session.contextEpoch,
+    teamId: currentTeamContextId()
+  }
+}
+
+function isCurrentPageContext(context) {
+  const current = currentPageContext()
+  return pageActive &&
+    current.routeName === 'SupplierContracts' &&
+    current.routeName === context.routeName &&
+    current.routeTeamId === context.routeTeamId &&
+    current.contextEpoch === context.contextEpoch &&
+    current.teamId === context.teamId
+}
 
 function queryParams() {
   return {
@@ -382,21 +425,46 @@ async function loadSuppliers() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     suppliers.value = []
     total.value = 0
-    return
+    return true
   }
+  const loadStartRevision = mutationRefresh.currentRevision()
   const requestId = ++listRequestId
+  const context = currentPageContext()
   loading.value = true
   loadError.value = ''
   try {
     const result = await getSuppliers(queryParams())
-    if (requestId !== listRequestId) return
+    if (requestId !== listRequestId || !isCurrentPageContext(context)) return false
     suppliers.value = result.suppliers || []
     total.value = Number(result.total) || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
-    if (requestId === listRequestId) loadError.value = error?.message || '供应商合同加载失败，请稍后重试'
+    if (requestId === listRequestId && isCurrentPageContext(context)) {
+      loadError.value = error?.message || '供应商合同加载失败，请稍后重试'
+    }
+    return false
   } finally {
     if (requestId === listRequestId) loading.value = false
   }
+}
+
+function invalidateSupplierResults() {
+  listRequestId += 1
+  exportRequestId += 1
+  firstRecordSubmitRequestId += 1
+  importRequestId += 1
+  suppliers.value = []
+  total.value = 0
+  loading.value = false
+  exportingScope.value = ''
+  submittingFirstRecord.value = false
+  importing.value = false
+  loadError.value = ''
+  firstRecordVisible.value = false
+  importVisible.value = false
+  importFiles.value = []
+  importFile.value = null
 }
 
 function applyFilters() {
@@ -404,7 +472,7 @@ function applyFilters() {
   loadSuppliers()
 }
 
-function resetFilters() {
+function resetFilterState() {
   Object.assign(filters, {
     code: '',
     name: '',
@@ -413,12 +481,22 @@ function resetFilters() {
     contractValid: '',
     page: 1
   })
-  loadSuppliers()
+}
+
+function resetFilters() {
+  resetFilterState()
+  return loadSuppliers()
 }
 
 async function handleTeamChange(teamId) {
+  invalidateSupplierResults()
+  resetFilterState()
   await router.replace({ query: teamId ? { teamId } : {} })
-  resetFilters()
+  if (
+    String(route.query.teamId || '') !== String(teamId || '') ||
+    String(selectedTeamId.value || '') !== String(teamId || '')
+  ) return
+  await loadSuppliers()
 }
 
 function resetFirstRecordFields() {
@@ -498,6 +576,9 @@ async function submitFirstRecord() {
   }
 
   submittingFirstRecord.value = true
+  const submitRequestId = ++firstRecordSubmitRequestId
+  const submitContext = currentPageContext()
+  const submittedTeamParams = { ...requestTeamParams.value }
   const uploadedFileIds = []
   try {
     const attachments = []
@@ -505,6 +586,14 @@ async function submitFirstRecord() {
       const prepared = await prepareAttachmentReferences(attachmentFiles.get(group.purpose) || [], uploadTemporaryFile)
       uploadedFileIds.push(...prepared.uploadedFileIds)
       attachments.push(...prepared.references.map(({ fileId }) => ({ fileId, purpose: group.purpose })))
+      if (
+        submitRequestId !== firstRecordSubmitRequestId ||
+        !isCurrentPageContext(submitContext)
+      ) {
+        await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
+        uploadedFileIds.length = 0
+        return
+      }
     }
     const payload = {
       ...buildRecordPayload(config, firstRecordForm, attachments),
@@ -513,15 +602,23 @@ async function submitFirstRecord() {
     }
     const result = await createSupplierFirstRecord(payload)
     uploadedFileIds.length = 0
+    if (
+      submitRequestId !== firstRecordSubmitRequestId ||
+      !isCurrentPageContext(submitContext)
+    ) return
     firstRecordVisible.value = false
     ElMessage.success('三级明细已新增，主表和二级汇总已自动更新')
     await loadSuppliers()
+    if (
+      submitRequestId !== firstRecordSubmitRequestId ||
+      !isCurrentPageContext(submitContext)
+    ) return
     const createdSupplierId = result?.supplier?._id
     if (createdSupplierId) {
       router.push({
         name: 'SupplierContractDetail',
         params: { supplierId: createdSupplierId },
-        query: requestTeamParams.value
+        query: submittedTeamParams
       })
     }
   } catch (error) {
@@ -529,9 +626,12 @@ async function submitFirstRecord() {
       [...uploadedFileIds, ...(error.uploadedFileIds || [])],
       deleteFile
     )
-    throw error
+    if (
+      submitRequestId === firstRecordSubmitRequestId &&
+      isCurrentPageContext(submitContext)
+    ) throw error
   } finally {
-    submittingFirstRecord.value = false
+    if (submitRequestId === firstRecordSubmitRequestId) submittingFirstRecord.value = false
   }
 }
 
@@ -544,17 +644,21 @@ function openDetail(row) {
 }
 
 async function handleExport(scope) {
+  if (exportingScope.value) return
+  const requestId = ++exportRequestId
+  const context = currentPageContext()
   exportingScope.value = scope
   try {
     const params = scope === 'overview'
       ? { ...queryParams(), scope: 'overview', page: undefined, pageSize: undefined }
       : { ...requestTeamParams.value, scope: 'detail' }
     const blob = await exportSuppliers(params)
+    if (requestId !== exportRequestId || !isCurrentPageContext(context)) return
     const label = scope === 'overview' ? '主表汇总' : '三级汇总'
     saveContractBlob(blob, `供应商合同-${label}-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
     ElMessage.success(`${label}已导出`)
   } finally {
-    exportingScope.value = ''
+    if (requestId === exportRequestId) exportingScope.value = ''
   }
 }
 
@@ -576,17 +680,35 @@ function handleImportFileChange(file, files) {
 
 async function submitImport() {
   if (!importFile.value) return
+  const requestId = ++importRequestId
+  const context = currentPageContext()
+  const file = importFile.value
+  const teamParams = { ...requestTeamParams.value }
   importing.value = true
   try {
-    const result = await importSuppliers(importFile.value, requestTeamParams.value)
+    const result = await importSuppliers(file, teamParams)
+    if (requestId !== importRequestId || !isCurrentPageContext(context)) return
     const count = Number(result.importedCount ?? result.createdCount ?? result.totalImported)
     ElMessage.success(Number.isFinite(count) ? `已导入 ${count} 条三级明细数据` : '三级细表导入完成')
     importVisible.value = false
     filters.page = 1
     await loadSuppliers()
   } finally {
-    importing.value = false
+    if (requestId === importRequestId) importing.value = false
   }
+}
+
+async function syncRouteTeamContext({ force = false } = {}) {
+  if (!pageActive || route.name !== 'SupplierContracts') return false
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = session.isGlobalReadOnly && routedTeamId !== selectedTeamId.value
+  if (!force && !teamChanged) return false
+  if (teamChanged) selectedTeamId.value = routedTeamId
+  invalidateSupplierResults()
+  resetFilterState()
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return true
+  await loadSuppliers()
+  return true
 }
 
 async function initialize() {
@@ -597,7 +719,51 @@ async function initialize() {
   await loadSuppliers()
 }
 
-onMounted(initialize)
+onMounted(async () => {
+  try {
+    await initialize()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  pageActive = true
+  if (!activationReady) return
+  const interrupted = resumeListLoad
+  resumeListLoad = false
+  void syncRouteTeamContext().then((changed) => {
+    if (changed) return
+    if (interrupted) return loadSuppliers()
+    return mutationRefresh.refreshIfNeeded(loadSuppliers)
+  }).catch(() => {})
+})
+watch(() => [route.name, route.query.teamId], () => {
+  if (pageActive && activationReady) void syncRouteTeamContext()
+})
+watch(() => session.contextEpoch, () => {
+  if (pageActive && activationReady) void syncRouteTeamContext({ force: true })
+  else invalidateSupplierResults()
+})
+
+function deactivateSupplierContracts() {
+  resumeListLoad = resumeListLoad || loading.value
+  pageActive = false
+  listRequestId += 1
+  exportRequestId += 1
+  firstRecordSubmitRequestId += 1
+  importRequestId += 1
+  loading.value = false
+  exportingScope.value = ''
+  submittingFirstRecord.value = false
+  importing.value = false
+  firstRecordVisible.value = false
+  importVisible.value = false
+  importFiles.value = []
+  importFile.value = null
+}
+
+onDeactivated(deactivateSupplierContracts)
+onBeforeUnmount(deactivateSupplierContracts)
 </script>
 
 <style scoped lang="scss">

@@ -12,6 +12,7 @@ const AuditLog = require('../../../app/models/AuditLog');
 const EquipmentAsset = require('../../../app/models/EquipmentAsset');
 const EquipmentCategory = require('../../../app/models/EquipmentCategory');
 const EquipmentRoutinePlan = require('../../../app/models/EquipmentRoutinePlan');
+const EquipmentRoutineRule = require('../../../app/models/EquipmentRoutineRule');
 const EquipmentStatusApplication = require('../../../app/models/EquipmentStatusApplication');
 const EquipmentStatusApproval = require('../../../app/models/EquipmentStatusApproval');
 const FileAsset = require('../../../app/models/FileAsset');
@@ -27,6 +28,9 @@ const { createFileAssetService } = require('../../../app/services/fileAssetServi
 const {
   createEquipmentStatusApplicationService
 } = require('../../../app/services/equipmentStatusApplicationService');
+const {
+  createEquipmentRoutineWorkerService
+} = require('../../../app/services/equipmentRoutineWorkerService');
 
 const DB_NAME = `equipment_status_${randomUUID().replaceAll('-', '')}_v2_test`;
 const MODELS = [
@@ -34,6 +38,7 @@ const MODELS = [
   EquipmentAsset,
   EquipmentCategory,
   EquipmentRoutinePlan,
+  EquipmentRoutineRule,
   EquipmentStatusApplication,
   EquipmentStatusApproval,
   FileAsset,
@@ -145,7 +150,9 @@ async function seed() {
     ['a1', orgA1._id],
     ['a2', orgA2._id],
     ['a3', orgA1._id],
-    ['idle', orgA1._id, 'IDLE']
+    ['idle', orgA1._id, 'IDLE'],
+    ['stopped', orgA1._id, 'STOPPED'],
+    ['scrapped', orgA1._id, 'SCRAPPED']
   ]) {
     assets[key] = await EquipmentAsset.create({
       teamId: teamA._id,
@@ -291,6 +298,279 @@ test('all three application types share the fixed chain and assistant substitute
   }).sort({ assetCode: 1 }).lean();
   assert.deepEqual(persisted.map((asset) => asset.status), ['IDLE', 'STOPPED', 'SCRAPPED']);
   assert.ok(approved.every((application) => application.open === false));
+});
+
+test('idle and stopped equipment can return to in-use through the fixed approval chain', async () => {
+  for (const [asset, reviewer] of [
+    [fixture.assets.idle, 'deputy'],
+    [fixture.assets.stopped, 'assistant']
+  ]) {
+    const openPlans = await createOpenRoutinePlans(asset);
+    let current = await createApplication(asset, 'IN_USE');
+    assert.equal(current.sourceStatus, asset.status);
+    assert.equal(current.targetStatus, 'IN_USE');
+    current = await action(current, reviewer, 'DEPUTY_APPROVE');
+    current = await action(current, 'manager', 'MANAGER_APPROVE');
+    assert.equal(current.workflowStatus, 'APPROVED');
+    assert.equal((await EquipmentAsset.findById(asset._id).lean()).status, 'IN_USE');
+    assert.equal(await EquipmentStatusApproval.countDocuments({ applicationId: current._id }), 3);
+    const notifications = await Message.find({ type: 'equipment_status' }).lean();
+    const notification = notifications.find((item) => (
+      String(item.extraData?.statusApplicationId) === String(current._id) &&
+      item.extraData?.applicationType === 'IN_USE'
+    ));
+    assert.ok(notification);
+    assert.match(notification.title, /恢复在用/);
+    const persistedPlans = await EquipmentRoutinePlan.find({
+      _id: { $in: openPlans.map(({ _id }) => _id) }
+    }).lean();
+    assert.ok(persistedPlans.every(({ status, cancellationReason, cancelledAt, cancelledBy }) => (
+      ['IN_WINDOW', 'OVERDUE'].includes(status) &&
+      cancellationReason === null &&
+      cancelledAt === null &&
+      cancelledBy === null
+    )));
+  }
+});
+
+test('worker restores the same current-cycle plans after final reactivation without reviving history', async () => {
+  const runAt = new Date('2030-01-15T02:30:00.000Z');
+  const categoryType = await EquipmentCategory.create({
+    teamId: fixture.teamA._id,
+    parentId: fixture.assets.idle.categoryId,
+    name: 'Reactivation type',
+    createdBy: fixture.users.manager._id,
+    updatedBy: fixture.users.manager._id
+  });
+  const primaryCategory = await EquipmentCategory.create({
+    teamId: fixture.teamA._id,
+    parentId: categoryType._id,
+    name: 'Reactivation primary',
+    createdBy: fixture.users.manager._id,
+    updatedBy: fixture.users.manager._id
+  });
+  const secondaryCategory = await EquipmentCategory.create({
+    teamId: fixture.teamA._id,
+    parentId: primaryCategory._id,
+    name: 'Reactivation secondary',
+    createdBy: fixture.users.manager._id,
+    updatedBy: fixture.users.manager._id
+  });
+  const rules = await EquipmentRoutineRule.create([
+    {
+      teamId: fixture.teamA._id,
+      categoryId: primaryCategory._id,
+      routineType: 'INSPECTION',
+      name: 'Reactivation daily inspection',
+      checklistItems: [{ key: 'reactivation-check', name: 'Check after reactivation' }],
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: {
+          unit: 'DAY',
+          interval: 1,
+          firstDueAt: new Date('2030-01-15T00:00:00.000Z')
+        }
+      },
+      executionConfig: {
+        timeZone: 'Asia/Shanghai',
+        windows: [
+          { key: 'DAY_SHIFT', name: 'Day shift', startTime: '07:00', endTime: '09:00', enabled: true },
+          { key: 'NIGHT_SHIFT', name: 'Night shift', startTime: '19:00', endTime: '21:00', enabled: true }
+        ],
+        weeklyDay: 1,
+        monthlyDay: 1,
+        inspectionEscalationMinutes: 60,
+        locationPolicy: 'PENDING_CONFIRMATION',
+        locationPrecisionMeters: null
+      },
+      createdBy: fixture.users.manager._id,
+      updatedBy: fixture.users.manager._id
+    },
+    {
+      teamId: fixture.teamA._id,
+      categoryId: primaryCategory._id,
+      routineType: 'MAINTENANCE',
+      name: 'Reactivation daily maintenance',
+      checklistItems: [{ key: 'reactivation-maintenance', name: 'Maintain after reactivation' }],
+      schedule: {
+        mode: 'CALENDAR',
+        calendar: {
+          unit: 'DAY',
+          interval: 1,
+          firstDueAt: new Date('2030-01-15T00:00:00.000Z')
+        }
+      },
+      executionConfig: {
+        timeZone: 'Asia/Shanghai',
+        windows: [
+          { key: 'MAINTENANCE', name: 'Maintenance window', startTime: '07:00', endTime: '09:00', enabled: true },
+          { key: 'UNUSED_WINDOW', name: 'Unused window', startTime: '19:00', endTime: '21:00', enabled: true }
+        ],
+        weeklyDay: 1,
+        monthlyDay: 1,
+        inspectionEscalationMinutes: 60,
+        locationPolicy: 'PENDING_CONFIRMATION',
+        locationPrecisionMeters: null
+      },
+      createdBy: fixture.users.manager._id,
+      updatedBy: fixture.users.manager._id
+    }
+  ]);
+  const assets = await EquipmentAsset.create([
+    {
+      teamId: fixture.teamA._id,
+      orgUnitId: fixture.orgA1._id,
+      categoryId: secondaryCategory._id,
+      assetCode: 'STATUS-REACTIVATE-IDLE',
+      name: 'Idle equipment awaiting reactivation',
+      status: 'IN_USE',
+      createdBy: fixture.users.manager._id,
+      updatedBy: fixture.users.manager._id
+    },
+    {
+      teamId: fixture.teamA._id,
+      orgUnitId: fixture.orgA1._id,
+      categoryId: secondaryCategory._id,
+      assetCode: 'STATUS-REACTIVATE-STOPPED',
+      name: 'Stopped equipment awaiting reactivation',
+      status: 'IN_USE',
+      createdBy: fixture.users.manager._id,
+      updatedBy: fixture.users.manager._id
+    }
+  ]);
+  const worker = createEquipmentRoutineWorkerService({ clock: () => runAt });
+  await worker.runOnce({ now: runAt, teamId: fixture.teamA._id });
+  const currentCycleKey = 'calendar:2030-01-15T00:00:00.000Z';
+  const currentPlans = await EquipmentRoutinePlan.find({
+    ruleId: { $in: rules.map(({ _id }) => _id) },
+    equipmentId: { $in: assets.map(({ _id }) => _id) },
+    cycleKey: currentCycleKey
+  }).sort({ equipmentId: 1, ruleId: 1, windowKey: 1 }).lean();
+  assert.equal(currentPlans.length, 6);
+  for (const asset of assets) {
+    assert.deepEqual(
+      currentPlans
+        .filter(({ equipmentId, routineType }) => (
+          String(equipmentId) === String(asset._id) && routineType === 'INSPECTION'
+        ))
+        .map(({ windowKey }) => windowKey)
+        .sort(),
+      ['DAY_SHIFT', 'NIGHT_SHIFT']
+    );
+    assert.deepEqual(
+      currentPlans
+        .filter(({ equipmentId, routineType }) => (
+          String(equipmentId) === String(asset._id) && routineType === 'MAINTENANCE'
+        ))
+        .map(({ windowKey }) => windowKey),
+      ['MAINTENANCE']
+    );
+  }
+  const currentPlanIds = currentPlans.map(({ _id }) => String(_id)).sort();
+  const historicalPlans = await EquipmentRoutinePlan.create(assets.map((asset) => ({
+    teamId: fixture.teamA._id,
+    orgUnitId: fixture.orgA1._id,
+    equipmentId: asset._id,
+    categoryId: secondaryCategory._id,
+    ruleId: rules[0]._id,
+    ruleVersion: rules[0].version,
+    ruleSnapshot: { name: rules[0].name },
+    routineType: 'INSPECTION',
+    cycleKey: 'calendar:2030-01-14T00:00:00.000Z',
+    windowKey: 'DAY_SHIFT',
+    windowName: 'Day shift',
+    scheduledFor: new Date('2030-01-13T23:00:00.000Z'),
+    dueAt: new Date('2030-01-14T01:00:00.000Z'),
+    status: 'CANCELLED',
+    cancellationReason: 'EQUIPMENT_STATUS_CHANGED',
+    cancelledAt: new Date('2030-01-14T00:30:00.000Z'),
+    cancelledBy: fixture.users.manager._id
+  })));
+
+  for (const [asset, targetStatus] of [
+    [assets[0], 'IDLE'],
+    [assets[1], 'STOPPED']
+  ]) {
+    let application = await createApplication(asset, targetStatus);
+    application = await action(application, 'deputy', 'DEPUTY_APPROVE');
+    application = await action(application, 'manager', 'MANAGER_APPROVE');
+    assert.equal(application.workflowStatus, 'APPROVED');
+  }
+  const cancelledCurrentPlans = await EquipmentRoutinePlan.find({
+    _id: { $in: currentPlans.map(({ _id }) => _id) }
+  }).lean();
+  assert.ok(cancelledCurrentPlans.every(({ status, cancellationReason }) => (
+    status === 'CANCELLED' && cancellationReason === 'EQUIPMENT_STATUS_CHANGED'
+  )));
+
+  for (const asset of assets) {
+    let application = await createApplication(asset, 'IN_USE');
+    application = await action(application, 'deputy', 'DEPUTY_APPROVE');
+    application = await action(application, 'manager', 'MANAGER_APPROVE');
+    assert.equal(application.workflowStatus, 'APPROVED');
+  }
+  await worker.runOnce({ now: runAt, teamId: fixture.teamA._id });
+  const restoredPlans = await EquipmentRoutinePlan.find({
+    _id: { $in: currentPlans.map(({ _id }) => _id) }
+  }).sort({ equipmentId: 1, ruleId: 1, windowKey: 1 }).lean();
+  assert.deepEqual(restoredPlans.map(({ _id }) => String(_id)).sort(), currentPlanIds);
+  for (const plan of restoredPlans) {
+    assert.ok(['PLANNED', 'IN_WINDOW', 'OVERDUE'].includes(plan.status));
+    assert.equal(plan.cancellationReason, null);
+    assert.equal(plan.cancelledAt, null);
+    assert.equal(plan.cancelledBy, null);
+    assert.equal(plan.rematerializationCount, 1);
+    assert.equal(plan.rematerializationHistory.length, 1);
+    assert.equal(plan.rematerializationHistory[0].cancellationReason, 'EQUIPMENT_STATUS_CHANGED');
+    assert.equal(plan.rematerializationHistory[0].source, 'WORKER');
+  }
+
+  const persistedHistory = await EquipmentRoutinePlan.find({
+    _id: { $in: historicalPlans.map(({ _id }) => _id) }
+  }).sort({ equipmentId: 1, windowKey: 1 }).lean();
+  assert.ok(persistedHistory.every(({
+    status,
+    cancellationReason,
+    rematerializationCount,
+    rematerializationHistory
+  }) => (
+    status === 'CANCELLED' &&
+    cancellationReason === 'EQUIPMENT_STATUS_CHANGED' &&
+    rematerializationCount === 0 &&
+    rematerializationHistory.length === 0
+  )));
+
+  const planCountAfterFirstRun = await EquipmentRoutinePlan.countDocuments({
+    ruleId: { $in: rules.map(({ _id }) => _id) }
+  });
+  await worker.runOnce({ now: runAt, teamId: fixture.teamA._id });
+  assert.equal(await EquipmentRoutinePlan.countDocuments({
+    ruleId: { $in: rules.map(({ _id }) => _id) }
+  }), planCountAfterFirstRun);
+  assert.deepEqual(
+    (await EquipmentRoutinePlan.find({
+      ruleId: { $in: rules.map(({ _id }) => _id) },
+      equipmentId: { $in: assets.map(({ _id }) => _id) },
+      cycleKey: currentCycleKey
+    }).lean()).map(({ _id }) => String(_id)).sort(),
+    currentPlanIds
+  );
+  assert.ok((await EquipmentRoutinePlan.find({
+    _id: { $in: currentPlanIds }
+  }).lean()).every(({ rematerializationCount, rematerializationHistory }) => (
+    rematerializationCount === 1 && rematerializationHistory.length === 1
+  )));
+});
+
+test('in-use is rejected as a same-state target and scrapped equipment remains terminal', async () => {
+  await assert.rejects(
+    createApplication(fixture.assets.a1, 'IN_USE'),
+    (error) => error.status === 409 && error.code === 'EQUIPMENT_STATUS_APPLICATION_CONFLICT'
+  );
+  await assert.rejects(
+    createApplication(fixture.assets.scrapped, 'IN_USE'),
+    (error) => error.status === 409 && error.code === 'EQUIPMENT_STATUS_APPLICATION_CONFLICT'
+  );
 });
 
 test('only ASSET_ADMIN can initiate and team/org scope blocks unrelated readers', async () => {

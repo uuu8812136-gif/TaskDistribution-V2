@@ -104,8 +104,8 @@
 </template>
 
 <script setup>
-import { computed, ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, ref, reactive, onActivated, onBeforeUnmount, onDeactivated, onMounted, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useMessageStore } from '@/stores/message'
 import { useSessionStore } from '@/stores/session'
 import {
@@ -117,11 +117,16 @@ import {
 } from '@/api/message'
 import { fromNow, messageTypeIcon } from '@/utils/format'
 import { hasMessageResource, messageResourceLocation } from '@/utils/messageNavigation'
+import {
+  createPageConfirmationGuard,
+  pageRequestContextSnapshot
+} from '@/utils/pageRequestContext'
 import { requestErrorMessage } from '@/utils/request'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const messageStore = useMessageStore()
 const session = useSessionStore()
+const route = useRoute()
 const router = useRouter()
 const canModifyMessages = computed(() => session.isTeamMode && !session.isReadOnly)
 
@@ -139,6 +144,26 @@ const pagination = reactive({
 
 const messageList = ref([])
 let listRequestId = 0
+let confirmationActionId = 0
+let bulkConfirmationActionId = 0
+const rowConfirmationActionIds = new Map()
+let pageActive = true
+let wasDeactivated = false
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({ route, session, pageActive })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function invalidateConfirmationActions() {
+  confirmationGuard.invalidate()
+  confirmationActionId += 1
+  bulkConfirmationActionId = 0
+  bulkAction.value = ''
+  for (const id of rowConfirmationActionIds.keys()) delete pendingRows[id]
+  rowConfirmationActionIds.clear()
+}
 
 const fetchData = async () => {
   const requestId = ++listRequestId
@@ -221,88 +246,136 @@ const handleMarkRead = async (row) => {
   }
 }
 
-const handleMarkAllRead = () => {
+const handleMarkAllRead = async () => {
   if (bulkAction.value || hasPendingRow.value) return
+  const actionId = ++confirmationActionId
+  bulkConfirmationActionId = actionId
   bulkAction.value = 'confirm-read-all'
-  ElMessageBox.confirm('确定要将所有消息标记为已读吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    if (bulkAction.value !== 'confirm-read-all' || hasPendingRow.value) return
-    bulkAction.value = 'read-all'
-    try {
-      await markAllAsRead()
-      messageStore.clearUnreadCount()
-      messageList.value.forEach((row) => { row.isRead = true })
-      ElMessage.success('操作成功')
-      await fetchData()
-    } catch (error) {
+  try {
+    const outcome = await confirmationGuard.run({
+      confirm: () => ElMessageBox.confirm('确定要将所有消息标记为已读吗？', '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }),
+      mutate: async () => {
+        if (bulkAction.value !== 'confirm-read-all' || hasPendingRow.value) return
+        bulkAction.value = 'read-all'
+        await markAllAsRead()
+      }
+    })
+    if (!outcome.isCurrent()) return
+    if (outcome.error) throw outcome.error
+    messageStore.clearUnreadCount()
+    messageList.value.forEach((row) => { row.isRead = true })
+    ElMessage.success('操作成功')
+    await fetchData()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
       console.error('操作失败:', error)
       ElMessage.error(requestErrorMessage(error, '全部标记已读失败，请稍后重试'))
-    } finally {
+    }
+  } finally {
+    if (bulkConfirmationActionId === actionId) {
+      bulkConfirmationActionId = 0
       bulkAction.value = ''
     }
-  }).catch(() => {
-    if (bulkAction.value === 'confirm-read-all') bulkAction.value = ''
-  })
+  }
 }
 
-const handleClearRead = () => {
+const handleClearRead = async () => {
   if (bulkAction.value || hasPendingRow.value) return
+  const actionId = ++confirmationActionId
+  bulkConfirmationActionId = actionId
   bulkAction.value = 'confirm-clear-read'
-  ElMessageBox.confirm('确定要清空所有已读消息吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    if (bulkAction.value !== 'confirm-clear-read' || hasPendingRow.value) return
-    bulkAction.value = 'clear-read'
-    try {
-      await clearReadMessages()
-      ElMessage.success('清空成功')
-      await fetchData()
-    } catch (error) {
+  try {
+    const outcome = await confirmationGuard.run({
+      confirm: () => ElMessageBox.confirm('确定要清空所有已读消息吗？', '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }),
+      mutate: async () => {
+        if (bulkAction.value !== 'confirm-clear-read' || hasPendingRow.value) return
+        bulkAction.value = 'clear-read'
+        await clearReadMessages()
+      }
+    })
+    if (!outcome.isCurrent()) return
+    if (outcome.error) throw outcome.error
+    ElMessage.success('清空成功')
+    await fetchData()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
       console.error('清空失败:', error)
       ElMessage.error(requestErrorMessage(error, '清空已读消息失败，请稍后重试'))
-    } finally {
+    }
+  } finally {
+    if (bulkConfirmationActionId === actionId) {
+      bulkConfirmationActionId = 0
       bulkAction.value = ''
     }
-  }).catch(() => {
-    if (bulkAction.value === 'confirm-clear-read') bulkAction.value = ''
-  })
+  }
 }
 
-const handleDelete = (row) => {
+const handleDelete = async (row) => {
   if (isRowPending(row) || bulkAction.value) return
+  const rowId = String(row?._id || '')
+  const actionId = ++confirmationActionId
+  rowConfirmationActionIds.set(rowId, actionId)
   setRowAction(row, 'confirm-delete')
-  ElMessageBox.confirm('确定要删除该消息吗？', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    if (rowAction(row) !== 'confirm-delete' || bulkAction.value) return
-    setRowAction(row, 'delete')
-    try {
-      await deleteMessage(row._id)
-      if (!row.isRead) {
-        messageStore.decreaseUnreadCount()
+  try {
+    const outcome = await confirmationGuard.run({
+      confirm: () => ElMessageBox.confirm('确定要删除该消息吗？', '提示', {
+        confirmButtonText: '确定',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }),
+      mutate: async () => {
+        if (rowAction(row) !== 'confirm-delete' || bulkAction.value) return
+        setRowAction(row, 'delete')
+        await deleteMessage(row._id)
       }
-      ElMessage.success('删除成功')
-      await fetchData()
-    } catch (error) {
+    })
+    if (!outcome.isCurrent()) return
+    if (outcome.error) throw outcome.error
+    if (!row.isRead) messageStore.decreaseUnreadCount()
+    ElMessage.success('删除成功')
+    await fetchData()
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
       console.error('删除失败:', error)
       ElMessage.error(requestErrorMessage(error, '删除消息失败，请稍后重试'))
-    } finally {
+    }
+  } finally {
+    if (rowConfirmationActionIds.get(rowId) === actionId) {
+      rowConfirmationActionIds.delete(rowId)
       setRowAction(row, '')
     }
-  }).catch(() => {
-    if (rowAction(row) === 'confirm-delete') setRowAction(row, '')
-  })
+  }
 }
 
 onMounted(() => {
   fetchData()
+})
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  fetchData()
+})
+onDeactivated(() => {
+  pageActive = false
+  wasDeactivated = true
+  invalidateConfirmationActions()
+  listRequestId += 1
+  loading.value = false
+})
+watch(() => session.contextEpoch, invalidateConfirmationActions)
+watch(() => [route.name, route.fullPath], invalidateConfirmationActions)
+onBeforeUnmount(() => {
+  pageActive = false
+  invalidateConfirmationActions()
 })
 </script>
 

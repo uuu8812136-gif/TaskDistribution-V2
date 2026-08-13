@@ -9,6 +9,7 @@ const readView = (relativePath) => readFileSync(
 
 const taskListSource = readView('TaskList.vue')
 const myTasksSource = readView('MyTasks.vue')
+const taskBoardSource = readView('TaskBoard.vue')
 const taskTableSource = readView('components/TaskTable.vue')
 
 test('global read-only task lists identify and filter the owning project team', () => {
@@ -35,9 +36,15 @@ test('task list and my-task requests ignore stale responses', () => {
   }
 })
 
-test('task list and my-task requests clear rows before a new query and after its failure', () => {
-  assert.match(myTasksSource, /loading\.value = true\s+tasks\.value = \[\]/)
-  assert.match(myTasksSource, /catch \(error\) \{[\s\S]*?tasks\.value = \[\]/)
-  assert.match(taskListSource, /loading\.value = true\s+taskList\.value = \[\]\s+pagination\.total = 0/)
-  assert.match(taskListSource, /catch \(error\) \{[\s\S]*?taskList\.value = \[\][\s\S]*?pagination\.total = 0/)
+test('task lists clear rows for a new query but preserve them during mutation refresh', () => {
+  for (const source of [taskListSource, myTasksSource, taskBoardSource]) {
+    assert.match(source, /\{ preserveExisting = false \} = \{\}/)
+    assert.match(source, /if \(!preserveExisting\)/)
+    assert.match(source, /fetchData\(\{ preserveExisting: true \}\)/)
+  }
+  assert.match(myTasksSource, /if \(!preserveExisting\) tasks\.value = \[\]/)
+  assert.match(taskBoardSource, /loadError\.value = ''\s+if \(!preserveExisting\) tasks\.value = \[\]/)
+  assert.match(taskBoardSource, /catch \(error\) \{[\s\S]*?if \(!preserveExisting\) tasks\.value = \[\]/)
+  assert.match(taskListSource, /if \(!preserveExisting\) \{\s+taskList\.value = \[\]\s+pagination\.total = 0/)
+  assert.match(taskListSource, /catch \(error\) \{[\s\S]*?if \(!preserveExisting\) \{[\s\S]*?taskList\.value = \[\]/)
 })

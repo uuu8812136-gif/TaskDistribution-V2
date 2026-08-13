@@ -4,6 +4,7 @@ const mongoose = require('mongoose');
 const EquipmentAsset = require('./EquipmentAsset');
 
 const EQUIPMENT_STATUS_APPLICATION_TYPES = Object.freeze({
+  IN_USE: EquipmentAsset.EQUIPMENT_STATUSES.IN_USE,
   IDLE: EquipmentAsset.EQUIPMENT_STATUSES.IDLE,
   STOPPED: EquipmentAsset.EQUIPMENT_STATUSES.STOPPED,
   SCRAPPED: EquipmentAsset.EQUIPMENT_STATUSES.SCRAPPED

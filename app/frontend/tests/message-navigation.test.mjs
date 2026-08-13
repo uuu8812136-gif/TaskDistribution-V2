@@ -148,6 +148,23 @@ test('message titles expose real links as keyboard-operable buttons', () => {
   assert.match(messageListSource, /\.message-title-link:focus-visible/)
 })
 
+test('cached message center refreshes on return without duplicating its first load', () => {
+  assert.match(messageListSource, /import \{[^}]*onActivated[^}]*onBeforeUnmount[^}]*onDeactivated[^}]*onMounted[^}]*\} from 'vue'/s)
+  assert.match(messageListSource, /let wasDeactivated = false/)
+  assert.match(messageListSource, /onMounted\(\(\) => \{\s*fetchData\(\)\s*\}\)/)
+  assert.match(messageListSource, /onActivated\(\(\) => \{\s*pageActive = true\s*if \(!wasDeactivated\) return\s*wasDeactivated = false\s*fetchData\(\)/)
+  assert.match(messageListSource, /onDeactivated\(\(\) => \{[\s\S]*wasDeactivated = true[\s\S]*listRequestId \+= 1[\s\S]*loading\.value = false/)
+})
+
+test('message confirmations are invalidated by context and lifecycle changes', () => {
+  assert.match(messageListSource, /createPageConfirmationGuard/)
+  assert.equal((messageListSource.match(/confirmationGuard\.run\(/g) || []).length, 3)
+  assert.match(messageListSource, /watch\(\(\) => session\.contextEpoch, invalidateConfirmationActions\)/)
+  assert.match(messageListSource, /watch\(\(\) => \[route\.name, route\.fullPath\], invalidateConfirmationActions\)/)
+  assert.match(messageListSource, /onDeactivated\([\s\S]*invalidateConfirmationActions\(\)/)
+  assert.match(messageListSource, /onBeforeUnmount\([\s\S]*invalidateConfirmationActions\(\)/)
+})
+
 test('attendance message navigation initializes the requested team and daily report date', () => {
   assert.match(attendanceSource, /const requestedReportDate = String\(route\.query\.reportDate \|\| ''\)/)
   assert.match(attendanceSource, /const currentLocalDate = dayjs\(\)\.format\('YYYY-MM-DD'\)/)

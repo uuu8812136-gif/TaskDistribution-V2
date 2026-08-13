@@ -15,7 +15,7 @@
       <button v-if="canCreate" class="scan-button" @click="scanToCreate">扫码发起</button>
     </view>
 
-    <view class="search-band">
+    <view v-if="mode === 'all'" class="search-band">
       <input v-model="keyword" maxlength="100" confirm-type="search" placeholder="设备编码、名称、联系人或维修人" @confirm="applySearch" />
       <button @click="applySearch">查询</button>
     </view>
@@ -133,7 +133,7 @@ export default {
       try {
         const result = await getEquipmentRepairs({
           todo: request.mode === 'todo' ? true : undefined,
-          keyword: request.keyword || undefined,
+          keyword: request.mode === 'all' ? request.keyword || undefined : undefined,
           page: request.page,
           pageSize,
           ...(userStore.isGlobalReadOnly ? { teamId: request.teamId } : {})
@@ -162,6 +162,7 @@ export default {
     const setMode = (value) => {
       if (mode.value === value) return
       mode.value = value
+      if (value === 'todo') keyword.value = ''
       refresh()
     }
     const applySearch = () => refresh()
@@ -254,11 +255,11 @@ export default {
 .team-band picker { min-width: 0; flex: 1; }
 .team-picker { color: #1677ff; text-align: right; overflow-wrap: anywhere; }
 .top-actions { display: flex; align-items: center; gap: 16rpx; }
-.mode-segment { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; border: 1px solid #cfd8e3; border-radius: 8rpx; overflow: hidden; }
+.mode-segment { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; gap: 12rpx; }
 .mode-segment.single { grid-template-columns: minmax(0, 1fr); }
-.mode-segment button { height: 68rpx; padding: 0; border-radius: 0; color: #52606d; background: #fff; font-size: 24rpx; line-height: 68rpx; }
-.mode-segment button + button { border-left: 1px solid #cfd8e3; }
-.mode-segment button.active { color: #fff; background: #4096ff; }
+.mode-segment button { height: 68rpx; margin: 0; padding: 0; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 10rpx; color: #344054; background: #fff; font-size: 24rpx; font-weight: 600; line-height: 66rpx; letter-spacing: 0; }
+.mode-segment button::after { border: 0; }
+.mode-segment button.active { border-color: #1677ff; color: #fff; background: #1677ff; box-shadow: 0 4rpx 10rpx rgba(22, 119, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .18); }
 .scan-button { flex: 0 0 164rpx; height: 68rpx; margin: 0; border-radius: 8rpx; color: #fff; background: #245d3f; font-size: 24rpx; line-height: 68rpx; }
 .search-band { display: grid; grid-template-columns: minmax(0, 1fr) 110rpx; gap: 12rpx; margin: 18rpx 0; }
 .search-band input { height: 70rpx; padding: 0 20rpx; border: 1px solid #dce4ee; border-radius: 8rpx; background: #fff; font-size: 24rpx; }

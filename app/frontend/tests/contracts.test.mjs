@@ -343,6 +343,16 @@ test('settlement table summary consumes backend totals instead of reducing the v
   assert.doesNotMatch(settlementSource, /settlements\.value\.reduce/)
 })
 
+test('settlement desktop table keeps its header and totals visible while long pages scroll internally', () => {
+  const settlementSource = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+  assert.match(
+    settlementSource,
+    /<el-table[\s\S]*?max-height="clamp\(320px, calc\(100dvh - 390px\), 680px\)"[\s\S]*?show-summary/
+  )
+  assert.match(settlementSource, /@media \(max-width: 1180px\)[\s\S]*?\.desktop-settlement-table \{ display: none; \}/)
+  assert.doesNotMatch(settlementSource, /position:\s*sticky/)
+})
+
 test('settlement edits keep the supplier immutable and omit server-derived names', () => {
   const settlementSource = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
   assert.match(settlementSource, /:disabled="Boolean\(editingId\)"/)
@@ -357,4 +367,114 @@ test('expiry filters use the final short remaining-days query keys', () => {
   assert.doesNotMatch(expirySource, /remainingDaysGreaterThan|remainingDaysLessThan/)
   assert.match(expirySource, /function alertLabel\(row\) \{\s*if \(row\.autoRenew\) return '正常'/)
   assert.match(expirySource, /function alertTagType\(row\) \{\s*if \(row\.autoRenew\) return 'success'/)
+})
+
+test('contract lists discard visible data and in-flight responses when the team context changes', () => {
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  const expirySource = readFileSync(new URL('../src/views/contracts/ContractExpiryAlerts.vue', import.meta.url), 'utf8')
+  const settlementSource = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+
+  assert.match(supplierSource, /function invalidateSupplierResults\(\) \{[\s\S]*listRequestId \+= 1[\s\S]*exportRequestId \+= 1[\s\S]*suppliers\.value = \[\][\s\S]*total\.value = 0/)
+  assert.match(supplierSource, /async function handleTeamChange\(teamId\) \{\s*invalidateSupplierResults\(\)[\s\S]*await router\.replace/)
+  assert.match(supplierSource, /watch\(\(\) => \[route\.name, route\.query\.teamId\][\s\S]*syncRouteTeamContext\(\)/)
+  assert.match(supplierSource, /watch\(\(\) => session\.contextEpoch[\s\S]*syncRouteTeamContext\(\{ force: true \}\)/)
+
+  assert.match(expirySource, /function invalidateAlertResults\(\) \{[\s\S]*requestId \+= 1[\s\S]*exportRequestId \+= 1[\s\S]*alerts\.value = \[\][\s\S]*total\.value = 0/)
+  assert.match(expirySource, /async function handleTeamChange\(teamId\) \{\s*invalidateAlertResults\(\)[\s\S]*await router\.replace/)
+  assert.match(expirySource, /watch\(\(\) => \[route\.name, route\.query\.teamId\][\s\S]*syncRouteTeamContext\(\)/)
+  assert.match(expirySource, /watch\(\(\) => session\.contextEpoch[\s\S]*syncRouteTeamContext\(\{ force: true \}\)/)
+
+  assert.match(settlementSource, /function invalidateSettlementResults\(\) \{[\s\S]*listRequestId \+= 1[\s\S]*supplierOptionsRequestId \+= 1[\s\S]*exportRequestId \+= 1[\s\S]*settlements\.value = \[\][\s\S]*supplierOptions\.value = \[\][\s\S]*total\.value = 0/)
+  assert.match(settlementSource, /for \(const item of SETTLEMENT_AMOUNT_FIELDS\) totals\[item\.key\] = 0/)
+  assert.match(settlementSource, /async function handleTeamChange\(teamId\) \{\s*invalidateSettlementResults\(\)[\s\S]*await router\.replace/)
+  assert.match(settlementSource, /watch\(\(\) => \[route\.name, route\.query\.teamId\][\s\S]*syncRouteTeamContext\(\)/)
+  assert.match(settlementSource, /watch\(\(\) => session\.contextEpoch[\s\S]*syncRouteTeamContext\(\{ force: true \}\)/)
+})
+
+test('settlement supplier options cannot be repopulated by a previous team request', () => {
+  const settlementSource = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+
+  assert.match(settlementSource, /let supplierOptionsRequestId = 0/)
+  assert.match(settlementSource, /const requestId = \+\+supplierOptionsRequestId\s*const teamParams = \{ \.\.\.requestTeamParams\.value \}\s*const context = currentPageContext\(\)/)
+  assert.match(settlementSource, /getSuppliers\(\{ \.\.\.teamParams, page, pageSize \}\)\s*if \(requestId !== supplierOptionsRequestId \|\| !isCurrentPageContext\(context\)\) return false/)
+  assert.match(settlementSource, /if \(requestId !== supplierOptionsRequestId \|\| !isCurrentPageContext\(context\)\) return false\s*supplierOptions\.value = collected/)
+})
+
+test('contract exports are discarded after route, team, session, or lifecycle context changes', () => {
+  const sources = [
+    readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/views/contracts/ContractExpiryAlerts.vue', import.meta.url), 'utf8'),
+    readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+  ]
+
+  for (const source of sources) {
+    assert.match(source, /function currentPageContext\(\)/)
+    assert.ok(
+      /pageRequestContextSnapshot\(\{[\s\S]*route,[\s\S]*session,[\s\S]*teamId:[\s\S]*pageActive/.test(source) ||
+      /routeName:[\s\S]*routeTeamId:[\s\S]*contextEpoch: session\.contextEpoch[\s\S]*teamId:/.test(source),
+      'contract export context must freeze route, session, team, and lifecycle ownership'
+    )
+    assert.ok(
+      /isSamePageRequestContext\(context, currentPageContext\(\)\)/.test(source) ||
+      /function isCurrentPageContext\(context\) \{[\s\S]*pageActive[\s\S]*current\.routeName === context\.routeName[\s\S]*current\.routeTeamId === context\.routeTeamId[\s\S]*current\.contextEpoch === context\.contextEpoch[\s\S]*current\.teamId === context\.teamId/.test(source),
+      'contract export response must be rejected outside its captured page context'
+    )
+    assert.match(source, /const (?:requestId|currentId) = \+\+exportRequestId[\s\S]*const context = currentPageContext\(\)[\s\S]*await export/)
+    assert.match(source, /(?:requestId|currentId) !== exportRequestId \|\| !isCurrentPageContext\(context\)\) return[\s\S]*saveContractBlob/)
+    assert.match(source, /onDeactivated\(/)
+    assert.match(source, /onBeforeUnmount\(/)
+  }
+})
+
+test('supplier first-record submission cannot update or navigate a stale team page', () => {
+  const source = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /const submitRequestId = \+\+firstRecordSubmitRequestId\s*const submitContext = currentPageContext\(\)\s*const submittedTeamParams = \{ \.\.\.requestTeamParams\.value \}/)
+  assert.match(source, /prepareAttachmentReferences[\s\S]*submitRequestId !== firstRecordSubmitRequestId \|\|[\s\S]*!isCurrentPageContext\(submitContext\)[\s\S]*cleanupTemporaryFiles\(uploadedFileIds, deleteFile\)[\s\S]*return/)
+  assert.match(source, /createSupplierFirstRecord\(payload\)[\s\S]*submitRequestId !== firstRecordSubmitRequestId \|\|[\s\S]*!isCurrentPageContext\(submitContext\)[\s\S]*return[\s\S]*ElMessage\.success/)
+  assert.match(source, /name: 'SupplierContractDetail'[\s\S]*query: submittedTeamParams/)
+})
+
+test('contract list deactivation cancels async effects without discarding remembered rows', () => {
+  const cases = [
+    ['SupplierContracts.vue', 'deactivateSupplierContracts', 'suppliers'],
+    ['ContractExpiryAlerts.vue', 'deactivateContractExpiryAlerts', 'alerts'],
+    ['SupplierSettlementFees.vue', 'deactivateSupplierSettlementFees', 'settlements']
+  ]
+
+  for (const [file, functionName, rowsName] of cases) {
+    const source = readFileSync(new URL(`../src/views/contracts/${file}`, import.meta.url), 'utf8')
+    const start = source.indexOf(`function ${functionName}()`)
+    const end = source.indexOf('\n}', start) + 2
+    const body = source.slice(start, end)
+    assert.ok(start >= 0, `missing ${functionName}`)
+    assert.match(body, /pageActive = false/)
+    assert.doesNotMatch(body, new RegExp(`${rowsName}\\.value = \\[\\]`))
+  }
+})
+
+test('settlement writes cannot update a page after its route or team context changes', () => {
+  const source = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /let mutationRequestId = 0/)
+  assert.match(source, /async function submitForm\(\)[\s\S]*const requestId = \+\+mutationRequestId[\s\S]*const context = currentPageContext\(\)[\s\S]*await (?:update|create)SupplierSettlement[\s\S]*requestId !== mutationRequestId \|\| !isCurrentPageContext\(context\)\) return[\s\S]*ElMessage\.success/)
+  assert.match(source, /async function handleDelete\(row\)[\s\S]*const confirmation = confirmationGuard\.capture\(\)[\s\S]*await ElMessageBox\.confirm[\s\S]*if \(!confirmationGuard\.isCurrent\(confirmation\)\) return/)
+  assert.match(source, /const requestId = \+\+mutationRequestId\s*const context = currentPageContext\(\)[\s\S]*await deleteSupplierSettlement/)
+  assert.match(source, /requestId !== mutationRequestId \|\|[\s\S]*!isCurrentPageContext\(context\) \|\|[\s\S]*!confirmationGuard\.isCurrent\(confirmation\)[\s\S]*\) return[\s\S]*ElMessage\.success/)
+  assert.match(source, /function invalidateSettlementResults\(\)[\s\S]*mutationRequestId \+= 1/)
+  assert.match(source, /function deactivateSupplierSettlementFees\(\)[\s\S]*mutationRequestId \+= 1/)
+})
+
+test('contract detail drops every read, write, export and import effect after leaving its team context', () => {
+  const source = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+
+  assert.match(source, /function currentPageContext\(\)[\s\S]*pageRequestContextSnapshot/)
+  assert.match(source, /function invalidateDetailPage\(\)[\s\S]*supplierRequestId \+= 1[\s\S]*detailRequestId \+= 1[\s\S]*mutationRequestId \+= 1[\s\S]*exportRequestId \+= 1[\s\S]*importRequestId \+= 1/)
+  assert.match(source, /async function loadSupplier\(\)[\s\S]*requestId !== supplierRequestId \|\| !isCurrentPageContext\(context\)\) return false/)
+  assert.match(source, /async function loadRecords[\s\S]*requestId !== state\.requestId \|\| !isCurrentPageContext\(context\)\) return false/)
+  assert.match(source, /async function submitRecord\(\)[\s\S]*const requestId = \+\+mutationRequestId[\s\S]*prepareAttachmentReferences[\s\S]*!isCurrentPageContext\(context\)[\s\S]*cleanupTemporaryFiles[\s\S]*await (?:updateSupplierRecord|createSupplierRecord)[\s\S]*!isCurrentPageContext\(context\)\) return[\s\S]*ElMessage\.success/)
+  assert.match(source, /async function handleDeleteRecord[\s\S]*await deleteSupplierRecord[\s\S]*!isCurrentPageContext\(context\)\) return[\s\S]*ElMessage\.success/)
+  assert.match(source, /async function handleExport[\s\S]*await exportSuppliers[\s\S]*!isCurrentPageContext\(context\)\) return[\s\S]*saveContractBlob/)
+  assert.match(source, /async function submitImport[\s\S]*await importSuppliers[\s\S]*!isCurrentPageContext\(context\)\) return[\s\S]*ElMessage\.success/)
+  assert.match(source, /onBeforeUnmount\(invalidateDetailPage\)/)
 })

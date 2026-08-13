@@ -143,7 +143,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
@@ -174,6 +183,8 @@ const filters = reactive({ page: 1, pageSize: 20 })
 
 let listRequestId = 0
 let detailRequestId = 0
+let pageActive = true
+let wasDeactivated = false
 
 const canGenerate = computed(() => session.can('report.daily.generate', {
   write: true,
@@ -225,7 +236,7 @@ async function loadList() {
   }
 }
 
-async function loadSelectedDate() {
+async function loadSelectedDate({ syncRoute = true } = {}) {
   const requestId = ++detailRequestId
   const reportDate = selectedDate.value
   const teamParams = { ...requestTeamParams.value }
@@ -238,12 +249,14 @@ async function loadSelectedDate() {
   }
   loading.value = true
   try {
-    await router.replace({
-      query: {
-        ...(selectedTeamId.value ? { teamId: selectedTeamId.value } : {}),
-        date: reportDate
-      }
-    })
+    if (syncRoute) {
+      await router.replace({
+        query: {
+          ...(selectedTeamId.value ? { teamId: selectedTeamId.value } : {}),
+          date: reportDate
+        }
+      })
+    }
     if (requestId !== detailRequestId) return
     const result = await getGeneratedDailyReports({
       ...teamParams,
@@ -344,7 +357,64 @@ async function initialize() {
   await Promise.all([loadList(), loadSelectedDate()])
 }
 
+async function syncRouteReportContext({ forceList = false, forceDetail = false } = {}) {
+  if (!pageActive || route.name !== 'GeneratedDailyReports') return
+
+  const routedDate = String(route.query.date || dayjs().format('YYYY-MM-DD'))
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const dateChanged = routedDate !== selectedDate.value
+  const teamChanged = routedTeamId !== selectedTeamId.value
+  if (!dateChanged && !teamChanged && !forceList && !forceDetail) return
+
+  listRequestId += 1
+  detailRequestId += 1
+  if (teamChanged) {
+    selectedTeamId.value = routedTeamId
+    filters.page = 1
+    reports.value = []
+    total.value = 0
+  }
+  if (dateChanged) selectedDate.value = routedDate
+  report.value = null
+  selectedVersion.value = null
+  generationBlock.value = ''
+  loading.value = false
+  listLoading.value = false
+
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  await Promise.all([
+    teamChanged || forceList ? loadList() : Promise.resolve(),
+    dateChanged || teamChanged || forceDetail
+      ? loadSelectedDate({ syncRoute: false })
+      : Promise.resolve()
+  ])
+}
+
+function deactivateDailyReports() {
+  pageActive = false
+  wasDeactivated = true
+  listRequestId += 1
+  detailRequestId += 1
+  loading.value = false
+  listLoading.value = false
+  generating.value = false
+}
+
 onMounted(initialize)
+watch(() => [route.name, route.query.teamId, route.query.date], () => {
+  if (pageActive) void syncRouteReportContext()
+})
+watch(() => session.contextEpoch, () => {
+  if (pageActive) void syncRouteReportContext({ forceList: true, forceDetail: true })
+})
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  void syncRouteReportContext({ forceList: true, forceDetail: true })
+})
+onDeactivated(deactivateDailyReports)
+onBeforeUnmount(deactivateDailyReports)
 </script>
 
 <style scoped lang="scss">

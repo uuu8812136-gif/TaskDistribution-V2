@@ -152,13 +152,24 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { exportContractExpiryAlerts, getContractExpiryAlerts } from '@/api/contract'
 import { useSessionStore } from '@/stores/session'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   CONTRACT_CATEGORY_CONFIGS,
   YES_NO_OPTIONS,
@@ -177,6 +188,13 @@ const loadError = ref('')
 const exporting = ref(false)
 const selectedTeamId = ref(String(route.query.teamId || ''))
 let requestId = 0
+let exportRequestId = 0
+let activationReady = false
+let pageActive = true
+let resumeListLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.CONTRACT_EXPIRY_ALERTS
+})
 const filters = reactive({
   supplierCode: '',
   supplierName: '',
@@ -191,6 +209,25 @@ const canExport = computed(() => session.hasPermission('contract.expiry.export')
 const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+
+function currentPageContext() {
+  return {
+    routeName: String(route.name || ''),
+    routeTeamId: String(route.query.teamId || ''),
+    contextEpoch: session.contextEpoch,
+    teamId: String(session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || '')
+  }
+}
+
+function isCurrentPageContext(context) {
+  const current = currentPageContext()
+  return pageActive &&
+    current.routeName === 'ContractExpiryAlerts' &&
+    current.routeName === context.routeName &&
+    current.routeTeamId === context.routeTeamId &&
+    current.contextEpoch === context.contextEpoch &&
+    current.teamId === context.teamId
+}
 
 function queryParams() {
   return {
@@ -245,21 +282,38 @@ async function loadAlerts() {
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     alerts.value = []
     total.value = 0
-    return
+    return true
   }
+  const loadStartRevision = mutationRefresh.currentRevision()
   const currentId = ++requestId
+  const context = currentPageContext()
   loading.value = true
   loadError.value = ''
   try {
     const result = await getContractExpiryAlerts(queryParams())
-    if (currentId !== requestId) return
+    if (currentId !== requestId || !isCurrentPageContext(context)) return false
     alerts.value = result.alerts || []
     total.value = Number(result.total) || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
-    if (currentId === requestId) loadError.value = error?.message || '合同到期预警加载失败，请稍后重试'
+    if (currentId === requestId && isCurrentPageContext(context)) {
+      loadError.value = error?.message || '合同到期预警加载失败，请稍后重试'
+    }
+    return false
   } finally {
     if (currentId === requestId) loading.value = false
   }
+}
+
+function invalidateAlertResults() {
+  requestId += 1
+  exportRequestId += 1
+  alerts.value = []
+  total.value = 0
+  loading.value = false
+  exporting.value = false
+  loadError.value = ''
 }
 
 function applyFilters() {
@@ -275,7 +329,7 @@ function applyFilters() {
   loadAlerts()
 }
 
-function resetFilters() {
+function resetFilterState() {
   Object.assign(filters, {
     supplierCode: '',
     supplierName: '',
@@ -284,12 +338,22 @@ function resetFilters() {
     autoRenew: '',
     page: 1
   })
-  loadAlerts()
+}
+
+function resetFilters() {
+  resetFilterState()
+  return loadAlerts()
 }
 
 async function handleTeamChange(teamId) {
+  invalidateAlertResults()
+  resetFilterState()
   await router.replace({ query: teamId ? { teamId } : {} })
-  resetFilters()
+  if (
+    String(route.query.teamId || '') !== String(teamId || '') ||
+    String(selectedTeamId.value || '') !== String(teamId || '')
+  ) return
+  await loadAlerts()
 }
 
 function openContract(row) {
@@ -301,14 +365,31 @@ function openContract(row) {
 }
 
 async function handleExport() {
+  if (exporting.value) return
+  const currentId = ++exportRequestId
+  const context = currentPageContext()
   exporting.value = true
   try {
     const blob = await exportContractExpiryAlerts({ ...queryParams(), page: undefined, pageSize: undefined })
+    if (currentId !== exportRequestId || !isCurrentPageContext(context)) return
     saveContractBlob(blob, `供应商合同到期预警-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
     ElMessage.success('合同到期预警已导出')
   } finally {
-    exporting.value = false
+    if (currentId === exportRequestId) exporting.value = false
   }
+}
+
+async function syncRouteTeamContext({ force = false } = {}) {
+  if (!pageActive || route.name !== 'ContractExpiryAlerts') return false
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = session.isGlobalReadOnly && routedTeamId !== selectedTeamId.value
+  if (!force && !teamChanged) return false
+  if (teamChanged) selectedTeamId.value = routedTeamId
+  invalidateAlertResults()
+  resetFilterState()
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return true
+  await loadAlerts()
+  return true
 }
 
 async function initialize() {
@@ -319,7 +400,43 @@ async function initialize() {
   await loadAlerts()
 }
 
-onMounted(initialize)
+onMounted(async () => {
+  try {
+    await initialize()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  pageActive = true
+  if (!activationReady) return
+  const interrupted = resumeListLoad
+  resumeListLoad = false
+  void syncRouteTeamContext().then((changed) => {
+    if (changed) return
+    if (interrupted) return loadAlerts()
+    return mutationRefresh.refreshIfNeeded(loadAlerts)
+  }).catch(() => {})
+})
+watch(() => [route.name, route.query.teamId], () => {
+  if (pageActive && activationReady) void syncRouteTeamContext()
+})
+watch(() => session.contextEpoch, () => {
+  if (pageActive && activationReady) void syncRouteTeamContext({ force: true })
+  else invalidateAlertResults()
+})
+
+function deactivateContractExpiryAlerts() {
+  resumeListLoad = resumeListLoad || loading.value
+  pageActive = false
+  requestId += 1
+  exportRequestId += 1
+  loading.value = false
+  exporting.value = false
+}
+
+onDeactivated(deactivateContractExpiryAlerts)
+onBeforeUnmount(deactivateContractExpiryAlerts)
 </script>
 
 <style scoped lang="scss">

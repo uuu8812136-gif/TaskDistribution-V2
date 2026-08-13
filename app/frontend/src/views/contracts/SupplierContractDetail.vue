@@ -359,7 +359,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { Delete, Edit, Plus, View } from '@element-plus/icons-vue'
@@ -379,6 +379,11 @@ import {
 } from '@/api/contract'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
+import {
+  createPageConfirmationGuard,
+  isSamePageRequestContext,
+  pageRequestContextSnapshot
+} from '@/utils/pageRequestContext'
 import { cleanupTemporaryFiles, existingAttachmentFileList, prepareAttachmentReferences } from '@/utils/attachments'
 import {
   CONTRACT_CATEGORY_CONFIGS,
@@ -438,10 +443,55 @@ const importVisible = ref(false)
 const importFiles = ref([])
 const importFile = ref(null)
 const importing = ref(false)
+let pageActive = true
+let supplierRequestId = 0
+let detailRequestId = 0
+let mutationRequestId = 0
+let exportRequestId = 0
+let importRequestId = 0
 
 const canManage = computed(() => session.can('contract.supplier.manage', { write: true, teamRequired: true }))
 const canImport = computed(() => session.can('contract.supplier.import', { write: true, teamRequired: true }))
 const canExport = computed(() => session.hasPermission('contract.supplier.export'))
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+function isCurrentPageContext(context) {
+  return isSamePageRequestContext(context, currentPageContext())
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function invalidateDetailPage() {
+  pageActive = false
+  confirmationGuard.invalidate()
+  supplierRequestId += 1
+  detailRequestId += 1
+  mutationRequestId += 1
+  exportRequestId += 1
+  importRequestId += 1
+  supplierLoading.value = false
+  savingSupplierIdentity.value = false
+  submitting.value = false
+  deletingId.value = ''
+  exportingScope.value = ''
+  importing.value = false
+  supplierIdentityVisible.value = false
+  viewVisible.value = false
+  formVisible.value = false
+  importVisible.value = false
+  for (const state of Object.values(recordState)) {
+    state.requestId += 1
+    state.loading = false
+  }
+}
 
 function goBack() {
   router.push({ name: 'SupplierContracts', query: requestTeamParams.value })
@@ -467,17 +517,21 @@ async function saveSupplierIdentity() {
     return
   }
   savingSupplierIdentity.value = true
+  const requestId = ++mutationRequestId
+  const context = currentPageContext()
   try {
     await updateSupplier(supplierId.value, {
       name,
       code,
       trusteeAttribute: supplierIdentityForm.trusteeAttribute
     })
+    if (requestId !== mutationRequestId || !isCurrentPageContext(context)) return
     supplierIdentityVisible.value = false
     await loadSupplier()
+    if (requestId !== mutationRequestId || !isCurrentPageContext(context)) return
     ElMessage.success('供应商信息已更新，主表与二级汇总已自动刷新')
   } finally {
-    savingSupplierIdentity.value = false
+    if (requestId === mutationRequestId) savingSupplierIdentity.value = false
   }
 }
 
@@ -506,16 +560,23 @@ function attachmentsForPurpose(attachments, purpose) {
 }
 
 async function loadSupplier() {
+  const requestId = ++supplierRequestId
+  const context = currentPageContext()
   supplierLoading.value = true
   supplierError.value = ''
   try {
     const result = await getSupplier(supplierId.value, requestTeamParams.value)
+    if (requestId !== supplierRequestId || !isCurrentPageContext(context)) return false
     supplier.value = result.supplier || result
+    return true
   } catch (error) {
-    supplier.value = null
-    supplierError.value = error?.message || '供应商资料加载失败，请稍后重试'
+    if (requestId === supplierRequestId && isCurrentPageContext(context)) {
+      supplier.value = null
+      supplierError.value = error?.message || '供应商资料加载失败，请稍后重试'
+    }
+    return false
   } finally {
-    supplierLoading.value = false
+    if (requestId === supplierRequestId) supplierLoading.value = false
   }
 }
 
@@ -523,6 +584,7 @@ async function loadRecords(category, { force = false } = {}) {
   const state = recordState[category]
   if (!state || state.loading || state.loaded && !force) return
   const requestId = ++state.requestId
+  const context = currentPageContext()
   state.loading = true
   state.error = ''
   try {
@@ -532,12 +594,16 @@ async function loadRecords(category, { force = false } = {}) {
       page: state.page,
       pageSize: state.pageSize
     })
-    if (requestId !== state.requestId) return
+    if (requestId !== state.requestId || !isCurrentPageContext(context)) return false
     state.items = (result.records || []).map(normalizeRecord)
     state.total = Number(result.total) || 0
     state.loaded = true
+    return true
   } catch (error) {
-    if (requestId === state.requestId) state.error = error?.message || '合同记录加载失败，请稍后重试'
+    if (requestId === state.requestId && isCurrentPageContext(context)) {
+      state.error = error?.message || '合同记录加载失败，请稍后重试'
+    }
+    return false
   } finally {
     if (requestId === state.requestId) state.loading = false
   }
@@ -583,17 +649,22 @@ function openCreateRecord() {
 }
 
 async function loadFullRecord(record) {
+  const requestId = ++detailRequestId
+  const context = currentPageContext()
   const result = await getSupplierRecord(record._id, requestTeamParams.value)
+  if (requestId !== detailRequestId || !isCurrentPageContext(context)) return null
   return normalizeRecord(result.record || result)
 }
 
 async function openViewRecord(record) {
   viewRecord.value = await loadFullRecord(record)
+  if (!viewRecord.value) return
   viewVisible.value = true
 }
 
 async function openEditRecord(record) {
   const fullRecord = await loadFullRecord(record)
+  if (!fullRecord) return
   editingRecordId.value = fullRecord._id
   resetRecordForm(fullRecord)
   formVisible.value = true
@@ -633,18 +704,25 @@ async function submitRecord() {
     return
   }
   submitting.value = true
+  const requestId = ++mutationRequestId
+  const context = currentPageContext()
   const uploadedFileIds = []
   try {
     const attachments = []
     for (const group of activeConfig.value.attachmentGroups) {
       const prepared = await prepareAttachmentReferences(attachmentFiles[group.purpose] || [], uploadTemporaryFile)
       uploadedFileIds.push(...prepared.uploadedFileIds)
+      if (requestId !== mutationRequestId || !isCurrentPageContext(context)) {
+        await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
+        return
+      }
       attachments.push(...prepared.references.map(({ fileId }) => ({ fileId, purpose: group.purpose })))
     }
     const payload = buildRecordPayload(activeConfig.value, recordForm, attachments)
     if (editingRecordId.value) await updateSupplierRecord(editingRecordId.value, payload)
     else await createSupplierRecord(supplierId.value, payload)
     uploadedFileIds.length = 0
+    if (requestId !== mutationRequestId || !isCurrentPageContext(context)) return
     ElMessage.success(editingRecordId.value ? '三级明细已更新，汇总已自动刷新' : '三级明细已新增，汇总已自动刷新')
     formVisible.value = false
     activeState.value.loaded = false
@@ -656,12 +734,13 @@ async function submitRecord() {
     )
     throw error
   } finally {
-    submitting.value = false
+    if (requestId === mutationRequestId) submitting.value = false
   }
 }
 
 async function handleDeleteRecord(record) {
   if (submitting.value || deletingId.value) return
+  const confirmation = confirmationGuard.capture()
   try {
     await ElMessageBox.confirm('确定删除这条三级明细吗？删除后主表和二级汇总会自动更新。', '删除三级明细', {
       type: 'warning',
@@ -672,9 +751,17 @@ async function handleDeleteRecord(record) {
   } catch {
     return
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   deletingId.value = record._id
+  const requestId = ++mutationRequestId
+  const context = currentPageContext()
   try {
     const result = await deleteSupplierRecord(record._id, { reason: '后台供应商合同管理删除记录' })
+    if (
+      requestId !== mutationRequestId ||
+      !isCurrentPageContext(context) ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
     const supplierDeleted = Boolean(result?.record?.supplierDeleted)
     ElMessage.success(supplierDeleted
       ? '最后一条三级明细及其派生供应商已删除'
@@ -691,7 +778,7 @@ async function handleDeleteRecord(record) {
     activeState.value.loaded = false
     await Promise.all([loadSupplier(), loadActiveRecords()])
   } finally {
-    deletingId.value = ''
+    if (requestId === mutationRequestId) deletingId.value = ''
   }
 }
 
@@ -702,6 +789,8 @@ function deleteEditingRecord() {
 
 async function handleExport(category = '') {
   const scope = category || 'supplier'
+  const requestId = ++exportRequestId
+  const context = currentPageContext()
   exportingScope.value = scope
   try {
     const blob = await exportSuppliers({
@@ -710,11 +799,12 @@ async function handleExport(category = '') {
       supplierId: supplierId.value,
       category: category || undefined
     })
+    if (requestId !== exportRequestId || !isCurrentPageContext(context)) return
     const suffix = category ? activeConfig.value.shortLabel : '二级汇总'
     saveContractBlob(blob, `${supplier.value.code}-${supplier.value.name}-${suffix}.xlsx`)
     ElMessage.success('合同资料已导出')
   } finally {
-    exportingScope.value = ''
+    if (requestId === exportRequestId) exportingScope.value = ''
   }
 }
 
@@ -736,9 +826,13 @@ function handleImportFileChange(file, files) {
 
 async function submitImport() {
   if (!importFile.value) return
+  const requestId = ++importRequestId
+  const context = currentPageContext()
+  const file = importFile.value
   importing.value = true
   try {
-    await importSuppliers(importFile.value, { ...requestTeamParams.value, supplierId: supplierId.value })
+    await importSuppliers(file, { ...requestTeamParams.value, supplierId: supplierId.value })
+    if (requestId !== importRequestId || !isCurrentPageContext(context)) return
     ElMessage.success('供应商合同导入完成')
     importVisible.value = false
     for (const state of Object.values(recordState)) state.loaded = false
@@ -747,7 +841,7 @@ async function submitImport() {
       ...CONTRACT_CATEGORY_CONFIGS.map((config) => loadRecords(config.value, { force: true }))
     ])
   } finally {
-    importing.value = false
+    if (requestId === importRequestId) importing.value = false
   }
 }
 
@@ -757,6 +851,7 @@ onMounted(async () => {
     ...CONTRACT_CATEGORY_CONFIGS.map((config) => loadRecords(config.value))
   ])
 })
+onBeforeUnmount(invalidateDetailPage)
 </script>
 
 <style scoped lang="scss">

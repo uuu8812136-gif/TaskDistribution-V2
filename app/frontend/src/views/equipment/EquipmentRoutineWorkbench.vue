@@ -410,7 +410,17 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  nextTick,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -442,6 +452,9 @@ import {
 } from '@/utils/equipment'
 import { requestErrorMessage } from '@/utils/request'
 import { useSessionStore } from '@/stores/session'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 
 const session = useSessionStore()
 const route = useRoute()
@@ -468,6 +481,16 @@ const orgUnitOptions = ref([])
 const total = ref(0)
 let referenceRequestId = 0
 let activeTabRequestId = 0
+let pageActive = true
+let wasDeactivated = false
+let referenceRequestPending = false
+let activeTabRequestPending = false
+let resumeReferenceLoad = false
+let resumeActiveTabLoad = false
+let exportRequestId = 0
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT_ROUTINES
+})
 const handleVisible = ref(false)
 const selectedException = ref(null)
 const recordDetailVisible = ref(false)
@@ -520,6 +543,46 @@ const stages = {
 const requestTeam = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
+const currentTeamContextId = () => String(
+  session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
+)
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function currentExportContext() {
+  const params = queryParams()
+  delete params.page
+  delete params.pageSize
+  return {
+    routeName: String(route.name || ''),
+    routeTeamId: String(route.query.teamId || ''),
+    contextEpoch: session.contextEpoch,
+    teamId: currentTeamContextId(),
+    tab: activeTab.value,
+    paramsKey: JSON.stringify(params)
+  }
+}
+
+function isCurrentExportContext(context) {
+  const current = currentExportContext()
+  return pageActive &&
+    current.routeName === 'EquipmentRoutineWorkbench' &&
+    current.routeName === context.routeName &&
+    current.routeTeamId === context.routeTeamId &&
+    current.contextEpoch === context.contextEpoch &&
+    current.teamId === context.teamId &&
+    current.tab === context.tab &&
+    current.paramsKey === context.paramsKey
+}
 const canExport = computed(() => session.hasPermission('equipment.export'))
 const canMarkRestDay = computed(() => (
   session.isTeamMode && session.hasPermission('equipment.inspect')
@@ -683,16 +746,21 @@ async function loadReferenceData() {
   }
   const teamParams = { ...requestTeam.value }
   const requestedTeamId = String(teamParams.teamId || '')
-  const [equipmentResult, optionResult] = await Promise.all([
-    getEquipmentList({ ...teamParams, page: 1, pageSize: 200 }),
-    getEquipmentOptions(teamParams)
-  ])
-  if (
-    requestId !== referenceRequestId ||
-    requestedTeamId !== String(requestTeam.value.teamId || '')
-  ) return
-  equipmentOptions.value = equipmentResult.equipment || []
-  orgUnitOptions.value = optionResult.orgUnits || []
+  referenceRequestPending = true
+  try {
+    const [equipmentResult, optionResult] = await Promise.all([
+      getEquipmentList({ ...teamParams, page: 1, pageSize: 200 }),
+      getEquipmentOptions(teamParams)
+    ])
+    if (
+      requestId !== referenceRequestId ||
+      requestedTeamId !== String(requestTeam.value.teamId || '')
+    ) return
+    equipmentOptions.value = equipmentResult.equipment || []
+    orgUnitOptions.value = optionResult.orgUnits || []
+  } finally {
+    if (requestId === referenceRequestId) referenceRequestPending = false
+  }
 }
 
 async function loadActiveTab() {
@@ -703,14 +771,16 @@ async function loadActiveTab() {
     exceptions.value = []
     total.value = 0
     loading.value = false
-    return
+    return false
   }
+  const loadStartRevision = mutationRefresh.currentRevision()
   const tab = activeTab.value
   const params = queryParams()
   const teamParams = { ...requestTeam.value }
-  const requestedTeamId = String(teamParams.teamId || '')
+  const requestedTeamId = currentTeamContextId()
   const requestedPlanId = focusedPlanId.value
   const requestedExceptionId = focusedExceptionId.value
+  activeTabRequestPending = true
   loading.value = true
   loadError.value = ''
   try {
@@ -720,9 +790,10 @@ async function loadActiveTab() {
         ? await getEquipmentRoutineRecords(params)
         : await getEquipmentRoutineExceptions(params)
     if (
+      !pageActive ||
       requestId !== activeTabRequestId ||
-      requestedTeamId !== String(requestTeam.value.teamId || '')
-    ) return
+      requestedTeamId !== currentTeamContextId()
+    ) return false
     const listedPlans = result.plans || []
     plans.value = listedPlans
     selectedRestDayPlanIds.value = []
@@ -741,7 +812,11 @@ async function loadActiveTab() {
           requestedPlanId,
           teamParams
         )
-        if (requestId !== activeTabRequestId) return
+        if (
+          !pageActive ||
+          requestId !== activeTabRequestId ||
+          requestedTeamId !== currentTeamContextId()
+        ) return false
         if (focusedResult?.plan) {
           plans.value = [focusedResult.plan, ...listedPlans]
         }
@@ -761,7 +836,11 @@ async function loadActiveTab() {
           requestedExceptionId,
           teamParams
         )
-        if (requestId !== activeTabRequestId) return
+        if (
+          !pageActive ||
+          requestId !== activeTabRequestId ||
+          requestedTeamId !== currentTeamContextId()
+        ) return false
         if (focusedResult?.exception) {
           exceptions.value = [focusedResult.exception, ...listedExceptions]
         }
@@ -771,20 +850,31 @@ async function loadActiveTab() {
         }
       }
     }
-    if (requestId !== activeTabRequestId) return
+    if (
+      !pageActive ||
+      requestId !== activeTabRequestId ||
+      requestedTeamId !== currentTeamContextId()
+    ) return false
     total.value = Number(result.total || 0)
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
     if (
+      !pageActive ||
       requestId !== activeTabRequestId ||
-      requestedTeamId !== String(requestTeam.value.teamId || '')
-    ) return
+      requestedTeamId !== currentTeamContextId()
+    ) return false
     if (tab === 'plans') plans.value = []
     if (tab === 'records') records.value = []
     if (tab === 'exceptions') exceptions.value = []
     total.value = 0
     loadError.value = requestErrorMessage(error, '工作台数据加载失败，请重试')
+    return false
   } finally {
-    if (requestId === activeTabRequestId) loading.value = false
+    if (requestId === activeTabRequestId) {
+      activeTabRequestPending = false
+      loading.value = false
+    }
   }
 }
 
@@ -796,6 +886,8 @@ function handlePlanSelectionChange(rows) {
 
 async function markSelectedPlansRestDay() {
   if (!selectedRestDayPlanIds.value.length || restDaySubmitting.value) return
+  const confirmation = confirmationGuard.capture()
+  const selectedPlanIds = [...selectedRestDayPlanIds.value]
   try {
     await ElMessageBox.confirm(
       `确认将选中的 ${selectedRestDayPlanIds.value.length} 条点检计划按各自计划日期设为“休班”吗？`,
@@ -809,11 +901,13 @@ async function markSelectedPlansRestDay() {
   } catch {
     return
   }
+  if (!confirmationGuard.isCurrent(confirmation)) return
   restDaySubmitting.value = true
   try {
     const result = await markEquipmentRoutinePlansRestDay({
-      planIds: [...selectedRestDayPlanIds.value]
+      planIds: selectedPlanIds
     })
+    if (!confirmationGuard.isCurrent(confirmation)) return
     const count = Number(result.cancelledCount || 0)
     ElMessage.success(count > 0 ? `已将 ${count} 条点检计划设为休班` : '所选计划已是休班状态')
     selectedRestDayPlanIds.value = []
@@ -895,6 +989,8 @@ async function changeTab(requestedTab = activeTab.value) {
     ? String(requestedTab)
     : 'plans'
   ++activeTabRequestId
+  ++exportRequestId
+  exporting.value = false
   loading.value = false
   activeTab.value = nextTab
   plans.value = []
@@ -917,11 +1013,26 @@ async function changeTab(requestedTab = activeTab.value) {
   await Promise.all([routeUpdate, dataLoad])
 }
 
-watch(() => [route.query.tab, route.query.planId, route.query.exceptionId], async ([
-  requestedRouteTab,
-  requestedPlanId,
-  requestedExceptionId
-]) => {
+async function syncRouteFocus() {
+  if (!pageActive || route.name !== 'EquipmentRoutineWorkbench') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const teamChanged = Boolean(routedTeamId && routedTeamId !== selectedTeamId.value)
+  if (teamChanged) {
+    confirmationGuard.invalidate()
+    selectedTeamId.value = routedTeamId
+    referenceRequestId += 1
+    activeTabRequestId += 1
+    exportRequestId += 1
+    exporting.value = false
+    equipmentOptions.value = []
+    orgUnitOptions.value = []
+    filters.equipmentId = ''
+    filters.orgUnitId = ''
+  }
+  const requestedRouteTab = route.query.tab
+  const requestedPlanId = route.query.planId
+  const requestedExceptionId = route.query.exceptionId
+  const nextEquipmentId = String(route.query.equipmentId || '')
   const routedTab = String(requestedRouteTab || '')
   const nextTab = ROUTINE_TABS.has(routedTab) ? routedTab : 'plans'
   const nextPlanId = nextTab === 'plans' ? String(requestedPlanId || '') : ''
@@ -931,9 +1042,12 @@ watch(() => [route.query.tab, route.query.planId, route.query.exceptionId], asyn
     nextPlanId !== focusedPlanId.value ||
     nextExceptionId !== focusedExceptionId.value
   )
-  if (!tabChanged && !focusChanged) return
+  const equipmentChanged = nextEquipmentId !== filters.equipmentId
+  if (!teamChanged && !tabChanged && !focusChanged && !equipmentChanged) return
   closeRecordDetail()
   ++activeTabRequestId
+  ++exportRequestId
+  exporting.value = false
   loading.value = false
   activeTab.value = nextTab
   plans.value = []
@@ -942,16 +1056,34 @@ watch(() => [route.query.tab, route.query.planId, route.query.exceptionId], asyn
   total.value = 0
   loadError.value = ''
   filters.page = 1
+  filters.equipmentId = nextEquipmentId
   focusedExceptionId.value = nextExceptionId
   focusedPlanId.value = nextPlanId
-  await loadActiveTab()
+  await Promise.all([
+    teamChanged ? loadReferenceData() : Promise.resolve(),
+    loadActiveTab()
+  ])
+}
+
+watch(() => [
+  route.name,
+  route.query.teamId,
+  route.query.tab,
+  route.query.planId,
+  route.query.exceptionId,
+  route.query.equipmentId
+], () => {
+  void syncRouteFocus()
 })
 
 async function changeTeam() {
+  confirmationGuard.invalidate()
   closeRecordDetail()
   ++activeTabRequestId
   ++referenceRequestId
+  ++exportRequestId
   loading.value = false
+  exporting.value = false
   plans.value = []
   records.value = []
   exceptions.value = []
@@ -1073,15 +1205,18 @@ async function submitHandle() {
 
 async function exportRows() {
   if (exporting.value) return
+  const requestId = ++exportRequestId
+  const context = currentExportContext()
   exporting.value = true
   try {
     const params = queryParams()
     delete params.page
     delete params.pageSize
     const blob = await exportEquipmentRoutineRecords(params)
+    if (requestId !== exportRequestId || !isCurrentExportContext(context)) return
     saveBlob(blob, `点检保养记录-${dayjs().format('YYYYMMDD')}.xlsx`)
   } finally {
-    exporting.value = false
+    if (requestId === exportRequestId) exporting.value = false
   }
 }
 
@@ -1091,7 +1226,37 @@ onMounted(async () => {
   }
   await Promise.all([loadReferenceData(), loadActiveTab()])
 })
+
+function deactivateRoutineWorkbench() {
+  resumeReferenceLoad = resumeReferenceLoad || referenceRequestPending
+  resumeActiveTabLoad = resumeActiveTabLoad || activeTabRequestPending
+  pageActive = false
+  confirmationGuard.invalidate()
+  wasDeactivated = true
+  activeTabRequestId += 1
+  referenceRequestId += 1
+  exportRequestId += 1
+  loading.value = false
+  exporting.value = false
+  closeRecordDetail()
+}
+
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const reloadReferenceData = resumeReferenceLoad
+  const reloadActiveTab = resumeActiveTabLoad
+  resumeReferenceLoad = false
+  resumeActiveTabLoad = false
+  void syncRouteFocus().then(() => Promise.all([
+    reloadReferenceData ? loadReferenceData() : Promise.resolve(),
+    reloadActiveTab ? loadActiveTab() : Promise.resolve()
+  ])).then(() => mutationRefresh.refreshIfNeeded(loadActiveTab)).catch(() => {})
+})
+onDeactivated(deactivateRoutineWorkbench)
 onBeforeUnmount(() => {
+  deactivateRoutineWorkbench()
   recordPhotoRequestGuard.destroy()
   recordPhotoLoadingId.value = ''
   clearRecordPhotoPreview()

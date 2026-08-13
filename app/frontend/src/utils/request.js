@@ -5,6 +5,7 @@ import {
   localizeRequestError,
   requestErrorMessage
 } from './requestErrorMessages.js'
+import { recordSuccessfulMutationRequest } from './successfulMutationRevision.js'
 
 export { REQUEST_ERROR_CODE_MESSAGES, requestErrorMessage }
 
@@ -90,6 +91,7 @@ request.interceptors.request.use((config) => {
 request.interceptors.response.use(
   (response) => {
     assertCurrentContext(response.config)
+    recordSuccessfulMutationRequest(response.config)
     return response.data
   },
   (error) => {

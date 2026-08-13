@@ -532,8 +532,8 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -549,6 +549,10 @@ import {
 } from '@/api/reporting'
 import { useSessionStore } from '@/stores/session'
 import {
+  createPageConfirmationGuard,
+  pageRequestContextSnapshot
+} from '@/utils/pageRequestContext'
+import {
   ATTENDANCE_NAMED_FIELDS,
   attendanceEffectiveActualCount,
   attendanceNamesText,
@@ -563,6 +567,7 @@ import {
 
 const session = useSessionStore()
 const route = useRoute()
+const router = useRouter()
 const requestedReportDate = String(route.query.reportDate || '')
 const currentLocalDate = dayjs().format('YYYY-MM-DD')
 const viewMode = ref(requestedReportDate ? 'daily' : 'records')
@@ -612,6 +617,29 @@ let dailyRequestId = 0
 let monthlyRequestId = 0
 let detailRequestId = 0
 let editRequestId = 0
+let reviewActionId = 0
+let pageActive = true
+let wasDeactivated = false
+let optionsRequestPending = false
+let resumeOptionsLoad = false
+let resumeActiveViewLoad = false
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({
+    route,
+    session,
+    teamId: selectedTeamId.value,
+    pageActive
+  })
+}
+
+const reviewConfirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function invalidateReviewConfirmation() {
+  reviewConfirmationGuard.invalidate()
+  reviewActionId += 1
+  reviewing.value = false
+}
 
 const canSubmitPermission = computed(() => session.can('report.submit', {
   write: true,
@@ -672,10 +700,15 @@ async function loadOptions() {
   orgUnits.value = []
   attendancePolicy.value = {}
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getAttendanceOptions(params)
-  if (requestId !== optionsRequestId) return
-  orgUnits.value = attendanceReportingOrgUnits(result.orgUnits)
-  attendancePolicy.value = result.attendancePolicy || {}
+  optionsRequestPending = true
+  try {
+    const result = await getAttendanceOptions(params)
+    if (requestId !== optionsRequestId) return
+    orgUnits.value = attendanceReportingOrgUnits(result.orgUnits)
+    attendancePolicy.value = result.attendancePolicy || {}
+  } finally {
+    if (requestId === optionsRequestId) optionsRequestPending = false
+  }
 }
 
 async function loadRecords() {
@@ -775,6 +808,61 @@ async function handleViewChange() {
   await loadActiveView()
 }
 
+async function syncRouteReportDate() {
+  if (!pageActive || route.name !== 'AttendanceReports') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  const requestedDate = String(route.query.reportDate || '')
+  const teamChanged = Boolean(routedTeamId && routedTeamId !== selectedTeamId.value)
+  if (teamChanged) {
+    invalidateReviewConfirmation()
+    selectedTeamId.value = routedTeamId
+    optionsRequestId += 1
+    recordsRequestId += 1
+    dailyRequestId += 1
+    monthlyRequestId += 1
+    detailRequestId += 1
+    editRequestId += 1
+    orgUnits.value = []
+    attendancePolicy.value = {}
+    detailVisible.value = false
+    formVisible.value = false
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(requestedDate)) {
+    if (teamChanged) await Promise.all([loadOptions(), loadActiveView()])
+    return
+  }
+  if (!teamChanged && requestedDate === dailyDate.value && viewMode.value === 'daily') {
+    await consumeRoutedReportDate(requestedDate)
+    return
+  }
+  recordsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  viewMode.value = 'daily'
+  dailyDate.value = requestedDate
+  summaryMonth.value = requestedDate.slice(0, 7)
+  records.value = []
+  total.value = 0
+  dailySummary.value = {}
+  monthlySummaries.value = []
+  loading.value = false
+  monthlyLoading.value = false
+  await Promise.all([
+    teamChanged ? loadOptions() : Promise.resolve(),
+    loadDailySummary()
+  ])
+  await consumeRoutedReportDate(requestedDate)
+}
+
+async function consumeRoutedReportDate(expectedDate) {
+  if (
+    !pageActive ||
+    route.name !== 'AttendanceReports' ||
+    String(route.query.reportDate || '') !== expectedDate
+  ) return
+  await router.replace({ query: { ...route.query, reportDate: undefined } })
+}
+
 async function applyFilters() {
   if (viewMode.value === 'records') filters.page = 1
   await loadActiveView()
@@ -792,6 +880,7 @@ async function resetFilters() {
 }
 
 async function handleTeamChange() {
+  invalidateReviewConfirmation()
   optionsRequestId += 1
   recordsRequestId += 1
   dailyRequestId += 1
@@ -811,6 +900,9 @@ async function handleTeamChange() {
   dailyLoading.value = false
   monthlyLoading.value = false
   detailLoading.value = false
+  await router.replace({
+    query: { ...route.query, teamId: selectedTeamId.value || undefined }
+  })
   await loadOptions()
   await loadActiveView()
 }
@@ -918,25 +1010,38 @@ function formatDateTime(value) {
 }
 
 async function handleReview() {
+  if (reviewing.value) return
+  const actionId = ++reviewActionId
   const complete = dailySummary.value.isComplete === true
+  const reviewDate = dailyDate.value
+  const reason = reviewReason.value.trim() || null
   const message = complete
     ? '审核后七个分部当日数据将永久锁定，不能退回、重开或再次修改。确认继续？'
     : '当前日报不完整。系统将阻止审核，并向缺报分部提报人及部门考勤员发送站内提醒。确认继续？'
-  await ElMessageBox.confirm(message, complete ? '审核确认' : '缺报提醒', {
-    type: complete ? 'warning' : 'error',
-    confirmButtonText: complete ? '确认审核' : '发送提醒',
-    cancelButtonText: '取消'
-  })
   reviewing.value = true
+  let outcome = null
   try {
-    const result = await reviewAttendanceDailySummary(dailyDate.value, {
-      reason: reviewReason.value.trim() || null
+    outcome = await reviewConfirmationGuard.run({
+      confirm: () => ElMessageBox.confirm(message, complete ? '审核确认' : '缺报提醒', {
+        type: complete ? 'warning' : 'error',
+        confirmButtonText: complete ? '确认审核' : '发送提醒',
+        cancelButtonText: '取消'
+      }),
+      mutate: () => reviewAttendanceDailySummary(reviewDate, { reason })
     })
+    if (!outcome.executed) return
+    if (!outcome.isCurrent()) return
+    if (outcome.error) throw outcome.error
+    const result = outcome.value
     ElMessage.success(result.idempotent ? '该日报已审核' : '审核完成，数据已永久锁定')
     reviewReason.value = ''
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') throw error
   } finally {
-    reviewing.value = false
-    await Promise.allSettled([loadDailySummary(), loadRecords()])
+    if (actionId === reviewActionId) {
+      reviewing.value = false
+      if (outcome?.isCurrent()) await Promise.allSettled([loadDailySummary(), loadRecords()])
+    }
   }
 }
 
@@ -964,7 +1069,51 @@ onMounted(async () => {
   if (!session.isGlobalReadOnly || selectedTeamId.value) {
     await loadOptions()
     await loadActiveView()
+    if (/^\d{4}-\d{2}-\d{2}$/.test(requestedReportDate)) {
+      await consumeRoutedReportDate(requestedReportDate)
+    }
   }
+})
+watch(() => [route.name, route.query.teamId, route.query.reportDate], () => {
+  invalidateReviewConfirmation()
+  if (pageActive) void syncRouteReportDate()
+})
+watch(() => session.contextEpoch, invalidateReviewConfirmation)
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  const reloadOptions = resumeOptionsLoad
+  const reloadActiveView = resumeActiveViewLoad
+  resumeOptionsLoad = false
+  resumeActiveViewLoad = false
+  void syncRouteReportDate().then(() => Promise.all([
+    reloadOptions ? loadOptions() : Promise.resolve(),
+    reloadActiveView ? loadActiveView() : Promise.resolve()
+  ]))
+})
+onDeactivated(() => {
+  resumeOptionsLoad = resumeOptionsLoad || optionsRequestPending
+  resumeActiveViewLoad = resumeActiveViewLoad || activeLoading.value
+  pageActive = false
+  wasDeactivated = true
+  invalidateReviewConfirmation()
+  optionsRequestId += 1
+  recordsRequestId += 1
+  dailyRequestId += 1
+  monthlyRequestId += 1
+  detailRequestId += 1
+  editRequestId += 1
+  loading.value = false
+  dailyLoading.value = false
+  monthlyLoading.value = false
+  detailLoading.value = false
+  detailVisible.value = false
+  formVisible.value = false
+})
+onBeforeUnmount(() => {
+  pageActive = false
+  invalidateReviewConfirmation()
 })
 </script>
 

@@ -178,11 +178,13 @@ function createEquipmentRoutineWorkerService({
       )
         ? [
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SUPERSEDED,
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
           ]
         : [
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED,
             EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.SIBLING_COMPLETED
           ],
       session
@@ -335,6 +337,10 @@ function createEquipmentRoutineWorkerService({
       desiredStatus: EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE,
       rematerializedAt: now,
       source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.WORKER,
+      recoverableCancellationReasons: [
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED
+      ],
       session
     });
   }
@@ -359,8 +365,10 @@ function createEquipmentRoutineWorkerService({
         { status: { $in: OPEN_ROUTINE_PLAN_STATUSES } },
         {
           status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
-          cancellationReason:
-            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED
+          cancellationReason: { $in: [
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+            EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED
+          ] }
         }
       ]
     }).lean(), session);
@@ -374,6 +382,10 @@ function createEquipmentRoutineWorkerService({
       rematerializedAt: now,
       source: EQUIPMENT_ROUTINE_PLAN_REMATERIALIZATION_SOURCES.WORKER,
       allowInsert: false,
+      recoverableCancellationReasons: [
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED,
+        EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED
+      ],
       session
     });
     return recovered && OPEN_ROUTINE_PLAN_STATUSES.includes(recovered.status)

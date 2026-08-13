@@ -101,9 +101,13 @@ test('routine workbench keeps its component mounted while tab query parameters c
   assert.match(routerSource, /path:\s*'equipment\/routines'[\s\S]*reuseQueryKeys:\s*\['tab', 'planId', 'exceptionId'\]/)
   assert.match(mainLayoutSource, /const routedComponentKey = computed/)
   assert.match(mainLayoutSource, /routeComponentKey\(route, session\.contextEpoch\)/)
-  assert.match(workbenchSource, /watch\(\(\) => \[route\.query\.tab, route\.query\.planId, route\.query\.exceptionId\]/)
+  assert.match(workbenchSource, /route\.query\.exceptionId,[\s\S]*route\.query\.equipmentId/)
+  assert.match(workbenchSource, /async function syncRouteFocus\(\)/)
+  assert.match(workbenchSource, /if \(!pageActive \|\| route\.name !== 'EquipmentRoutineWorkbench'\) return/)
   assert.match(workbenchSource, /const nextTab = ROUTINE_TABS\.has\(routedTab\) \? routedTab : 'plans'/)
-  assert.match(workbenchSource, /if \(!tabChanged && !focusChanged\) return/)
+  assert.match(workbenchSource, /const nextEquipmentId = String\(route\.query\.equipmentId \|\| ''\)/)
+  assert.match(workbenchSource, /if \(!teamChanged && !tabChanged && !focusChanged && !equipmentChanged\) return/)
+  assert.match(workbenchSource, /filters\.equipmentId = nextEquipmentId/)
 
   const base = {
     path: '/equipment/routines',
@@ -176,7 +180,9 @@ test('only open routine plans approved by the server can be selected for rest da
   assert.equal(isRoutinePlanRestDaySelectable({ status: 'OVERDUE', restDayEligible: false }), false)
   assert.equal(isRoutinePlanRestDaySelectable({ status: 'OVERDUE' }), false)
   assert.match(workbenchSource, /canMarkRestDay\.value && isRoutinePlanRestDaySelectable\(row\)/)
-  assert.match(workbenchSource, /planIds:\s*\[\.\.\.selectedRestDayPlanIds\.value\]/)
+  assert.match(workbenchSource, /const confirmation = confirmationGuard\.capture\(\)\s*const selectedPlanIds = \[\.\.\.selectedRestDayPlanIds\.value\]/)
+  assert.match(workbenchSource, /if \(!confirmationGuard\.isCurrent\(confirmation\)\) return[\s\S]*planIds:\s*selectedPlanIds/)
+  assert.match(workbenchSource, /markEquipmentRoutinePlansRestDay[\s\S]*if \(!confirmationGuard\.isCurrent\(confirmation\)\) return[\s\S]*ElMessage\.success/)
   assert.match(workbenchSource, />\s*所选计划设为休班\s*</)
   assert.match(workbenchSource, /按各自计划日期设为“休班”/)
 })
@@ -339,8 +345,10 @@ test('routine record details preview private photos in the selected team context
   assert.match(workbenchSource, /URL\.revokeObjectURL\(recordPhotoPreviewUrl\.value\)/)
   assert.match(workbenchSource, /<el-button @click="closeRecordDetail">关闭<\/el-button>/)
   assert.match(workbenchSource, /function closeRecordDetail\(\) \{\s*invalidateRecordPhotoRequest\(\)/)
-  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*closeRecordDetail\(\)/)
-  assert.match(workbenchSource, /onBeforeUnmount\(\(\) => \{\s*recordPhotoRequestGuard\.destroy\(\)/)
+  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*confirmationGuard\.invalidate\(\)\s*closeRecordDetail\(\)/)
+  assert.match(workbenchSource, /onDeactivated\(deactivateRoutineWorkbench\)/)
+  assert.match(workbenchSource, /function deactivateRoutineWorkbench\(\)[\s\S]*closeRecordDetail\(\)/)
+  assert.match(workbenchSource, /onBeforeUnmount\(\(\) => \{\s*deactivateRoutineWorkbench\(\)\s*recordPhotoRequestGuard\.destroy\(\)/)
 })
 
 test('routine photo preview rejects stale record, team, close, and unmount responses', async () => {
@@ -455,25 +463,30 @@ test('routine exception actions trust the server access policy instead of guessi
   assert.match(workbenchSource, /SUB_DEPARTMENT_MANAGER: '分部负责人处理'/)
 })
 
-test('routine record export is permission gated and protected from repeated clicks', () => {
+test('routine record export is permission gated and protected from stale page contexts', () => {
   assert.match(workbenchSource, /v-if="activeTab === 'records' && canExport"/)
   assert.match(workbenchSource, /:loading="exporting"/)
   assert.match(workbenchSource, /const canExport = computed\(\(\) => session\.hasPermission\('equipment\.export'\)\)/)
-  assert.match(workbenchSource, /async function exportRows\(\) \{\s+if \(exporting\.value\) return\s+exporting\.value = true/)
-  assert.match(workbenchSource, /finally \{\s+exporting\.value = false\s+\}/)
+  assert.match(workbenchSource, /function currentExportContext\(\) \{[\s\S]*delete params\.page[\s\S]*delete params\.pageSize[\s\S]*routeName:[\s\S]*routeTeamId:[\s\S]*contextEpoch: session\.contextEpoch[\s\S]*teamId: currentTeamContextId\(\)[\s\S]*tab: activeTab\.value[\s\S]*paramsKey: JSON\.stringify\(params\)/)
+  assert.match(workbenchSource, /function isCurrentExportContext\(context\) \{[\s\S]*pageActive[\s\S]*current\.routeTeamId === context\.routeTeamId[\s\S]*current\.contextEpoch === context\.contextEpoch[\s\S]*current\.teamId === context\.teamId[\s\S]*current\.tab === context\.tab[\s\S]*current\.paramsKey === context\.paramsKey/)
+  assert.match(workbenchSource, /async function exportRows\(\) \{\s+if \(exporting\.value\) return\s+const requestId = \+\+exportRequestId\s+const context = currentExportContext\(\)\s+exporting\.value = true/)
+  assert.match(workbenchSource, /if \(requestId !== exportRequestId \|\| !isCurrentExportContext\(context\)\) return/)
+  assert.match(workbenchSource, /async function changeTeam\(\) \{[\s\S]*\+\+exportRequestId[\s\S]*exporting\.value = false/)
+  assert.match(workbenchSource, /async function changeTab[\s\S]*\+\+exportRequestId[\s\S]*exporting\.value = false/)
+  assert.match(workbenchSource, /finally \{\s+if \(requestId === exportRequestId\) exporting\.value = false\s+\}/)
 })
 
 test('routine workbench discards stale team and tab responses', () => {
   assert.match(workbenchSource, /let referenceRequestId = 0/)
   assert.match(workbenchSource, /let activeTabRequestId = 0/)
   assert.match(workbenchSource, /const requestId = \+\+referenceRequestId[\s\S]*requestId !== referenceRequestId \|\|[\s\S]*requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)[\s\S]*\) return/)
-  assert.match(workbenchSource, /const requestId = \+\+activeTabRequestId[\s\S]*requestId !== activeTabRequestId \|\|[\s\S]*requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)[\s\S]*\) return/)
-  assert.match(workbenchSource, /if \(requestId === activeTabRequestId\) loading\.value = false/)
+  assert.match(workbenchSource, /const requestId = \+\+activeTabRequestId[\s\S]*!pageActive \|\|[\s\S]*requestId !== activeTabRequestId \|\|[\s\S]*requestedTeamId !== currentTeamContextId\(\)[\s\S]*\) return false/)
+  assert.match(workbenchSource, /if \(requestId === activeTabRequestId\) \{\s*activeTabRequestPending = false\s*loading\.value = false\s*\}/)
   assert.match(workbenchSource, /plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
-  assert.match(workbenchSource, /requestedTeamId !== String\(requestTeam\.value\.teamId \|\| ''\)/)
-  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*closeRecordDetail\(\)\s*\+\+activeTabRequestId\s*\+\+referenceRequestId/)
+  assert.match(workbenchSource, /requestedTeamId !== currentTeamContextId\(\)/)
+  assert.match(workbenchSource, /async function changeTeam\(\) \{\s*confirmationGuard\.invalidate\(\)\s*closeRecordDetail\(\)\s*\+\+activeTabRequestId\s*\+\+referenceRequestId/)
   assert.match(workbenchSource, /changeTeam\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\]/)
-  assert.match(workbenchSource, /async function changeTab\(requestedTab = activeTab\.value\)[\s\S]*?\+\+activeTabRequestId\s*loading\.value = false/)
+  assert.match(workbenchSource, /async function changeTab\(requestedTab = activeTab\.value\)[\s\S]*?\+\+activeTabRequestId[\s\S]*?\+\+exportRequestId[\s\S]*?loading\.value = false/)
   assert.match(workbenchSource, /changeTab\(\)[\s\S]*plans\.value = \[\][\s\S]*records\.value = \[\][\s\S]*exceptions\.value = \[\][\s\S]*total\.value = 0/)
 })
 

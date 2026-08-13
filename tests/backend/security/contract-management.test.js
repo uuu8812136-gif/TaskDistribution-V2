@@ -204,6 +204,52 @@ test('global read-only requires explicit active team and can read either team on
   assert.deepEqual(result.suppliers.map((item) => item.code), ['B-1']);
 });
 
+test('supplier, expiry, and settlement reads stay isolated across every team selection path', async () => {
+  const supplierA = await supplier(fixture.contextA, 'ISO-A', 'Isolated Supplier A');
+  const supplierB = await supplier(fixture.contextB, 'ISO-B', 'Isolated Supplier B');
+  await record(fixture.contextA, supplierA._id, {
+    contractNumber: 'ISO-CONTRACT-A',
+    expiryDate: '2026-08-20'
+  });
+  await record(fixture.contextB, supplierB._id, {
+    contractNumber: 'ISO-CONTRACT-B',
+    expiryDate: '2026-08-21'
+  });
+  await service.createSettlement({
+    authContext: fixture.contextA,
+    input: { supplierId: supplierA._id, month: '2026-08', productLaunchAmount: 10 }
+  });
+  await service.createSettlement({
+    authContext: fixture.contextB,
+    input: { supplierId: supplierB._id, month: '2026-08', productLaunchAmount: 20 }
+  });
+
+  async function readCodes(authContext, requestedTeamId) {
+    const input = { authContext, ...(requestedTeamId ? { requestedTeamId } : {}) };
+    const [suppliers, expiry, settlements] = await Promise.all([
+      service.listSuppliers(input),
+      service.listExpiryAlerts(input),
+      service.listSettlements(input)
+    ]);
+    return {
+      suppliers: suppliers.suppliers.map((item) => item.code),
+      expiry: expiry.alerts.map((item) => item.supplierCode),
+      settlements: settlements.settlements.map((item) => item.supplierCode)
+    };
+  }
+
+  const expectedA = { suppliers: ['ISO-A'], expiry: ['ISO-A'], settlements: ['ISO-A'] };
+  const expectedB = { suppliers: ['ISO-B'], expiry: ['ISO-B'], settlements: ['ISO-B'] };
+  assert.deepEqual(await readCodes(fixture.contextA), expectedA);
+  assert.deepEqual(await readCodes(fixture.contextB), expectedB);
+
+  // TEAM mode is authoritative: a client cannot override its active team with a query parameter.
+  assert.deepEqual(await readCodes(fixture.contextA, String(fixture.teamB)), expectedA);
+
+  assert.deepEqual(await readCodes(fixture.global, String(fixture.teamA)), expectedA);
+  assert.deepEqual(await readCodes(fixture.global, String(fixture.teamB)), expectedB);
+});
+
 test('first tertiary record atomically creates its supplier and rejects an existing code', async () => {
   const created = await service.createFirstRecord({
     authContext: fixture.contextA,
@@ -968,6 +1014,62 @@ test('supplier import writes one atomic supplier and history batch and constrain
   assert.equal(await Supplier.exists({ teamId: fixture.teamA, code: 'ROLLBACK-IMPORT' }), null);
   assert.equal(await SupplierContractRecord.exists({ teamId: fixture.teamA,
     contractNumber: 'MAIN-1', supplierId: { $ne: imported._id } }), null);
+});
+
+test('supplier and settlement imports use the authenticated team when codes overlap', async () => {
+  const teamBSupplier = await supplier(
+    fixture.contextB,
+    'IMPORT-SHARED',
+    'Team B Supplier'
+  );
+  const supplierBuffer = await supplierWorkbook({
+    code: 'IMPORT-SHARED',
+    name: 'Team A Supplier',
+    contractNumber: 'TEAM-A-IMPORT'
+  });
+
+  await service.importSuppliers({
+    authContext: fixture.contextA,
+    file: { buffer: supplierBuffer }
+  });
+  const [teamASupplier, persistedTeamBSupplier] = await Promise.all([
+    Supplier.findOne({ teamId: fixture.teamA, code: 'IMPORT-SHARED' }).lean(),
+    Supplier.findById(teamBSupplier._id).lean()
+  ]);
+  assert.equal(teamASupplier.name, 'Team A Supplier');
+  assert.equal(persistedTeamBSupplier.name, 'Team B Supplier');
+  assert.notEqual(String(teamASupplier._id), String(persistedTeamBSupplier._id));
+  assert.equal(await SupplierContractRecord.countDocuments({
+    teamId: fixture.teamA,
+    supplierId: teamASupplier._id,
+    contractNumber: 'TEAM-A-IMPORT'
+  }), 1);
+  assert.equal(await SupplierContractRecord.countDocuments({
+    teamId: fixture.teamB,
+    supplierId: persistedTeamBSupplier._id,
+    contractNumber: 'TEAM-A-IMPORT'
+  }), 0);
+
+  const settlementBuffer = await settlementWorkbook([{
+    month: '2026-08',
+    name: 'Team A Supplier',
+    code: 'IMPORT-SHARED',
+    amount: 12
+  }]);
+  await service.importSettlements({
+    authContext: fixture.contextA,
+    file: { buffer: settlementBuffer }
+  });
+  assert.equal(await SupplierSettlementFee.countDocuments({
+    teamId: fixture.teamA,
+    supplierId: teamASupplier._id,
+    month: '2026-08'
+  }), 1);
+  assert.equal(await SupplierSettlementFee.countDocuments({
+    teamId: fixture.teamB,
+    supplierId: persistedTeamBSupplier._id,
+    month: '2026-08'
+  }), 0);
 });
 
 test('conflicting trustee attributes for one code reject the whole supplier import without writes', async () => {

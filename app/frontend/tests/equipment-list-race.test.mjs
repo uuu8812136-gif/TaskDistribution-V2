@@ -17,7 +17,7 @@ test('equipment repair and status lists discard stale team and search responses'
   assert.match(repairsSource, /if \(requestId === repairsRequestId\) loading\.value = false/)
 
   assert.match(statusApplicationsSource, /const requestId = \+\+listRequestId/)
-  assert.match(statusApplicationsSource, /if \(requestId !== listRequestId\) return/)
+  assert.match(statusApplicationsSource, /!pageActive \|\|\s*requestId !== listRequestId \|\|[\s\S]*requestedContextTeamId !== currentTeamContextId\(\)[\s\S]*\) return false/)
   assert.match(statusApplicationsSource, /if \(requestId === listRequestId\) loading\.value = false/)
   assert.match(statusApplicationsSource, /const requestId = \+\+equipmentRequestId/)
   assert.match(statusApplicationsSource, /if \(requestId !== equipmentRequestId\) return/)

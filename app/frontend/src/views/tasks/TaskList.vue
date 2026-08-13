@@ -138,8 +138,8 @@
 </template>
 
 <script setup>
-import { computed, ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
 import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
@@ -150,10 +150,14 @@ import {
   taskDetailLocation
 } from '@/utils/taskPolicy'
 import { requestErrorMessage } from '@/utils/request'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 
 const router = useRouter()
+const route = useRoute()
 const session = useSessionStore()
 const canCreate = ref(false)
 const canExport = computed(() => session.hasPermission('task.export'))
@@ -178,6 +182,23 @@ const pagination = reactive({
 
 const taskList = ref([])
 let fetchRequestId = 0
+let activationReady = false
+let pageActive = true
+let deleteRequestId = 0
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.TASKS
+})
+
+function currentPageContext() {
+  return pageRequestContextSnapshot({ route, session, pageActive })
+}
+
+const confirmationGuard = createPageConfirmationGuard(currentPageContext)
+
+function invalidateTaskActions() {
+  confirmationGuard.invalidate()
+  deleteRequestId += 1
+}
 
 const teamNameById = computed(() => new Map(
   session.teams.map((team) => [String(team._id), team.name])
@@ -192,12 +213,15 @@ const resolveTeamName = (task) => {
 const canEditRow = (task) => canEditTask(task)
 const canDeleteRow = (task) => canDeleteTask(task)
 
-const fetchData = async () => {
+const fetchData = async ({ preserveExisting = false } = {}) => {
+  const loadStartRevision = mutationRefresh.currentRevision()
   const requestId = ++fetchRequestId
   loading.value = true
-  taskList.value = []
-  pagination.total = 0
-  canCreate.value = false
+  if (!preserveExisting) {
+    taskList.value = []
+    pagination.total = 0
+    canCreate.value = false
+  }
   try {
     const result = await getTaskList({
       page: pagination.page,
@@ -213,12 +237,17 @@ const fetchData = async () => {
     taskList.value = result.tasks || []
     canCreate.value = canCreateTask(result)
     pagination.total = result.pagination?.total || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
     if (requestId !== fetchRequestId) return
-    taskList.value = []
-    pagination.total = 0
-    canCreate.value = false
+    if (!preserveExisting) {
+      taskList.value = []
+      pagination.total = 0
+      canCreate.value = false
+    }
     console.error('获取任务列表失败:', error)
+    return false
   } finally {
     if (requestId === fetchRequestId) loading.value = false
   }
@@ -255,22 +284,30 @@ const handleEdit = (row) => {
   router.push(`/tasks/${row._id}/edit`)
 }
 
-const handleDelete = (row) => {
+const handleDelete = async (row) => {
   if (!canDeleteRow(row)) return
-  ElMessageBox.confirm('确定要删除该任务吗？删除后无法恢复！', '提示', {
-    confirmButtonText: '确定',
-    cancelButtonText: '取消',
-    type: 'warning'
-  }).then(async () => {
-    try {
-      await deleteTask(row._id)
-      ElMessage.success('删除成功')
-      fetchData()
-    } catch (error) {
-      console.error('删除失败:', error)
-      await fetchData()
-    }
-  }).catch(() => {})
+  const confirmation = confirmationGuard.capture()
+  try {
+    await ElMessageBox.confirm('确定要删除该任务吗？删除后无法恢复！', '提示', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+  } catch {
+    return
+  }
+  if (!confirmationGuard.isCurrent(confirmation)) return
+  const requestId = ++deleteRequestId
+  try {
+    await deleteTask(row._id)
+    if (requestId !== deleteRequestId || !confirmationGuard.isCurrent(confirmation)) return
+    ElMessage.success('删除成功')
+    await fetchData({ preserveExisting: true })
+  } catch (error) {
+    if (requestId !== deleteRequestId || !confirmationGuard.isCurrent(confirmation)) return
+    console.error('删除失败:', error)
+    await fetchData({ preserveExisting: true })
+  }
 }
 
 const handleBatchExport = async () => {
@@ -350,8 +387,29 @@ const handleBatchExport = async () => {
   }
 }
 
-onMounted(() => {
-  fetchData()
+onMounted(async () => {
+  try {
+    await fetchData()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  pageActive = true
+  if (!activationReady) return
+  void mutationRefresh.refreshIfNeeded(() => fetchData({ preserveExisting: true })).catch(() => {})
+})
+onDeactivated(() => {
+  pageActive = false
+  invalidateTaskActions()
+  fetchRequestId += 1
+  loading.value = false
+})
+watch(() => session.contextEpoch, invalidateTaskActions)
+watch(() => [route.name, route.fullPath], invalidateTaskActions)
+onBeforeUnmount(() => {
+  pageActive = false
+  invalidateTaskActions()
 })
 </script>
 

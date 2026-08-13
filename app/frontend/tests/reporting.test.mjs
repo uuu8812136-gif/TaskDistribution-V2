@@ -161,6 +161,20 @@ test('attendance views clear incompatible data and only accept their latest requ
   assert.match(viewSource, /async function handleTeamChange\(\)[\s\S]*detailVisible\.value = false/)
 })
 
+test('attendance review confirmation is bound to its original team and page lifecycle', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/AttendanceReports.vue`, 'utf8')
+
+  assert.match(viewSource, /createPageConfirmationGuard/)
+  assert.match(viewSource, /const reviewConfirmationGuard = createPageConfirmationGuard\(currentPageContext\)/)
+  assert.match(viewSource, /outcome = await reviewConfirmationGuard\.run\(/)
+  assert.match(viewSource, /if \(!outcome\.isCurrent\(\)\) return[\s\S]*ElMessage\.success/)
+  assert.match(viewSource, /async function handleTeamChange\(\) \{\s*invalidateReviewConfirmation\(\)/)
+  assert.match(viewSource, /watch\(\(\) => session\.contextEpoch, invalidateReviewConfirmation\)/)
+  assert.match(viewSource, /onDeactivated\([\s\S]*invalidateReviewConfirmation\(\)/)
+  assert.match(viewSource, /onBeforeUnmount\([\s\S]*invalidateReviewConfirmation\(\)/)
+})
+
 test('transport payload emits only the fixed form and opaque photo ids', () => {
   const loadDetails = emptyTransportLoadDetails()
   loadDetails.woodenBox = '3'
@@ -364,4 +378,21 @@ test('production daily list and detail discard stale team, date and page respons
   assert.match(viewSource, /if \(requestId === detailRequestId\) loading\.value = false/)
   assert.match(viewSource, /async function handleTeamChange\(teamId\)[\s\S]*report\.value = null[\s\S]*reports\.value = \[\]/)
   assert.match(viewSource, /const pageLoading = computed\(\(\) => loading\.value \|\| listLoading\.value\)/)
+})
+
+test('cached production daily reports synchronize browser date and team query changes', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/GeneratedDailyReports.vue`, 'utf8')
+
+  assert.match(viewSource, /async function loadSelectedDate\(\{ syncRoute = true \} = \{\}\)/)
+  assert.match(viewSource, /if \(syncRoute\) \{[\s\S]*await router\.replace/)
+  assert.match(viewSource, /async function syncRouteReportContext\(\{ forceList = false, forceDetail = false \} = \{\}\)/)
+  assert.match(viewSource, /const routedDate = String\(route\.query\.date \|\| dayjs\(\)\.format\('YYYY-MM-DD'\)\)/)
+  assert.match(viewSource, /const routedTeamId = session\.isGlobalReadOnly \? String\(route\.query\.teamId \|\| ''\) : ''/)
+  assert.match(viewSource, /loadSelectedDate\(\{ syncRoute: false \}\)/)
+  assert.match(viewSource, /watch\(\(\) => \[route\.name, route\.query\.teamId, route\.query\.date\]/)
+  assert.match(viewSource, /watch\(\(\) => session\.contextEpoch/)
+  assert.match(viewSource, /onActivated\(\(\) => \{[\s\S]*syncRouteReportContext\(\{ forceList: true, forceDetail: true \}\)/)
+  assert.match(viewSource, /onDeactivated\(deactivateDailyReports\)/)
+  assert.match(viewSource, /listRequestId \+= 1[\s\S]*detailRequestId \+= 1/)
 })

@@ -119,7 +119,14 @@
           </p>
         </el-form-item>
         <el-form-item label="申请原因" required>
-          <el-input v-model="createForm.reason" type="textarea" :rows="5" maxlength="5000" show-word-limit />
+          <el-input
+            v-model="createForm.reason"
+            type="textarea"
+            :rows="5"
+            maxlength="5000"
+            show-word-limit
+            placeholder="请说明恢复在用、闲置、停用或报废原因"
+          />
         </el-form-item>
         <el-form-item label="附件（最多10个，支持 JPG、PNG、PDF）">
           <el-upload v-model:file-list="createForm.files" :auto-upload="false" multiple :limit="10">
@@ -136,14 +143,25 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import { createEquipmentStatusApplication, getEquipmentList, getEquipmentDetail, getEquipmentStatusApplications } from '@/api/equipment'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
 import { cleanupTemporaryFiles, prepareAttachmentReferences } from '@/utils/attachments'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
 import { requestErrorMessage } from '@/utils/request'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   STATUS_APPLICATION_TYPES,
   statusApplicationTypeLabel,
@@ -173,6 +191,15 @@ const filters = reactive({ applicationType: '', workflowStatus: '', todo: false 
 const createForm = reactive(emptyCreateForm())
 let listRequestId = 0
 let equipmentRequestId = 0
+let createRequestId = 0
+let submitRequestId = 0
+let pageActive = true
+let wasDeactivated = false
+let routeCreateToken = ''
+let resumeListLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT_STATUS_APPLICATIONS
+})
 const workflowOptions = [
   { value: 'DEPUTY_REVIEW_PENDING', label: '待副经理/经理助理审核' },
   { value: 'MANAGER_REVIEW_PENDING', label: '待部门经理终审' },
@@ -231,10 +258,35 @@ function handleEquipmentChange(equipmentId) {
   syncTargetStatus()
 }
 
+const currentTeamContextId = () => String(
+  session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
+)
+
+function currentPageContext() {
+  return {
+    routeName: String(route.name || ''),
+    routeTeamId: String(route.query.teamId || ''),
+    contextEpoch: session.contextEpoch,
+    teamId: currentTeamContextId()
+  }
+}
+
+function isCurrentPageContext(context) {
+  const current = currentPageContext()
+  return pageActive &&
+    current.routeName === 'EquipmentStatusApplications' &&
+    current.routeName === context.routeName &&
+    current.routeTeamId === context.routeTeamId &&
+    current.contextEpoch === context.contextEpoch &&
+    current.teamId === context.teamId
+}
+
 async function load() {
   const requestId = ++listRequestId
   const requestedPage = page.value
   const requestedTeamId = session.isGlobalReadOnly ? String(selectedTeamId.value || '') : ''
+  const requestedContextTeamId = currentTeamContextId()
+  const loadStartRevision = mutationRefresh.currentRevision()
   loadError.value = ''
   loading.value = true
   try {
@@ -247,18 +299,27 @@ async function load() {
       ...(filters.todo ? { todo: true } : {})
     })
     if (
+      !pageActive ||
       requestId !== listRequestId ||
-      requestedTeamId !== (session.isGlobalReadOnly ? String(selectedTeamId.value || '') : '')
-    ) return
+      requestedTeamId !== (session.isGlobalReadOnly ? String(selectedTeamId.value || '') : '') ||
+      requestedContextTeamId !== currentTeamContextId()
+    ) return false
     rows.value = result.applications || []
     total.value = Number(result.total || 0)
     lastLoadedPage.value = requestedPage
     failedPage.value = null
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } catch (error) {
-    if (requestId !== listRequestId) return
+    if (
+      !pageActive ||
+      requestId !== listRequestId ||
+      requestedContextTeamId !== currentTeamContextId()
+    ) return false
     failedPage.value = requestedPage
     page.value = lastLoadedPage.value
     loadError.value = requestErrorMessage(error, '状态申请加载失败，请稍后重试')
+    return false
   } finally {
     if (requestId === listRequestId) loading.value = false
   }
@@ -277,32 +338,83 @@ async function loadEquipmentOptions(keyword = '') {
 }
 
 async function openCreate(equipmentId = '') {
+  const requestId = ++createRequestId
   Object.assign(createForm, emptyCreateForm(), { equipmentId })
   equipmentOptions.value = []
   selectedSourceStatus.value = ''
   if (equipmentId) {
     const result = await getEquipmentDetail(equipmentId)
+    if (!pageActive || requestId !== createRequestId) return
     equipmentOptions.value = [result.equipment]
     selectedSourceStatus.value = result.equipment?.status || ''
     syncTargetStatus()
   } else {
     await loadEquipmentOptions()
+    if (!pageActive || requestId !== createRequestId) return
   }
   createVisible.value = true
 }
 
+function currentCreateToken() {
+  if (route.name !== 'EquipmentStatusApplications' || route.query.create !== '1') return ''
+  return `${String(route.query.create)}:${String(route.query.equipmentId || '')}`
+}
+
+async function syncRouteCreateAction() {
+  if (!pageActive || route.name !== 'EquipmentStatusApplications') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  if (routedTeamId && routedTeamId !== selectedTeamId.value) {
+    selectedTeamId.value = routedTeamId
+    listRequestId += 1
+    equipmentRequestId += 1
+    createRequestId += 1
+    submitRequestId += 1
+    rows.value = []
+    total.value = 0
+    equipmentOptions.value = []
+    selectedSourceStatus.value = ''
+    equipmentLoading.value = false
+    submitting.value = false
+    createVisible.value = false
+    await load()
+    if (!pageActive || routedTeamId !== selectedTeamId.value) return
+  }
+  if (!canCreate.value) return
+  const token = currentCreateToken()
+  if (!token) {
+    routeCreateToken = ''
+    return
+  }
+  if (token === routeCreateToken) return
+  routeCreateToken = token
+  await openCreate(String(route.query.equipmentId || ''))
+  if (!pageActive || currentCreateToken() !== token) return
+  await router.replace({ query: { ...route.query, create: undefined, equipmentId: undefined } })
+}
+
 async function submitCreate() {
+  if (submitting.value) return
   if (!createForm.equipmentId || !createForm.reason.trim()) {
     return ElMessage.warning('请选择设备并填写申请原因')
   }
   if (createForm.applicationType === selectedSourceStatus.value) {
     return ElMessage.warning('目标状态不能与设备当前状态相同')
   }
+  const requestId = ++submitRequestId
+  const context = currentPageContext()
+  const detailQuery = session.isGlobalReadOnly && selectedTeamId.value
+    ? { teamId: selectedTeamId.value }
+    : {}
   submitting.value = true
   let uploadedFileIds = []
   try {
     const prepared = await prepareAttachmentReferences(createForm.files, uploadTemporaryFile)
     uploadedFileIds = prepared.uploadedFileIds
+    if (requestId !== submitRequestId || !isCurrentPageContext(context)) {
+      await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
+      uploadedFileIds = []
+      return
+    }
     const result = await createEquipmentStatusApplication({
       equipmentId: createForm.equipmentId,
       applicationType: createForm.applicationType,
@@ -311,15 +423,25 @@ async function submitCreate() {
       idempotencyKey: globalThis.crypto?.randomUUID?.() || `web-${Date.now()}-${Math.random()}`
     })
     uploadedFileIds = []
+    if (requestId !== submitRequestId || !isCurrentPageContext(context)) return
     createVisible.value = false
     ElMessage.success('状态申请已提交')
-    await router.push({ name: 'EquipmentStatusApplicationDetail', params: { applicationId: result.application._id } })
+    await router.push({
+      name: 'EquipmentStatusApplicationDetail',
+      params: { applicationId: result.application._id },
+      query: detailQuery
+    })
   } catch (error) {
-    await cleanupTemporaryFiles(uploadedFileIds, deleteFile)
-    console.error('设备状态申请提交失败:', error)
-    ElMessage.error(requestErrorMessage(error, '设备状态申请提交失败，请稍后重试'))
+    await cleanupTemporaryFiles(
+      [...uploadedFileIds, ...(error.uploadedFileIds || [])],
+      deleteFile
+    )
+    if (requestId === submitRequestId && isCurrentPageContext(context)) {
+      console.error('设备状态申请提交失败:', error)
+      ElMessage.error(requestErrorMessage(error, '设备状态申请提交失败，请稍后重试'))
+    }
   } finally {
-    submitting.value = false
+    if (requestId === submitRequestId) submitting.value = false
   }
 }
 
@@ -349,7 +471,13 @@ async function retryLoad() {
 
 async function handleTeamChange(teamId) {
   ++listRequestId
+  ++equipmentRequestId
+  ++createRequestId
+  ++submitRequestId
   loading.value = false
+  equipmentLoading.value = false
+  submitting.value = false
+  createVisible.value = false
   page.value = 1
   lastLoadedPage.value = 1
   failedPage.value = null
@@ -361,8 +489,21 @@ async function handleTeamChange(teamId) {
   await load()
 }
 
-watch(() => route.query.create, async (value) => {
-  if (value === '1' && canCreate.value) await openCreate(String(route.query.equipmentId || ''))
+watch(() => [route.name, route.query.teamId, route.query.create, route.query.equipmentId], () => {
+  if (pageActive) void syncRouteCreateAction()
+})
+watch(() => session.contextEpoch, () => {
+  listRequestId += 1
+  equipmentRequestId += 1
+  createRequestId += 1
+  submitRequestId += 1
+  rows.value = []
+  total.value = 0
+  loading.value = false
+  equipmentLoading.value = false
+  submitting.value = false
+  createVisible.value = false
+  if (pageActive) void load()
 })
 
 onMounted(async () => {
@@ -371,8 +512,36 @@ onMounted(async () => {
   }
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
   await load()
-  if (route.query.create === '1' && canCreate.value) await openCreate(String(route.query.equipmentId || ''))
+  await syncRouteCreateAction()
 })
+
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  routeCreateToken = ''
+  const reloadList = resumeListLoad
+  resumeListLoad = false
+  void syncRouteCreateAction().then(() => (
+    reloadList ? load() : Promise.resolve()
+  )).then(() => mutationRefresh.refreshIfNeeded(load)).catch(() => {})
+})
+function deactivateStatusApplications() {
+  resumeListLoad = resumeListLoad || loading.value
+  pageActive = false
+  wasDeactivated = true
+  listRequestId += 1
+  equipmentRequestId += 1
+  createRequestId += 1
+  submitRequestId += 1
+  loading.value = false
+  equipmentLoading.value = false
+  submitting.value = false
+  createVisible.value = false
+}
+
+onDeactivated(deactivateStatusApplications)
+onBeforeUnmount(deactivateStatusApplications)
 </script>
 
 <style scoped>

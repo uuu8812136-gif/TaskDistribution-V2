@@ -148,7 +148,16 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref,
+  watch
+} from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
@@ -158,6 +167,8 @@ import {
   getEquipmentList
 } from '@/api/equipment'
 import { useSessionStore } from '@/stores/session'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   INVENTORY_STATUS_OPTIONS,
   inventoryProgress,
@@ -178,6 +189,19 @@ const createFormRef = ref(null)
 const availableEquipment = ref([])
 const options = reactive({ orgUnits: [], inventoryPeople: [] })
 const filters = reactive({ keyword: '', status: '', orgUnitId: '', pendingOnly: false, page: 1, pageSize: 20 })
+let activationReady = false
+let pageActive = true
+let optionsRequestId = 0
+let sessionsRequestId = 0
+let equipmentRequestId = 0
+let optionsRequestPending = false
+let sessionsRequestPending = false
+let wasDeactivated = false
+let resumeOptionsLoad = false
+let resumeSessionsLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT_INVENTORIES
+})
 const createForm = reactive(emptyCreateForm())
 const canCreate = computed(() => session.can('equipment.inventory', { write: true, teamRequired: true }))
 const requestTeamParams = computed(() => (
@@ -218,21 +242,47 @@ function listParams() {
 }
 
 async function loadOptions() {
+  const requestId = ++optionsRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) return
-  const result = await getEquipmentInventoryOptions(requestTeamParams.value)
-  options.orgUnits = result.orgUnits || []
-  options.inventoryPeople = result.inventoryPeople || []
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  optionsRequestPending = true
+  try {
+    const result = await getEquipmentInventoryOptions(requestTeamParams.value)
+    if (
+      !pageActive ||
+      requestId !== optionsRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return
+    options.orgUnits = result.orgUnits || []
+    options.inventoryPeople = result.inventoryPeople || []
+  } finally {
+    if (requestId === optionsRequestId) optionsRequestPending = false
+  }
 }
 
 async function loadSessions() {
-  if (session.isGlobalReadOnly && !selectedTeamId.value) return
+  const requestId = ++sessionsRequestId
+  if (session.isGlobalReadOnly && !selectedTeamId.value) return true
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
+  const loadStartRevision = mutationRefresh.currentRevision()
+  sessionsRequestPending = true
   loading.value = true
   try {
     const result = await getEquipmentInventorySessions(listParams())
+    if (
+      !pageActive ||
+      requestId !== sessionsRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '')
+    ) return false
     sessions.value = result.inventorySessions || []
     total.value = result.total || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } finally {
-    loading.value = false
+    if (requestId === sessionsRequestId) {
+      sessionsRequestPending = false
+      loading.value = false
+    }
   }
 }
 
@@ -253,7 +303,34 @@ function resetFilters() {
 }
 
 async function handleTeamChange(teamId) {
+  invalidateInventoryTeamContext()
+  Object.assign(filters, { keyword: '', status: '', orgUnitId: '', pendingOnly: false, page: 1 })
   await router.replace({ query: teamId ? { teamId } : {} })
+  await Promise.all([loadOptions(), loadSessions()])
+}
+
+function invalidateInventoryTeamContext() {
+  optionsRequestId += 1
+  sessionsRequestId += 1
+  equipmentRequestId += 1
+  optionsRequestPending = false
+  sessionsRequestPending = false
+  loading.value = false
+  equipmentLoading.value = false
+  sessions.value = []
+  total.value = 0
+  options.orgUnits = []
+  options.inventoryPeople = []
+  createVisible.value = false
+  resetCreateForm()
+}
+
+async function syncRouteTeamContext() {
+  if (!pageActive || route.name !== 'EquipmentInventories') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  if (!routedTeamId || routedTeamId === selectedTeamId.value) return
+  invalidateInventoryTeamContext()
+  selectedTeamId.value = routedTeamId
   Object.assign(filters, { keyword: '', status: '', orgUnitId: '', pendingOnly: false, page: 1 })
   await Promise.all([loadOptions(), loadSessions()])
 }
@@ -277,16 +354,29 @@ function resetCreateForm() {
 }
 
 async function handleCreateOrgChange(orgUnitId) {
+  const requestId = ++equipmentRequestId
   createForm.inventoryPersonId = ''
   createForm.equipmentIds = []
   availableEquipment.value = []
   if (!orgUnitId) return
+  const requestedTeamId = String(requestTeamParams.value.teamId || '')
   equipmentLoading.value = true
   try {
-    const result = await getEquipmentList({ orgUnitId, page: 1, pageSize: 200 })
+    const result = await getEquipmentList({
+      ...requestTeamParams.value,
+      orgUnitId,
+      page: 1,
+      pageSize: 200
+    })
+    if (
+      !pageActive ||
+      requestId !== equipmentRequestId ||
+      requestedTeamId !== String(requestTeamParams.value.teamId || '') ||
+      orgUnitId !== createForm.orgUnitId
+    ) return
     availableEquipment.value = result.equipment || []
   } finally {
-    equipmentLoading.value = false
+    if (requestId === equipmentRequestId) equipmentLoading.value = false
   }
 }
 
@@ -310,7 +400,47 @@ async function submitCreate() {
   }
 }
 
-onMounted(initialize)
+onMounted(async () => {
+  try {
+    await initialize()
+  } finally {
+    activationReady = true
+  }
+})
+watch(() => [route.name, route.query.teamId], () => {
+  if (pageActive) void syncRouteTeamContext()
+})
+onActivated(() => {
+  pageActive = true
+  if (!activationReady) return
+  if (wasDeactivated) {
+    wasDeactivated = false
+    const reloadOptions = resumeOptionsLoad
+    const reloadSessions = resumeSessionsLoad
+    resumeOptionsLoad = false
+    resumeSessionsLoad = false
+    void syncRouteTeamContext().then(() => Promise.all([
+      reloadOptions ? loadOptions() : Promise.resolve(),
+      reloadSessions ? loadSessions() : Promise.resolve()
+    ])).then(() => mutationRefresh.refreshIfNeeded(loadSessions)).catch(() => {})
+    return
+  }
+  void mutationRefresh.refreshIfNeeded(loadSessions).catch(() => {})
+})
+function deactivateInventoryList() {
+  resumeOptionsLoad = resumeOptionsLoad || optionsRequestPending
+  resumeSessionsLoad = resumeSessionsLoad || sessionsRequestPending
+  pageActive = false
+  wasDeactivated = true
+  optionsRequestId += 1
+  sessionsRequestId += 1
+  equipmentRequestId += 1
+  loading.value = false
+  equipmentLoading.value = false
+  createVisible.value = false
+}
+onDeactivated(deactivateInventoryList)
+onBeforeUnmount(deactivateInventoryList)
 </script>
 
 <style scoped>

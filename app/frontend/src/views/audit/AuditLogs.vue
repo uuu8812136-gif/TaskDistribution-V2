@@ -172,7 +172,15 @@
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import {
+  computed,
+  onActivated,
+  onBeforeUnmount,
+  onDeactivated,
+  onMounted,
+  reactive,
+  ref
+} from 'vue'
 import dayjs from 'dayjs'
 import { getAuditLog, getAuditLogs } from '@/api/auditLog'
 import { useSessionStore } from '@/stores/session'
@@ -197,6 +205,8 @@ const compactDetail = ref(false)
 let listRequestId = 0
 let detailRequestId = 0
 let detailMediaQuery = null
+let detailMediaListenerAttached = false
+let resumeListLoad = false
 
 const filters = reactive({
   timeRange: [],
@@ -315,18 +325,41 @@ function syncDetailLayout(event) {
   compactDetail.value = event.matches
 }
 
-onMounted(() => {
-  detailMediaQuery = window.matchMedia('(max-width: 680px)')
+function attachDetailMediaListener() {
+  if (!detailMediaQuery) detailMediaQuery = window.matchMedia('(max-width: 680px)')
   syncDetailLayout(detailMediaQuery)
+  if (detailMediaListenerAttached) return
   detailMediaQuery.addEventListener('change', syncDetailLayout)
+  detailMediaListenerAttached = true
+}
+
+function deactivateAuditPage() {
+  resumeListLoad = resumeListLoad || loading.value
+  if (detailMediaListenerAttached) {
+    detailMediaQuery?.removeEventListener('change', syncDetailLayout)
+    detailMediaListenerAttached = false
+  }
+  listRequestId += 1
+  detailRequestId += 1
+  loading.value = false
+  detailLoading.value = false
+  detailVisible.value = false
+  selectedLog.value = null
+}
+
+onMounted(() => {
+  attachDetailMediaListener()
   loadAuditLogs()
 })
 
-onBeforeUnmount(() => {
-  detailMediaQuery?.removeEventListener('change', syncDetailLayout)
-  listRequestId += 1
-  detailRequestId += 1
+onActivated(() => {
+  attachDetailMediaListener()
+  if (!resumeListLoad) return
+  resumeListLoad = false
+  void loadAuditLogs()
 })
+onDeactivated(deactivateAuditPage)
+onBeforeUnmount(deactivateAuditPage)
 </script>
 
 <style scoped lang="scss">

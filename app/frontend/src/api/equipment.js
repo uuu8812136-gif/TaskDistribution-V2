@@ -84,17 +84,25 @@ export const exportEquipment = (params) => request({
   responseType: 'blob'
 })
 
-export const createEquipmentImportPreview = (file, { onUploadProgress } = {}) => {
+export function equipmentImportPreviewRequestConfig(
+  file,
+  { onUploadProgress, signal } = {}
+) {
   const data = new FormData()
   data.append('file', file)
-  return request({
+  return {
     url: '/equipment/imports',
     method: 'post',
     data,
     timeout: 15 * 60 * 1000,
-    onUploadProgress
-  })
+    onUploadProgress,
+    signal
+  }
 }
+
+export const createEquipmentImportPreview = (file, options = {}) => request(
+  equipmentImportPreviewRequestConfig(file, options)
+)
 
 export const getEquipmentImportJob = (importJobId, params) => request({
   url: `/equipment/imports/${importJobId}`,

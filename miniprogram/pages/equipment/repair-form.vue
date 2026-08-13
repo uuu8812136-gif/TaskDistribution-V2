@@ -314,10 +314,10 @@ export default {
 .asset-code { margin-top: 6rpx; color: #667085; font-size: 23rpx; }
 .asset-meta { display: flex; flex-wrap: wrap; gap: 10rpx 28rpx; margin-top: 18rpx; color: #667085; font-size: 23rpx; }
 .section-title, .parts-heading > text, .photo-heading > text:first-child { color: #1f2733; font-size: 27rpx; font-weight: 600; }
-.type-segment { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 18rpx; border: 1px solid #cfd8e3; border-radius: 8rpx; overflow: hidden; }
-.type-option { min-width: 0; min-height: 88rpx; padding: 10rpx 6rpx; border-radius: 0; color: #52606d; background: #fff; font-size: 24rpx; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
-.type-option + .type-option { border-left: 1px solid #cfd8e3; }
-.type-option.active { color: #fff; background: #4096ff; }
+.type-segment { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12rpx; margin-top: 18rpx; }
+.type-option { width: 100%; min-width: 0; height: 76rpx; margin: 0; padding: 0 4rpx; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 10rpx; color: #344054; background: #fff; font-size: 23rpx; font-weight: 600; line-height: 74rpx; letter-spacing: 0; white-space: nowrap; overflow: hidden; text-overflow: clip; }
+.type-option::after { border: 0; }
+.type-option.active { border-color: #1677ff; color: #fff; background: #1677ff; box-shadow: 0 4rpx 10rpx rgba(22, 119, 255, .22), inset 0 0 0 1px rgba(255, 255, 255, .18); }
 .field-list { display: grid; gap: 0; }
 .field-row { display: grid; grid-template-columns: 160rpx minmax(0, 1fr); align-items: center; min-height: 92rpx; border-bottom: 1px solid #e8edf3; }
 .field-row > text, .field-block > text { color: #344054; font-size: 24rpx; }

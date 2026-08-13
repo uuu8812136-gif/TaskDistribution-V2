@@ -117,10 +117,12 @@
 </template>
 
 <script setup>
-import { computed, ref, reactive, onMounted } from 'vue'
+import { computed, onActivated, onMounted, reactive, ref } from 'vue'
 import { getExtensionList, approveExtension } from '@/api/extension'
 import { formatDate } from '@/utils/format'
 import { canApproveExtensionRequest } from '@/utils/taskPolicy'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import { ElMessage } from 'element-plus'
 
 const loading = ref(false)
@@ -140,6 +142,10 @@ const approveForm = reactive({
 
 const extensionList = ref([])
 let fetchRequestId = 0
+let activationReady = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EXTENSIONS
+})
 
 const canApproveRow = (request) => canApproveExtensionRequest({
   request
@@ -152,10 +158,11 @@ const extensionStatusLabel = (status) => ({
   rejected: '已拒绝'
 }[status] || '-')
 
-const fetchData = async () => {
+const fetchData = async ({ preserveExisting = false } = {}) => {
+  const loadStartRevision = mutationRefresh.currentRevision()
   const requestId = ++fetchRequestId
   loading.value = true
-  extensionList.value = []
+  if (!preserveExisting) extensionList.value = []
   if (currentExtension.value) {
     currentExtension.value = { ...currentExtension.value, capabilities: {} }
   }
@@ -164,17 +171,22 @@ const fetchData = async () => {
     if (requestId !== fetchRequestId) return
     const requests = Array.isArray(result.requests) ? result.requests : []
     extensionList.value = requests
+    mutationRefresh.markThrough(loadStartRevision)
     if (approveDialogVisible.value && currentExtension.value?._id) {
       const refreshed = requests.find((request) => request._id === currentExtension.value._id)
       currentExtension.value = refreshed || null
       if (!refreshed) approveDialogVisible.value = false
     }
+    return true
   } catch (error) {
     if (requestId !== fetchRequestId) return
     console.error('获取延期申请列表失败:', error)
-    extensionList.value = []
-    currentExtension.value = null
-    approveDialogVisible.value = false
+    if (!preserveExisting) {
+      extensionList.value = []
+      currentExtension.value = null
+      approveDialogVisible.value = false
+    }
+    return false
   } finally {
     if (requestId === fetchRequestId) loading.value = false
   }
@@ -213,8 +225,16 @@ const submitApprove = async () => {
   }
 }
 
-onMounted(() => {
-  fetchData()
+onMounted(async () => {
+  try {
+    await fetchData()
+  } finally {
+    activationReady = true
+  }
+})
+onActivated(() => {
+  if (!activationReady) return
+  void mutationRefresh.refreshIfNeeded(() => fetchData({ preserveExisting: true })).catch(() => {})
 })
 </script>
 

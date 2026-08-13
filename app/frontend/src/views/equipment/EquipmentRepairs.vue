@@ -252,7 +252,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onActivated, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
@@ -267,7 +267,9 @@ import {
 import { deleteFile, getFileMetadata, uploadTemporaryFile } from '@/api/file'
 import { useSessionStore } from '@/stores/session'
 import { prepareAttachmentReferences } from '@/utils/attachments'
+import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareListRefresh'
 import { requestErrorMessage } from '@/utils/request'
+import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   REPAIR_STATUS_LABELS,
   REPAIR_TYPE_OPTIONS,
@@ -296,6 +298,20 @@ const repairLocations = ref([])
 const locationDraft = ref([])
 const selectedTeamId = ref(String(route.query.teamId || ''))
 let repairsRequestId = 0
+let equipmentOptionsRequestId = 0
+let repairLocationsRequestId = 0
+let exportRequestId = 0
+let pageActive = true
+let wasDeactivated = false
+let routeCreateToken = ''
+let equipmentOptionsRequestPending = false
+let repairLocationsRequestPending = false
+let resumeRepairsLoad = false
+let resumeEquipmentOptionsLoad = false
+let resumeRepairLocationsLoad = false
+const mutationRefresh = createMutationAwareListRefreshTracker({
+  scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT_REPAIRS
+})
 
 const filters = reactive({ keyword: '', type: '', status: '', todo: false, page: 1, pageSize: 20 })
 const createForm = reactive(emptyCreateForm())
@@ -339,6 +355,9 @@ function emptyCreateForm() {
 
 const displayDate = (value) => value ? dayjs(value).format('YYYY-MM-DD') : '-'
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+const currentTeamContextId = () => String(
+  session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
+)
 
 function listParams(extra = {}) {
   return {
@@ -359,32 +378,61 @@ async function loadRepairs() {
     repairs.value = []
     total.value = 0
     loading.value = false
-    return
+    return false
   }
+  const loadStartRevision = mutationRefresh.currentRevision()
+  const requestedTeamId = currentTeamContextId()
   loading.value = true
   try {
     const result = await getEquipmentRepairs(listParams())
-    if (requestId !== repairsRequestId) return
+    if (requestId !== repairsRequestId) return false
+    if (!pageActive || requestedTeamId !== currentTeamContextId()) return false
     repairs.value = result.repairs || []
     total.value = result.total || 0
+    mutationRefresh.markThrough(loadStartRevision)
+    return true
   } finally {
     if (requestId === repairsRequestId) loading.value = false
   }
 }
 
 async function loadEquipmentOptions() {
+  const requestId = ++equipmentOptionsRequestId
   if (!session.isTeamMode) return
-  const result = await getEquipmentList({ page: 1, pageSize: 200 })
-  equipmentOptions.value = result.equipment || []
+  const requestedTeamId = currentTeamContextId()
+  equipmentOptionsRequestPending = true
+  try {
+    const result = await getEquipmentList({ page: 1, pageSize: 200 })
+    if (
+      !pageActive ||
+      requestId !== equipmentOptionsRequestId ||
+      requestedTeamId !== currentTeamContextId()
+    ) return
+    equipmentOptions.value = result.equipment || []
+  } finally {
+    if (requestId === equipmentOptionsRequestId) equipmentOptionsRequestPending = false
+  }
 }
 
 async function loadRepairLocations() {
+  const requestId = ++repairLocationsRequestId
   if (session.isGlobalReadOnly && !selectedTeamId.value) {
     repairLocations.value = []
     return
   }
-  const result = await getEquipmentRepairLocations(requestTeamParams.value)
-  repairLocations.value = result.locations || []
+  const requestedTeamId = currentTeamContextId()
+  repairLocationsRequestPending = true
+  try {
+    const result = await getEquipmentRepairLocations(requestTeamParams.value)
+    if (
+      !pageActive ||
+      requestId !== repairLocationsRequestId ||
+      requestedTeamId !== currentTeamContextId()
+    ) return
+    repairLocations.value = result.locations || []
+  } finally {
+    if (requestId === repairLocationsRequestId) repairLocationsRequestPending = false
+  }
 }
 
 function applyFilters() {
@@ -397,11 +445,30 @@ function resetFilters() {
   loadRepairs()
 }
 
-function handleTeamChange() {
-  filters.page = 1
-  router.replace({ query: selectedTeamId.value ? { teamId: selectedTeamId.value } : {} })
-  loadRepairs()
-  loadRepairLocations()
+function invalidateRepairTeamContext() {
+  repairsRequestId += 1
+  equipmentOptionsRequestId += 1
+  repairLocationsRequestId += 1
+  exportRequestId += 1
+  equipmentOptionsRequestPending = false
+  repairLocationsRequestPending = false
+  loading.value = false
+  exporting.value = false
+  repairs.value = []
+  equipmentOptions.value = []
+  repairLocations.value = []
+  locationDraft.value = []
+  total.value = 0
+  createVisible.value = false
+  locationVisible.value = false
+  resetCreateForm()
+}
+
+async function handleTeamChange(teamId) {
+  invalidateRepairTeamContext()
+  Object.assign(filters, { keyword: '', type: '', status: '', todo: false, page: 1 })
+  await router.replace({ query: teamId ? { teamId } : {} })
+  await Promise.all([loadRepairs(), loadRepairLocations()])
 }
 
 function openLocationManagement() {
@@ -423,11 +490,41 @@ async function saveLocations() {
 }
 
 function openCreate() {
+  resetCreateForm()
   const requestedEquipmentId = String(route.query.equipmentId || '')
   if (requestedEquipmentId && equipmentOptions.value.some((item) => item._id === requestedEquipmentId)) {
     createForm.equipmentId = requestedEquipmentId
   }
   createVisible.value = true
+}
+
+function currentCreateToken() {
+  if (route.name !== 'EquipmentRepairs' || route.query.create !== '1') return ''
+  return `${String(route.query.create)}:${String(route.query.equipmentId || '')}`
+}
+
+async function syncRouteCreateAction() {
+  if (!pageActive || route.name !== 'EquipmentRepairs') return
+  const routedTeamId = session.isGlobalReadOnly ? String(route.query.teamId || '') : ''
+  if (routedTeamId && routedTeamId !== selectedTeamId.value) {
+    invalidateRepairTeamContext()
+    selectedTeamId.value = routedTeamId
+    Object.assign(filters, { keyword: '', type: '', status: '', todo: false, page: 1 })
+    await Promise.all([loadRepairs(), loadRepairLocations()])
+    if (!pageActive || routedTeamId !== selectedTeamId.value) return
+  }
+  if (!canCreate.value) return
+  const token = currentCreateToken()
+  if (!token) {
+    routeCreateToken = ''
+    return
+  }
+  if (token === routeCreateToken) return
+  routeCreateToken = token
+  if (!equipmentOptions.value.length) await loadEquipmentOptions()
+  if (!pageActive || currentCreateToken() !== token) return
+  openCreate()
+  await router.replace({ query: { ...route.query, create: undefined, equipmentId: undefined } })
 }
 
 function openDetail(row) {
@@ -515,18 +612,62 @@ async function cleanupUnboundTemporaryFiles(fileIds) {
 }
 
 async function handleExport() {
+  const requestId = ++exportRequestId
+  const requestedTeamId = currentTeamContextId()
   exporting.value = true
   try {
     const blob = await exportEquipmentRepairs(listParams({ page: undefined, pageSize: undefined, todo: undefined }))
+    if (
+      !pageActive ||
+      requestId !== exportRequestId ||
+      requestedTeamId !== currentTeamContextId()
+    ) return
     saveRepairWorkbook(blob)
   } finally {
-    exporting.value = false
+    if (requestId === exportRequestId) exporting.value = false
   }
 }
 
 onMounted(async () => {
   await Promise.all([loadRepairs(), loadEquipmentOptions(), loadRepairLocations()])
-  if (route.query.create === '1' && canCreate.value) openCreate()
+  await syncRouteCreateAction()
+})
+
+watch(() => [route.name, route.query.teamId, route.query.create, route.query.equipmentId], () => {
+  if (pageActive) void syncRouteCreateAction()
+})
+
+onActivated(() => {
+  pageActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
+  routeCreateToken = ''
+  const reloadRepairs = resumeRepairsLoad
+  const reloadEquipmentOptions = resumeEquipmentOptionsLoad
+  const reloadRepairLocations = resumeRepairLocationsLoad
+  resumeRepairsLoad = false
+  resumeEquipmentOptionsLoad = false
+  resumeRepairLocationsLoad = false
+  void syncRouteCreateAction().then(() => Promise.all([
+    reloadRepairs ? loadRepairs() : Promise.resolve(),
+    reloadEquipmentOptions ? loadEquipmentOptions() : Promise.resolve(),
+    reloadRepairLocations ? loadRepairLocations() : Promise.resolve()
+  ])).then(() => mutationRefresh.refreshIfNeeded(loadRepairs)).catch(() => {})
+})
+onDeactivated(() => {
+  resumeRepairsLoad = resumeRepairsLoad || loading.value
+  resumeEquipmentOptionsLoad = resumeEquipmentOptionsLoad || equipmentOptionsRequestPending
+  resumeRepairLocationsLoad = resumeRepairLocationsLoad || repairLocationsRequestPending
+  pageActive = false
+  wasDeactivated = true
+  repairsRequestId += 1
+  equipmentOptionsRequestId += 1
+  repairLocationsRequestId += 1
+  exportRequestId += 1
+  loading.value = false
+  exporting.value = false
+  createVisible.value = false
+  locationVisible.value = false
 })
 </script>
 
