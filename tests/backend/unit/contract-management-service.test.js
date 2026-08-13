@@ -111,6 +111,13 @@ test('record PATCH deep-merges only the current category details', () => {
   assert.equal(normalized.details.overstorageDays, '30+15');
   assert.equal(normalized.details.remarks, 'after');
   assert.equal(Object.hasOwn(normalized.details, 'equipmentType'), false);
+
+  const freeText = normalizeRecordInput({
+    category: 'LOGISTICS_FEE_AGREEMENT',
+    signingStatus: 'SIGNED',
+    details: { overstorageDays: '  免超储费  ' }
+  });
+  assert.equal(freeText.details.overstorageDays, '免超储费');
 });
 
 test('attachment purpose is category-scoped and duplicate file IDs are rejected', () => {

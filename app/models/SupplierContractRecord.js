@@ -27,13 +27,6 @@ const SUPPLY_STATUSES = Object.freeze({
   STOPPED: 'STOPPED'
 });
 
-const OVERSTORAGE_DAY_OPTIONS = Object.freeze({
-  NONE: 'NONE',
-  DAYS_30_PLUS_15: '30+15',
-  DAYS_60_PLUS_15: '60+15',
-  DAYS_90_PLUS_15: '90+15'
-});
-
 const contactSchema = new mongoose.Schema({
   name: { type: String, trim: true, maxlength: 100, default: '' },
   phone: { type: String, trim: true, maxlength: 100, default: '' }
@@ -78,7 +71,8 @@ const detailsSchema = new mongoose.Schema({
   overstorageServiceRate: { type: String, trim: true, maxlength: 100, default: '' },
   overstorageDays: {
     type: String,
-    enum: [...Object.values(OVERSTORAGE_DAY_OPTIONS), null],
+    trim: true,
+    maxlength: 200,
     default: null
   },
   settlementCycle: { type: String, trim: true, maxlength: 200, default: '' },
@@ -170,5 +164,4 @@ module.exports = SupplierContractRecord;
 module.exports.CONTRACT_ATTACHMENT_PURPOSES = CONTRACT_ATTACHMENT_PURPOSES;
 module.exports.CONTRACT_RECORD_CATEGORIES = CONTRACT_RECORD_CATEGORIES;
 module.exports.CONTRACT_SIGNING_STATUSES = CONTRACT_SIGNING_STATUSES;
-module.exports.OVERSTORAGE_DAY_OPTIONS = OVERSTORAGE_DAY_OPTIONS;
 module.exports.SUPPLY_STATUSES = SUPPLY_STATUSES;

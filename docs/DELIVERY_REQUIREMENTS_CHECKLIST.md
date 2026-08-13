@@ -21,6 +21,17 @@ Completion wording is evidence-based:
 
 If any source conflicts with another, use the least-complete status and keep the item open. After each meaningful task, update this file before giving the user the completion report.
 
+## 2026-08-13 Contract Filters, Exports, And Routine Records
+
+- [x] Supplier settlement month filtering is an inclusive month range. Web sends `startMonth` and `endMonth`; list rows, result-wide totals, and export all use the same backend filter. The legacy single `month` query remains compatible, while conflicting or reversed filters are rejected explicitly.
+- [x] The PC routine workbench keeps one component instance while `tab`, `planId`, and `exceptionId` change. Switching from a message-focused plan/exception to execution records no longer remounts the page; a new message focus still refreshes the reused route, while team, equipment, and session-context changes still create isolated state.
+- [x] Logistics `overstorageDays` is ordinary trimmed text up to 200 characters in the model, API, Web form, import, and export. Exact historical values `无`, `无超期`, `无超储`, and stored `NONE` remain compatible; longer custom text containing those words is preserved instead of being collapsed into a fixed option.
+- [x] Supplier contract exports have explicit levels: overview produces only the current filtered main table; secondary requires the current supplier and produces only its second-level summary; detail with supplier and category produces only that supplier/current tab; detail without either produces the all-supplier tertiary summary. Tertiary data always uses the canonical 57 columns, with an attachment list added only when matching attachments exist.
+- [x] Real XLSX files were written and reopened from the H-drive acceptance directory. Overview, secondary, current supplier/category detail, and all-supplier detail had the expected sheet isolation; both detail files had exactly 57 columns. `免超储费（年度框架内）` survived import, export, and re-import unchanged. The machine-readable local receipt reports `passed=true`.
+- [x] Web and mini-program centralized error maps include the new month-range, text-length, and export-context errors. This synchronization changes no mini-program screen or business workflow and does not by itself require a new mini-program business release.
+- [x] The final frozen candidate passed backend `660/660`, Web `224/224`, and mini-program `130/130`; all 46 mini-program Vue SFC files compiled, the mini-program isolation check passed, and the Vite production build completed with 2,267 transformed modules. The locked runtime was Node `v22.23.1` with npm `10.9.8`; only the existing chunk-size warning remained.
+- [ ] Commit, push, create a new immutable V2 release, complete the stopped-backup/off-host receipt/PostAudit gate, and verify the public customer flows. Until then, the public site may still be the older `v2-20260812-b33dbab` runtime.
+
 ## 2026-08-12 Mini-program Login Signature
 
 - [x] The mini-program login footer now matches the website signature: `沟通、协作、持续进步` and `欢迎你，我的朋友。 -马延浩`; the former plural welcome, Horselink-growth line, and project-team signature are absent from the compiled login page.
@@ -269,7 +280,7 @@ Status meaning: `Mapped locally` means the exact customer header, parser mapping
 | AA | 合同截止日期 | logistics `expiryDate` | Mapped locally as date |
 | AB | 仓储服务费率 | logistics `details.warehouseServiceRate` | Mapped locally as source text |
 | AC | 超储服务费率 | logistics `details.overstorageServiceRate` | Mapped locally as source text |
-| AD | 超储天数（无超储/30+15/60+15/90+15） | logistics `details.overstorageDays` | Mapped locally to `NONE`/`30+15`/`60+15`/`90+15` |
+| AD | 超储天数 | logistics `details.overstorageDays` | Ordinary trimmed text up to 200 characters; the legacy constrained header and exact historical no-overstorage values remain import-compatible |
 | AE | 结算周期 | logistics `details.settlementCycle` | Mapped locally as text |
 | AF | 备注 | logistics `details.remarks` | Mapped locally |
 | AG | 周转器具服务协议 | turnover `signingStatus` | Mapped locally; missing/invalid status is rejected |

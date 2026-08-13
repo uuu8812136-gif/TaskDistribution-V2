@@ -85,9 +85,10 @@ function createContractController({
         });
         return sendWorkbook(res, {
           buffer: result.buffer,
-          count: result.recordCount,
+          count: result.exportedCount,
           filename: 'supplier-contracts.xlsx',
           extraHeaders: {
+            'X-Export-Scope': result.scope,
             'X-Exported-Supplier-Count': result.supplierCount
           }
         });

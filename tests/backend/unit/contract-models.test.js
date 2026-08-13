@@ -89,6 +89,21 @@ test('contract record schema exposes five categories and the canonical Excel fie
   );
 });
 
+test('contract overstorage days accepts ordinary text instead of a fixed enum', async () => {
+  const record = new SupplierContractRecord({
+    teamId: objectId(),
+    supplierId: objectId(),
+    category: SupplierContractRecord.CONTRACT_RECORD_CATEGORIES.LOGISTICS_FEE_AGREEMENT,
+    signingStatus: SupplierContractRecord.CONTRACT_SIGNING_STATUSES.SIGNED,
+    details: { overstorageDays: '  免超储费  ' },
+    ...auditFields()
+  });
+
+  await record.validate();
+  assert.equal(record.details.overstorageDays, '免超储费');
+  assert.equal(record.schema.path('details.overstorageDays').options.enum, undefined);
+});
+
 test('supplier information rejects contract-only fields and empty contacts', async () => {
   const record = new SupplierContractRecord({
     teamId: objectId(),

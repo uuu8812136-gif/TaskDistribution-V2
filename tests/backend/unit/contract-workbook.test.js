@@ -48,7 +48,7 @@ const CUSTOMER_DETAIL_HEADERS = [
   '合同截止日期',
   '仓储服务费率',
   '超储服务费率',
-  '超储天数（无超储/30+15/60+15/90+15）',
+  '超储天数',
   '结算周期',
   '备注',
   '周转器具服务协议',
@@ -141,6 +141,51 @@ function extractedMedia(imagesByRow = new Map()) {
 
 test('exported detail headers exactly match the canonical 57-column tertiary workbook', () => {
   assert.deepEqual(DETAIL_HEADERS, CUSTOMER_DETAIL_HEADERS);
+});
+
+test('overstorage days imports arbitrary text and accepts the legacy constrained header', async () => {
+  for (const [header, overstorageDays] of [
+    ['超储天数', '无超储费用另议'],
+    ['超储天数（无超储/30+15/60+15/90+15）', '免超储费']
+  ]) {
+    const headers = [...CUSTOMER_DETAIL_HEADERS];
+    headers[29] = header;
+    const row = Array(57).fill('');
+    row[1] = '001078';
+    row[2] = '供应商甲';
+    row[3] = '托管';
+    row[24] = '已签订';
+    row[29] = overstorageDays;
+    const { workbook } = supplierWorkbook({ detailHeaders: headers, detailRows: [row] });
+    const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
+      extractWorkbookMedia: () => extractedMedia()
+    });
+    const logistics = parsed.rows[0].records.find((record) => (
+      record.category === 'LOGISTICS_FEE_AGREEMENT'
+    ));
+    assert.equal(logistics.details.overstorageDays, overstorageDays);
+  }
+
+  const supplier = {
+    _id: 'overstorage-supplier', code: '001078', name: '供应商甲',
+    trusteeAttribute: 'HOSTED', hasSignedContract: true, contractValid: true
+  };
+  for (const [storedValue, exportedValue] of [['90天', '90天'], ['NONE', '无超储']]) {
+    const buffer = await createSupplierExportWorkbook({
+      scope: 'detail',
+      suppliers: [supplier],
+      records: [{
+        supplierId: supplier._id,
+        category: 'LOGISTICS_FEE_AGREEMENT',
+        signingStatus: 'SIGNED',
+        details: { overstorageDays: storedValue },
+        attachments: []
+      }]
+    });
+    const exported = new ExcelJS.Workbook();
+    await exported.xlsx.load(buffer);
+    assert.equal(exported.getWorksheet(DETAIL_SHEET).getRow(3).getCell(30).value, exportedValue);
+  }
 });
 
 test('customer 57-column row maps every non-attachment field to canonical records', () => {
@@ -539,6 +584,7 @@ test('filtered supplier export stays canonical and writes trustee attribute in c
     contractValid: true
   };
   const buffer = await createSupplierExportWorkbook({
+    scope: 'detail',
     suppliers: [supplier],
     category: 'LOGISTICS_FEE_AGREEMENT',
     records: [{
@@ -587,6 +633,7 @@ test('canonical 57-column supplier export can be imported back without identity 
     attachments: []
   };
   const buffer = await createSupplierExportWorkbook({
+    scope: 'detail',
     suppliers: [supplier],
     records: [sourceRecord]
   });
@@ -630,7 +677,11 @@ test('canonical detail remains reimportable when attachments are listed on a sep
     details: {},
     attachments: [{ purpose: 'CONTRACT_PDF', originalName: 'main-contract.pdf' }]
   };
-  const buffer = await createSupplierExportWorkbook({ suppliers: [supplier], records: [sourceRecord] });
+  const buffer = await createSupplierExportWorkbook({
+    scope: 'detail',
+    suppliers: [supplier],
+    records: [sourceRecord]
+  });
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
 
@@ -645,4 +696,74 @@ test('canonical detail remains reimportable when attachments are listed on a sep
   assert.equal(parsed.rows.length, 1);
   assert.equal(parsed.rows[0].records[0].contractNumber, sourceRecord.contractNumber);
   assert.deepEqual(parsed.rows[0].records[0].importedMedia, []);
+});
+
+test('supplier export scopes create only the requested workbook level', async () => {
+  const supplier = {
+    _id: 'supplier-scoped-export',
+    code: '000180',
+    name: '分层导出供应商',
+    trusteeAttribute: 'HOSTED',
+    hasSignedContract: true,
+    contractValid: true
+  };
+  const records = [{
+    supplierId: supplier._id,
+    category: 'MAIN_SERVICE_AGREEMENT',
+    signingStatus: 'SIGNED',
+    contractNumber: 'SCOPE-001',
+    effectiveDate: new Date('2026-01-01T00:00:00.000Z'),
+    expiryDate: new Date('2027-12-31T00:00:00.000Z'),
+    autoRenew: false,
+    details: {},
+    attachments: [{ purpose: 'CONTRACT_PDF', originalName: 'scope.pdf' }]
+  }];
+
+  const overviewWorkbook = new ExcelJS.Workbook();
+  await overviewWorkbook.xlsx.load(await createSupplierExportWorkbook({
+    scope: 'overview', suppliers: [supplier], records
+  }));
+  assert.deepEqual(overviewWorkbook.worksheets.map(({ name }) => name), [SUPPLIER_SHEET]);
+
+  const secondaryWorkbook = new ExcelJS.Workbook();
+  await secondaryWorkbook.xlsx.load(await createSupplierExportWorkbook({
+    scope: 'secondary', suppliers: [supplier], records
+  }));
+  assert.deepEqual(secondaryWorkbook.worksheets.map(({ name }) => name), [
+    '二级细表（供应商合同管理）'
+  ]);
+  assert.equal(secondaryWorkbook.worksheets[0].getRow(3).getCell(5).value, 1);
+
+  const detailWorkbook = new ExcelJS.Workbook();
+  await detailWorkbook.xlsx.load(await createSupplierExportWorkbook({
+    scope: 'detail', suppliers: [supplier], records
+  }));
+  assert.deepEqual(detailWorkbook.worksheets.map(({ name }) => name), [
+    DETAIL_SHEET,
+    ATTACHMENT_SHEET_NAME
+  ]);
+  assert.equal(detailWorkbook.getWorksheet(DETAIL_SHEET).columnCount, 57);
+});
+
+test('attachment sheet is omitted outside detail scope and when detail has no attachments', async () => {
+  const supplier = {
+    _id: 'supplier-no-attachment', code: '000181', name: '无附件供应商',
+    trusteeAttribute: 'NON_HOSTED', hasSignedContract: false, contractValid: false
+  };
+  const records = [{
+    supplierId: supplier._id,
+    category: 'SUPPLIER_INFO',
+    signingStatus: null,
+    contractNumber: '',
+    effectiveDate: null,
+    expiryDate: null,
+    autoRenew: false,
+    details: {},
+    attachments: []
+  }];
+  for (const scope of ['overview', 'secondary', 'detail']) {
+    const workbook = new ExcelJS.Workbook();
+    await workbook.xlsx.load(await createSupplierExportWorkbook({ scope, suppliers: [supplier], records }));
+    assert.equal(workbook.getWorksheet(ATTACHMENT_SHEET_NAME), undefined);
+  }
 });

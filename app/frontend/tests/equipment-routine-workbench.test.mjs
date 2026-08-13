@@ -98,32 +98,51 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
 })
 
 test('routine workbench keeps its component mounted while tab query parameters change', () => {
-  assert.match(routerSource, /path:\s*'equipment\/routines'[\s\S]*reuseQueryKeys:\s*\['tab'\]/)
+  assert.match(routerSource, /path:\s*'equipment\/routines'[\s\S]*reuseQueryKeys:\s*\['tab', 'planId', 'exceptionId'\]/)
   assert.match(mainLayoutSource, /const routedComponentKey = computed/)
   assert.match(mainLayoutSource, /routeComponentKey\(route, session\.contextEpoch\)/)
-  assert.match(workbenchSource, /watch\(\(\) => route\.query\.tab/)
+  assert.match(workbenchSource, /watch\(\(\) => \[route\.query\.tab, route\.query\.planId, route\.query\.exceptionId\]/)
   assert.match(workbenchSource, /const nextTab = ROUTINE_TABS\.has\(routedTab\) \? routedTab : 'plans'/)
-  assert.match(workbenchSource, /if \(nextTab === activeTab\.value\) return/)
+  assert.match(workbenchSource, /if \(!tabChanged && !focusChanged\) return/)
 
   const base = {
     path: '/equipment/routines',
-    meta: { reuseQueryKeys: ['tab'] },
+    meta: { reuseQueryKeys: ['tab', 'planId', 'exceptionId'] },
     query: { tab: 'plans', teamId: 'team-a', planId: 'plan-a' },
     hash: ''
   }
   assert.equal(
     routeComponentKey(base, 3),
-    routeComponentKey({ ...base, query: { ...base.query, tab: 'records' } }, 3)
+    routeComponentKey({ ...base, query: { tab: 'records', teamId: 'team-a' } }, 3)
+  )
+  const exceptionBase = {
+    ...base,
+    query: { tab: 'exceptions', teamId: 'team-a', exceptionId: 'exception-a' }
+  }
+  assert.equal(
+    routeComponentKey(exceptionBase, 3),
+    routeComponentKey({ ...exceptionBase, query: { tab: 'records', teamId: 'team-a' } }, 3)
   )
   assert.notEqual(
     routeComponentKey(base, 3),
     routeComponentKey({ ...base, query: { ...base.query, teamId: 'team-b' } }, 3)
   )
-  assert.notEqual(
+  assert.equal(
     routeComponentKey(base, 3),
     routeComponentKey({ ...base, query: { ...base.query, planId: 'plan-b' } }, 3)
   )
+  assert.notEqual(
+    routeComponentKey(base, 3),
+    routeComponentKey({ ...base, query: { ...base.query, equipmentId: 'equipment-a' } }, 3)
+  )
   assert.notEqual(routeComponentKey(base, 3), routeComponentKey(base, 4))
+})
+
+test('routine workbench refreshes focus when a new message targets the reused route', () => {
+  assert.match(workbenchSource, /const nextPlanId = nextTab === 'plans' \? String\(requestedPlanId \|\| ''\) : ''/)
+  assert.match(workbenchSource, /const nextExceptionId = nextTab === 'exceptions' \? String\(requestedExceptionId \|\| ''\) : ''/)
+  assert.match(workbenchSource, /const focusChanged = \([\s\S]*nextPlanId !== focusedPlanId\.value[\s\S]*nextExceptionId !== focusedExceptionId\.value/)
+  assert.match(workbenchSource, /focusedExceptionId\.value = nextExceptionId[\s\S]*focusedPlanId\.value = nextPlanId[\s\S]*await loadActiveTab\(\)/)
 })
 
 test('routine workbench keeps an actionable page when an active API request fails', () => {

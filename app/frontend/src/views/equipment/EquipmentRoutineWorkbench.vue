@@ -912,10 +912,21 @@ async function changeTab() {
   await loadActiveTab()
 }
 
-watch(() => route.query.tab, async (requestedRouteTab) => {
+watch(() => [route.query.tab, route.query.planId, route.query.exceptionId], async ([
+  requestedRouteTab,
+  requestedPlanId,
+  requestedExceptionId
+]) => {
   const routedTab = String(requestedRouteTab || '')
   const nextTab = ROUTINE_TABS.has(routedTab) ? routedTab : 'plans'
-  if (nextTab === activeTab.value) return
+  const nextPlanId = nextTab === 'plans' ? String(requestedPlanId || '') : ''
+  const nextExceptionId = nextTab === 'exceptions' ? String(requestedExceptionId || '') : ''
+  const tabChanged = nextTab !== activeTab.value
+  const focusChanged = (
+    nextPlanId !== focusedPlanId.value ||
+    nextExceptionId !== focusedExceptionId.value
+  )
+  if (!tabChanged && !focusChanged) return
   closeRecordDetail()
   ++activeTabRequestId
   loading.value = false
@@ -926,8 +937,8 @@ watch(() => route.query.tab, async (requestedRouteTab) => {
   total.value = 0
   loadError.value = ''
   filters.page = 1
-  focusedExceptionId.value = nextTab === 'exceptions' ? String(route.query.exceptionId || '') : ''
-  focusedPlanId.value = nextTab === 'plans' ? String(route.query.planId || '') : ''
+  focusedExceptionId.value = nextExceptionId
+  focusedPlanId.value = nextPlanId
   await loadActiveTab()
 })
 

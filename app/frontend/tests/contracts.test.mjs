@@ -7,7 +7,9 @@ import {
   SETTLEMENT_AMOUNT_FIELDS,
   buildRecordDetails,
   buildRecordPayload,
-  expiryAlertRowClass
+  expiryAlertRowClass,
+  formatContractField,
+  normalizeRecord
 } from '../src/utils/contract.js'
 
 const categoryByValue = new Map(
@@ -96,6 +98,24 @@ test('contract detail configuration covers the five Excel groups without duplica
     assert.deepEqual(config.fields.map((field) => field.key), keys)
     assert.equal(new Set(keys).size, keys.length)
   }
+})
+
+test('overstorage days is maintained as ordinary text', () => {
+  const logistics = categoryByValue.get(CONTRACT_RECORD_CATEGORIES.LOGISTICS_FEE_AGREEMENT)
+  const overstorageDays = logistics.fields.find((field) => field.key === 'overstorageDays')
+  assert.equal(overstorageDays.type, 'text')
+  assert.equal(overstorageDays.maxlength, 200)
+  assert.equal(overstorageDays.options, undefined)
+  assert.equal(formatContractField('NONE', overstorageDays), '无超储')
+  assert.equal(normalizeRecord({ details: { overstorageDays: 'NONE' } }).overstorageDays, '无超储')
+})
+
+test('settlement filters send an inclusive month range', () => {
+  const source = readFileSync(new URL('../src/views/contracts/SupplierSettlementFees.vue', import.meta.url), 'utf8')
+  assert.match(source, /type="monthrange"/)
+  assert.match(source, /startMonth:\s*filters\.monthRange\?\.\[0\]/)
+  assert.match(source, /endMonth:\s*filters\.monthRange\?\.\[1\]/)
+  assert.doesNotMatch(source, /month:\s*filters\.month\s*\|\|\s*undefined/)
 })
 
 test('contract attachment groups preserve the private Excel evidence types', () => {
@@ -230,6 +250,40 @@ test('contract API keeps the three independent menu exports and private file tra
   assert.match(apiSource, /url: '\/contracts\/expiry-alerts\/export'[\s\S]*responseType: 'blob'/)
   assert.match(apiSource, /url: '\/contracts\/settlements\/export'[\s\S]*responseType: 'blob'/)
   assert.doesNotMatch(apiSource, /\/uploads\//)
+})
+
+test('new contract validation errors have direct customer-facing messages', () => {
+  const errorSource = readFileSync(new URL('../src/utils/requestErrorMessages.js', import.meta.url), 'utf8')
+  assert.match(errorSource, /CONTRACT_EXPORT_SCOPE_INVALID: '供应商合同导出范围不正确，请刷新页面后重试'/)
+  assert.match(errorSource, /CONTRACT_EXPORT_PARAMETER_INVALID: '当前导出层级包含不支持的筛选条件'/)
+  assert.match(errorSource, /CONTRACT_EXPORT_SUPPLIER_REQUIRED: '导出二级汇总时必须选择当前供应商'/)
+  assert.match(errorSource, /CONTRACT_EXPORT_CATEGORY_NOT_ALLOWED: '当前导出层级不能指定合同类型'/)
+  assert.match(errorSource, /CONTRACT_EXPORT_DETAIL_CONTEXT_INVALID: '导出三级明细时，请同时选择供应商和合同类型'/)
+  assert.match(errorSource, /CONTRACT_IMPORT_OVERSTORAGE_DAYS_INVALID: '合同导入文件中的超储天数不能超过 200 个字符'/)
+  assert.match(errorSource, /CONTRACT_SETTLEMENT_MONTH_RANGE_INVALID: '开始月份不能晚于结束月份'/)
+  assert.match(errorSource, /CONTRACT_SETTLEMENT_MONTH_FILTER_CONFLICT: '单月筛选不能与月份区间同时使用'/)
+})
+
+test('supplier contract export buttons request an explicit workbook level', () => {
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  const detailSource = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+
+  assert.match(supplierSource, /导出主表汇总/)
+  assert.match(supplierSource, /导出汇总/)
+  assert.match(supplierSource, /scope: 'overview'/)
+  assert.match(supplierSource, /scope: 'detail'/)
+  assert.match(detailSource, /scope: category \? 'detail' : 'secondary'/)
+  assert.match(detailSource, /supplierId: supplierId\.value/)
+  assert.match(detailSource, /category: category \|\| undefined/)
+})
+
+test('contract text fields honor their field-specific input limits and guidance', () => {
+  const contractUtilsSource = readFileSync(new URL('../src/utils/contract.js', import.meta.url), 'utf8')
+  const detailSource = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+
+  assert.match(contractUtilsSource, /field\('overstorageDays', '超储天数', 'text', \{ maxlength: 200, placeholder: '如：60天、90天、免超储费' \}\)/)
+  assert.match(detailSource, /:maxlength="item\.maxlength \|\| 500"/)
+  assert.match(detailSource, /:placeholder="item\.placeholder \|\| ''"/)
 })
 
 test('contract routes and menu entries use three independent view permissions', () => {

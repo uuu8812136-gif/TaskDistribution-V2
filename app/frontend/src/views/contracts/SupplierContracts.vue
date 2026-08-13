@@ -10,9 +10,13 @@
           <el-icon><Upload /></el-icon>
           导入三级细表
         </el-button>
-        <el-button v-if="canExport" :loading="exporting" @click="handleExport">
+        <el-button v-if="canExport" :loading="exportingScope === 'overview'" @click="handleExport('overview')">
           <el-icon><Download /></el-icon>
           导出主表汇总
+        </el-button>
+        <el-button v-if="canExport" :loading="exportingScope === 'detail'" @click="handleExport('detail')">
+          <el-icon><Download /></el-icon>
+          导出汇总
         </el-button>
         <el-button v-if="canManage" type="primary" @click="openFirstRecord">
           <el-icon><Plus /></el-icon>
@@ -307,7 +311,7 @@ const router = useRouter()
 const session = useSessionStore()
 const loading = ref(false)
 const loadError = ref('')
-const exporting = ref(false)
+const exportingScope = ref('')
 const importing = ref(false)
 const importVisible = ref(false)
 const firstRecordVisible = ref(false)
@@ -539,14 +543,18 @@ function openDetail(row) {
   })
 }
 
-async function handleExport() {
-  exporting.value = true
+async function handleExport(scope) {
+  exportingScope.value = scope
   try {
-    const blob = await exportSuppliers({ ...queryParams(), page: undefined, pageSize: undefined })
-    saveContractBlob(blob, `供应商合同-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
-    ElMessage.success('供应商合同已导出')
+    const params = scope === 'overview'
+      ? { ...queryParams(), scope: 'overview', page: undefined, pageSize: undefined }
+      : { ...requestTeamParams.value, scope: 'detail' }
+    const blob = await exportSuppliers(params)
+    const label = scope === 'overview' ? '主表汇总' : '三级汇总'
+    saveContractBlob(blob, `供应商合同-${label}-${dayjs().format('YYYYMMDD-HHmm')}.xlsx`)
+    ElMessage.success(`${label}已导出`)
   } finally {
-    exporting.value = false
+    exportingScope.value = ''
   }
 }
 

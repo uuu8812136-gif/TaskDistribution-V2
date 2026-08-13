@@ -292,7 +292,12 @@
               :maxlength="item.maxlength || 2000"
               show-word-limit
             />
-            <el-input v-else v-model="recordForm[item.key]" maxlength="500" />
+            <el-input
+              v-else
+              v-model="recordForm[item.key]"
+              :maxlength="item.maxlength || 500"
+              :placeholder="item.placeholder || ''"
+            />
           </el-form-item>
         </div>
 
@@ -701,10 +706,11 @@ async function handleExport(category = '') {
   try {
     const blob = await exportSuppliers({
       ...requestTeamParams.value,
+      scope: category ? 'detail' : 'secondary',
       supplierId: supplierId.value,
       category: category || undefined
     })
-    const suffix = category ? activeConfig.value.shortLabel : '全部合同'
+    const suffix = category ? activeConfig.value.shortLabel : '二级汇总'
     saveContractBlob(blob, `${supplier.value.code}-${supplier.value.name}-${suffix}.xlsx`)
     ElMessage.success('合同资料已导出')
   } finally {

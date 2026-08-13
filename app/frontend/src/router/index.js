@@ -111,7 +111,7 @@ const router = createRouter({
             permission: 'equipment.view',
             teamRequired: true,
             readOnlyAllowed: true,
-            reuseQueryKeys: ['tab']
+            reuseQueryKeys: ['tab', 'planId', 'exceptionId']
           }
         },
         {

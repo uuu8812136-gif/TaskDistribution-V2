@@ -80,12 +80,7 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
       rootField('expiryDate', '截止日期', 'date'),
       field('warehouseServiceRate', '仓储服务费率'),
       field('overstorageServiceRate', '超储服务费率'),
-      field('overstorageDays', '超储天数', 'select', {
-        options: [
-          { value: 'NONE', label: '无超储' },
-          ...['30+15', '60+15', '90+15'].map((value) => ({ value, label: value }))
-        ]
-      }),
+      field('overstorageDays', '超储天数', 'text', { maxlength: 200, placeholder: '如：60天、90天、免超储费' }),
       field('settlementCycle', '结算周期'),
       rootField('autoRenew', '合同是否自动顺延', 'boolean'),
       field('remarks', '备注', 'textarea', { span: 2, maxlength: 5000 })
@@ -163,10 +158,12 @@ export function booleanLabel(value) {
 }
 
 export function normalizeRecord(record = {}) {
-  return {
+  const normalized = {
     ...record,
     ...(record.details && typeof record.details === 'object' ? record.details : {})
   }
+  if (normalized.overstorageDays === 'NONE') normalized.overstorageDays = '无超储'
+  return normalized
 }
 
 export function emptyRecordDetails(config) {
@@ -221,6 +218,7 @@ export function buildRecordPayload(config, source = {}, attachments = []) {
 }
 
 export function formatContractField(value, item) {
+  if (item.key === 'overstorageDays' && value === 'NONE') return '无超储'
   if (item.type === 'boolean') return booleanLabel(value)
   if (item.type === 'signingStatus') return optionLabel(SIGNING_STATUS_OPTIONS, value)
   if (item.type === 'date') return value && dayjs(value).isValid() ? dayjs(value).format('YYYY-MM-DD') : '-'

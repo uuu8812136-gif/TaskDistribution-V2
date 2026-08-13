@@ -31,7 +31,16 @@
       >
         <el-option v-for="team in session.teams" :key="team._id" :label="team.name" :value="team._id" />
       </el-select>
-      <el-date-picker v-model="filters.month" type="month" value-format="YYYY-MM" placeholder="月份" />
+      <el-date-picker
+        v-model="filters.monthRange"
+        type="monthrange"
+        value-format="YYYY-MM"
+        range-separator="至"
+        start-placeholder="开始月份"
+        end-placeholder="结束月份"
+        class="month-range"
+        unlink-panels
+      />
       <el-input v-model="filters.supplierCode" clearable placeholder="供应商编码（精确）" @keyup.enter="applyFilters" />
       <el-input v-model="filters.supplierName" clearable placeholder="供应商名称" @keyup.enter="applyFilters">
         <template #prefix><el-icon><Search /></el-icon></template>
@@ -298,7 +307,7 @@ const importFile = ref(null)
 let listRequestId = 0
 
 const filters = reactive({
-  month: '',
+  monthRange: [],
   supplierCode: '',
   supplierName: '',
   hasSignedContract: '',
@@ -348,7 +357,8 @@ function emptyForm() {
 function queryParams() {
   return {
     ...requestTeamParams.value,
-    month: filters.month || undefined,
+    startMonth: filters.monthRange?.[0] || undefined,
+    endMonth: filters.monthRange?.[1] || undefined,
     supplierCode: filters.supplierCode.trim() || undefined,
     supplierName: filters.supplierName.trim() || undefined,
     hasSignedContract: filters.hasSignedContract === '' ? undefined : filters.hasSignedContract,
@@ -416,7 +426,7 @@ function applyFilters() {
 
 function resetFilters() {
   Object.assign(filters, {
-    month: '', supplierCode: '', supplierName: '', hasSignedContract: '', contractValid: '', page: 1
+    monthRange: [], supplierCode: '', supplierName: '', hasSignedContract: '', contractValid: '', page: 1
   })
   loadSettlements()
 }
@@ -556,6 +566,7 @@ onMounted(initialize)
 .settlement-toolbar { margin-bottom: 14px; }
 .settlement-toolbar .team-select { width: 190px; }
 .settlement-toolbar .el-input, .settlement-toolbar .el-date-editor { width: 180px; }
+.settlement-toolbar .month-range { width: 280px; }
 .settlement-toolbar .el-select { width: 150px; }
 .totals-band { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 16px; border-block: 1px solid var(--zl-border-soft); }
 .totals-band > div { min-width: 0; padding: 12px 16px; border-right: 1px solid var(--zl-border-soft); }

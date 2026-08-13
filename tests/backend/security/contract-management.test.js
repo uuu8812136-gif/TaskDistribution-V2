@@ -9,6 +9,7 @@ const { after, before, beforeEach, test } = require('node:test');
 const appRequire = require('../helpers/appRequire');
 
 const ExcelJS = appRequire('exceljs');
+const XLSX = appRequire('xlsx');
 const mongoose = appRequire('mongoose');
 const { MongoMemoryReplSet } = appRequire('mongodb-memory-server');
 
@@ -380,6 +381,14 @@ test('settlement totals cover the full filtered result and status is dynamically
     supplierId: second._id, month: '2026-08', productLaunchAmount: 1,
     warehousingLogisticsFee: 2, overstorageProductAmount: 3, overstorageLogisticsFee: 4
   } });
+  await service.createSettlement({ authContext: fixture.contextA, input: {
+    supplierId: first._id, month: '2026-07', productLaunchAmount: 100,
+    warehousingLogisticsFee: 200, overstorageProductAmount: 300, overstorageLogisticsFee: 400
+  } });
+  await service.createSettlement({ authContext: fixture.contextA, input: {
+    supplierId: first._id, month: '2026-09', productLaunchAmount: 1000,
+    warehousingLogisticsFee: 2000, overstorageProductAmount: 3000, overstorageLogisticsFee: 4000
+  } });
   const result = await service.listSettlements({ authContext: fixture.contextA,
     query: { month: '2026-08', pageSize: 1 } });
   assert.equal(result.settlements.length, 1);
@@ -392,7 +401,39 @@ test('settlement totals cover the full filtered result and status is dynamically
   });
   const signed = await service.listSettlements({ authContext: fixture.contextA,
     query: { hasSignedContract: true } });
-  assert.deepEqual(signed.settlements.map((item) => item.supplierCode), ['SET-1']);
+  assert.deepEqual(signed.settlements.map((item) => item.supplierCode), ['SET-1', 'SET-1', 'SET-1']);
+
+  const ranged = await service.listSettlements({ authContext: fixture.contextA,
+    query: { startMonth: '2026-07', endMonth: '2026-08', pageSize: 1 } });
+  assert.equal(ranged.settlements.length, 1);
+  assert.equal(ranged.total, 3);
+  assert.deepEqual(ranged.totals, {
+    productLaunchAmount: 111,
+    warehousingLogisticsFee: 222,
+    overstorageProductAmount: 333,
+    overstorageLogisticsFee: 444
+  });
+
+  const exported = await service.settlementExport({ authContext: fixture.contextA,
+    query: { startMonth: '2026-07', endMonth: '2026-08' } });
+  const exportBook = XLSX.read(exported.buffer, { type: 'buffer' });
+  const exportRows = XLSX.utils.sheet_to_json(exportBook.Sheets[exportBook.SheetNames[0]], {
+    header: 1,
+    defval: ''
+  });
+  assert.equal(exported.count, 3);
+  assert.deepEqual(exportRows.slice(1).map((row) => row[1]).sort(), ['2026-07', '2026-08', '2026-08']);
+
+  await assert.rejects(service.listSettlements({ authContext: fixture.contextA,
+    query: { startMonth: '2026-09', endMonth: '2026-08' } }), {
+    status: 400,
+    code: 'CONTRACT_SETTLEMENT_MONTH_RANGE_INVALID'
+  });
+  await assert.rejects(service.listSettlements({ authContext: fixture.contextA,
+    query: { month: '2026-08', startMonth: '2026-07', endMonth: '2026-08' } }), {
+    status: 400,
+    code: 'CONTRACT_SETTLEMENT_MONTH_FILTER_CONFLICT'
+  });
 });
 
 test('standalone supplier writes are absent and orphan projections stay out of all three views', async () => {
@@ -422,7 +463,7 @@ test('standalone supplier writes are absent and orphan projections stay out of a
   }), { status: 409, code: 'CONTRACT_SUPPLIER_TERTIARY_RECORD_REQUIRED' });
   await assert.rejects(service.supplierExport({
     authContext: fixture.contextA,
-    query: { supplierId: orphan._id }
+    query: { scope: 'detail', supplierId: orphan._id, category: 'SUPPLIER_INFO' }
   }), { status: 404, code: 'CONTRACT_SUPPLIER_NOT_FOUND' });
 });
 
@@ -619,7 +660,7 @@ test('concurrent final-record deletion and settlement import cannot leave orphan
   }
 });
 
-test('supplier export honors derived filters and keeps full secondary counts for category exports', async () => {
+test('supplier export scopes honor filters and isolate overview, secondary, and detail sheets', async () => {
   const included = await supplier(fixture.contextA, 'EXPORT-IN', 'Export Included');
   await record(fixture.contextA, included._id, {
     contractNumber: 'EXPORT-MAIN',
@@ -640,28 +681,112 @@ test('supplier export honors derived filters and keeps full secondary counts for
     input: { trusteeAttribute: 'NON_HOSTED' }
   });
 
-  const result = await service.supplierExport({
+  const overviewResult = await service.supplierExport({
     authContext: fixture.contextA,
     query: {
+      scope: 'overview',
       trusteeAttribute: 'HOSTED',
       hasSignedContract: false,
-      contractValid: true,
-      category: 'MAIN_SERVICE_AGREEMENT'
+      contractValid: true
     }
   });
-  assert.equal(result.supplierCount, 1);
-  assert.equal(result.recordCount, 1);
-  const workbook = new ExcelJS.Workbook();
-  await workbook.xlsx.load(result.buffer);
-  const overview = workbook.getWorksheet('主表（供应商合同管理）');
+  assert.equal(overviewResult.supplierCount, 1);
+  assert.equal(overviewResult.recordCount, 0);
+  assert.equal(overviewResult.exportedCount, 1);
+  const overviewWorkbook = new ExcelJS.Workbook();
+  await overviewWorkbook.xlsx.load(overviewResult.buffer);
+  assert.deepEqual(overviewWorkbook.worksheets.map(({ name }) => name), ['主表（供应商合同管理）']);
+  const overview = overviewWorkbook.getWorksheet('主表（供应商合同管理）');
   assert.equal(overview.rowCount, 3);
   assert.equal(overview.getRow(3).getCell(3).value, 'EXPORT-IN');
-  const secondary = workbook.getWorksheet('二级细表（供应商合同管理）');
+
+  const secondaryResult = await service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'secondary', supplierId: included._id }
+  });
+  const secondaryWorkbook = new ExcelJS.Workbook();
+  assert.equal(secondaryResult.exportedCount, 1);
+  await secondaryWorkbook.xlsx.load(secondaryResult.buffer);
+  assert.deepEqual(secondaryWorkbook.worksheets.map(({ name }) => name), ['二级细表（供应商合同管理）']);
+  const secondary = secondaryWorkbook.getWorksheet('二级细表（供应商合同管理）');
   assert.equal(secondary.getRow(3).getCell(5).value, 1);
   assert.equal(secondary.getRow(3).getCell(6).value, 1);
-  const details = workbook.getWorksheet('三级细表（供应商合同管理）');
+
+  const detailResult = await service.supplierExport({
+    authContext: fixture.contextA,
+    query: {
+      scope: 'detail', supplierId: included._id, category: 'MAIN_SERVICE_AGREEMENT'
+    }
+  });
+  assert.equal(detailResult.supplierCount, 1);
+  assert.equal(detailResult.recordCount, 1);
+  assert.equal(detailResult.exportedCount, 1);
+  const detailWorkbook = new ExcelJS.Workbook();
+  await detailWorkbook.xlsx.load(detailResult.buffer);
+  assert.deepEqual(detailWorkbook.worksheets.map(({ name }) => name), ['三级细表（供应商合同管理）']);
+  const details = detailWorkbook.getWorksheet('三级细表（供应商合同管理）');
   assert.equal(details.rowCount, 3);
   assert.equal(details.getRow(3).getCell(14).value, 'EXPORT-MAIN');
+
+  const allDetailsResult = await service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'detail' }
+  });
+  assert.equal(allDetailsResult.supplierCount >= 2, true);
+  assert.equal(allDetailsResult.recordCount >= 5, true);
+  const allDetailsWorkbook = new ExcelJS.Workbook();
+  await allDetailsWorkbook.xlsx.load(allDetailsResult.buffer);
+  assert.equal(allDetailsWorkbook.worksheets[0].name, '三级细表（供应商合同管理）');
+  assert.equal(allDetailsWorkbook.worksheets[0].columnCount, 57);
+  const exportAudit = await AuditLog.findOne({
+    action: permissions.AUDIT_ACTIONS.EXPORT,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
+    targetTeamId: fixture.teamA,
+    'after.scope': 'detail'
+  }).sort({ createdAt: -1 }).lean();
+  assert.deepEqual(exportAudit.after, {
+    supplierCount: allDetailsResult.supplierCount,
+    recordCount: allDetailsResult.recordCount,
+    scope: 'detail',
+    supplierId: null,
+    category: null
+  });
+});
+
+test('supplier export rejects unknown or contradictory scopes', async () => {
+  const created = await supplier(fixture.contextA, 'EXPORT-VALIDATION');
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'unknown' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_SCOPE_INVALID' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'secondary' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_SUPPLIER_REQUIRED' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'secondary', supplierId: created._id, category: 'SUPPLIER_INFO' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_CATEGORY_NOT_ALLOWED' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'overview', category: 'SUPPLIER_INFO' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_CATEGORY_NOT_ALLOWED' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'secondary', supplierId: created._id, name: 'ignored filter' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_PARAMETER_INVALID' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'detail', contractValid: true }
+  }), { status: 400, code: 'CONTRACT_EXPORT_PARAMETER_INVALID' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'detail', supplierId: created._id }
+  }), { status: 400, code: 'CONTRACT_EXPORT_DETAIL_CONTEXT_INVALID' });
+  await assert.rejects(service.supplierExport({
+    authContext: fixture.contextA,
+    query: { scope: 'detail', category: 'SUPPLIER_INFO' }
+  }), { status: 400, code: 'CONTRACT_EXPORT_DETAIL_CONTEXT_INVALID' });
 });
 
 test('contract attachment purpose binds atomically and record delete marks the file deleted', async () => {

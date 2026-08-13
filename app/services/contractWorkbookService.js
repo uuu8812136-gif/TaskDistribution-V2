@@ -17,7 +17,7 @@ const DETAIL_HEADERS = Object.freeze([
   '载信给供应商回寄合同的快递单号', '合同交付给载信商务部的日期',
   '合同交付给济南变速箱厂的日期', '合同PDF（上传）', '合同是否自动顺延',
   '物流服务费用及支付方式协定', '合同生效日期', '合同截止日期',
-  '仓储服务费率', '超储服务费率', '超储天数（无超储/30+15/60+15/90+15）', '结算周期', '备注',
+  '仓储服务费率', '超储服务费率', '超储天数', '结算周期', '备注',
   '周转器具服务协议', '合同编号', '合同生效日期', '合同截止日期',
   '器具类型', '器具服务价格\n（元/个/次）', '供应商签署合同日期', '载信签署合同日期',
   '载信给供应商回寄合同的日期', '载信给供应商回寄合同的快递单号',
@@ -111,13 +111,13 @@ function parseSupplyStatus(value) {
 }
 
 function parseOverstorageDays(value) {
-  const normalized = text(value).replace('无超期', '无超储');
+  const normalized = text(value);
   if (!normalized) return null;
-  if (/无超储|^无$/.test(normalized)) return 'NONE';
-  if (normalized.includes('30+15')) return '30+15';
-  if (normalized.includes('60+15')) return '60+15';
-  if (normalized.includes('90+15')) return '90+15';
-  throw workbookError('CONTRACT_IMPORT_OVERSTORAGE_DAYS_INVALID', `无法识别超储天数：${normalized}`);
+  if (['无', '无超期', '无超储'].includes(normalized)) return 'NONE';
+  if (normalized.length > 200) {
+    throw workbookError('CONTRACT_IMPORT_OVERSTORAGE_DAYS_INVALID', '超储天数不能超过200个字符');
+  }
+  return normalized;
 }
 
 function dateOnlyFromParts(year, month, day) {
@@ -234,9 +234,19 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       `Excel必须包含“${DETAIL_SHEET_NAME}”工作表`
     );
   }
-  DETAIL_HEADERS.forEach((expected, columnIndex) => (
-    assertHeader(detailSheet, 1, columnIndex, expected, DETAIL_SHEET_NAME)
-  ));
+  DETAIL_HEADERS.forEach((expected, columnIndex) => {
+    if (columnIndex === 29) {
+      const actual = text(cellValue(detailSheet, 1, columnIndex));
+      if (![expected, '超储天数（无超储/30+15/60+15/90+15）'].includes(actual)) {
+        throw workbookError(
+          'CONTRACT_IMPORT_TEMPLATE_INVALID',
+          `${DETAIL_SHEET_NAME}表头不匹配：第2行第30列应为“${expected}”`
+        );
+      }
+      return;
+    }
+    assertHeader(detailSheet, 1, columnIndex, expected, DETAIL_SHEET_NAME);
+  });
 
   let extracted;
   try {
@@ -506,17 +516,23 @@ function styleWorksheet(sheet, { headerRow = 1 } = {}) {
   sheet.columns.forEach((column) => { column.width = Math.min(30, Math.max(12, column.header?.length || 12)); });
 }
 
-async function createSupplierExportWorkbook({ suppliers, records, category = null }) {
+async function createSupplierExportWorkbook({ scope, suppliers, records, category = null }) {
   const workbook = new ExcelJS.Workbook();
-  const overview = workbook.addWorksheet(SUPPLIER_SHEET_NAME);
-  overview.addRow(['一级主表']);
-  overview.addRow(SUPPLIER_HEADERS);
-  suppliers.forEach((supplier, index) => overview.addRow([
-    index + 1, formulaSafe(supplier.name), formulaSafe(supplier.code),
-    supplier.trusteeAttribute === 'HOSTED' ? '托管' : '非托',
-    supplier.hasSignedContract ? '是' : '否', supplier.contractValid ? '有效' : '到期'
-  ]));
-  styleWorksheet(overview, { headerRow: 2 });
+  if (!['overview', 'secondary', 'detail'].includes(scope)) {
+    throw workbookError('CONTRACT_EXPORT_SCOPE_INVALID', '供应商合同导出范围不正确');
+  }
+
+  if (scope === 'overview') {
+    const overview = workbook.addWorksheet(SUPPLIER_SHEET_NAME);
+    overview.addRow(['一级主表']);
+    overview.addRow(SUPPLIER_HEADERS);
+    suppliers.forEach((supplier, index) => overview.addRow([
+      index + 1, formulaSafe(supplier.name), formulaSafe(supplier.code),
+      supplier.trusteeAttribute === 'HOSTED' ? '托管' : '非托',
+      supplier.hasSignedContract ? '是' : '否', supplier.contractValid ? '有效' : '到期'
+    ]));
+    styleWorksheet(overview, { headerRow: 2 });
+  }
 
   const recordsBySupplier = new Map();
   for (const record of records) {
@@ -525,41 +541,46 @@ async function createSupplierExportWorkbook({ suppliers, records, category = nul
     grouped.push(record);
     recordsBySupplier.set(key, grouped);
   }
-  const secondary = workbook.addWorksheet('二级细表（供应商合同管理）');
-  secondary.addRow(['二级汇总']);
-  secondary.addRow([
-    '供应商编码', '供应商名称', '托管属性',
-    '供应商基本信息', '主合同签订情况',
-    '物流服务费用及支付方式协定', '周转器具服务协议', '器具租赁'
-  ]);
-  suppliers.forEach((supplier) => {
-    const supplierRecords = recordsBySupplier.get(String(supplier._id)) || [];
-    const count = (recordCategory) => supplierRecords.filter(
-      (record) => record.category === recordCategory
-    ).length;
+  if (scope === 'secondary') {
+    const secondary = workbook.addWorksheet('二级细表（供应商合同管理）');
+    secondary.addRow(['二级汇总']);
     secondary.addRow([
-      formulaSafe(supplier.code), formulaSafe(supplier.name),
-      supplier.trusteeAttribute === 'HOSTED' ? '托管' : '非托',
-      count('SUPPLIER_INFO'), count('MAIN_SERVICE_AGREEMENT'),
-      count('LOGISTICS_FEE_AGREEMENT'), count('TURNOVER_EQUIPMENT_SERVICE'),
-      count('EQUIPMENT_RENTAL')
+      '供应商编码', '供应商名称', '托管属性',
+      '供应商基本信息', '主合同签订情况',
+      '物流服务费用及支付方式协定', '周转器具服务协议', '器具租赁'
     ]);
-  });
-  styleWorksheet(secondary, { headerRow: 2 });
+    suppliers.forEach((supplier) => {
+      const supplierRecords = recordsBySupplier.get(String(supplier._id)) || [];
+      const count = (recordCategory) => supplierRecords.filter(
+        (record) => record.category === recordCategory
+      ).length;
+      secondary.addRow([
+        formulaSafe(supplier.code), formulaSafe(supplier.name),
+        supplier.trusteeAttribute === 'HOSTED' ? '托管' : '非托',
+        count('SUPPLIER_INFO'), count('MAIN_SERVICE_AGREEMENT'),
+        count('LOGISTICS_FEE_AGREEMENT'), count('TURNOVER_EQUIPMENT_SERVICE'),
+        count('EQUIPMENT_RENTAL')
+      ]);
+    });
+    styleWorksheet(secondary, { headerRow: 2 });
+  }
 
-  const details = workbook.addWorksheet(DETAIL_SHEET_NAME);
-  details.addRow([]);
-  details.addRow(DETAIL_HEADERS);
   const suppliersById = new Map(suppliers.map((supplier) => [String(supplier._id), supplier]));
-  let index = 1;
-  records.filter((record) => !category || record.category === category).forEach((record) => {
-    const supplier = suppliersById.get(String(record.supplierId));
-    if (supplier) details.addRow(recordExportRow(record, supplier, index++));
-  });
-  styleWorksheet(details, { headerRow: 2 });
+  const detailRecords = records.filter((record) => !category || record.category === category);
+  if (scope === 'detail') {
+    const details = workbook.addWorksheet(DETAIL_SHEET_NAME);
+    details.addRow([]);
+    details.addRow(DETAIL_HEADERS);
+    let index = 1;
+    detailRecords.forEach((record) => {
+      const supplier = suppliersById.get(String(record.supplierId));
+      if (supplier) details.addRow(recordExportRow(record, supplier, index++));
+    });
+    styleWorksheet(details, { headerRow: 2 });
+  }
 
   const attachmentRows = [];
-  for (const record of records.filter((item) => !category || item.category === category)) {
+  for (const record of scope === 'detail' ? detailRecords : []) {
     const supplier = suppliersById.get(String(record.supplierId));
     if (!supplier) continue;
     for (const attachment of record.attachments || []) {

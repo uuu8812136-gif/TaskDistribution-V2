@@ -49,6 +49,14 @@ const CONTRACT_CATEGORIES = Object.freeze(CATEGORY_VALUES.filter(
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_IMPORT_FILE_SIZE = 20 * 1024 * 1024;
 const EXCEL_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const SUPPLIER_EXPORT_QUERY_KEYS = Object.freeze({
+  overview: new Set([
+    'scope', 'teamId', 'supplierId', 'code', 'name', 'trusteeAttribute',
+    'hasSignedContract', 'contractValid', 'category'
+  ]),
+  secondary: new Set(['scope', 'teamId', 'supplierId', 'category']),
+  detail: new Set(['scope', 'teamId', 'supplierId', 'category'])
+});
 
 const DETAIL_FIELDS_BY_CATEGORY = Object.freeze({
   [CONTRACT_RECORD_CATEGORIES.SUPPLIER_INFO]: Object.freeze([
@@ -301,8 +309,7 @@ function normalizeDetails(category, value) {
       else normalized[field] = fieldValue;
     } else if (field === 'overstorageDays') {
       if (fieldValue === undefined || fieldValue === null || fieldValue === '') normalized[field] = null;
-      else if (!['NONE', '30+15', '60+15', '90+15'].includes(fieldValue)) throw contractError(400, 'CONTRACT_INPUT_INVALID', '超储天数不正确');
-      else normalized[field] = fieldValue;
+      else normalized[field] = optionalText(fieldValue, '超储天数', 200);
     } else normalized[field] = optionalText(fieldValue, field, field === 'remarks' ? 5000 : 2000);
   }
   return normalized;
@@ -780,6 +787,33 @@ function createContractManagementService({
 
   async function supplierExport({ authContext, req, requestedTeamId, query = {} }) {
     const teamId = await teamForRead(authContext, requestedTeamId, 'contract.supplier.export');
+    const scope = String(query.scope || '').trim();
+    if (!['overview', 'secondary', 'detail'].includes(scope)) {
+      throw contractError(400, 'CONTRACT_EXPORT_SCOPE_INVALID', '供应商合同导出范围不正确');
+    }
+    const unexpectedParameter = Object.keys(query).find(
+      (key) => !SUPPLIER_EXPORT_QUERY_KEYS[scope].has(key)
+    );
+    if (unexpectedParameter) {
+      throw contractError(
+        400,
+        'CONTRACT_EXPORT_PARAMETER_INVALID',
+        `当前导出范围不支持参数：${unexpectedParameter}`
+      );
+    }
+    if (scope === 'secondary' && !query.supplierId) {
+      throw contractError(400, 'CONTRACT_EXPORT_SUPPLIER_REQUIRED', '导出二级汇总必须指定供应商');
+    }
+    if (scope !== 'detail' && query.category) {
+      throw contractError(400, 'CONTRACT_EXPORT_CATEGORY_NOT_ALLOWED', '当前导出范围不能指定合同类型');
+    }
+    if (scope === 'detail' && Boolean(query.supplierId) !== Boolean(query.category)) {
+      throw contractError(
+        400,
+        'CONTRACT_EXPORT_DETAIL_CONTEXT_INVALID',
+        '导出三级明细时，供应商和合同类型必须同时指定或同时留空'
+      );
+    }
     const supplierFilter = { teamId };
     const linkedSupplierIds = await ContractRecordModel.distinct('supplierId', { teamId });
     if (query.supplierId) {
@@ -811,14 +845,18 @@ function createContractManagementService({
       (hasSigned === null || supplier.hasSignedContract === hasSigned) &&
       (contractValid === null || supplier.contractValid === contractValid)
     ));
+    const needsRecords = scope !== 'overview';
     const recordFilter = { teamId, supplierId: { $in: filteredSuppliers.map((supplier) => supplier._id) } };
-    const records = filteredSuppliers.length
+    const records = needsRecords && filteredSuppliers.length
       ? await ContractRecordModel.find(recordFilter).sort({ supplierId: 1, category: 1, effectiveDate: -1, createdAt: -1 }).lean()
       : [];
-    const exportedRecordCount = query.category
+    const exportedRecordCount = scope === 'overview'
+      ? 0
+      : query.category
       ? records.filter((record) => record.category === query.category).length
       : records.length;
     const buffer = await createSupplierExportWorkbook({
+      scope,
       suppliers: filteredSuppliers,
       records,
       category: query.category || null
@@ -826,8 +864,15 @@ function createContractManagementService({
     await auditService.record({ req, authContext, action: AUDIT_ACTIONS.EXPORT,
       resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
       targetTeamId: teamId, after: { supplierCount: filteredSuppliers.length, recordCount: exportedRecordCount,
-        supplierId: query.supplierId || null, category: query.category || null } });
-    return { buffer, supplierCount: filteredSuppliers.length, recordCount: exportedRecordCount };
+        scope, supplierId: query.supplierId || null, category: query.category || null } });
+    const exportedCount = scope === 'detail' ? exportedRecordCount : filteredSuppliers.length;
+    return {
+      buffer,
+      scope,
+      exportedCount,
+      supplierCount: filteredSuppliers.length,
+      recordCount: exportedRecordCount
+    };
   }
 
   function importedMediaStorageRoot() {
@@ -1105,9 +1150,32 @@ function createContractManagementService({
   async function settlementRows({ authContext, requestedTeamId, query = {}, permissionKey = 'contract.settlement.view' }) {
     const teamId = await teamForRead(authContext, requestedTeamId, permissionKey);
     const filter = { teamId };
+    if (query.month && (query.startMonth || query.endMonth)) {
+      throw contractError(
+        400,
+        'CONTRACT_SETTLEMENT_MONTH_FILTER_CONFLICT',
+        '单月筛选不能与月份区间同时使用'
+      );
+    }
+    let startMonth;
+    let endMonth;
+    try {
+      startMonth = query.startMonth ? parseMonth(query.startMonth) : null;
+      endMonth = query.endMonth ? parseMonth(query.endMonth) : null;
+    } catch {
+      throw contractError(400, 'CONTRACT_SETTLEMENT_MONTH_INVALID', '月份格式必须是YYYY-MM');
+    }
+    if (startMonth && endMonth && startMonth > endMonth) {
+      throw contractError(400, 'CONTRACT_SETTLEMENT_MONTH_RANGE_INVALID', '开始月份不能晚于结束月份');
+    }
     if (query.month) {
       try { filter.month = parseMonth(query.month); }
       catch { throw contractError(400, 'CONTRACT_SETTLEMENT_MONTH_INVALID', '月份格式必须是YYYY-MM'); }
+    } else if (startMonth || endMonth) {
+      filter.month = {
+        ...(startMonth ? { $gte: startMonth } : {}),
+        ...(endMonth ? { $lte: endMonth } : {})
+      };
     }
     if (query.supplierCode) filter.supplierCode = requiredText(query.supplierCode, '供应商编码', 100);
     if (query.supplierName) filter.supplierName = { $regex: escapeRegex(requiredText(query.supplierName, '供应商名称')), $options: 'i' };
