@@ -136,6 +136,7 @@ import {
 } from '@/api/equipment'
 import { useSessionStore } from '@/stores/session'
 import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
+import { isStaleContextResponseError, requestErrorMessage } from '@/utils/request'
 import {
   CATEGORY_STATUS_OPTIONS,
   buildCategoryTree,
@@ -157,6 +158,7 @@ const keyword = ref('')
 const showDisabled = ref(true)
 const form = reactive(emptyForm())
 let categoriesRequestId = 0
+let mutationContextRevision = 0
 let categoriesRequestPending = false
 let loadedTeamSnapshot = ''
 let pageActive = true
@@ -258,10 +260,13 @@ function isCurrentCategoryRequest(requestId, requestedTeamSnapshot) {
 function invalidateCategoryResults() {
   confirmationGuard.invalidate()
   categoriesRequestId += 1
+  mutationContextRevision += 1
   categoriesRequestPending = false
   loadedTeamSnapshot = ''
   categories.value = []
   loading.value = false
+  submitting.value = false
+  deletingId.value = ''
   dialogVisible.value = false
   resetForm()
 }
@@ -321,8 +326,11 @@ function openEdit(item) {
 }
 
 async function submitForm() {
+  const mutationRevision = mutationContextRevision
+  const context = confirmationGuard.capture()
   const valid = await formRef.value?.validate().catch(() => false)
-  if (!valid) return
+  if (!valid || mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(context)) return
+  const editing = Boolean(editingId.value)
   submitting.value = true
   try {
     const payload = {
@@ -331,13 +339,21 @@ async function submitForm() {
       sortOrder: Number(form.sortOrder),
       reason: form.reason.trim() || null
     }
-    if (editingId.value) await updateEquipmentCategory(editingId.value, payload)
+    if (editing) await updateEquipmentCategory(editingId.value, payload)
     else await createEquipmentCategory(payload)
-    ElMessage.success(editingId.value ? '分类已更新' : '分类已创建')
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(context)) return
+    ElMessage.success(editing ? '分类已更新' : '分类已创建')
     dialogVisible.value = false
     await loadCategories()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(context)
+    ) return
+    ElMessage.error(requestErrorMessage(error, editing ? '分类更新失败，请稍后重试' : '分类创建失败，请稍后重试'))
   } finally {
-    submitting.value = false
+    if (mutationRevision === mutationContextRevision) submitting.value = false
   }
 }
 
@@ -354,19 +370,41 @@ async function disableCategory(item) {
     throw error
   }
   if (!confirmationGuard.isCurrent(confirmation)) return
-  await disableEquipmentCategory(item._id, { reason: '后台分类管理停用' })
-  if (!confirmationGuard.isCurrent(confirmation)) return
-  ElMessage.success('分类已停用')
-  await loadCategories()
+  const mutationRevision = mutationContextRevision
+  try {
+    await disableEquipmentCategory(item._id, { reason: '后台分类管理停用' })
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(confirmation)) return
+    ElMessage.success('分类已停用')
+    await loadCategories()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '分类停用失败，请稍后重试'))
+  }
 }
 
 async function enableCategory(item) {
-  await updateEquipmentCategory(item._id, {
-    status: 'ACTIVE',
-    reason: '后台分类管理启用'
-  })
-  ElMessage.success('分类已启用')
-  await loadCategories()
+  const mutationRevision = mutationContextRevision
+  const context = confirmationGuard.capture()
+  try {
+    await updateEquipmentCategory(item._id, {
+      status: 'ACTIVE',
+      reason: '后台分类管理启用'
+    })
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(context)) return
+    ElMessage.success('分类已启用')
+    await loadCategories()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(context)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '分类启用失败，请稍后重试'))
+  }
 }
 
 async function deleteCategory(item) {
@@ -387,14 +425,22 @@ async function deleteCategory(item) {
     throw error
   }
   if (!confirmationGuard.isCurrent(confirmation)) return
+  const mutationRevision = mutationContextRevision
   deletingId.value = item._id
   try {
     await deleteEquipmentCategory(item._id, { reason: '后台分类管理永久删除' })
-    if (!confirmationGuard.isCurrent(confirmation)) return
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(confirmation)) return
     ElMessage.success('分类已删除')
     await loadCategories()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '分类删除失败，请稍后重试'))
   } finally {
-    deletingId.value = ''
+    if (mutationRevision === mutationContextRevision) deletingId.value = ''
   }
 }
 
@@ -418,10 +464,13 @@ function deactivateCategoriesPage() {
   resumeCategoriesLoad = resumeCategoriesLoad || categoriesRequestPending || loading.value
   pageActive = false
   confirmationGuard.invalidate()
+  mutationContextRevision += 1
   wasDeactivated = true
   categoriesRequestId += 1
   categoriesRequestPending = false
   loading.value = false
+  submitting.value = false
+  deletingId.value = ''
   dialogVisible.value = false
 }
 

@@ -221,6 +221,7 @@ import {
 } from '@/api/equipment'
 import { useSessionStore } from '@/stores/session'
 import { createPageConfirmationGuard, pageRequestContextSnapshot } from '@/utils/pageRequestContext'
+import { isStaleContextResponseError, requestErrorMessage } from '@/utils/request'
 import {
   ROUTINE_PHOTO_POLICY_OPTIONS,
   ROUTINE_RULE_STATUS_OPTIONS,
@@ -277,6 +278,7 @@ let wasDeactivated = false
 let categoriesRequestId = 0
 let rulesRequestId = 0
 let ruleDetailRequestId = 0
+let mutationContextRevision = 0
 let categoriesRequestPending = false
 let resumeCategoriesLoad = false
 let resumeRulesLoad = false
@@ -415,8 +417,11 @@ function invalidateRuleTeamContext() {
   categoriesRequestId += 1
   rulesRequestId += 1
   ruleDetailRequestId += 1
+  mutationContextRevision += 1
   categoriesRequestPending = false
   loading.value = false
+  submitting.value = false
+  deletingId.value = ''
   categories.value = []
   rules.value = []
   total.value = 0
@@ -566,19 +571,32 @@ async function openCopy(row) {
 }
 
 async function saveRule(payload) {
+  const mutationRevision = mutationContextRevision
+  const context = confirmationGuard.capture()
+  const editing = Boolean(selectedRule.value?._id && !copying.value)
+  const successMessage = editing
+    ? '规则已更新'
+    : copying.value ? '规则已复制' : '规则已创建'
   submitting.value = true
   try {
-    if (selectedRule.value?._id && !copying.value) {
+    if (editing) {
       await updateEquipmentRoutineRule(selectedRule.value._id, payload)
-      ElMessage.success('规则已更新')
     } else {
       await createEquipmentRoutineRule(payload)
-      ElMessage.success(copying.value ? '规则已复制' : '规则已创建')
     }
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(context)) return
+    ElMessage.success(successMessage)
     dialogVisible.value = false
     await loadRules()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(context)
+    ) return
+    ElMessage.error(requestErrorMessage(error, editing ? '规则更新失败，请稍后重试' : '规则创建失败，请稍后重试'))
   } finally {
-    submitting.value = false
+    if (mutationRevision === mutationContextRevision) submitting.value = false
   }
 }
 
@@ -595,16 +613,38 @@ async function disableRule(row) {
     throw error
   }
   if (!confirmationGuard.isCurrent(confirmation)) return
-  await disableEquipmentRoutineRule(row._id)
-  if (!confirmationGuard.isCurrent(confirmation)) return
-  ElMessage.success('规则已停用')
-  await loadRules()
+  const mutationRevision = mutationContextRevision
+  try {
+    await disableEquipmentRoutineRule(row._id)
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(confirmation)) return
+    ElMessage.success('规则已停用')
+    await loadRules()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '规则停用失败，请稍后重试'))
+  }
 }
 
 async function enableRule(row) {
-  await updateEquipmentRoutineRule(row._id, { status: 'ACTIVE' })
-  ElMessage.success('规则已启用')
-  await loadRules()
+  const mutationRevision = mutationContextRevision
+  const context = confirmationGuard.capture()
+  try {
+    await updateEquipmentRoutineRule(row._id, { status: 'ACTIVE' })
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(context)) return
+    ElMessage.success('规则已启用')
+    await loadRules()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(context)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '规则启用失败，请稍后重试'))
+  }
 }
 
 async function deleteRule(row) {
@@ -625,14 +665,22 @@ async function deleteRule(row) {
     throw error
   }
   if (!confirmationGuard.isCurrent(confirmation)) return
+  const mutationRevision = mutationContextRevision
   deletingId.value = row._id
   try {
     await deleteEquipmentRoutineRule(row._id, { reason: '后台规则管理永久删除' })
-    if (!confirmationGuard.isCurrent(confirmation)) return
+    if (mutationRevision !== mutationContextRevision || !confirmationGuard.isCurrent(confirmation)) return
     ElMessage.success('规则已删除')
     await loadRules()
+  } catch (error) {
+    if (
+      isStaleContextResponseError(error) ||
+      mutationRevision !== mutationContextRevision ||
+      !confirmationGuard.isCurrent(confirmation)
+    ) return
+    ElMessage.error(requestErrorMessage(error, '规则删除失败，请稍后重试'))
   } finally {
-    deletingId.value = ''
+    if (mutationRevision === mutationContextRevision) deletingId.value = ''
   }
 }
 
@@ -669,12 +717,16 @@ onDeactivated(() => {
   categoriesRequestId += 1
   rulesRequestId += 1
   ruleDetailRequestId += 1
+  mutationContextRevision += 1
   loading.value = false
+  submitting.value = false
+  deletingId.value = ''
   dialogVisible.value = false
 })
 onBeforeUnmount(() => {
   pageActive = false
   confirmationGuard.invalidate()
+  mutationContextRevision += 1
 })
 </script>
 

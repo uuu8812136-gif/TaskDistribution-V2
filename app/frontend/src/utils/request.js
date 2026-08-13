@@ -113,6 +113,7 @@ request.interceptors.response.use(
     const localizedError = error.code === 'ERR_CANCELED'
       ? error
       : localizeRequestError(error, fallback)
+    const suppressGlobalError = error.config?.suppressGlobalError === true
 
     if (status === 401 && hadToken && !isLoginRequest) {
       clearAuthToken()
@@ -122,15 +123,15 @@ request.interceptors.response.use(
         advanceRequestContextEpoch()
       }
       ElMessage.error('登录已过期，请重新登录')
-    } else if (status === 403) {
+    } else if (!suppressGlobalError && status === 403) {
       ElMessage.error(localizedError.message)
-    } else if (status === 404) {
+    } else if (!suppressGlobalError && status === 404) {
       ElMessage.error(localizedError.message)
-    } else if (status >= 500) {
+    } else if (!suppressGlobalError && status >= 500) {
       ElMessage.error(localizedError.message)
-    } else if (status && !isLoginRequest) {
+    } else if (!suppressGlobalError && status && !isLoginRequest) {
       ElMessage.error(localizedError.message)
-    } else if (!error.response && error.code !== 'ERR_CANCELED') {
+    } else if (!suppressGlobalError && !error.response && error.code !== 'ERR_CANCELED') {
       ElMessage.error(localizedError.message)
     }
 

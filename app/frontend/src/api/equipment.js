@@ -45,25 +45,29 @@ export const getEquipmentCategories = (params) => request({
 export const createEquipmentCategory = (data) => request({
   url: '/equipment/categories',
   method: 'post',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const updateEquipmentCategory = (categoryId, data) => request({
   url: `/equipment/categories/${categoryId}`,
   method: 'patch',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const disableEquipmentCategory = (categoryId, data = {}) => request({
   url: `/equipment/categories/${categoryId}`,
   method: 'patch',
-  data: { ...data, status: 'DISABLED' }
+  data: { ...data, status: 'DISABLED' },
+  suppressGlobalError: true
 })
 
 export const deleteEquipmentCategory = (categoryId, data = {}) => request({
   url: `/equipment/categories/${categoryId}/permanent`,
   method: 'delete',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const getEquipmentHistory = (equipmentId, params) => request({
@@ -144,25 +148,29 @@ export const getEquipmentRoutineRule = (ruleId, params) => request({
 export const createEquipmentRoutineRule = (data) => request({
   url: '/equipment/routine-rules',
   method: 'post',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const updateEquipmentRoutineRule = (ruleId, data) => request({
   url: `/equipment/routine-rules/${ruleId}`,
   method: 'patch',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const disableEquipmentRoutineRule = (ruleId, data = {}) => request({
   url: `/equipment/routine-rules/${ruleId}`,
   method: 'patch',
-  data: { ...data, status: 'DISABLED' }
+  data: { ...data, status: 'DISABLED' },
+  suppressGlobalError: true
 })
 
 export const deleteEquipmentRoutineRule = (ruleId, data = {}) => request({
   url: `/equipment/routine-rules/${ruleId}/permanent`,
   method: 'delete',
-  data
+  data,
+  suppressGlobalError: true
 })
 
 export const getEquipmentRoutineSchedule = (equipmentId, params) => request({

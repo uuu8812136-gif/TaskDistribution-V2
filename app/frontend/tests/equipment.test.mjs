@@ -349,6 +349,48 @@ test('category and routine rule deletion stays behind the disabled-state permane
   assert.match(api, /`\/equipment\/routine-rules\/\$\{ruleId\}\/permanent`/)
 })
 
+test('category and routine rule writes ignore stale responses after page or team context changes', () => {
+  const categoryView = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentCategories.vue'),
+    'utf8'
+  )
+  const ruleView = fs.readFileSync(
+    path.join(root, 'src/views/equipment/EquipmentRules.vue'),
+    'utf8'
+  )
+
+  for (const source of [categoryView, ruleView]) {
+    assert.match(source, /let mutationContextRevision = 0/)
+    assert.match(source, /import \{ isStaleContextResponseError, requestErrorMessage \} from '@\/utils\/request'/)
+    assert.match(source, /const mutationRevision = mutationContextRevision\s+const context = confirmationGuard\.capture\(\)/)
+    assert.match(source, /mutationRevision !== mutationContextRevision \|\| !confirmationGuard\.isCurrent\(context\)\) return/)
+    assert.match(source, /confirmationGuard\.invalidate\(\)[\s\S]*mutationContextRevision \+= 1/)
+    assert.match(source, /catch \(error\) \{[\s\S]*isStaleContextResponseError\(error\)/)
+    assert.match(source, /ElMessage\.error\(requestErrorMessage\(error,/)
+    assert.match(source, /deletingId\.value = ''/)
+    assert.doesNotMatch(source, /\+\+mutationContextRevision/)
+  }
+
+  assert.match(ruleView, /async function saveRule\(payload\)[\s\S]*await (?:update|create)EquipmentRoutineRule[\s\S]*ElMessage\.success\(successMessage\)/)
+  assert.match(ruleView, /async function (?:disable|enable|delete)Rule[\s\S]*const mutationRevision = mutationContextRevision/)
+  assert.match(categoryView, /async function submitForm\(\)[\s\S]*confirmationGuard\.capture\(\)[\s\S]*await formRef\.value\?\.validate[\s\S]*confirmationGuard\.isCurrent\(context\)[\s\S]*await (?:update|create)EquipmentCategory/)
+  assert.match(categoryView, /async function (?:disable|enable|delete)Category[\s\S]*const mutationRevision = mutationContextRevision/)
+
+  const api = fs.readFileSync(path.join(root, 'src/api/equipment.js'), 'utf8')
+  for (const method of [
+    'createEquipmentCategory',
+    'updateEquipmentCategory',
+    'disableEquipmentCategory',
+    'deleteEquipmentCategory',
+    'createEquipmentRoutineRule',
+    'updateEquipmentRoutineRule',
+    'disableEquipmentRoutineRule',
+    'deleteEquipmentRoutineRule'
+  ]) {
+    assert.match(api, new RegExp(`export const ${method} = [\\s\\S]*?suppressGlobalError: true`))
+  }
+})
+
 test('checklist editor supports repeated additions, stable ordering and a one-item minimum', () => {
   const first = { _localKey: 'item-1', name: '检查制动' }
   const second = { _localKey: 'item-2', name: '检查轮胎' }

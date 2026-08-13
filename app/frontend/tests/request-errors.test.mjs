@@ -144,6 +144,8 @@ test('a caller-specific fallback remains available after the interceptor hides u
 test('Web request interceptor localizes errors before notifications and rejection', () => {
   const source = readFileSync(new URL('../src/utils/request.js', import.meta.url), 'utf8')
   assert.match(source, /localizeRequestError\(error, fallback\)/)
+  assert.match(source, /const suppressGlobalError = error\.config\?\.suppressGlobalError === true/)
+  assert.match(source, /!suppressGlobalError && status >= 500/)
   assert.match(source, /ElMessage\.error\(localizedError\.message\)/)
   assert.match(source, /return Promise\.reject\(localizedError\)/)
 })
