@@ -48,6 +48,14 @@ test('WeChat manifest declares the location purpose and private API', () => {
   assert.deepEqual(weixin.requiredPrivateInfos, ['getLocation'])
 })
 
+test('release manifest matches the current development upload and enforces legal domains', () => {
+  const manifest = readManifest()
+  assert.equal(manifest.versionName, '0.9.20260814.1')
+  assert.equal(manifest.versionCode, '2026081401')
+  assert.equal(manifest['mp-weixin']?.appid, 'wxd8f18985dfd63b89')
+  assert.equal(manifest['mp-weixin']?.setting?.urlCheck, true)
+})
+
 for (const forbidden of [
   'http://www.horselink.cn/api',
   'http://www.horselink.cn./api',
