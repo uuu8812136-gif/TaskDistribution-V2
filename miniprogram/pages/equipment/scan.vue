@@ -55,7 +55,7 @@
           <view class="result-copy">
             <text class="result-kicker">已识别设备</text>
             <text class="equipment-name">{{ equipment.name }}</text>
-            <text class="equipment-code">{{ equipment.assetCode }}</text>
+            <text class="equipment-code">固定资产编号：{{ equipment.assetCode || '-' }}</text>
           </view>
           <text class="equipment-status">{{ statusLabel(equipment.status) }}</text>
         </view>

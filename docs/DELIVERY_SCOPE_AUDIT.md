@@ -489,6 +489,13 @@ PC与小程序最终页面分工仍是客户待确认项；在客户确认前，
 - **Account retention gate**: `npm run verify:super-admin` verifies the nominated account exists, is active, remains `isSuperAdmin=true`, and has zero memberships. Adding a user-level super administrator through the ordinary team-member API is rejected.
 - **Current evidence**: backend, Web and Mini Program focused regressions cover empty permission arrays, ordinary-user denial, global-read-only denial, unknown permission keys and membership-free retention. This is candidate-source evidence only until the new Web release and Mini Program experience version are activated and accepted.
 
+### 2026-08-14 小程序固定资产编号与未来日历配色补丁
+
+- **客户最终口径**：三处截图中的 `CUST26-HDL-004` 来自设备台账 `assetCode/固定资产编号`，不是 `plateNumber/车牌号`。月度点检日历、设备详情和扫码结果均保留原编号值并显式标注“固定资产编号”，不修改设备台账数据。
+- **日历显示口径**：上海日期今天之后，只有 `NO_PLAN` 和尚未到执行日的 `PENDING` 在前端派生为灰色“未到期”；后台明确返回的休班仍为蓝色，正常完成保持绿色，点检异常保持红色，今天及过去的状态不改。
+- **当前证据**：小程序完整测试 `134/134`、46 个 Vue SFC 编译和环境隔离检查通过。源码候选版本为 `0.9.20260814.3`（`2026081403`）。
+- **未越界声明**：本补丁没有修改 API、计划生成 worker、数据库或客户设备数据。HBuilderX 正式构建、微信开发版上传、设为体验版和微信真机验收分别记录，在取得对应证据前不得合并表述为已上线。
+
 ## 14. 下一次“完成”报告的强制门槛
 
 在再次使用“全部完成”前，必须同时满足：

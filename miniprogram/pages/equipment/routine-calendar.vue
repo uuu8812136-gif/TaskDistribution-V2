@@ -9,7 +9,8 @@
       <view class="calendar-header">
         <view class="calendar-heading">
           <text class="calendar-title">月度点检日历</text>
-          <text class="calendar-subtitle">{{ equipment?.name || '设备' }} · {{ equipment?.assetCode || '-' }}</text>
+          <text class="calendar-subtitle">{{ equipment?.name || '设备' }}</text>
+          <text class="calendar-code">固定资产编号：{{ equipment?.assetCode || '-' }}</text>
         </view>
         <view class="month-switcher">
           <button class="month-button" :disabled="loading" @click="changeMonth(-1)">上月</button>
@@ -87,7 +88,8 @@ export default {
       { tone: 'normal', label: '正常完成' },
       { tone: 'pending', label: '未点检/逾期' },
       { tone: 'abnormal', label: '点检异常' },
-      { tone: 'rest', label: '休班无计划' }
+      { tone: 'rest', label: '休班无计划' },
+      { tone: 'upcoming', label: '未到期' }
     ]
     const loadCalendar = async () => {
       if (!canView.value || !equipmentId.value || loading.value) return
@@ -144,9 +146,10 @@ export default {
 .calendar-header, .calendar-band, .state-band { border: 1px solid #dce4ee; border-radius: 8rpx; background: #fff; }
 .calendar-header { padding: 24rpx; }
 .calendar-heading { min-width: 0; }
-.calendar-title, .calendar-subtitle { display: block; }
+.calendar-title, .calendar-subtitle, .calendar-code { display: block; }
 .calendar-title { color: #1f2733; font-size: 32rpx; font-weight: 700; }
 .calendar-subtitle { margin-top: 7rpx; color: #64748b; font-size: 22rpx; overflow-wrap: anywhere; }
+.calendar-code { margin-top: 5rpx; color: #475569; font-size: 22rpx; overflow-wrap: anywhere; }
 .month-switcher { display: grid; grid-template-columns: 112rpx minmax(0, 1fr) 112rpx; align-items: center; gap: 14rpx; margin-top: 22rpx; }
 .month-button { height: 62rpx; line-height: 62rpx; margin: 0; padding: 0; border-radius: 8rpx; color: #1d5fa7; background: #eaf3ff; font-size: 23rpx; }
 .month-label { color: #1f2733; text-align: center; font-size: 29rpx; font-weight: 600; }
@@ -159,6 +162,7 @@ export default {
 .day-pending { border-color: #cbd5e1; background: #fff; }
 .day-abnormal { border-color: #d94a42; background: #ffd6d2; }
 .day-rest { border-color: #3b82f6; background: #dbeafe; }
+.day-upcoming { border-color: #94a3b8; background: #f1f5f9; }
 .day-number, .day-count { display: block; }
 .day-number { color: #1f2733; font-size: 25rpx; font-weight: 600; }
 .day-count { margin-top: 5rpx; color: #64748b; font-size: 18rpx; }
@@ -170,6 +174,7 @@ export default {
 .legend-dot.day-pending { background: #fff; border-color: #cbd5e1; }
 .legend-dot.day-abnormal { background: #ffd6d2; border-color: #d94a42; }
 .legend-dot.day-rest { background: #dbeafe; border-color: #3b82f6; }
+.legend-dot.day-upcoming { background: #f1f5f9; border-color: #94a3b8; }
 .state-band { margin-top: 20rpx; padding: 80rpx 30rpx; text-align: center; }
 .state-title, .state-copy { display: block; }
 .state-title { color: #1f2733; font-size: 29rpx; font-weight: 600; }

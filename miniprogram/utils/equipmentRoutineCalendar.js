@@ -5,6 +5,7 @@ export const ROUTINE_CALENDAR_STATUSES = Object.freeze([
   'PENDING',
   'ABNORMAL',
   'REST_DAY',
+  'UPCOMING',
   'NO_PLAN'
 ])
 
@@ -38,18 +39,28 @@ export function routineCalendarDaysInMonth(month) {
   return new Date(Date.UTC(parsed.year, parsed.month, 0)).getUTCDate()
 }
 
-export function routineCalendarGrid(month, days = []) {
+export function routineCalendarShanghaiDate(now = new Date()) {
+  const date = now instanceof Date ? now : new Date(now)
+  if (Number.isNaN(date.getTime())) throw new TypeError('日期格式不正确')
+  return new Date(date.getTime() + (8 * 60 * 60 * 1000)).toISOString().slice(0, 10)
+}
+
+export function routineCalendarGrid(month, days = [], now = new Date()) {
   const parsed = parseMonth(month)
   const dayByDate = new Map((Array.isArray(days) ? days : []).map((day) => [day?.date, day]))
   const count = routineCalendarDaysInMonth(month)
   const leading = (new Date(Date.UTC(parsed.year, parsed.month - 1, 1)).getUTCDay() + 6) % 7
+  const today = routineCalendarShanghaiDate(now)
   const cells = Array.from({ length: leading }, () => null)
   for (let day = 1; day <= count; day += 1) {
     const date = `${month}-${String(day).padStart(2, '0')}`
+    const source = dayByDate.get(date) || { date, status: 'NO_PLAN' }
     cells.push({
       date,
       day,
-      summary: dayByDate.get(date) || { date, status: 'NO_PLAN' }
+      summary: date > today && ['NO_PLAN', 'PENDING'].includes(source.status)
+        ? { ...source, status: 'UPCOMING' }
+        : source
     })
   }
   while (cells.length % 7 !== 0) cells.push(null)
@@ -62,6 +73,7 @@ export function routineCalendarStatusTone(status) {
     PENDING: 'pending',
     ABNORMAL: 'abnormal',
     REST_DAY: 'rest',
+    UPCOMING: 'upcoming',
     NO_PLAN: 'rest'
   }[status] || 'rest'
 }
@@ -72,6 +84,7 @@ export function routineCalendarStatusLabel(status) {
     PENDING: '未点检/逾期',
     ABNORMAL: '点检异常',
     REST_DAY: '休班无计划',
+    UPCOMING: '未到期',
     NO_PLAN: '休班无计划'
   }[status] || '休班无计划'
 }
