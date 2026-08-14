@@ -62,3 +62,12 @@ test('repair pages expose maintained locations, readable actors, and a copyable 
   assert.match(detail, /item\.actorName \|\| '未知操作人'/)
   assert.match(detail, /repairPositionLabel\(item\.actorPositionKey\)/)
 })
+
+test('repair list loads permission-scoped todos by default in team context', () => {
+  const list = readFileSync(new URL('../src/views/equipment/EquipmentRepairs.vue', import.meta.url), 'utf8')
+
+  assert.match(list, /canViewRepairTodos/)
+  assert.match(list, /filters\.todo = defaultTodoFilter\(\)/)
+  assert.match(list, /session\.contextEpoch, session\.mode, session\.activeTeamId/)
+  assert.match(list, /todo: defaultTodoFilter\(\)/)
+})

@@ -46,7 +46,7 @@
       <el-select v-model="filters.status" clearable placeholder="流程状态">
         <el-option v-for="(label, value) in REPAIR_STATUS_LABELS" :key="value" :label="label" :value="value" />
       </el-select>
-      <el-checkbox v-if="session.isTeamMode" v-model="filters.todo">只看我的待办</el-checkbox>
+      <el-checkbox v-if="canViewRepairTodos" v-model="filters.todo">只看我的待办</el-checkbox>
       <el-button type="primary" @click="applyFilters">查询</el-button>
       <el-button @click="resetFilters">重置</el-button>
       <span class="toolbar-spacer" />
@@ -316,6 +316,9 @@ const mutationRefresh = createMutationAwareListRefreshTracker({
 const filters = reactive({ keyword: '', type: '', status: '', todo: false, page: 1, pageSize: 20 })
 const createForm = reactive(emptyCreateForm())
 const canCreate = computed(() => session.can('equipment.repair', { write: true, teamRequired: true }))
+const canViewRepairTodos = computed(() => (
+  session.isTeamMode && session.can('equipment.repair', { teamRequired: true })
+))
 const canExport = computed(() => session.hasPermission('equipment.export'))
 const canManageLocations = computed(() => session.can('equipment.edit', { write: true, teamRequired: true }))
 const requestTeamParams = computed(() => (
@@ -358,6 +361,10 @@ const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') :
 const currentTeamContextId = () => String(
   session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
 )
+
+function defaultTodoFilter() {
+  return canViewRepairTodos.value
+}
 
 function listParams(extra = {}) {
   return {
@@ -441,7 +448,7 @@ function applyFilters() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { keyword: '', type: '', status: '', todo: false, page: 1 })
+  Object.assign(filters, { keyword: '', type: '', status: '', todo: defaultTodoFilter(), page: 1 })
   loadRepairs()
 }
 
@@ -466,7 +473,7 @@ function invalidateRepairTeamContext() {
 
 async function handleTeamChange(teamId) {
   invalidateRepairTeamContext()
-  Object.assign(filters, { keyword: '', type: '', status: '', todo: false, page: 1 })
+  Object.assign(filters, { keyword: '', type: '', status: '', todo: defaultTodoFilter(), page: 1 })
   await router.replace({ query: teamId ? { teamId } : {} })
   await Promise.all([loadRepairs(), loadRepairLocations()])
 }
@@ -629,9 +636,20 @@ async function handleExport() {
 }
 
 onMounted(async () => {
+  filters.todo = defaultTodoFilter()
   await Promise.all([loadRepairs(), loadEquipmentOptions(), loadRepairLocations()])
   await syncRouteCreateAction()
 })
+
+watch(
+  () => [session.contextEpoch, session.mode, session.activeTeamId],
+  () => {
+    if (!pageActive) return
+    filters.todo = defaultTodoFilter()
+    filters.page = 1
+    void loadRepairs()
+  }
+)
 
 watch(() => [route.name, route.query.teamId, route.query.create, route.query.equipmentId], () => {
   if (pageActive) void syncRouteCreateAction()
