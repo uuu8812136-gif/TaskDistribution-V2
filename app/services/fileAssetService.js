@@ -42,6 +42,7 @@ const {
 } = require('./scopedQueryService');
 const {
   assertBusinessContext,
+  hasEffectivePermission,
   assertPermission,
   assertTeamContext,
   resolveModuleDataScope,
@@ -341,7 +342,7 @@ function auditSnapshot(file) {
 function assertTemporaryUploadPermission(authContext) {
   assertTeamContext(authContext);
   if (!TEMPORARY_UPLOAD_PERMISSIONS.some(
-    (permissionKey) => authContext.permissionKeys.includes(permissionKey)
+    (permissionKey) => hasEffectivePermission(authContext, permissionKey)
   )) {
     throw new AuthContextError(
       403,
@@ -562,7 +563,7 @@ function createFileAssetService({
     const permissionKeys = write && Array.isArray(policy.writePermissionsAny)
       ? policy.writePermissionsAny
       : [write ? policy.writePermission : policy.readPermission];
-    if (!permissionKeys.some((permissionKey) => authContext.permissionKeys.includes(permissionKey))) {
+    if (!permissionKeys.some((permissionKey) => hasEffectivePermission(authContext, permissionKey))) {
       assertPermission(authContext, permissionKeys[0]);
     }
     let ownerFilter;

@@ -34,6 +34,7 @@ const {
   AUTH_ERROR_CODES,
   AuthContextError
 } = require('./authContextError');
+const { hasEffectivePermission } = require('./teamContextService');
 
 const OBJECT_ID_PATTERN = /^[0-9a-fA-F]{24}$/;
 const permissionKeySet = new Set(PERMISSION_KEYS);
@@ -783,7 +784,7 @@ function createTeamManagementService({
 
   async function listMembers({ authContext, filters = {} } = {}) {
     assertTeamContext(authContext);
-    if (!authContext.permissionKeys?.includes('member.view')) {
+    if (!hasEffectivePermission(authContext, 'member.view')) {
       throw permissionDenied();
     }
     const teamId = activeTeamId(authContext);
@@ -969,7 +970,11 @@ function createTeamManagementService({
         user = await UserModel.findOne({
           _id: existingUserId,
           status: 'active',
-          isSystemAccount: { $ne: true }
+          isSystemAccount: { $ne: true },
+          // A user-level super administrator is deliberately membership-free.
+          // Keep the identity global instead of silently turning it into a
+          // team member with a second, potentially stale permission source.
+          isSuperAdmin: false
         }).session(session);
         if (!user) throw notFound('User');
       } else {

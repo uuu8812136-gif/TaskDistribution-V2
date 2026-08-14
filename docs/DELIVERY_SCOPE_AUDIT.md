@@ -482,6 +482,13 @@ PC与小程序最终页面分工仍是客户待确认项；在客户确认前，
 - **性能证据**：98,035,547 字节真实工作簿只读基准保持 144 行、5 个 Sheet、228 图片引用（220 WPS + 8 drawing）；复用首次 workbook 后管线约 1.013 秒、404 MiB RSS，对照重复 `XLSX.read` 约 1.279 秒、497 MiB RSS。
 - **验证边界**：后端356/356与Web 125/125/构建通过；当前API在最后源码修改后重启并完成健康、登录和核心路由复验，本轮浏览器已再次验证141条设备、详情图片与规则读取，但未执行完整上传→异常决定→发布。
 
+### P0-7 Super-administrator retention and automatic full access
+
+- **Implemented boundary**: a user-level `isSuperAdmin=true` identity remains independent of `TeamMembership`. In `TEAM` mode it passes every registered feature permission without relying on a mutable membership permission checklist. Adding future registered feature permissions therefore does not require assigning those permissions to the super-administrator account.
+- **Preserved controls**: `GLOBAL_READ_ONLY` remains read-only; the administrator must enter a concrete team before a business write. Team scope, workflow state, approval stage and resource ownership checks are not removed. Unknown server permission keys still fail closed.
+- **Account retention gate**: `npm run verify:super-admin` verifies the nominated account exists, is active, remains `isSuperAdmin=true`, and has zero memberships. Adding a user-level super administrator through the ordinary team-member API is rejected.
+- **Current evidence**: backend, Web and Mini Program focused regressions cover empty permission arrays, ordinary-user denial, global-read-only denial, unknown permission keys and membership-free retention. This is candidate-source evidence only until the new Web release and Mini Program experience version are activated and accepted.
+
 ## 14. 下一次“完成”报告的强制门槛
 
 在再次使用“全部完成”前，必须同时满足：

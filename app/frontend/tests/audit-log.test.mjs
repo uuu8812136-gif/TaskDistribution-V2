@@ -26,6 +26,7 @@ test('audit visibility requires an administrator role and audit.view', () => {
   const permissionKeys = ['audit.view']
   assert.equal(canViewAudit({ isSuperAdmin: true, isGlobalReadOnly: true, permissionKeys }), true)
   assert.equal(canViewAudit({ isSuperAdmin: true, isTeamMode: true, permissionKeys }), true)
+  assert.equal(canViewAudit({ isSuperAdmin: true, isTeamMode: true, permissionKeys: [] }), true)
   assert.equal(canViewAudit({
     isTeamMode: true,
     membershipRole: 'PROJECT_ADMIN',

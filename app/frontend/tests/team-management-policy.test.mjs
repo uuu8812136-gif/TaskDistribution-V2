@@ -121,6 +121,7 @@ test('project administrators cannot maintain another project administrator', () 
   assert.equal(canManageMembership(projectAdminContext, { role: MEMBERSHIP_ROLES.MEMBER }), true)
   assert.equal(canManageMembership(projectAdminContext, { role: MEMBERSHIP_ROLES.PROJECT_ADMIN }), false)
   assert.equal(canManageMembership(superAdminContext, { role: MEMBERSHIP_ROLES.PROJECT_ADMIN }), true)
+  assert.equal(canManageMembership({ ...superAdminContext, permissionKeys: [] }, { role: MEMBERSHIP_ROLES.MEMBER }), true)
   assert.equal(canManageMembership({ ...superAdminContext, isReadOnly: true }, { role: MEMBERSHIP_ROLES.MEMBER }), false)
   assert.equal(canManageMembership({
     ...projectAdminContext,

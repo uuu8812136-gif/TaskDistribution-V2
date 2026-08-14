@@ -94,8 +94,8 @@ export function canViewAudit({
   membershipRole = null,
   permissionKeys = []
 } = {}) {
+  if (isSuperAdmin && (isTeamMode || isGlobalReadOnly)) return true
   if (!permissionKeys.includes('audit.view')) return false
-  if (isSuperAdmin) return isTeamMode || isGlobalReadOnly
   return isTeamMode && membershipRole === 'PROJECT_ADMIN'
 }
 

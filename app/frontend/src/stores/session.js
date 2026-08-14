@@ -20,7 +20,6 @@ import {
   SESSION_MODES,
   canUsePermission,
   createEmptyContext,
-  hasPermission,
   normalizeSessionContext,
   normalizeSessionMode
 } from '@/utils/sessionPolicy'
@@ -63,7 +62,7 @@ export const useSessionStore = defineStore('session', {
 
   actions: {
     hasPermission(permission, match = 'all') {
-      return hasPermission(this.permissionKeys, permission, match)
+      return canUsePermission(this.context, permission, { match })
     },
 
     can(permission, options = {}) {

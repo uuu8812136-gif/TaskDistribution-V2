@@ -9,6 +9,7 @@ const {
 } = require('./contractWorkbookService');
 const {
   assertPermission,
+  hasEffectivePermission,
   assertTeamContext
 } = require('./teamContextService');
 
@@ -78,9 +79,8 @@ function publicTemplate(template) {
 }
 
 function canAccessTemplate(authContext, template) {
-  const granted = new Set(authContext.permissionKeys || []);
   return [template.permission, template.importPermission]
-    .some((permissionKey) => granted.has(permissionKey));
+    .some((permissionKey) => hasEffectivePermission(authContext, permissionKey));
 }
 
 function assertTemplateAccess(authContext, template) {

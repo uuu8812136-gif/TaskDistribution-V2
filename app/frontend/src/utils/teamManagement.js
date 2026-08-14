@@ -224,7 +224,8 @@ export function canManageMembership({
   membershipRole,
   permissionKeys = []
 }, membership) {
-  if (!isTeamMode || isReadOnly || !permissionKeys.includes('member.manage')) return false
+  if (!isTeamMode || isReadOnly) return false
+  if (!isSuperAdmin && !permissionKeys.includes('member.manage')) return false
   if (!isSuperAdmin && membershipRole !== MEMBERSHIP_ROLES.PROJECT_ADMIN) return false
   return isSuperAdmin || membership?.role !== MEMBERSHIP_ROLES.PROJECT_ADMIN
 }

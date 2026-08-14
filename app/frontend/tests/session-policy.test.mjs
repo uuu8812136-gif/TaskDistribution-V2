@@ -38,6 +38,33 @@ test('global context permits configured reads but never write guards', () => {
   assert.equal(canUsePermission(context, 'task.view', { teamRequired: true }), false)
 })
 
+test('team super administrators keep feature access when the membership checklist is empty', () => {
+  const context = normalizeSessionContext({
+    mode: SESSION_MODES.TEAM,
+    activeTeamId: 'team-a',
+    isSuperAdmin: true,
+    permissionKeys: [],
+    readOnly: false,
+    canAccessBusiness: true
+  })
+
+  assert.equal(canUsePermission(context, 'contract.settlement.manage', { write: true }), true)
+  assert.equal(canUsePermission(context, 'new.feature.permission'), true)
+})
+
+test('global read-only super administrators still use the read-only permission catalog', () => {
+  const context = normalizeSessionContext({
+    mode: SESSION_MODES.GLOBAL_READ_ONLY,
+    isSuperAdmin: true,
+    permissionKeys: [],
+    readOnly: true,
+    canAccessBusiness: true
+  })
+
+  assert.equal(canUsePermission(context, 'task.view'), false)
+  assert.equal(canUsePermission(context, 'task.create', { write: true }), false)
+})
+
 test('permission matching supports explicit all and any policies', () => {
   const permissions = ['task.view', 'task.export']
   assert.equal(hasPermission(permissions, ['task.view', 'task.export']), true)

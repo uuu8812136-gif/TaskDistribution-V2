@@ -329,14 +329,7 @@ function assertTeamContext(context) {
 
 function assertPermission(context, permissionKey) {
   assertBusinessContext(context);
-  if (!permissionKeySet.has(permissionKey)) {
-    throw contextError(
-      403,
-      AUTH_ERROR_CODES.PERMISSION_KEY_UNKNOWN,
-      'The requested permission is not configured'
-    );
-  }
-  if (!context.permissionKeys.includes(permissionKey)) {
+  if (!hasEffectivePermission(context, permissionKey)) {
     throw contextError(
       403,
       AUTH_ERROR_CODES.PERMISSION_DENIED,
@@ -344,6 +337,27 @@ function assertPermission(context, permissionKey) {
     );
   }
   return context;
+}
+
+/**
+ * Resolve a permission without making membership.permissionKeys the source of
+ * truth for a user-level super administrator.  The team context and the
+ * configured permission catalog remain mandatory, while GLOBAL_READ_ONLY keeps
+ * its deliberately restricted read-only permission set.
+ */
+function hasEffectivePermission(context, permissionKey) {
+  assertBusinessContext(context);
+  if (!permissionKeySet.has(permissionKey)) {
+    throw contextError(
+      403,
+      AUTH_ERROR_CODES.PERMISSION_KEY_UNKNOWN,
+      'The requested permission is not configured'
+    );
+  }
+  return (
+    context.mode === SESSION_MODES.TEAM &&
+    context.isSuperAdmin === true
+  ) || context.permissionKeys.includes(permissionKey);
 }
 
 function resolveModuleDataScope(context, moduleKey) {
@@ -612,6 +626,7 @@ module.exports = {
   buildContext,
   createTeamContextService,
   defaultGlobalReadPermissionKeys,
+  hasEffectivePermission,
   resolveModuleDataScope,
   sameId,
   validateModuleDataScopes,

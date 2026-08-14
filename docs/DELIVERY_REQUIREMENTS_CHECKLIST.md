@@ -472,3 +472,13 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] After the public deployment and renewal-task trial, the legacy `/`, `/admin`, `/health`, `38080` tunnel and production MongoDB remained healthy; the MongoDB check was read-only.
 - [ ] Commit and push the current source to the private GitHub repository after reviewing the complete diff and sensitive-material scan. Historical delivery commits exist, but the 2026-08-11 worktree changes are not committed or pushed.
 - [ ] Execute and archive the release/rollback drill on the selected staging host; the documentation itself is not deployment evidence.
+
+## 2026-08-14 Super-admin permission hardening (candidate)
+
+- [x] In a concrete `TEAM` context, a user-level `isSuperAdmin=true` identity is granted every configured permission without depending on `TeamMembership.permissionKeys`; unknown permission keys still fail closed.
+- [x] Web and mini-program permission gates use the same team-scoped super-admin rule. `GLOBAL_READ_ONLY` remains read-only and continues to use the server-provided read catalog.
+- [x] A user-level super administrator cannot be added as a team membership, preserving the membership-free identity model.
+- [x] Added `app/script/verifySuperAdminRetention.js` and `npm run verify:super-admin`. The release gate verifies the nominated account is present, active, still `isSuperAdmin=true`, and has zero memberships before and after activation. The check emits no password or token.
+- [x] Candidate regression: backend unit `243/243` plus full backend `672/672`, Web `286/286`, mini-program `133/133`, mini-program `46/46` SFC files and isolation checks, focused team-management integration `21/21`, and `git diff --check` passed.
+- [ ] Mini-program manifest candidate is `0.9.20260814.2` (`versionCode` `2026081402`); the previous `.1` experience version does not contain this permission change. HBuilderX/WeChat Developer Tools compilation and experience-version upload are still required.
+- [ ] The candidate has not yet been activated on the customer host. Run the retention check with `SUPER_ADMIN_USERNAME` (or `CUSTOMER_SUPER_ADMIN_USERNAME`) at both release boundaries, then complete the normal backup/Hold/Execute/PostAudit chain.

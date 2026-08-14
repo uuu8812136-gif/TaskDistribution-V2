@@ -31,6 +31,7 @@ const {
 } = require('./scopedQueryService');
 const {
   assertBusinessContext,
+  hasEffectivePermission,
   assertPermission,
   assertTeamContext,
   resolveModuleDataScope,
@@ -275,7 +276,7 @@ function availableActions(context, application) {
   if (
     application.workflowStatus === EQUIPMENT_STATUS_APPLICATION_STATUSES.DEPUTY_REVIEW_PENDING &&
     isDeputyOrAssistant(context) &&
-    context.permissionKeys.includes('equipment.status.approve')
+    hasEffectivePermission(context, 'equipment.status.approve')
   ) {
     actions.push(
       EQUIPMENT_STATUS_APPLICATION_ACTIONS.DEPUTY_APPROVE,
@@ -286,7 +287,7 @@ function availableActions(context, application) {
   if (
     application.workflowStatus === EQUIPMENT_STATUS_APPLICATION_STATUSES.MANAGER_REVIEW_PENDING &&
     isDepartmentManager(context) &&
-    context.permissionKeys.includes('equipment.status.approve')
+    hasEffectivePermission(context, 'equipment.status.approve')
   ) {
     actions.push(
       EQUIPMENT_STATUS_APPLICATION_ACTIONS.MANAGER_APPROVE,
@@ -297,7 +298,7 @@ function availableActions(context, application) {
   if (
     sameId(context.userId, application.createdBy) &&
     isAssetAdmin(context) &&
-    context.permissionKeys.includes('equipment.status.apply')
+    hasEffectivePermission(context, 'equipment.status.apply')
   ) {
     if (application.workflowStatus === EQUIPMENT_STATUS_APPLICATION_STATUSES.RETURNED_TO_CREATOR) {
       actions.push(EQUIPMENT_STATUS_APPLICATION_ACTIONS.RESUBMIT);
@@ -311,7 +312,7 @@ function todoFilter(context) {
   const filters = [];
   if (
     isDeputyOrAssistant(context) &&
-    context.permissionKeys.includes('equipment.status.approve')
+    hasEffectivePermission(context, 'equipment.status.approve')
   ) {
     filters.push({
       workflowStatus: EQUIPMENT_STATUS_APPLICATION_STATUSES.DEPUTY_REVIEW_PENDING
@@ -319,7 +320,7 @@ function todoFilter(context) {
   }
   if (
     isDepartmentManager(context) &&
-    context.permissionKeys.includes('equipment.status.approve')
+    hasEffectivePermission(context, 'equipment.status.approve')
   ) {
     filters.push({
       workflowStatus: EQUIPMENT_STATUS_APPLICATION_STATUSES.MANAGER_REVIEW_PENDING
@@ -327,7 +328,7 @@ function todoFilter(context) {
   }
   if (
     isAssetAdmin(context) &&
-    context.permissionKeys.includes('equipment.status.apply')
+    hasEffectivePermission(context, 'equipment.status.apply')
   ) {
     filters.push({
       createdBy: context.userId,

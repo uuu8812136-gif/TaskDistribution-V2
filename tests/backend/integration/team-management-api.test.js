@@ -279,6 +279,27 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
     }
   });
 
+  await t.test('user-level super administrators remain membership-free', async () => {
+    const globalOnly = await createUser('global-only-super-admin', true);
+    try {
+      const response = await request(app)
+        .post('/api/team-members')
+        .set('Authorization', `Bearer ${seeded.teamSuperToken}`)
+        .send({
+          existingUserId: globalOnly._id.toString(),
+          orgUnitId: seeded.rootA._id.toString()
+        })
+        .expect(404);
+
+      assert.equal(response.body.code, 'MANAGEMENT_RESOURCE_NOT_FOUND');
+      assert.equal(await TeamMembership.countDocuments({ userId: globalOnly._id }), 0);
+      assert.equal(await User.findById(globalOnly._id).then((user) => user.isSuperAdmin), true);
+    } finally {
+      await TeamMembership.deleteMany({ userId: globalOnly._id });
+      await User.deleteOne({ _id: globalOnly._id });
+    }
+  });
+
   await t.test('a project administrator cannot create an administrator or inject derived privilege fields', async () => {
     await request(app)
       .post('/api/team-members')

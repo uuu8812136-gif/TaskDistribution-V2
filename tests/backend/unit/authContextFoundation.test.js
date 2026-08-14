@@ -23,6 +23,7 @@ const {
   assertBusinessContext,
   assertPermission,
   createTeamContextService,
+  hasEffectivePermission,
   resolveModuleDataScope
 } = require('../../../app/services/teamContextService');
 const {
@@ -386,6 +387,27 @@ test('a super administrator enters any active team with server-derived full acce
     { method: 'PATCH', authContext: context }
   );
   assert.equal(write.next, true);
+});
+
+test('team super administrators do not depend on membership permission arrays', async () => {
+  const context = await serviceFor({
+    userOverrides: { isSuperAdmin: true },
+    membershipOverrides: { permissionKeys: [] }
+  }).resolveContext({
+    claims: validateTokenClaims(claims()),
+    session: session()
+  });
+
+  assert.equal(context.permissionKeys.length > 0, true);
+  // Simulate an old/stale client context or a newly added membership record
+  // whose checklist has not been populated yet.
+  const staleContext = Object.freeze({ ...context, permissionKeys: Object.freeze([]) });
+  assert.equal(hasEffectivePermission(staleContext, 'contract.settlement.manage'), true);
+  assert.doesNotThrow(() => assertPermission(staleContext, 'contract.settlement.manage'));
+  assert.throws(
+    () => assertPermission(staleContext, 'permission.not-configured'),
+    (error) => error.code === 'PERMISSION_KEY_UNKNOWN'
+  );
 });
 
 test('disabled users, teams and memberships invalidate existing tokens with 401', async () => {

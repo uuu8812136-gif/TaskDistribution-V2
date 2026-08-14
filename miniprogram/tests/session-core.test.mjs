@@ -40,6 +40,33 @@ test('global read-only context never exposes write capability', () => {
   assert.equal(canUsePermission(context, 'task.view', { teamRequired: true }), false)
 })
 
+test('team super administrators keep feature access when the permission list is empty', () => {
+  const context = normalizeSessionContext({
+    mode: SESSION_MODES.TEAM,
+    activeTeamId: 'team-a',
+    isSuperAdmin: true,
+    permissionKeys: [],
+    readOnly: false,
+    canAccessBusiness: true
+  })
+
+  assert.equal(canUsePermission(context, 'contract.settlement.manage', { write: true }), true)
+  assert.equal(canUsePermission(context, 'new.feature.permission'), true)
+})
+
+test('global read-only super administrators remain read-only without a read grant', () => {
+  const context = normalizeSessionContext({
+    mode: SESSION_MODES.GLOBAL_READ_ONLY,
+    isSuperAdmin: true,
+    permissionKeys: [],
+    readOnly: true,
+    canAccessBusiness: true
+  })
+
+  assert.equal(canUsePermission(context, 'task.view'), false)
+  assert.equal(canUsePermission(context, 'task.create', { write: true }), false)
+})
+
 test('team selection routes to the mandatory team chooser', () => {
   assert.equal(getSessionEntryRoute(SESSION_MODES.TEAM_SELECTION), '/pages/team/select')
   assert.equal(getSessionEntryRoute(SESSION_MODES.TEAM), '/pages/task/received')

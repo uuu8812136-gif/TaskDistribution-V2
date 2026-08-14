@@ -79,5 +79,9 @@ export function canUsePermission(context, permission, options = {}) {
   const normalized = normalizeSessionContext(context)
   if (options.teamRequired && normalized.mode !== SESSION_MODES.TEAM) return false
   if (options.write && normalized.readOnly) return false
+  // A team-scoped super administrator is not represented by a mutable
+  // membership permission checklist. Keep global mode read-only and use the
+  // server-provided read catalog there.
+  if (normalized.isSuperAdmin && normalized.mode === SESSION_MODES.TEAM) return true
   return hasPermission(normalized.permissionKeys, permission, options.match)
 }

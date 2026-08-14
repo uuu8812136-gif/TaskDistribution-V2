@@ -30,6 +30,7 @@ const {
 } = require('./scopedQueryService');
 const {
   assertBusinessContext,
+  hasEffectivePermission,
   assertPermission,
   assertTeamContext,
   sameId
@@ -956,7 +957,7 @@ function createEquipmentRepairService({
 
   async function getRepair({ authContext, requestedTeamId, method = 'GET', repairId }) {
     const context = assertBusinessContext(authContext);
-    const canViewEquipment = context.permissionKeys.includes('equipment.view');
+    const canViewEquipment = hasEffectivePermission(context, 'equipment.view');
     const permissionKey = canViewEquipment ? 'equipment.view' : 'equipment.repair';
     const { filter } = await readFilter({
       authContext: context,

@@ -84,6 +84,10 @@ export function canUsePermission(context, permission, options = {}) {
   if (options.teamRequired && normalized.mode !== SESSION_MODES.TEAM) return false
   if (options.write && normalized.readOnly) return false
   if (!normalized.canAccessBusiness && options.business !== false) return false
+  // Team-scoped super administrators have permanent access to every
+  // configured feature; GLOBAL_READ_ONLY remains read-only and uses its
+  // server-provided read catalog.
+  if (normalized.isSuperAdmin && normalized.mode === SESSION_MODES.TEAM) return true
   return hasPermission(normalized.permissionKeys, permission, options.match)
 }
 

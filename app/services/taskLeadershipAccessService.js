@@ -15,6 +15,7 @@ const {
 const { buildScopedDetailFilter, normalizeObjectId } = require('./scopedQueryService');
 const {
   assertPermission,
+  hasEffectivePermission,
   assertTeamContext,
   resolveModuleDataScope,
   sameId
@@ -67,8 +68,11 @@ function requiresDynamicTaskLeadership(authContext) {
 }
 
 function hasTaskPermission(authContext, permissionKey) {
-  return Array.isArray(authContext?.permissionKeys) &&
-    authContext.permissionKeys.includes(permissionKey);
+  try {
+    return hasEffectivePermission(authContext, permissionKey);
+  } catch {
+    return false;
+  }
 }
 
 function storedTaskReadAuthorization(authContext, { leadershipSuppressed = false } = {}) {
