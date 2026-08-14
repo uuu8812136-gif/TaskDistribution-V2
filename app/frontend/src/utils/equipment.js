@@ -188,7 +188,7 @@ export function routinePlanCancellationReasonLabel(plan = {}) {
 export function routineRecordPlanWindow(record = {}) {
   const plan = routineRecordPlan(record)
   const planIdValue = firstPresentValue(record.planId, plan._id, plan.id)
-  const planId = typeof planIdValue === 'object'
+  const planId = planIdValue && typeof planIdValue === 'object'
     ? String(planIdValue._id || planIdValue.id || '')
     : String(planIdValue || '')
   return {

@@ -296,6 +296,18 @@ body {
   }
 }
 
+/* Keep column headings visible while long desktop tables scroll their rows. */
+@media (min-width: 901px) {
+  .main-content .el-table:not(.el-table--fluid-height)
+    > .el-table__inner-wrapper
+    > .el-table__body-wrapper
+    > .el-scrollbar
+    > .el-scrollbar__wrap {
+    max-height: clamp(280px, calc(100vh - 430px), 630px);
+    max-height: clamp(280px, calc(100dvh - 430px), 630px);
+  }
+}
+
 /* Desktop list pages use the available viewport and wrap cells instead of requiring side-scrolling. */
 @media (min-width: 1024px) and (max-width: 1600px) {
   .main-content .el-table:not(.asset-table) .el-table__header,

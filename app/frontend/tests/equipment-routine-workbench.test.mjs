@@ -308,6 +308,13 @@ test('routine record presentation accepts enriched plan fields and maps snapshot
     windowName: '白班',
     cycleKey: 'cycle-1'
   })
+  assert.deepEqual(routineRecordPlanWindow({ planId: null }), {
+    planId: '',
+    scheduledFor: null,
+    dueAt: null,
+    windowName: '',
+    cycleKey: ''
+  })
   assert.equal(routineRecordPlateNumber(record), '鲁A12345')
   assert.equal(routineRecordPerformerName({
     performedByName: '  主记录姓名  ',

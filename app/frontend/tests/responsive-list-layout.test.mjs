@@ -48,6 +48,13 @@ test('authenticated shell and global mobile containers prefer dynamic viewport h
   assert.match(globalStyleSource, /max-height: calc\(100vh - 24px\);\s+max-height: calc\(100dvh - 24px\);/)
 })
 
+test('desktop data tables keep column headings visible through one shared row scroller', () => {
+  assert.match(
+    globalStyleSource,
+    /@media \(min-width: 901px\) \{[\s\S]*?\.main-content \.el-table:not\(\.el-table--fluid-height\)[\s\S]*?> \.el-table__body-wrapper[\s\S]*?> \.el-scrollbar__wrap \{[\s\S]*?max-height: clamp\(280px, calc\(100vh - 430px\), 630px\);[\s\S]*?max-height: clamp\(280px, calc\(100dvh - 430px\), 630px\);/
+  )
+})
+
 test('mobile authenticated shell removes the closed sidebar and starts main content at x zero', () => {
   assert.match(mainLayoutSource, /v-if="!isMobile \|\| !isCollapse"/)
   assert.match(
