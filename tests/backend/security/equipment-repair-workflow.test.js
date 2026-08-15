@@ -58,6 +58,7 @@ function authContext({
   functionalRoleKeys = [],
   permissionKeys = ['equipment.view', 'equipment.repair', 'equipment.export'],
   scope = permissions.DATA_SCOPES.ORG_UNIT,
+  equipmentOrgUnitScopeIds = null,
   isSuperAdmin = false
 }) {
   const positionLevel = isSuperAdmin
@@ -97,6 +98,9 @@ function authContext({
       : permissions.AUDIT_ACTOR_ROLES.MEMBER,
     permissionKeys: Object.freeze([...permissionKeys]),
     moduleDataScopes: Object.freeze({ equipment: scope }),
+    ...(equipmentOrgUnitScopeIds
+      ? { equipmentOrgUnitScopeIds: Object.freeze([...equipmentOrgUnitScopeIds]) }
+      : {}),
     readOnly: false,
     canAccessBusiness: true
   });
@@ -224,7 +228,8 @@ function actors() {
     supervisor: authContext({
       teamId: fixtures.teamA._id,
       orgUnitId: fixtures.orgA1Group._id,
-      positionKey: permissions.POSITION_KEYS.SUPERVISOR
+      positionKey: permissions.POSITION_KEYS.SUPERVISOR,
+      equipmentOrgUnitScopeIds: [fixtures.orgA1._id, fixtures.orgA1Group._id]
     }),
     wrongSubManager: authContext({
       teamId: fixtures.teamA._id,
@@ -418,16 +423,17 @@ test('repair deputy is primary and supervisor fallback is scoped to the exact su
     repairId: created._id
   });
   assert.ok(deputyView.availableActions.includes('SUB_DEPARTMENT_APPROVE'));
-  await assert.rejects(service.getRepair({
+  const supervisorView = await service.getRepair({
     authContext: role.supervisor,
     repairId: created._id
-  }), (error) => error.status === 404);
+  });
+  assert.deepEqual(supervisorView.availableActions, []);
   await assert.rejects(action(
     service,
     role.supervisor,
     created,
     'SUB_DEPARTMENT_APPROVE'
-  ), (error) => error.status === 404);
+  ), (error) => error.status === 403);
   assert.equal((await service.listRepairs({
     authContext: role.supervisor,
     query: { todo: true }
@@ -559,7 +565,7 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
     permissionKeys: ['equipment.repair']
   });
   const assistantTodo = await service.listRepairs({
-    authContext: assistantWithOrgScope,
+    authContext: role.assistant,
     query: { todo: true }
   });
   assert.equal(assistantTodo.total, 1);
@@ -572,9 +578,26 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
     'extraData.status': 'DEPUTY_APPROVAL_PENDING'
   }));
   assert.equal((await service.getRepair({
-    authContext: assistantWithOrgScope,
+    authContext: role.assistant,
     repairId: repair._id
   }))._id, repair._id);
+  const assistantOrgTodo = await service.listRepairs({
+    authContext: assistantWithOrgScope,
+    query: { todo: true }
+  });
+  assert.equal(assistantOrgTodo.total, 0);
+  assert.equal(assistantOrgTodo.repairs.length, 0);
+  await assert.rejects(service.getRepair({
+    authContext: assistantWithOrgScope,
+    repairId: repair._id
+  }), (error) => error.status === 404);
+  await assert.rejects(action(
+    service,
+    assistantWithOrgScope,
+    repair,
+    'DEPUTY_APPROVE',
+    { note: '越权审批' }
+  ), (error) => error.status === 404);
   await assert.rejects(service.listRepairs({
     authContext: authContext({
       teamId: fixtures.teamA._id,
@@ -589,7 +612,7 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
     authContext: assistantWithOrgScope,
     query: {}
   }), (error) => error.status === 403);
-  repair = await action(service, assistantWithOrgScope, repair, 'DEPUTY_APPROVE', { note: '同意价格' });
+  repair = await action(service, role.assistant, repair, 'DEPUTY_APPROVE', { note: '同意价格' });
   assert.equal(repair.status, 'MANAGER_APPROVAL_PENDING');
   const managerWithOrgScope = authContext({
     teamId: fixtures.teamA._id,
@@ -600,7 +623,7 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
     permissionKeys: ['equipment.repair']
   });
   const managerTodo = await service.listRepairs({
-    authContext: managerWithOrgScope,
+    authContext: role.manager,
     query: { todo: true }
   });
   assert.equal(managerTodo.total, 1);
@@ -611,7 +634,13 @@ test('parts repair allows dynamic rows, server-side amount calculation, and assi
     'extraData.repairId': repair._id,
     'extraData.status': 'MANAGER_APPROVAL_PENDING'
   }));
-  repair = await action(service, managerWithOrgScope, repair, 'MANAGER_APPROVE', { note: '同意结案' });
+  const managerOrgTodo = await service.listRepairs({
+    authContext: managerWithOrgScope,
+    query: { todo: true }
+  });
+  assert.equal(managerOrgTodo.total, 0);
+  assert.equal(managerOrgTodo.repairs.length, 0);
+  repair = await action(service, role.manager, repair, 'MANAGER_APPROVE', { note: '同意结案' });
   assert.equal(repair.status, 'COMPLETED');
   assert.match(repair.summaryText, /设备编码：FC-A1-001/);
   assert.match(repair.summaryText, /维修金额：27\.68元/);

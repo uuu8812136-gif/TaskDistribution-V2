@@ -8,8 +8,8 @@
     </view>
 
     <view class="top-actions">
-      <view class="mode-segment" :class="{ single: userStore.isGlobalReadOnly }">
-        <button v-if="!userStore.isGlobalReadOnly" :class="{ active: mode === 'todo' }" @click="setMode('todo')">我的待办</button>
+      <view class="mode-segment" :class="{ single: !canViewTodos }">
+        <button v-if="canViewTodos" :class="{ active: mode === 'todo' }" @click="setMode('todo')">我的待办</button>
         <button :class="{ active: mode === 'all' }" @click="setMode('all')">全部记录</button>
       </view>
       <button v-if="canCreate" class="scan-button" @click="scanToCreate">扫码发起</button>
@@ -88,7 +88,11 @@ export default {
   name: 'EquipmentRepairList',
   setup() {
     const userStore = useUserStore()
-    const mode = ref(userStore.isGlobalReadOnly ? 'all' : 'todo')
+    const canViewTodos = computed(() => (
+      userStore.isTeamMode &&
+      userStore.can('equipment.repair', { teamRequired: true })
+    ))
+    const mode = ref(canViewTodos.value ? 'todo' : 'all')
     const keyword = ref('')
     const repairs = ref([])
     const page = ref(1)
@@ -111,8 +115,33 @@ export default {
       write: true,
       teamRequired: true
     }))
+    let activeContextSignature = ''
+    let modeSelectedByUser = false
+
+    const currentContextSignature = () => [
+      userStore.contextEpoch,
+      userStore.mode || '',
+      userStore.activeTeamId || '',
+      userStore.isSuperAdmin ? 'super' : 'member',
+      [...userStore.permissionKeys].sort().join(',')
+    ].join('|')
+
+    const syncModeWithContext = () => {
+      const signature = currentContextSignature()
+      if (signature === activeContextSignature) return
+
+      const isFirstContext = !activeContextSignature
+      activeContextSignature = signature
+      if (!isFirstContext) modeSelectedByUser = false
+
+      if (!modeSelectedByUser || !canViewTodos.value) {
+        mode.value = canViewTodos.value ? 'todo' : 'all'
+        keyword.value = ''
+      }
+    }
 
     const load = async ({ append = false } = {}) => {
+      syncModeWithContext()
       if (userStore.isGlobalReadOnly && !teamId.value) {
         requestGate.invalidate()
         repairs.value = []
@@ -124,9 +153,10 @@ export default {
       const request = requestGate.begin({
         append,
         page: page.value,
-        mode: mode.value,
+        mode: canViewTodos.value ? mode.value : 'all',
         keyword: keyword.value.trim(),
-        teamId: teamId.value
+        teamId: teamId.value,
+        contextSignature: currentContextSignature()
       })
       loading.value = true
       loadError.value = ''
@@ -138,7 +168,10 @@ export default {
           pageSize,
           ...(userStore.isGlobalReadOnly ? { teamId: request.teamId } : {})
         })
-        if (!requestGate.isCurrent(request)) return
+        if (
+          !requestGate.isCurrent(request) ||
+          request.contextSignature !== currentContextSignature()
+        ) return
         repairs.value = request.append
           ? [...repairs.value, ...(result.repairs || [])]
           : (result.repairs || [])
@@ -160,7 +193,9 @@ export default {
       await load()
     }
     const setMode = (value) => {
+      if (value === 'todo' && !canViewTodos.value) return
       if (mode.value === value) return
+      modeSelectedByUser = true
       mode.value = value
       if (value === 'todo') keyword.value = ''
       refresh()
@@ -213,7 +248,12 @@ export default {
 
     onLoad((options) => {
       teamId.value = options.teamId || ''
-      if (options.mode === 'all' || userStore.isGlobalReadOnly) mode.value = 'all'
+      if (options.mode === 'all') {
+        mode.value = 'all'
+        modeSelectedByUser = true
+      } else if (!canViewTodos.value) {
+        mode.value = 'all'
+      }
     })
     onShow(refresh)
     onPullDownRefresh(async () => {
@@ -229,6 +269,7 @@ export default {
       loading,
       loadError,
       hasMore,
+      canViewTodos,
       canCreate,
       teamOptions,
       teamIndex,

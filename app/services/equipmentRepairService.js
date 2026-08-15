@@ -56,13 +56,6 @@ const {
 const DEFAULT_PAGE_SIZE = 20;
 const MAX_PAGE_SIZE = 200;
 const IMAGE_MIME_TYPES = Object.freeze(['image/jpeg', 'image/png']);
-const TERMINAL_STATUSES = new Set([
-  EQUIPMENT_REPAIR_STATUSES.COMPLETED,
-  EQUIPMENT_REPAIR_STATUSES.VOIDED
-]);
-const PENDING_STATUSES = new Set(
-  EQUIPMENT_REPAIR_STATUS_VALUES.filter((status) => !TERMINAL_STATUSES.has(status))
-);
 const SUB_DEPARTMENT_POSITION_KEYS = new Set([
   POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
   POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
@@ -580,42 +573,6 @@ function queryFilters(query = {}) {
   return filters.length ? { $and: filters } : {};
 }
 
-function todoStatusFilter(context) {
-  if (context.isSuperAdmin === true) return {
-    $or: [
-      {
-        status: {
-          $in: [...PENDING_STATUSES].filter(
-            (status) => status !== EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR
-          )
-        }
-      },
-      { status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR, createdBy: context.userId }
-    ]
-  };
-  const statuses = [];
-  if (SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
-    statuses.push(
-      EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
-      EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
-    );
-  }
-  if (isAssetAdmin(context)) {
-    statuses.push(
-      EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING,
-      EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING
-    );
-  }
-  if (isDeputyOrAssistant(context)) statuses.push(EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING);
-  if (isDepartmentManager(context)) statuses.push(EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING);
-  return {
-    $or: [
-      ...(statuses.length ? [{ status: { $in: [...new Set(statuses)] } }] : []),
-      { status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR, createdBy: context.userId }
-    ]
-  };
-}
-
 async function execute(query, session) {
   if (session && typeof query.session === 'function') query.session(session);
   return query;
@@ -870,6 +827,74 @@ function createEquipmentRepairService({
     return { teamId, filter };
   }
 
+  // Build actor-specific todo clauses separately from the scoped read filter.
+  // The final query must keep readFilter()'s team/organization constraint so
+  // an approval-stage OR cannot widen an ORG_UNIT data scope.
+  async function buildTodoFilter(context, teamId) {
+    const todoClauses = [];
+    if (context.isSuperAdmin === true) {
+      todoClauses.push({
+        status: {
+          $in: EQUIPMENT_REPAIR_STATUS_VALUES.filter((status) => (
+            status !== EQUIPMENT_REPAIR_STATUSES.COMPLETED &&
+            status !== EQUIPMENT_REPAIR_STATUSES.VOIDED &&
+            status !== EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR
+          ))
+        }
+      });
+      todoClauses.push({
+        status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR,
+        createdBy: context.userId
+      });
+      return { $or: todoClauses };
+    }
+
+    todoClauses.push({
+      status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR,
+      createdBy: context.userId
+    });
+    if (SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
+      const subDepartmentIds = await subDepartmentOrgUnitIds({
+        OrgUnitModel,
+        teamId,
+        orgUnitId: context.membership.orgUnitId
+      });
+      const canLead = await canMembershipActAsSubDepartmentLeader({
+        TeamMembershipModel,
+        OrgUnitModel,
+        membership: context.membership,
+        teamId,
+        orgUnitIds: subDepartmentIds
+      });
+      if (canLead) {
+        todoClauses.push({
+          orgUnitId: { $in: await leadershipOrgUnitIds({
+            OrgUnitModel,
+            teamId,
+            orgUnitIds: subDepartmentIds
+          }) },
+          status: { $in: [
+            EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
+            EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
+          ] }
+        });
+      }
+    }
+    if (isAssetAdmin(context)) {
+      todoClauses.push({ status: { $in: [
+        EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING,
+        EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING
+      ] } });
+    }
+    if (isDeputyOrAssistant(context)) {
+      todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING });
+    }
+    if (isDepartmentManager(context)) {
+      todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING });
+    }
+    return { $or: todoClauses };
+  }
+
   async function listRepairs({ authContext, requestedTeamId, method = 'GET', query = {} }) {
     const context = assertBusinessContext(authContext);
     const todoOnly = query.todo === 'true' || query.todo === true;
@@ -879,67 +904,21 @@ function createEquipmentRepairService({
     const permissionKey = todoOnly ? 'equipment.repair' : 'equipment.view';
     const { page, pageSize, skip } = pagination(query);
     const baseFilter = queryFilters(query);
-    const userFilter = query.todo === 'true' || query.todo === true
-      ? { $and: [baseFilter, todoStatusFilter(context)] }
-      : baseFilter;
     const { teamId, filter: scopedFilter } = await readFilter({
       authContext: context,
       requestedTeamId,
       method,
-      userFilter,
+      userFilter: baseFilter,
       permissionKey
     });
     let filter = scopedFilter;
     if (todoOnly) {
-      const todoClauses = [];
-      if (context.isSuperAdmin === true) {
-        todoClauses.push(todoStatusFilter(context));
-      } else {
-        todoClauses.push({
-          status: EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR,
-          createdBy: context.userId
-        });
-        if (SUB_DEPARTMENT_POSITION_KEYS.has(context.membership?.positionKey)) {
-          const subDepartmentIds = await subDepartmentOrgUnitIds({
-            OrgUnitModel,
-            teamId,
-            orgUnitId: context.membership.orgUnitId
-          });
-          const canLead = await canMembershipActAsSubDepartmentLeader({
-            TeamMembershipModel,
-            OrgUnitModel,
-            membership: context.membership,
-            teamId,
-            orgUnitIds: subDepartmentIds
-          });
-          if (canLead) {
-            todoClauses.push({
-              orgUnitId: { $in: await leadershipOrgUnitIds({
-                OrgUnitModel,
-                teamId,
-                orgUnitIds: subDepartmentIds
-              }) },
-              status: { $in: [
-                EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING,
-                EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING
-              ] }
-            });
-          }
-        }
-        if (isAssetAdmin(context)) {
-          todoClauses.push({ status: { $in: [
-            EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING,
-            EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING
-          ] } });
-        }
-        if (isDeputyOrAssistant(context)) {
-          todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING });
-        }
-        if (isDepartmentManager(context)) {
-          todoClauses.push({ status: EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING });
-        }
-      }
-      filter = { $and: [baseFilter, { teamId }, { $or: todoClauses }] };
+      filter = {
+        $and: [
+          scopedFilter,
+          await buildTodoFilter(context, teamId)
+        ]
+      };
     }
     const [documents, total] = await Promise.all([
       EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
@@ -969,15 +948,6 @@ function createEquipmentRepairService({
     let document = await EquipmentRepairOrderModel.findOne(filter).lean();
     if (document && !canViewEquipment && (await resolveAllowedActions(context, document)).length === 0) {
       document = null;
-    }
-    if (!document && context.mode === SESSION_MODES.TEAM) {
-      const candidate = await EquipmentRepairOrderModel.findOne({
-        _id: normalizeDetailId(repairId),
-        teamId: context.activeTeamId
-      }).lean();
-      if (candidate && (await resolveAllowedActions(context, candidate)).length > 0) {
-        document = candidate;
-      }
     }
     if (!document) throw notFound();
     return serializeRepairWithActors(document, await resolveAllowedActions(context, document));
@@ -1274,7 +1244,6 @@ function createEquipmentRepairService({
       repairId,
       permissionKey: 'equipment.repair'
     });
-    const normalizedRepairId = normalizeDetailId(repairId);
     const noteRequired = [
       EQUIPMENT_REPAIR_ACTIONS.DEPUTY_APPROVE,
       EQUIPMENT_REPAIR_ACTIONS.MANAGER_APPROVE,
@@ -1289,21 +1258,13 @@ function createEquipmentRepairService({
     try {
       return await runRepairTransaction(async (session) => {
       let current = await execute(EquipmentRepairOrderModel.findOne(filter), session);
-      const candidate = current || await execute(EquipmentRepairOrderModel.findOne({
-        _id: normalizedRepairId,
-        teamId: context.activeTeamId
-      }), session);
-      if (candidate && isSubDepartmentStage(candidate)) {
+      if (current && isSubDepartmentStage(current)) {
         await lockSubDepartmentLeadership({
           OrgUnitModel,
-          teamId: candidate.teamId,
-          orgUnitIds: [candidate.orgUnitId],
+          teamId: current.teamId,
+          orgUnitIds: [current.orgUnitId],
           session
         });
-      }
-      if (!current && candidate) {
-        const candidateActions = await resolveAllowedActions(context, candidate, session);
-        if (candidateActions.includes(input.action)) current = candidate;
       }
       if (!current) throw notFound();
       if (current.revision !== revision) {

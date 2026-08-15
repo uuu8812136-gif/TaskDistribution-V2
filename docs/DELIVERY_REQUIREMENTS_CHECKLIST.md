@@ -486,3 +486,12 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] WeChat Developer Tools uploaded the production artifact as development version `0.9.20260814.3` (1,383,783 bytes) and generated a 470x470 preview QR. The structured receipt is `work/release/miniprogram-upload-receipt-0.9.20260814.3.json`; the CLI upload returned exit code 0.
 - [ ] The user/platform must still promote `0.9.20260814.3` to the experience version and complete real-device acceptance. WeChat Review and formal Publish remain separate gates; the upload receipt does not prove either action.
 - [ ] The candidate has not yet been activated on the customer host. Run the retention check with `SUPER_ADMIN_USERNAME` (or `CUSTOMER_SUPER_ADMIN_USERNAME`) at both release boundaries, then complete the normal backup/Hold/Execute/PostAudit chain.
+
+## 2026-08-15 待办、二维码与合同 PDF 交付口径
+
+- [x] 设备维修“我的待办”按当前账号的岗位、流程节点、团队和组织数据范围自动查询；小程序团队模式进入页面后自动加载，切换团队、恢复会话或重新显示页面会刷新。跨分部详情读取和直接审批继续拒绝，不能用待办状态的 `$or` 条件扩大组织范围。
+- [ ] 上述维修待办修复目前只在本地工作树和自动化测试中，尚未部署到客户公网；公网旧构建不能作为本修复的验收依据。
+- [x] 设备二维码使用每台设备不可变的随机 `qrToken`。二维码载荷不包含固定资产编号、车牌号或公开 API URL；系统小程序“扫码查设备”支持 V1 JSON、纯 token 和系统链接，并在登录、团队和设备权限校验后查询。
+- [x] 测试环境和正式环境分别生成二维码，测试二维码不能直接用于正式打印。正式导入台账并确认数据后，在正式环境重新生成并打印；普通编辑设备名称、固定资产编号、车牌号或组织一般不改变 token，无需重打。
+- [x] 供应商合同三级模板的 W/BC/BD“合同PDF（上传）”是私有附件列，不能填写本机路径、文件名或 URL。当前最快可用路径是先导入 57 列合同基础数据，再在三级细表按供应商/合同记录一次多选上传 PDF；系统按权限和团队绑定附件，每条记录最多 10 个、单个不超过 20MB。
+- [ ] 当前没有按供应商编码/合同编号自动匹配 PDF 的 ZIP 批量导入功能。若新增该功能，必须先约定文件名、重复匹配策略、失败清单和事务回滚，不能把“附件清单（不可回导）”误当成可回导的附件绑定。
