@@ -4794,6 +4794,8 @@ test('inspection calendar groups by Shanghai plan date and applies daily state p
     equipmentId: String(fixture.asset._id),
     query: { month: '2030-08' }
   });
+  assert.equal(calendar.equipment.assetCode, fixture.asset.assetCode);
+  assert.equal(calendar.equipment.plateNumber, 'PLATE-EQ-001');
   assert.equal(calendar.days.length, 31);
   const statuses = Object.fromEntries(calendar.days.map((day) => [day.date, day.status]));
   assert.equal(statuses['2030-08-05'], 'NORMAL');

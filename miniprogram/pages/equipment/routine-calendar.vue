@@ -11,6 +11,7 @@
           <text class="calendar-title">月度点检日历</text>
           <text class="calendar-subtitle">{{ equipment?.name || '设备' }}</text>
           <text class="calendar-code">固定资产编号：{{ equipment?.assetCode || '-' }}</text>
+          <text class="calendar-code">车牌号：{{ equipment?.plateNumber || '-' }}</text>
         </view>
         <view class="month-switcher">
           <button class="month-button" :disabled="loading" @click="changeMonth(-1)">上月</button>

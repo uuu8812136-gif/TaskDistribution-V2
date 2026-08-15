@@ -5,6 +5,7 @@
         <view class="asset-copy">
           <text class="asset-name">{{ equipment.name }}</text>
           <text class="asset-code">固定资产编号：{{ equipment.assetCode || '-' }}</text>
+          <text class="asset-code">车牌号：{{ equipment.plateNumber || '-' }}</text>
         </view>
         <text class="asset-status">{{ statusLabel(equipment.status) }}</text>
       </view>

@@ -480,7 +480,7 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] A user-level super administrator cannot be added as a team membership, preserving the membership-free identity model.
 - [x] Added `app/script/verifySuperAdminRetention.js` and `npm run verify:super-admin`. The release gate verifies the nominated account is present, active, still `isSuperAdmin=true`, and has zero memberships before and after activation. The check emits no password or token.
 - [x] Candidate regression: backend unit `243/243` plus full backend `672/672`, Web `286/286`, mini-program `134/134`, mini-program `46/46` SFC files and isolation checks, focused team-management integration `21/21`, and `git diff --check` passed.
-- [x] The monthly routine calendar, equipment detail and scan result now label the existing `assetCode` value explicitly as `固定资产编号`. The customer's latest marked workbook confirms this field is not a plate number; no customer equipment data or `plateNumber` value is rewritten.
+- [x] The monthly routine calendar, equipment detail and scan result show `assetCode` explicitly as `固定资产编号` and independently show `plateNumber` as `车牌号`; neither field substitutes for or rewrites the other. A blank plate number is rendered as `-`.
 - [x] Calendar dates after the current Shanghai date render future `NO_PLAN` and `PENDING` cells as grey `未到期`; actual `REST_DAY` remains blue, and completed/abnormal states are preserved. This is a display-only derivation and does not change plans or worker behavior.
 - [x] HBuilderX production build for manifest `0.9.20260815.1` (`versionCode` `2026081501`) is independently verified from commit `f00a7753f8b80fec393fad67a2b908a369283358`: 40 pages, 199 files, 718,011 artifact bytes, strict UTF-8/JSON/JavaScript checks, formal AppID `wxd8f18985dfd63b89`, and API `https://v2-test.horselink.cn/api`. All build temp/cache paths stayed on E:.
 - [x] WeChat Developer Tools uploaded the production artifact as development version `0.9.20260815.1` (1,385,764 bytes) and generated a 470x470 preview QR. The structured receipt is `work/release/miniprogram-upload-receipt-0.9.20260815.1.json`; CLI login was verified and upload returned exit code 0.
@@ -489,6 +489,10 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] Historical candidate `v2-20260815-0833a67` is superseded by active release `v2-20260815-ee6ec3e`; it remains reference evidence only and is not the deployed website version.
 
 ## 2026-08-15 待办、二维码与合同 PDF 交付口径
+
+- [x] 客户最终澄清月度点检日历、设备详情和扫码结果三处都要同时显示“固定资产编号”和“车牌号”。设备详情及二维码查询原本已经返回 `plateNumber`；本次补齐三个小程序标题区，并补齐点检日历及点检计划接口的 `plateNumber` 响应字段。
+- [x] 客户测试库只读核对确认 `CUST26-HDL-004` 的 `plateNumber` 非空，当前共有 25 台设备维护了非空车牌号；本次未修改任何客户台账数据。后端设备流程 `47/47`、后端全量 `677/677`、小程序 `134/134`、46 个 SFC 和环境隔离检查通过。
+- [ ] 修复版小程序 `0.9.20260815.2`（`2026081502`）仍须完成 HBuilderX 生产构建、微信开发版上传、体验版提升和真机复验；在取得对应回执前不能称为客户已更新。
 
 - [x] 设备维修“我的待办”按当前账号的岗位、流程节点、团队和组织数据范围自动查询；小程序团队模式进入页面后自动加载，切换团队、恢复会话或重新显示页面会刷新。跨分部详情读取和直接审批继续拒绝，不能用待办状态的 `$or` 条件扩大组织范围。
 - [x] 维修待办已随 `v2-20260815-ee6ec3e` 部署，并使用荆隆基、马延浩和超级管理员真实账号调用公网 `todo=true` API 验收：荆隆基、马延浩当前均为 0 条，原因是现有维修单已完成或当前流程节点不属于该账号；超级管理员返回 3 条。该结果证明接口按当前节点实时计算，不应把历史已完成单伪装成待办；后续客户新建并流转到两人节点的维修单仍应继续做页面/真机验收。

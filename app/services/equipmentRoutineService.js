@@ -1978,6 +1978,7 @@ function createEquipmentRoutineService({
         orgUnitId: normalizeId(asset.orgUnitId),
         categoryId: normalizeId(asset.categoryId),
         assetCode: asset.assetCode,
+        plateNumber: asset.plateNumber || '',
         name: asset.name,
         location: asset.location || '',
         currentRuntimeHours: asset.currentRuntimeHours ?? null,
@@ -2295,6 +2296,7 @@ function createEquipmentRoutineService({
         _id: normalizeId(asset._id),
         teamId: normalizeId(asset.teamId),
         assetCode: asset.assetCode,
+        plateNumber: asset.plateNumber || '',
         name: asset.name,
         location: asset.location || ''
       },

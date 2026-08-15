@@ -107,11 +107,12 @@ test('calendar page includes month navigation, Monday-first headings, retry, and
   assert.match(calendarSource, /teamId\.value \? \{ teamId: teamId\.value \}/)
 })
 
-test('calendar, detail, and scan equipment headings identify the fixed asset code explicitly', () => {
+test('calendar, detail, and scan equipment headings identify fixed asset code and plate number explicitly', () => {
   for (const source of [calendarSource, detailSource, scanSource]) {
     assert.match(source, /equipment(?:\?\.|\.)assetCode/)
     assert.match(source, /固定资产编号：\{\{ equipment(?:\?\.|\.)assetCode \|\| '-' \}\}/)
-    assert.doesNotMatch(source, /车牌号：\{\{ equipment(?:\?\.|\.)plateNumber/)
+    assert.match(source, /equipment(?:\?\.|\.)plateNumber/)
+    assert.match(source, /车牌号：\{\{ equipment(?:\?\.|\.)plateNumber \|\| '-' \}\}/)
   }
 })
 
