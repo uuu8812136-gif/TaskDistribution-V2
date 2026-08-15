@@ -81,6 +81,13 @@ export const generateEquipmentQrCode = (equipmentId) => request({
   method: 'post'
 })
 
+export const getEquipmentByQrToken = (qrToken, params = {}) => request({
+  url: `/equipment/qr/${encodeURIComponent(qrToken)}`,
+  method: 'get',
+  params,
+  suppressGlobalError: true
+})
+
 export const exportEquipment = (params) => request({
   url: '/equipment/export',
   method: 'get',

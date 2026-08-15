@@ -13,6 +13,7 @@ const { businessWriteGuard } = require('../middlewares/businessWriteGuard');
 const {
   ContractManagementError,
   EXCEL_MIME_TYPE,
+  MAX_CONTRACT_PDF_ZIP_SIZE,
   MAX_IMPORT_FILE_SIZE,
   createContractManagementService
 } = require('../services/contractManagementService');
@@ -38,6 +39,26 @@ const importUpload = multer({
   }
 }).single('file');
 
+const pdfZipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_CONTRACT_PDF_ZIP_SIZE,
+    files: 1,
+    fields: 5,
+    parts: 6,
+    fieldNameSize: 100,
+    fieldSize: 16 * 1024
+  },
+  fileFilter(req, file, callback) {
+    if (/\.zip$/i.test(file.originalname || '')) return callback(null, true);
+    return callback(new ContractManagementError(
+      415,
+      'CONTRACT_PDF_ZIP_UNSUPPORTED',
+      '仅支持包含PDF文件的 .zip 压缩包'
+    ));
+  }
+}).single('file');
+
 function importUploadMiddleware(req, res, next) {
   importUpload(req, res, (error) => {
     if (!error) return next();
@@ -48,6 +69,22 @@ function importUploadMiddleware(req, res, next) {
         tooLarge ? 413 : 400,
         tooLarge ? 'CONTRACT_IMPORT_FILE_TOO_LARGE' : 'CONTRACT_IMPORT_UPLOAD_INVALID',
         tooLarge ? '合同管理Excel文件不能超过20MB' : '合同管理Excel上传内容不正确'
+      ));
+    }
+    return next(error);
+  });
+}
+
+function pdfZipUploadMiddleware(req, res, next) {
+  pdfZipUpload(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof ContractManagementError) return next(error);
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+      return next(new ContractManagementError(
+        tooLarge ? 413 : 400,
+        tooLarge ? 'CONTRACT_PDF_ZIP_TOO_LARGE' : 'CONTRACT_PDF_ZIP_UPLOAD_INVALID',
+        tooLarge ? 'PDF压缩包不能超过220MB' : 'PDF压缩包上传内容不正确'
       ));
     }
     return next(error);
@@ -92,6 +129,14 @@ function createContractsRouter({ storageRoot, service } = {}) {
     importUploadMiddleware,
     rejectWriteTeamId,
     contractController.importSuppliers
+  );
+  router.post(
+    '/suppliers/contract-pdfs/import',
+    requireTeamContext,
+    requirePermission('contract.supplier.import'),
+    pdfZipUploadMiddleware,
+    rejectWriteTeamId,
+    contractController.importContractPdfs
   );
   router.get(
     '/suppliers',
@@ -211,5 +256,6 @@ function createContractsRouter({ storageRoot, service } = {}) {
 module.exports = {
   createContractsRouter,
   importUploadMiddleware,
+  pdfZipUploadMiddleware,
   rejectWriteTeamId
 };

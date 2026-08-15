@@ -36,6 +36,19 @@ export function importSuppliers(file, params = {}, onUploadProgress) {
   })
 }
 
+export function importSupplierContractPdfs(file, params = {}, onUploadProgress) {
+  const data = new FormData()
+  data.append('file', file)
+  return request({
+    url: '/contracts/suppliers/contract-pdfs/import',
+    method: 'post',
+    params,
+    data,
+    suppressGlobalError: true,
+    onUploadProgress
+  })
+}
+
 export function exportSuppliers(params) {
   return request({
     url: '/contracts/suppliers/export',

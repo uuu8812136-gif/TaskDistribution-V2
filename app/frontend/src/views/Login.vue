@@ -132,6 +132,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { getLoginTeams } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
+import { equipmentScanTeamIdFromRedirect } from '@/utils/equipmentQr'
+import { safeInternalRedirect, teamSelectionLocation } from '@/utils/internalRedirect'
 import { defaultLoginTeamId, normalizeLoginTeams } from '@/utils/loginTeams'
 import { requestErrorMessage } from '@/utils/request'
 import {
@@ -192,7 +194,11 @@ const loadLoginTeams = async () => {
     const payload = await getLoginTeams()
     const teams = normalizeLoginTeams(payload?.teams)
     loginTeams.value = teams
-    if (!teams.some((team) => team._id === loginForm.teamId)) {
+    const redirect = safeInternalRedirect(route.query.redirect)
+    const scanTeamId = equipmentScanTeamIdFromRedirect(redirect)
+    if (scanTeamId && teams.some((team) => team._id === scanTeamId)) {
+      loginForm.teamId = scanTeamId
+    } else if (!teams.some((team) => team._id === loginForm.teamId)) {
       loginForm.teamId = defaultLoginTeamId(teams)
     }
   } catch {
@@ -244,16 +250,12 @@ const handleLogin = async () => {
     }
     if (rememberWarning) ElMessage.warning(`登录成功，但${rememberWarning}`)
     else ElMessage.success('登录成功')
-    if (session.isTeamSelection) {
-      await router.replace({ name: 'TeamSelect' })
-    } else {
-      const redirect = typeof route.query.redirect === 'string' &&
-        route.query.redirect.startsWith('/') &&
-        !route.query.redirect.startsWith('//')
-        ? route.query.redirect
-        : null
-      await router.replace(redirect || { name: 'Dashboard' })
-    }
+    const redirect = safeInternalRedirect(route.query.redirect)
+    await router.replace(
+      session.isTeamSelection
+        ? teamSelectionLocation(redirect)
+        : (redirect || { name: 'Dashboard' })
+    )
   } catch (error) {
     const isLoginResponseError = error?.config?.url === '/auth/login' && Boolean(error?.response)
     if (isLoginResponseError || !error?.config) {

@@ -10,6 +10,10 @@
           <el-icon><Upload /></el-icon>
           导入三级细表
         </el-button>
+        <el-button v-if="canImport" @click="openPdfImport">
+          <el-icon><FolderOpened /></el-icon>
+          批量导入合同PDF
+        </el-button>
         <el-button v-if="canExport" :loading="exportingScope === 'overview'" @click="handleExport('overview')">
           <el-icon><Download /></el-icon>
           导出主表汇总
@@ -276,6 +280,46 @@
         <el-button type="primary" :loading="importing" :disabled="!importFile" @click="submitImport">开始导入</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog
+      v-model="pdfImportVisible"
+      title="批量导入合同PDF"
+      width="min(680px, 94vw)"
+      append-to-body
+      :close-on-click-modal="!pdfImporting"
+      :show-close="!pdfImporting"
+    >
+      <el-alert
+        title="把PDF放进一个ZIP后上传，文件名按“供应商编码__合同编号.pdf”；同一供应商只有一条合同时可只写供应商编码"
+        type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        class="pdf-import-note"
+        title="系统只会绑定已有的主合同或器具租赁合同，不会新建合同记录；匹配不完整时整包不写入"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <el-upload
+        v-model:file-list="pdfImportFiles"
+        drag
+        :auto-upload="false"
+        :limit="1"
+        accept=".zip,application/zip,application/x-zip-compressed"
+        class="import-upload"
+        :on-change="handlePdfImportFileChange"
+      >
+        <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+        <div class="el-upload__text">拖入 ZIP 压缩包，或<em>点击选择</em></div>
+        <template #tip><div class="el-upload__tip">仅支持 PDF，压缩包不超过 220 MB，单个 PDF 不超过 20 MB</div></template>
+      </el-upload>
+      <template #footer>
+        <el-button :disabled="pdfImporting" @click="pdfImportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="pdfImporting" :disabled="!pdfImportFile" @click="submitPdfImport">开始匹配并导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -292,13 +336,14 @@ import {
 } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
-import { Delete, View } from '@element-plus/icons-vue'
+import { Delete, FolderOpened, View } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import ContractFileUpload from './components/ContractFileUpload.vue'
 import {
   createSupplierFirstRecord,
   exportSuppliers,
   getSuppliers,
+  importSupplierContractPdfs,
   importSuppliers
 } from '@/api/contract'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
@@ -325,12 +370,16 @@ const loadError = ref('')
 const exportingScope = ref('')
 const importing = ref(false)
 const importVisible = ref(false)
+const pdfImportVisible = ref(false)
+const pdfImporting = ref(false)
 const firstRecordVisible = ref(false)
 const firstRecordFormRef = ref(null)
 const submittingFirstRecord = ref(false)
 const firstRecordAttachmentFiles = reactive({})
 const importFiles = ref([])
 const importFile = ref(null)
+const pdfImportFiles = ref([])
+const pdfImportFile = ref(null)
 const suppliers = ref([])
 const total = ref(0)
 const selectedTeamId = ref(String(route.query.teamId || ''))
@@ -338,6 +387,7 @@ let listRequestId = 0
 let exportRequestId = 0
 let firstRecordSubmitRequestId = 0
 let importRequestId = 0
+let pdfImportRequestId = 0
 let activationReady = false
 let pageActive = true
 let resumeListLoad = false
@@ -454,17 +504,22 @@ function invalidateSupplierResults() {
   exportRequestId += 1
   firstRecordSubmitRequestId += 1
   importRequestId += 1
+  pdfImportRequestId += 1
   suppliers.value = []
   total.value = 0
   loading.value = false
   exportingScope.value = ''
   submittingFirstRecord.value = false
   importing.value = false
+  pdfImporting.value = false
   loadError.value = ''
   firstRecordVisible.value = false
   importVisible.value = false
+  pdfImportVisible.value = false
   importFiles.value = []
   importFile.value = null
+  pdfImportFiles.value = []
+  pdfImportFile.value = null
 }
 
 function applyFilters() {
@@ -668,6 +723,12 @@ function openImport() {
   importVisible.value = true
 }
 
+function openPdfImport() {
+  pdfImportFiles.value = []
+  pdfImportFile.value = null
+  pdfImportVisible.value = true
+}
+
 function handleImportFileChange(file, files) {
   if (!file.raw || !/\.xlsx$/i.test(file.raw.name || '')) {
     ElMessage.warning('请选择 .xlsx 格式的供应商合同文件')
@@ -676,6 +737,16 @@ function handleImportFileChange(file, files) {
     return
   }
   importFile.value = file.raw
+}
+
+function handlePdfImportFileChange(file, files) {
+  if (!file.raw || !/\.zip$/i.test(file.raw.name || '')) {
+    ElMessage.warning('请选择 .zip 格式的PDF压缩包')
+    pdfImportFiles.value = files.filter((item) => item.uid !== file.uid)
+    pdfImportFile.value = null
+    return
+  }
+  pdfImportFile.value = file.raw
 }
 
 async function submitImport() {
@@ -695,6 +766,30 @@ async function submitImport() {
     await loadSuppliers()
   } finally {
     if (requestId === importRequestId) importing.value = false
+  }
+}
+
+async function submitPdfImport() {
+  if (!pdfImportFile.value) return
+  const requestId = ++pdfImportRequestId
+  const context = currentPageContext()
+  const file = pdfImportFile.value
+  const teamParams = { ...requestTeamParams.value }
+  pdfImporting.value = true
+  try {
+    const result = await importSupplierContractPdfs(file, teamParams)
+    if (requestId !== pdfImportRequestId || !isCurrentPageContext(context)) return
+    const imported = Number(result.importedCount) || 0
+    const skipped = Number(result.skippedExisting) || 0
+    ElMessage.success(`已匹配 ${result.matchedCount || 0} 个文件，导入 ${imported} 个，跳过重复 ${skipped} 个`)
+    pdfImportVisible.value = false
+    await loadSuppliers()
+  } catch (error) {
+    if (requestId === pdfImportRequestId && isCurrentPageContext(context)) {
+      ElMessage.error(error?.message || '合同PDF批量导入失败，请稍后重试')
+    }
+  } finally {
+    if (requestId === pdfImportRequestId) pdfImporting.value = false
   }
 }
 
@@ -752,14 +847,19 @@ function deactivateSupplierContracts() {
   exportRequestId += 1
   firstRecordSubmitRequestId += 1
   importRequestId += 1
+  pdfImportRequestId += 1
   loading.value = false
   exportingScope.value = ''
   submittingFirstRecord.value = false
   importing.value = false
+  pdfImporting.value = false
   firstRecordVisible.value = false
   importVisible.value = false
+  pdfImportVisible.value = false
   importFiles.value = []
   importFile.value = null
+  pdfImportFiles.value = []
+  pdfImportFile.value = null
 }
 
 onDeactivated(deactivateSupplierContracts)
@@ -775,6 +875,7 @@ onBeforeUnmount(deactivateSupplierContracts)
 .contract-toolbar .name-input { width: 230px; }
 .contract-toolbar .el-select { width: 150px; }
 .scope-alert { margin-bottom: 16px; }
+.pdf-import-note { margin-top: 12px; }
 .supplier-table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 6px; }
 .mobile-supplier-list { display: none; }
 .table-actions--right { justify-content: flex-end; }

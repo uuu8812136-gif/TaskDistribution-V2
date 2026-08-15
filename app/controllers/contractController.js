@@ -75,6 +75,19 @@ function createContractController({
       }
     },
 
+    async importContractPdfs(req, res, next) {
+      try {
+        const result = await service.importContractPdfs({
+          authContext: req.authContext,
+          req,
+          file: req.file
+        });
+        return res.status(201).json(result);
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async exportSuppliers(req, res, next) {
       try {
         const result = await service.supplierExport({

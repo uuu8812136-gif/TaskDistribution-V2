@@ -366,6 +366,8 @@
         <strong>{{ equipment?.name }}</strong>
         <span>固定资产编号：{{ equipment?.assetCode }}</span>
         <img v-if="qrImage" :src="qrImage" alt="设备二维码" />
+        <small v-if="qrImage">扫码后需登录，并进入该设备所属项目团队。</small>
+        <small v-if="qrImage">二维码绑定当前系统环境，正式上线后请在正式系统重新生成打印。</small>
       </div>
       <template #footer>
         <el-button @click="qrVisible = false">关闭</el-button>
@@ -422,6 +424,7 @@ import {
   equipmentSourceRawEntries,
   normalizeEquipmentPhotoIds
 } from '@/utils/equipmentAssetDisplay'
+import { normalizeEquipmentQrToken } from '@/utils/equipmentQr'
 
 const route = useRoute()
 const router = useRouter()
@@ -437,6 +440,7 @@ const historyPageSize = 20
 const historyTotal = ref(0)
 const qrVisible = ref(false)
 const qrImage = ref('')
+const qrLink = ref('')
 const photosLoading = ref(false)
 const equipmentPhotos = ref([])
 const photoFailures = ref([])
@@ -779,13 +783,28 @@ function editEquipment() {
 }
 
 async function showQrCode() {
-  const result = await generateEquipmentQrCode(equipment.value._id)
-  qrImage.value = await QRCode.toDataURL(result.qrCode.payload, {
-    width: 360,
-    margin: 2,
-    errorCorrectionLevel: 'M'
-  })
-  qrVisible.value = true
+  try {
+    const result = await generateEquipmentQrCode(equipment.value._id)
+    const qrToken = normalizeEquipmentQrToken(result?.qrCode?.payload)
+    if (!qrToken) throw new TypeError('设备二维码令牌无效')
+
+    const scanLocation = router.resolve({
+      name: 'EquipmentScan',
+      params: { qrToken },
+      query: { teamId: session.activeTeamId }
+    })
+    qrLink.value = new URL(scanLocation.href, window.location.origin).toString()
+    qrImage.value = await QRCode.toDataURL(qrLink.value, {
+      width: 512,
+      margin: 4,
+      errorCorrectionLevel: 'M'
+    })
+    qrVisible.value = true
+  } catch {
+    qrLink.value = ''
+    qrImage.value = ''
+    ElMessage.error('设备二维码生成失败，请稍后重试')
+  }
 }
 
 function escapeHtml(value) {
@@ -797,7 +816,7 @@ function escapeHtml(value) {
 function printQr() {
   const printWindow = window.open('', '_blank', 'width=520,height=640')
   if (!printWindow) return
-  printWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(equipment.value.assetCode)}</title><style>body{font-family:Arial,sans-serif;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 8px}p{font-size:16px;margin:0 0 18px}img{width:360px;height:360px}</style></head><body><h1>${escapeHtml(equipment.value.name)}</h1><p>固定资产编号：${escapeHtml(equipment.value.assetCode)}</p><img src="${qrImage.value}" onload="window.print();window.close()"></body></html>`)
+  printWindow.document.write(`<!doctype html><html><head><title>${escapeHtml(equipment.value.assetCode)}</title><style>body{font-family:Arial,sans-serif;text-align:center;padding:32px}h1{font-size:22px;margin:0 0 8px}p{font-size:16px;margin:0 0 18px}img{width:420px;max-width:100%;height:auto}small{display:block;margin-top:10px;color:#444;font-size:12px}</style></head><body><h1>${escapeHtml(equipment.value.name)}</h1><p>固定资产编号：${escapeHtml(equipment.value.assetCode)}</p><img src="${qrImage.value}" onload="window.print();window.close()"><small>请使用手机扫码器或 Horselink 管理系统小程序扫描</small><small>二维码绑定当前系统环境，正式上线后请在正式系统重新生成打印</small></body></html>`)
   printWindow.document.close()
 }
 
@@ -867,6 +886,7 @@ onBeforeUnmount(releaseEquipmentPhotos)
 .qr-sheet strong { font-size: 18px; }
 .qr-sheet span { margin-top: 4px; color: #606266; }
 .qr-sheet img { width: min(360px, 100%); aspect-ratio: 1; margin-top: 14px; }
+.qr-sheet small { margin-top: 8px; color: #909399; text-align: center; }
 @media (max-width: 760px) {
   .page-heading { align-items: flex-start; }
   .heading-main { width: 100%; }

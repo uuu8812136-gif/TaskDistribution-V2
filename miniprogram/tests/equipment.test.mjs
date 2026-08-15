@@ -71,6 +71,10 @@ test('equipment QR parser accepts V1 payload, raw token and system URL formats',
     { token }
   )
   assert.deepEqual(
+    parseEquipmentQrPayload(`https://v2-test.horselink.cn/equipment-scan/${token}?teamId=${objectId}`),
+    { token }
+  )
+  assert.deepEqual(
     parseEquipmentQrPayload(`/equipment/detail?qrToken=${token}`),
     { token }
   )

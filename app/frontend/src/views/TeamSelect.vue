@@ -74,17 +74,21 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useSessionStore } from '@/stores/session'
+import { safeInternalRedirect } from '@/utils/internalRedirect'
 
+const route = useRoute()
 const router = useRouter()
 const session = useSessionStore()
 const refreshing = ref(false)
 const switching = ref('')
 const logoutSubmitting = ref(false)
 const teamsError = ref('')
+const redirectTarget = computed(() => safeInternalRedirect(route.query.redirect))
+const continueToTarget = () => router.replace(redirectTarget.value || { name: 'Dashboard' })
 
 const loadTeams = async () => {
   if (refreshing.value) return
@@ -104,7 +108,7 @@ const loadTeams = async () => {
 const selectTeam = async (team) => {
   if (switching.value || refreshing.value || logoutSubmitting.value) return
   if (session.isTeamMode && team._id === session.activeTeamId) {
-    await router.replace({ name: 'Dashboard' })
+    await continueToTarget()
     return
   }
 
@@ -112,7 +116,7 @@ const selectTeam = async (team) => {
   try {
     await session.switchTeam(team._id)
     ElMessage.success(`已进入${team.name}`)
-    await router.replace({ name: 'Dashboard' })
+    await continueToTarget()
   } catch {
     // 请求层统一展示错误，用户可重新选择。
   } finally {
@@ -125,7 +129,7 @@ const enterGlobal = async () => {
   switching.value = 'global'
   try {
     await session.enterGlobalReadOnly()
-    await router.replace({ name: 'Dashboard' })
+    await continueToTarget()
   } catch {
     // 请求层统一展示错误，保留当前团队上下文。
   } finally {

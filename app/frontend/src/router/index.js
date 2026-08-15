@@ -4,6 +4,7 @@ import { useSessionStore, SESSION_MODES } from '@/stores/session'
 import { isStaleContextResponseError, readAuthToken } from '@/utils/request'
 import { isModeAllowed } from '@/utils/teamManagement'
 import { isTaskLeadershipCandidateContext } from '@/utils/taskPolicy'
+import { safeInternalRedirect, teamSelectionLocation } from '@/utils/internalRedirect'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -77,6 +78,16 @@ const router = createRouter({
             title: '设备台账',
             permission: 'equipment.view',
             teamRequired: true,
+            readOnlyAllowed: true
+          }
+        },
+        {
+          path: 'equipment-scan/:qrToken',
+          name: 'EquipmentScan',
+          component: () => import('@/views/equipment/EquipmentScanLanding.vue'),
+          meta: {
+            title: '扫码查设备',
+            teamRequired: false,
             readOnlyAllowed: true
           }
         },
@@ -451,11 +462,13 @@ router.beforeEach(async (to) => {
   }
 
   if (to.name === 'Login') {
-    return session.isTeamSelection ? { name: 'TeamSelect' } : { name: 'Dashboard' }
+    const redirect = safeInternalRedirect(to.query.redirect)
+    if (session.isTeamSelection) return teamSelectionLocation(redirect)
+    return redirect || { name: 'Dashboard' }
   }
 
   if (session.mode === SESSION_MODES.TEAM_SELECTION && to.name !== 'TeamSelect') {
-    return { name: 'TeamSelect' }
+    return teamSelectionLocation(to.fullPath)
   }
 
   if (to.meta.superAdminRequired && !session.isSuperAdmin) {
@@ -482,7 +495,7 @@ router.beforeEach(async (to) => {
     session.mode !== SESSION_MODES.TEAM &&
     !(session.isGlobalReadOnly && to.meta.readOnlyAllowed === true)
   ) {
-    return { name: 'TeamSelect' }
+    return teamSelectionLocation(to.fullPath)
   }
 
   if (!isModeAllowed(session.mode, to.meta.allowedModes)) {

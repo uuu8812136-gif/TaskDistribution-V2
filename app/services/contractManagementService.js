@@ -18,6 +18,7 @@ const {
   createStorageKey,
   resolveStoragePath
 } = require('./fileStorageService');
+const { extractZipEntries } = require('./zipArchiveService');
 const { normalizeObjectId } = require('./scopedQueryService');
 const { resolveReadTeamId } = require('./reportingServiceSupport');
 const {
@@ -48,6 +49,7 @@ const CONTRACT_CATEGORIES = Object.freeze(CATEGORY_VALUES.filter(
 ));
 const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_IMPORT_FILE_SIZE = 20 * 1024 * 1024;
+const MAX_CONTRACT_PDF_ZIP_SIZE = 220 * 1024 * 1024;
 const EXCEL_MIME_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 const SUPPLIER_EXPORT_QUERY_KEYS = Object.freeze({
   overview: new Set([
@@ -184,6 +186,61 @@ function plain(document) {
 
 function escapeRegex(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizeAttachmentMatchText(value) {
+  return String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase('zh-CN')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function contractPdfPurposeAllowed(record) {
+  return record?.category === CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT ||
+    record?.category === CONTRACT_RECORD_CATEGORIES.EQUIPMENT_RENTAL;
+}
+
+function matchContractPdfEntry(entry, suppliers, records) {
+  const stem = String(entry.name || '').replace(/\.pdf$/i, '');
+  const recordById = records.find((record) => (
+    new RegExp(`(?:^|[^a-f0-9])${String(record._id)}(?:$|[^a-f0-9])`, 'i').test(stem)
+  ));
+  if (recordById && contractPdfPurposeAllowed(recordById)) return { record: recordById };
+
+  const separatorIndex = stem.indexOf('__');
+  const supplierHint = normalizeAttachmentMatchText(
+    separatorIndex >= 0 ? stem.slice(0, separatorIndex) : stem
+  );
+  const supplierCandidates = suppliers.filter((supplier) => {
+    const code = normalizeAttachmentMatchText(supplier.code);
+    return code && code === supplierHint;
+  });
+  if (supplierCandidates.length !== 1) {
+    return supplierCandidates.length > 1
+      ? { status: 'ambiguous', reason: '文件名同时匹配多个供应商编码' }
+      : { status: 'unmatched', reason: '文件名未使用唯一供应商编码' };
+  }
+  const supplier = supplierCandidates[0];
+  const supplierRecords = records.filter((record) => (
+    String(record.supplierId) === String(supplier._id) && contractPdfPurposeAllowed(record)
+  ));
+  if (!supplierRecords.length) return { status: 'unmatched', reason: '该供应商没有可绑定合同记录' };
+
+  const contractHint = separatorIndex >= 0
+    ? normalizeAttachmentMatchText(stem.slice(separatorIndex + 2))
+    : '';
+  if (separatorIndex >= 0) {
+    if (!contractHint) return { status: 'unmatched', reason: '文件名缺少合同编号' };
+    const byContractNumber = supplierRecords.filter((record) => (
+      normalizeAttachmentMatchText(record.contractNumber) === contractHint
+    ));
+    if (byContractNumber.length === 1) return { record: byContractNumber[0] };
+    return byContractNumber.length > 1
+      ? { status: 'ambiguous', reason: '同一供应商和合同编号对应多条记录' }
+      : { status: 'unmatched', reason: '文件名中的合同编号不存在' };
+  }
+  if (supplierRecords.length === 1) return { record: supplierRecords[0] };
+  return { status: 'ambiguous', reason: '同一供应商有多条合同记录，请在文件名中加入__合同编号' };
 }
 
 function pagination(query = {}) {
@@ -920,6 +977,231 @@ function createContractManagementService({
     };
   }
 
+  async function stageContractPdf({ entry, teamId }) {
+    const storageName = `contract-${crypto.randomUUID()}.pdf`;
+    const storageKey = createStorageKey({
+      teamId,
+      originalName: storageName,
+      mimeType: 'application/pdf'
+    });
+    const storagePath = resolveStoragePath(importedMediaStorageRoot(), storageKey);
+    await fs.promises.mkdir(path.dirname(storagePath), { recursive: true, mode: 0o700 });
+    try {
+      await fs.promises.writeFile(storagePath, entry.buffer, { flag: 'wx', mode: 0o600 });
+    } catch (error) {
+      await fs.promises.rm(storagePath, { force: true }).catch(() => {});
+      throw error;
+    }
+    return {
+      storageKey,
+      storagePath,
+      originalName: entry.name,
+      mimeType: 'application/pdf',
+      size: entry.buffer.length,
+      sha256: crypto.createHash('sha256').update(entry.buffer).digest('hex'),
+      entryName: entry.name
+    };
+  }
+
+  async function removeStagedContractPdfs(stagedFiles, retainedStorageKeys = null) {
+    if (!stagedFiles.length) return;
+    let retained = retainedStorageKeys && new Set([...retainedStorageKeys].map(String));
+    if (!retained) {
+      const bound = await FileAssetModel.find({
+        storageKey: { $in: stagedFiles.map(({ storageKey }) => storageKey) },
+        status: FILE_STATUSES.ACTIVE
+      }).select('storageKey').lean();
+      retained = new Set(bound.map(({ storageKey }) => String(storageKey)));
+    }
+    await Promise.all(stagedFiles
+      .filter(({ storageKey }) => !retained.has(String(storageKey)))
+      .map(({ storagePath }) => fs.promises.rm(storagePath, { force: true })));
+  }
+
+  async function persistContractPdf({ staged, context, req, teamId, record, session }) {
+    const file = await createOne(FileAssetModel, {
+      teamId,
+      ownerType: FILE_OWNER_TYPES.SUPPLIER_CONTRACT,
+      ownerId: record._id,
+      storageKey: staged.storageKey,
+      originalName: staged.originalName,
+      mimeType: staged.mimeType,
+      size: staged.size,
+      sha256: staged.sha256,
+      uploaderId: context.userId,
+      status: FILE_STATUSES.ACTIVE
+    }, session);
+    await auditService.record({
+      req,
+      authContext: context,
+      action: AUDIT_ACTIONS.CREATE,
+      resourceType: AUDIT_RESOURCE_TYPES.FILE_ASSET,
+      resourceId: file._id,
+      after: {
+        _id: file._id,
+        ownerType: file.ownerType,
+        ownerId: file.ownerId,
+        originalName: file.originalName,
+        mimeType: file.mimeType,
+        size: file.size,
+        status: file.status
+      },
+      targetTeamId: teamId,
+      session
+    });
+    return {
+      fileId: file._id,
+      originalName: file.originalName,
+      mimeType: file.mimeType,
+      size: file.size,
+      uploadTime: file.createdAt,
+      purpose: CONTRACT_ATTACHMENT_PURPOSES.CONTRACT_PDF
+    };
+  }
+
+  async function importContractPdfs({ authContext, req, file }) {
+    const { context, teamId } = teamForWrite(authContext, 'contract.supplier.import');
+    if (!file || !Buffer.isBuffer(file.buffer)) {
+      throw contractError(400, 'CONTRACT_PDF_ZIP_REQUIRED', '请选择包含PDF文件的ZIP压缩包');
+    }
+    if (file.buffer.length > MAX_CONTRACT_PDF_ZIP_SIZE) {
+      throw contractError(413, 'CONTRACT_PDF_ZIP_TOO_LARGE', 'PDF压缩包不能超过220MB');
+    }
+    const entries = extractZipEntries(file.buffer);
+    const [suppliers, records] = await Promise.all([
+      SupplierModel.find({ teamId }).lean(),
+      ContractRecordModel.find({
+        teamId,
+        category: {
+          $in: [
+            CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT,
+            CONTRACT_RECORD_CATEGORIES.EQUIPMENT_RENTAL
+          ]
+        }
+      }).lean()
+    ]);
+    const matches = entries.map((entry) => ({
+      entry,
+      match: matchContractPdfEntry(entry, suppliers, records)
+    }));
+    const unresolved = matches.filter(({ match }) => !match.record);
+    if (unresolved.length) {
+      const unresolvedNames = unresolved.slice(0, 3).map(({ entry }) => entry.name).join('、');
+      throw contractError(
+        409,
+        'CONTRACT_PDF_MATCH_FAILED',
+        `部分PDF无法唯一匹配合同记录：${unresolvedNames}${unresolved.length > 3 ? '等' : ''}。请按“供应商编码__合同编号.pdf”重命名后重试`
+      );
+    }
+
+    const recordIds = [...new Set(matches.map(({ match }) => String(match.record._id)))];
+    const existingFiles = await FileAssetModel.find({
+      teamId,
+      ownerType: FILE_OWNER_TYPES.SUPPLIER_CONTRACT,
+      ownerId: { $in: recordIds },
+      status: FILE_STATUSES.ACTIVE
+    }).lean();
+    const existingByRecord = new Map();
+    for (const existing of existingFiles) {
+      const key = String(existing.ownerId);
+      const list = existingByRecord.get(key) || [];
+      list.push(existing);
+      existingByRecord.set(key, list);
+    }
+    const toStage = [];
+    const scheduledHashesByRecord = new Map();
+    let skippedExisting = 0;
+    for (const { entry, match } of matches) {
+      const recordKey = String(match.record._id);
+      const existing = existingByRecord.get(recordKey) || [];
+      const scheduledHashes = scheduledHashesByRecord.get(recordKey) || new Set();
+      const hash = crypto.createHash('sha256').update(entry.buffer).digest('hex');
+      if (existing.some((item) => item.sha256 === hash) || scheduledHashes.has(hash)) {
+        skippedExisting += 1;
+        continue;
+      }
+      const stagedCount = toStage.filter((item) => String(item.record._id) === String(match.record._id)).length;
+      if (existing.length + stagedCount >= 10) {
+        throw contractError(409, 'CONTRACT_ATTACHMENT_LIMIT', `合同记录“${match.record.contractNumber || match.record._id}”附件不能超过10个`);
+      }
+      scheduledHashes.add(hash);
+      scheduledHashesByRecord.set(recordKey, scheduledHashes);
+      toStage.push({ entry, record: match.record });
+    }
+
+    const stagedFiles = [];
+    try {
+      for (const item of toStage) {
+        item.staged = await stageContractPdf({ entry: item.entry, teamId });
+        stagedFiles.push(item.staged);
+      }
+      const result = await runWrite(async (session) => {
+        const imported = [];
+        const retainedStorageKeys = [];
+        let skippedExistingDuringWrite = 0;
+        for (const item of toStage) {
+          const record = await execute(ContractRecordModel.findOne({
+            _id: item.record._id,
+            teamId
+          }), session);
+          if (!record || !contractPdfPurposeAllowed(record)) {
+            throw contractError(409, 'CONTRACT_PDF_RECORD_CHANGED', '合同记录在导入过程中发生变化，请刷新后重试');
+          }
+          const before = plain(record);
+          const duplicate = await execute(FileAssetModel.findOne({
+            teamId,
+            ownerType: FILE_OWNER_TYPES.SUPPLIER_CONTRACT,
+            ownerId: record._id,
+            sha256: item.staged.sha256,
+            status: FILE_STATUSES.ACTIVE
+          }), session);
+          if (duplicate) {
+            skippedExistingDuringWrite += 1;
+            continue;
+          }
+          if ((record.attachments || []).length >= 10) {
+            throw contractError(409, 'CONTRACT_ATTACHMENT_LIMIT', `合同记录“${record.contractNumber || record._id}”附件不能超过10个`);
+          }
+          const attachment = await persistContractPdf({
+            staged: item.staged,
+            context,
+            req,
+            teamId,
+            record,
+            session
+          });
+          record.attachments.push(attachment);
+          record.updatedBy = context.userId;
+          await record.save({ session });
+          await auditService.record({
+            req,
+            authContext: context,
+            action: AUDIT_ACTIONS.IMPORT,
+            resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
+            resourceId: record._id,
+            before,
+            after: plain(record),
+            targetTeamId: teamId,
+            session
+          });
+          retainedStorageKeys.push(item.staged.storageKey);
+          imported.push({ fileName: item.entry.name, recordId: String(record._id) });
+        }
+        return { importedCount: imported.length, imported, retainedStorageKeys, skippedExistingDuringWrite };
+      });
+      await removeStagedContractPdfs(stagedFiles, result.retainedStorageKeys).catch(() => {});
+      return {
+        matchedCount: matches.length,
+        importedCount: result.importedCount,
+        skippedExisting: skippedExisting + result.skippedExistingDuringWrite,
+        imported: result.imported
+      };
+    } catch (error) {
+      await removeStagedContractPdfs(stagedFiles).catch(() => {});
+      throw normalizePersistenceError(error);
+    }
+  }
+
   async function importSuppliers({ authContext, req, file, supplierId = null }) {
     const { context, teamId } = teamForWrite(authContext, 'contract.supplier.import');
     if (!file || !Buffer.isBuffer(file.buffer)) throw contractError(400, 'CONTRACT_IMPORT_FILE_REQUIRED', '请选择合同Excel文件');
@@ -1361,6 +1643,7 @@ function createContractManagementService({
     getRecord,
     getSettlement,
     getSupplier,
+    importContractPdfs,
     importSettlements,
     importSuppliers,
     listExpiryAlerts,
@@ -1378,6 +1661,7 @@ function createContractManagementService({
 module.exports = {
   ContractManagementError,
   EXCEL_MIME_TYPE,
+  MAX_CONTRACT_PDF_ZIP_SIZE,
   MAX_IMPORT_FILE_SIZE,
   createContractManagementService,
   derivedContractState,

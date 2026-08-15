@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const zlib = require('node:zlib');
 const { randomUUID } = require('node:crypto');
 const { after, before, beforeEach, test } = require('node:test');
 const appRequire = require('../helpers/appRequire');
@@ -22,6 +23,7 @@ const SupplierSettlementFee = require('../../../app/models/SupplierSettlementFee
 const permissions = require('../../../app/config/permissions');
 const { createAuditService } = require('../../../app/services/auditService');
 const { createFileAssetService } = require('../../../app/services/fileAssetService');
+const { resolveStoragePath } = require('../../../app/services/fileStorageService');
 const {
   createContractManagementService
 } = require('../../../app/services/contractManagementService');
@@ -152,6 +154,59 @@ async function record(authContext, supplierId, input) {
   } });
 }
 
+function pdfZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  const crc32 = (buffer) => {
+    let value = 0xffffffff;
+    for (const byte of buffer) {
+      value ^= byte;
+      for (let bit = 0; bit < 8; bit += 1) value = (value >>> 1) ^ (value & 1 ? 0xedb88320 : 0);
+    }
+    return (value ^ 0xffffffff) >>> 0;
+  };
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8');
+    const content = Buffer.from(entry.content);
+    const compressed = entry.deflate ? zlib.deflateRawSync(content) : content;
+    const method = entry.deflate ? 8 : 0;
+    const crc = crc32(content);
+    const local = Buffer.alloc(30 + name.length);
+    local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0x800, 6);
+    local.writeUInt16LE(method, 8); local.writeUInt32LE(crc, 14); local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(content.length, 22); local.writeUInt16LE(name.length, 26); name.copy(local, 30);
+    locals.push(local, compressed);
+    const central = Buffer.alloc(46 + name.length);
+    central.writeUInt32LE(0x02014b50, 0); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(0x800, 8); central.writeUInt16LE(method, 10); central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(compressed.length, 20); central.writeUInt32LE(content.length, 24);
+    central.writeUInt16LE(name.length, 28); central.writeUInt32LE(offset, 42); name.copy(central, 46);
+    centrals.push(central); offset += local.length + compressed.length;
+  }
+  const central = Buffer.concat(centrals);
+  const end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10); end.writeUInt32LE(central.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...locals, central, end]);
+}
+
+async function storageFiles(directory = storageRoot) {
+  const result = [];
+  async function visit(current) {
+    const entries = await fs.promises.readdir(current, { withFileTypes: true }).catch((error) => {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    });
+    for (const entry of entries) {
+      const target = path.join(current, entry.name);
+      if (entry.isDirectory()) await visit(target);
+      else if (entry.isFile()) result.push(target);
+    }
+  }
+  await visit(directory);
+  return result.sort();
+}
+
 before(async () => {
   storageRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'contract-v2-'));
   replicaSet = await MongoMemoryReplSet.create({
@@ -164,6 +219,8 @@ before(async () => {
 
 beforeEach(async () => {
   for (const model of [...MODELS].reverse()) await model.collection.deleteMany({});
+  await fs.promises.rm(storageRoot, { recursive: true, force: true });
+  await fs.promises.mkdir(storageRoot, { recursive: true });
   fixture = await seedFixture();
   service = createService();
 });
@@ -1095,6 +1152,130 @@ test('conflicting trustee attributes for one code reject the whole supplier impo
     teamId: fixture.teamA,
     contractNumber: { $in: ['MAIN-1', 'CONFLICT-1', 'CONFLICT-2'] }
   }), null);
+});
+
+test('bulk contract PDF import matches by supplier and contract number, is idempotent, and stays team-scoped', async () => {
+  await supplier(fixture.contextA, 'PDF', 'Similar Prefix Supplier');
+  const target = await supplier(fixture.contextA, 'PDF-BATCH', 'PDF Batch Supplier');
+  const first = await record(fixture.contextA, target._id, { contractNumber: 'MAIN.2026.01' });
+  const second = await record(fixture.contextA, target._id, { contractNumber: 'MAIN.2026.02' });
+  const firstPdf = Buffer.from('%PDF-1.7\nA\n%%EOF');
+  const secondPdf = Buffer.from('%PDF-1.7\nB\n%%EOF');
+  const zip = pdfZip([
+    { name: 'PDF-BATCH__MAIN.2026.01.pdf', content: firstPdf, deflate: true },
+    { name: 'PDF-BATCH__MAIN.2026.02.pdf', content: secondPdf }
+  ]);
+  const request = { method: 'POST', originalUrl: '/api/contracts/suppliers/contract-pdfs/import' };
+  const result = await service.importContractPdfs({ authContext: fixture.contextA, file: { buffer: zip }, req: request });
+  assert.deepEqual({ matchedCount: result.matchedCount, importedCount: result.importedCount }, {
+    matchedCount: 2, importedCount: 2
+  });
+  const persisted = await SupplierContractRecord.find({ _id: { $in: [first._id, second._id] } }).lean();
+  assert.deepEqual(persisted.map((item) => item.attachments.length).sort(), [1, 1]);
+  const persistedFiles = await FileAsset.find({
+    teamId: fixture.teamA,
+    ownerType: FileAsset.FILE_OWNER_TYPES.SUPPLIER_CONTRACT,
+    status: FileAsset.FILE_STATUSES.ACTIVE
+  }).sort({ originalName: 1 }).lean();
+  assert.equal(persistedFiles.length, 2);
+  const expectedBytes = new Map([
+    ['PDF-BATCH__MAIN.2026.01.pdf', firstPdf],
+    ['PDF-BATCH__MAIN.2026.02.pdf', secondPdf]
+  ]);
+  for (const persistedFile of persistedFiles) {
+    const diskBytes = await fs.promises.readFile(resolveStoragePath(storageRoot, persistedFile.storageKey));
+    assert.deepEqual(diskBytes, expectedBytes.get(persistedFile.originalName));
+  }
+  assert.equal((await storageFiles()).length, 2);
+  const repeated = await service.importContractPdfs({ authContext: fixture.contextA, file: { buffer: zip }, req: request });
+  assert.equal(repeated.importedCount, 0);
+  assert.equal(repeated.skippedExisting, 2);
+  assert.equal((await storageFiles()).length, 2);
+  await assert.rejects(service.importContractPdfs({ authContext: fixture.contextB, file: { buffer: zip }, req: request }), {
+    status: 409,
+    code: 'CONTRACT_PDF_MATCH_FAILED'
+  });
+  assert.equal(await FileAsset.countDocuments({
+    teamId: fixture.teamB,
+    ownerType: FileAsset.FILE_OWNER_TYPES.SUPPLIER_CONTRACT
+  }), 0);
+});
+
+test('concurrent duplicate contract PDF imports bind once and remove the unbound staged file', async () => {
+  const target = await supplier(fixture.contextA, 'PDF-RACE', 'PDF Race Supplier');
+  const targetRecord = await record(fixture.contextA, target._id, { contractNumber: 'RACE-1' });
+  const pdf = Buffer.from('%PDF-1.7\nconcurrent\n%%EOF');
+  const zip = pdfZip([{ name: 'PDF-RACE__RACE-1.pdf', content: pdf, deflate: true }]);
+  const request = { method: 'POST', originalUrl: '/api/contracts/suppliers/contract-pdfs/import' };
+  const realAudit = createAuditService({ AuditLog });
+  let arrivals = 0;
+  let release;
+  const bothTransactionsStaged = new Promise((resolve) => { release = resolve; });
+  const auditService = {
+    async record(options) {
+      if (
+        options.resourceType === permissions.AUDIT_RESOURCE_TYPES.FILE_ASSET &&
+        arrivals < 2
+      ) {
+        arrivals += 1;
+        if (arrivals === 2) release();
+        await bothTransactionsStaged;
+      }
+      return realAudit.record(options);
+    }
+  };
+  service = createService({ auditService });
+
+  const results = await Promise.all([
+    service.importContractPdfs({ authContext: fixture.contextA, file: { buffer: zip }, req: request }),
+    service.importContractPdfs({ authContext: fixture.contextA, file: { buffer: zip }, req: request })
+  ]);
+  assert.equal(results.reduce((sum, item) => sum + item.importedCount, 0), 1);
+  assert.equal(results.reduce((sum, item) => sum + item.skippedExisting, 0), 1);
+  assert.equal(await FileAsset.countDocuments({
+    teamId: fixture.teamA,
+    ownerType: FileAsset.FILE_OWNER_TYPES.SUPPLIER_CONTRACT,
+    ownerId: targetRecord._id,
+    status: FileAsset.FILE_STATUSES.ACTIVE
+  }), 1);
+  const persisted = await SupplierContractRecord.findById(targetRecord._id).lean();
+  assert.equal(persisted.attachments.length, 1);
+  const files = await storageFiles();
+  assert.equal(files.length, 1);
+  assert.deepEqual(await fs.promises.readFile(files[0]), pdf);
+});
+
+test('failed contract PDF import rolls back metadata and removes staged disk bytes', async () => {
+  const target = await supplier(fixture.contextA, 'PDF-ROLLBACK', 'PDF Rollback Supplier');
+  const targetRecord = await record(fixture.contextA, target._id, { contractNumber: 'ROLLBACK-1' });
+  const zip = pdfZip([{
+    name: 'PDF-ROLLBACK__ROLLBACK-1.pdf',
+    content: '%PDF-1.7\nrollback\n%%EOF'
+  }]);
+  const realAudit = createAuditService({ AuditLog });
+  service = createService({
+    auditService: {
+      async record(options) {
+        if (options.resourceType === permissions.AUDIT_RESOURCE_TYPES.FILE_ASSET) {
+          throw new Error('contract PDF audit unavailable');
+        }
+        return realAudit.record(options);
+      }
+    }
+  });
+
+  await assert.rejects(service.importContractPdfs({
+    authContext: fixture.contextA,
+    file: { buffer: zip },
+    req: { method: 'POST', originalUrl: '/api/contracts/suppliers/contract-pdfs/import' }
+  }), /contract PDF audit unavailable/);
+  assert.equal(await FileAsset.countDocuments({
+    teamId: fixture.teamA,
+    ownerType: FileAsset.FILE_OWNER_TYPES.SUPPLIER_CONTRACT
+  }), 0);
+  const persisted = await SupplierContractRecord.findById(targetRecord._id).lean();
+  assert.equal(persisted.attachments.length, 0);
+  assert.deepEqual(await storageFiles(), []);
 });
 
 test('settlement import duplicate aborts the whole batch without a partial first row', async () => {
