@@ -486,6 +486,7 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] WeChat Developer Tools uploaded the production artifact as development version `0.9.20260814.3` (1,383,783 bytes) and generated a 470x470 preview QR. The structured receipt is `work/release/miniprogram-upload-receipt-0.9.20260814.3.json`; the CLI upload returned exit code 0.
 - [ ] The user/platform must still promote `0.9.20260814.3` to the experience version and complete real-device acceptance. WeChat Review and formal Publish remain separate gates; the upload receipt does not prove either action.
 - [ ] The candidate has not yet been activated on the customer host. Run the retention check with `SUPER_ADMIN_USERNAME` (or `CUSTOMER_SUPER_ADMIN_USERNAME`) at both release boundaries, then complete the normal backup/Hold/Execute/PostAudit chain.
+- [x] Candidate package `v2-20260815-0833a67` was built from commit `0833a676fa74545779de57dffaf52de85f454100` with Node `v22.23.1` and npm `10.9.8`; archive SHA256 is `8da3ffea67d3762644395faeb353e917cf38bfcef7586b63ff724c1fef03419b`. It is staged locally only and has not been uploaded or activated on the customer host.
 
 ## 2026-08-15 待办、二维码与合同 PDF 交付口径
 
