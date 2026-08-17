@@ -476,6 +476,122 @@ test('repair deputy is primary and supervisor fallback is scoped to the exact su
   assert.equal(approved.status, 'ASSET_ADMIN_RECEIPT_PENDING');
 });
 
+test('repair todo ownership resyncs from fallback supervisor to a newly eligible manager', async () => {
+  const service = createService();
+  const role = actors();
+  await persistActorMembership(role.supervisor);
+  await persistActorMembership(role.wrongSubManager);
+  const noRepairPermissionManager = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA1._id,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+    permissionKeys: ['equipment.view']
+  });
+  await persistActorMembership(noRepairPermissionManager, {
+    permissionKeys: ['equipment.view']
+  });
+
+  const repair = await createFault(service, role.creator, {
+    idempotencyKey: 'repair-todo-handler-resync'
+  });
+  const supervisorTodo = await service.listRepairs({
+    authContext: role.supervisor,
+    query: { todo: true }
+  });
+  assert.equal(supervisorTodo.total, 1);
+  assert.ok(supervisorTodo.repairs[0].availableActions.includes('SUB_DEPARTMENT_APPROVE'));
+  const supervisorMessage = await Message.findOne({
+    recipient: role.supervisor.userId,
+    'extraData.repairId': repair._id,
+    'extraData.todoState': 'ACTIVE'
+  }).lean();
+  assert.ok(supervisorMessage);
+  assert.equal((await service.listRepairs({
+    authContext: role.wrongSubManager,
+    query: { todo: true }
+  })).total, 0);
+  assert.deepEqual((await service.getRepair({
+    authContext: noRepairPermissionManager,
+    repairId: repair._id
+  })).availableActions, []);
+
+  const replacementManager = authContext({
+    teamId: fixtures.teamA._id,
+    orgUnitId: fixtures.orgA1._id,
+    positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
+  });
+  await persistActorMembership(replacementManager);
+  const messageCountBeforeTransfer = await Message.countDocuments({
+    'extraData.repairId': repair._id
+  });
+  await service.syncOpenRepairMessages({ teamId: fixtures.teamA._id });
+  const managerTodo = await service.listRepairs({
+    authContext: replacementManager,
+    query: { todo: true }
+  });
+  assert.equal(managerTodo.total, 1);
+  assert.ok(managerTodo.repairs[0].availableActions.includes('SUB_DEPARTMENT_APPROVE'));
+  assert.equal((await service.listRepairs({
+    authContext: role.supervisor,
+    query: { todo: true }
+  })).total, 0);
+  assert.deepEqual((await service.getRepair({
+    authContext: role.supervisor,
+    repairId: repair._id
+  })).availableActions, []);
+
+  const managerMessage = await Message.findOne({
+    recipient: replacementManager.userId,
+    'extraData.repairId': repair._id,
+    'extraData.todoState': 'ACTIVE'
+  }).lean();
+  assert.ok(managerMessage);
+  const transferredSupervisorMessage = await Message.findById(supervisorMessage._id).lean();
+  assert.equal(transferredSupervisorMessage.extraData.todoState, 'TRANSFERRED');
+  assert.equal(transferredSupervisorMessage.extraData.invalidatedReason, 'HANDLER_CHANGED');
+  assert.deepEqual(transferredSupervisorMessage.extraData.transferredTo, [replacementManager.userId]);
+  assert.equal(transferredSupervisorMessage.isRead, true);
+  assert.equal(await Message.countDocuments({
+    'extraData.repairId': repair._id
+  }), messageCountBeforeTransfer + 1);
+  assert.ok(await AuditLog.exists({
+    action: permissions.AUDIT_ACTIONS.UPDATE,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
+    resourceId: String(supervisorMessage._id),
+    'after.todoState': 'TRANSFERRED'
+  }));
+
+  const messageAuditCount = await AuditLog.countDocuments({
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
+    resourceId: String(supervisorMessage._id)
+  });
+  await service.listRepairs({
+    authContext: replacementManager,
+    query: { todo: true }
+  });
+  assert.equal(await AuditLog.countDocuments({
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
+    resourceId: String(supervisorMessage._id)
+  }), messageAuditCount);
+
+  await persistActorMembership(role.assetAdmin);
+  const reviewed = await action(
+    service,
+    replacementManager,
+    repair,
+    'SUB_DEPARTMENT_APPROVE'
+  );
+  assert.equal(reviewed.status, 'ASSET_ADMIN_RECEIPT_PENDING');
+  const completed = await action(service, role.assetAdmin, reviewed, 'ACCEPT_RECEIPT');
+  assert.equal(completed.status, 'COMPLETED');
+  assert.equal(await Message.countDocuments({
+    'extraData.repairId': repair._id,
+    'extraData.todoState': 'ACTIVE'
+  }), 0);
+  assert.ok(await Message.exists({ _id: supervisorMessage._id }));
+  assert.ok(await Message.exists({ _id: managerMessage._id }));
+});
+
 test('concurrent leader restoration serializes before supervisor repair approval', async () => {
   const service = createService();
   const role = actors();

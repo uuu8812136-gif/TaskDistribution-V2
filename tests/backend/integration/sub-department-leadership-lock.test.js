@@ -114,9 +114,15 @@ test('every membership mutation entry locks the old and new sub-department leade
     isSuperAdmin: true,
     readOnly: false
   };
+  const repairTodoSyncCalls = [];
   const service = createTeamManagementService({
     connection: mongoose.connection,
-    auditService: { record: async () => null }
+    auditService: { record: async () => null },
+    repairTodoSynchronizer: async ({ teamId, session }) => {
+      assert.equal(String(teamId), String(team._id));
+      assert.ok(session);
+      repairTodoSyncCalls.push(String(teamId));
+    }
   });
 
   const created = await service.createMember({
@@ -133,9 +139,13 @@ test('every membership mutation entry locks the old and new sub-department leade
   await service.updateMember({
     authContext,
     membershipId: created.member._id,
-    input: { positionKey: permissions.POSITION_KEYS.SUPERVISOR }
+    input: {
+      positionKey: permissions.POSITION_KEYS.SUPERVISOR,
+      permissionKeys: ['equipment.repair']
+    }
   });
   assert.equal(await revision(branchA._id), 2);
+  assert.equal(repairTodoSyncCalls.length, 1);
 
   await service.updateMember({
     authContext,
@@ -143,6 +153,7 @@ test('every membership mutation entry locks the old and new sub-department leade
     input: { status: permissions.MEMBERSHIP_STATUSES.DISABLED }
   });
   assert.equal(await revision(branchA._id), 3);
+  assert.equal(repairTodoSyncCalls.length, 2);
 
   await service.updateMember({
     authContext,
@@ -154,6 +165,7 @@ test('every membership mutation entry locks the old and new sub-department leade
   });
   assert.equal(await revision(branchA._id), 4);
   assert.equal(await revision(branchB._id), 1);
+  assert.equal(repairTodoSyncCalls.length, 3);
 
   await service.disableMember({
     authContext,
@@ -162,4 +174,5 @@ test('every membership mutation entry locks the old and new sub-department leade
   });
   assert.equal(await revision(branchA._id), 4);
   assert.equal(await revision(branchB._id), 2);
+  assert.equal(repairTodoSyncCalls.length, 4);
 });

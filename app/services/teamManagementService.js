@@ -47,6 +47,14 @@ const manageableOrgStatusSet = new Set([
   ORG_UNIT_STATUSES.DISABLED
 ]);
 const orgTypeSet = new Set(ORG_UNIT_TYPE_VALUES);
+const repairRecipientPositionKeys = new Set([
+  POSITION_KEYS.DEPARTMENT_MANAGER,
+  POSITION_KEYS.DEPARTMENT_DEPUTY_MANAGER,
+  POSITION_KEYS.DEPARTMENT_MANAGER_ASSISTANT,
+  POSITION_KEYS.SUB_DEPARTMENT_MANAGER,
+  POSITION_KEYS.SUB_DEPARTMENT_DEPUTY_MANAGER,
+  POSITION_KEYS.SUPERVISOR
+]);
 
 const DEFAULT_PROJECT_ADMIN_PERMISSIONS = Object.freeze([
   'member.view',
@@ -111,6 +119,24 @@ function rejectPrivilegeFields(value) {
   if (supplied) {
     throw permissionDenied(`The ${supplied} field is controlled by the server`);
   }
+}
+
+function membershipMayReceiveRepairTodo(membership) {
+  return membership?.status === MEMBERSHIP_STATUSES.ACTIVE &&
+    membership.permissionKeys?.includes('equipment.repair') === true &&
+    (
+      repairRecipientPositionKeys.has(membership.positionKey) ||
+      membership.functionalRoleKeys?.includes(FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN) === true
+    );
+}
+
+function repairRecipientFieldsChanged(before, after) {
+  const sorted = (values) => [...new Set(Array.isArray(values) ? values : [])].sort();
+  return normalizeId(before?.orgUnitId) !== normalizeId(after?.orgUnitId) ||
+    before?.positionKey !== after?.positionKey ||
+    before?.status !== after?.status ||
+    JSON.stringify(sorted(before?.permissionKeys)) !== JSON.stringify(sorted(after?.permissionKeys)) ||
+    JSON.stringify(sorted(before?.functionalRoleKeys)) !== JSON.stringify(sorted(after?.functionalRoleKeys));
 }
 
 function requiredString(value, fieldName, { min = 1, max = 100 } = {}) {
@@ -369,6 +395,7 @@ function createTeamManagementService({
   OrgUnitModel = OrgUnit,
   TeamMembershipModel = TeamMembership,
   orgUnitDependencyFinder = findOrgUnitDependency,
+  repairTodoSynchronizer = null,
   auditService = createAuditService(),
   clock = () => new Date()
 } = {}) {
@@ -1028,6 +1055,12 @@ function createTeamManagementService({
       });
       await membership.save({ session });
       const after = serializeMembership(membership, { user, orgUnit });
+      if (
+        typeof repairTodoSynchronizer === 'function' &&
+        membershipMayReceiveRepairTodo(after)
+      ) {
+        await repairTodoSynchronizer({ teamId, session });
+      }
       await auditService.record({
         req,
         authContext,
@@ -1116,6 +1149,13 @@ function createTeamManagementService({
       });
       await membership.save({ session });
       const after = memberAuditSnapshot(membership, user);
+      if (
+        typeof repairTodoSynchronizer === 'function' &&
+        repairRecipientFieldsChanged(before, after) &&
+        (membershipMayReceiveRepairTodo(before) || membershipMayReceiveRepairTodo(after))
+      ) {
+        await repairTodoSynchronizer({ teamId, session });
+      }
 
       const auditEntries = [];
       if (before.role !== after.role) {

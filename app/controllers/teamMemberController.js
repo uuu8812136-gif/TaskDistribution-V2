@@ -1,8 +1,12 @@
 'use strict';
 
 const { createTeamManagementService } = require('../services/teamManagementService');
+const { createEquipmentRepairService } = require('../services/equipmentRepairService');
 
-const teamManagementService = createTeamManagementService();
+const equipmentRepairService = createEquipmentRepairService();
+const teamManagementService = createTeamManagementService({
+  repairTodoSynchronizer: equipmentRepairService.syncOpenRepairMessages
+});
 
 exports.listMembers = async (req, res, next) => {
   try {
@@ -65,4 +69,3 @@ exports.disableMember = async (req, res, next) => {
     return next(error);
   }
 };
-

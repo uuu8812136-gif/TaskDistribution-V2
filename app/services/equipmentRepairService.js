@@ -37,10 +37,9 @@ const {
 } = require('./teamContextService');
 const { runWithOptionalTransaction, supportsTransactions } = require('./transactionService');
 const {
-  actingSubDepartmentLeaderPositionKeys,
-  canMembershipActAsSubDepartmentLeader,
   leadershipOrgUnitIds,
   lockSubDepartmentLeadership,
+  PRIMARY_SUB_DEPARTMENT_LEADER_POSITION_KEYS,
   subDepartmentOrgUnitIds
 } = require('./subDepartmentLeadershipService');
 
@@ -76,6 +75,15 @@ const REPAIR_STATUS_MESSAGE_LABELS = Object.freeze({
   [EQUIPMENT_REPAIR_STATUSES.COMPLETED]: '已完成',
   [EQUIPMENT_REPAIR_STATUSES.VOIDED]: '已作废'
 });
+const REPAIR_TODO_STATES = Object.freeze({
+  ACTIVE: 'ACTIVE',
+  TRANSFERRED: 'TRANSFERRED',
+  INVALIDATED: 'INVALIDATED'
+});
+const TERMINAL_REPAIR_STATUSES = new Set([
+  EQUIPMENT_REPAIR_STATUSES.COMPLETED,
+  EQUIPMENT_REPAIR_STATUSES.VOIDED
+]);
 
 class EquipmentRepairError extends Error {
   constructor(status, code, message) {
@@ -636,23 +644,27 @@ function createEquipmentRepairService({
     return serializeRepair(document, availableActions, await actorNameMap(document, session));
   }
 
-  async function canActAsSubDepartmentLeader(context, order, session = null) {
-    if (context.isSuperAdmin === true) return true;
-    if (!context.membership) return false;
-    const orgUnitIds = await subDepartmentOrgUnitIds({
-      OrgUnitModel,
-      teamId: order.teamId,
-      orgUnitId: order.orgUnitId,
-      session
-    });
-    return canMembershipActAsSubDepartmentLeader({
-      TeamMembershipModel,
-      OrgUnitModel,
-      membership: context.membership,
-      teamId: order.teamId,
-      orgUnitIds,
-      session
-    });
+  async function activeMembershipUserIds(filter, session = null) {
+    const membershipQuery = TeamMembershipModel.find({
+      ...filter,
+      status: MEMBERSHIP_STATUSES.ACTIVE,
+      permissionKeys: 'equipment.repair'
+    }).select('userId').lean();
+    if (session) membershipQuery.session(session);
+    const memberships = await membershipQuery;
+    const userIds = [...new Set(
+      memberships.map(({ userId }) => normalizeId(userId)).filter(Boolean)
+    )];
+    if (userIds.length === 0) return [];
+
+    const userQuery = UserModel.find({
+      _id: { $in: userIds },
+      status: 'active'
+    }).select('_id').lean();
+    if (session) userQuery.session(session);
+    const activeUsers = await userQuery;
+    const activeUserIds = new Set(activeUsers.map(({ _id }) => normalizeId(_id)));
+    return userIds.filter((userId) => activeUserIds.has(userId));
   }
 
   async function belongsToOrderSubDepartment(context, order, session = null) {
@@ -682,87 +694,143 @@ function createEquipmentRepairService({
     ));
   }
 
+  async function resolveSubDepartmentStageHandlers(order, session = null, candidateContext = null) {
+    const subDepartmentIds = await subDepartmentOrgUnitIds({
+      OrgUnitModel,
+      teamId: order.teamId,
+      orgUnitId: order.orgUnitId,
+      session
+    });
+    if (subDepartmentIds.length === 0) {
+      return { orgUnitIds: [], positionKeys: [], userIds: [] };
+    }
+    const orgUnitIds = await leadershipOrgUnitIds({
+      OrgUnitModel,
+      teamId: order.teamId,
+      orgUnitIds: subDepartmentIds,
+      session
+    });
+    const primaryFilter = {
+      teamId: order.teamId,
+      orgUnitId: { $in: orgUnitIds },
+      positionKey: { $in: [...PRIMARY_SUB_DEPARTMENT_LEADER_POSITION_KEYS] }
+    };
+    const primaryUserIds = await activeMembershipUserIds(primaryFilter, session);
+    const candidateIsPrimary = Boolean(
+      candidateContext &&
+      hasEffectivePermission(candidateContext, 'equipment.repair') &&
+      PRIMARY_SUB_DEPARTMENT_LEADER_POSITION_KEYS.includes(
+        candidateContext.membership?.positionKey
+      ) &&
+      await belongsToOrderSubDepartment(candidateContext, order, session)
+    );
+    if (primaryUserIds.length > 0 || candidateIsPrimary) {
+      return {
+        orgUnitIds,
+        positionKeys: [...PRIMARY_SUB_DEPARTMENT_LEADER_POSITION_KEYS],
+        userIds: primaryUserIds
+      };
+    }
+    return {
+      orgUnitIds,
+      positionKeys: [POSITION_KEYS.SUPERVISOR],
+      userIds: await activeMembershipUserIds({
+        teamId: order.teamId,
+        orgUnitId: { $in: orgUnitIds },
+        positionKey: POSITION_KEYS.SUPERVISOR
+      }, session)
+    };
+  }
+
+  async function canActAsSubDepartmentLeader(context, order, session = null) {
+    if (context.isSuperAdmin === true) return true;
+    if (
+      !hasEffectivePermission(context, 'equipment.repair') ||
+      !await belongsToOrderSubDepartment(context, order, session)
+    ) {
+      return false;
+    }
+    const handlers = await resolveSubDepartmentStageHandlers(order, session, context);
+    return handlers.positionKeys.includes(context.membership?.positionKey);
+  }
+
+  async function resolveCurrentStageHandlers(order, session = null) {
+    switch (order.status) {
+      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
+      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING:
+        return (await resolveSubDepartmentStageHandlers(order, session)).userIds;
+      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING:
+      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING:
+        return activeMembershipUserIds({
+          teamId: order.teamId,
+          functionalRoleKeys: FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN
+        }, session);
+      case EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING:
+        return activeMembershipUserIds({
+          teamId: order.teamId,
+          positionKey: { $in: [...DEPUTY_POSITION_KEYS] }
+        }, session);
+      case EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING:
+        return activeMembershipUserIds({
+          teamId: order.teamId,
+          positionKey: POSITION_KEYS.DEPARTMENT_MANAGER
+        }, session);
+      case EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR:
+        return [normalizeId(order.createdBy)].filter(Boolean);
+      default:
+        return [];
+    }
+  }
+
+  async function isCurrentStageHandler(context, order, session = null) {
+    if (context.isSuperAdmin === true) return true;
+    if (
+      context.mode !== SESSION_MODES.TEAM ||
+      context.readOnly === true ||
+      !sameId(context.activeTeamId, order.teamId) ||
+      !hasEffectivePermission(context, 'equipment.repair')
+    ) {
+      return false;
+    }
+    switch (order.status) {
+      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
+      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING:
+        return canActAsSubDepartmentLeader(context, order, session);
+      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING:
+      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING:
+        return isAssetAdmin(context);
+      case EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING:
+        return isDeputyOrAssistant(context);
+      case EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING:
+        return isDepartmentManager(context);
+      case EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR:
+        return sameId(context.userId, order.createdBy);
+      default:
+        return false;
+    }
+  }
+
   async function resolveAllowedActions(context, order, session = null) {
-    if (!isSubDepartmentStage(order)) return allowedActions(context, order);
+    if (!await isCurrentStageHandler(context, order, session)) return [];
     return allowedActions(context, order, {
-      subDepartmentLeaderAllowed: await canActAsSubDepartmentLeader(context, order, session)
+      subDepartmentLeaderAllowed: isSubDepartmentStage(order) ? true : null
     });
   }
 
-  async function notifyCurrentStage(order, session) {
-    let recipients = [];
-    const membershipFilter = {
-      teamId: order.teamId,
-      status: MEMBERSHIP_STATUSES.ACTIVE,
-      permissionKeys: 'equipment.repair'
-    };
-    switch (order.status) {
-      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING:
-      case EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_ACCEPTANCE_PENDING: {
-        const orgUnitIds = await subDepartmentOrgUnitIds({
-          OrgUnitModel,
-          teamId: order.teamId,
-          orgUnitId: order.orgUnitId,
-          session
-        });
-        membershipFilter.orgUnitId = { $in: await leadershipOrgUnitIds({
-          OrgUnitModel,
-          teamId: order.teamId,
-          orgUnitIds,
-          session
-        }) };
-        membershipFilter.positionKey = {
-          $in: await actingSubDepartmentLeaderPositionKeys({
-            TeamMembershipModel,
-            OrgUnitModel,
-            teamId: order.teamId,
-            orgUnitIds,
-            session
-          })
-        };
-        break;
-      }
-      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_RECEIPT_PENDING:
-      case EQUIPMENT_REPAIR_STATUSES.ASSET_ADMIN_PRICING_PENDING:
-        membershipFilter.functionalRoleKeys = FUNCTIONAL_ROLE_KEYS.ASSET_ADMIN;
-        break;
-      case EQUIPMENT_REPAIR_STATUSES.DEPUTY_APPROVAL_PENDING:
-        membershipFilter.positionKey = { $in: [...DEPUTY_POSITION_KEYS] };
-        break;
-      case EQUIPMENT_REPAIR_STATUSES.MANAGER_APPROVAL_PENDING:
-        membershipFilter.positionKey = POSITION_KEYS.DEPARTMENT_MANAGER;
-        break;
-      case EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR:
-      case EQUIPMENT_REPAIR_STATUSES.COMPLETED:
-      case EQUIPMENT_REPAIR_STATUSES.VOIDED:
-        recipients = [normalizeId(order.createdBy)];
-        break;
-      default:
-        return;
-    }
-    if (recipients.length === 0) {
-      const query = TeamMembershipModel.find(membershipFilter).select('userId').lean();
-      if (session) query.session(session);
-      const memberships = await query;
-      recipients = memberships.map((membership) => normalizeId(membership.userId)).filter(Boolean);
-    }
-    recipients = [...new Set(recipients)];
+  async function createCurrentStageMessages(order, recipients, session) {
     if (recipients.length === 0) return;
     const title = order.status === EQUIPMENT_REPAIR_STATUSES.RETURNED_TO_CREATOR
       ? '设备维修单已退回'
-      : order.status === EQUIPMENT_REPAIR_STATUSES.COMPLETED
-        ? '设备维修流程已完成'
-        : order.status === EQUIPMENT_REPAIR_STATUSES.VOIDED
-          ? '设备维修流程已作废'
-          : '设备维修待办';
+      : '设备维修待办';
     const content = `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修单状态：${REPAIR_STATUS_MESSAGE_LABELS[order.status] || order.status}`;
+    const deduplicationKey = `repair:${order._id}:revision:${order.revision}`;
     for (const recipient of recipients) {
       const updateOptions = { upsert: true };
       if (session) updateOptions.session = session;
       await MessageModel.updateOne({
         teamId: order.teamId,
         recipient,
-        deduplicationKey: `repair:${order._id}:revision:${order.revision}`
+        deduplicationKey
       }, {
         $setOnInsert: {
           teamId: order.teamId,
@@ -770,15 +838,178 @@ function createEquipmentRepairService({
           title,
           content,
           recipient,
+          deduplicationKey
+        },
+        $set: {
           extraData: {
             resourceType: 'REPAIR_ORDER',
             repairId: normalizeId(order._id),
-            status: order.status
-          },
-          deduplicationKey: `repair:${order._id}:revision:${order.revision}`
+            status: order.status,
+            revision: order.revision,
+            todoState: REPAIR_TODO_STATES.ACTIVE
+          }
         }
       }, updateOptions);
     }
+  }
+
+  async function invalidateStaleStageMessages(order, recipients, session) {
+    const repairId = normalizeId(order._id);
+    const currentRecipients = new Set(recipients);
+    const currentDeduplicationKey = `repair:${order._id}:revision:${order.revision}`;
+    const query = MessageModel.find({
+      teamId: order.teamId,
+      type: 'system',
+      'extraData.resourceType': 'REPAIR_ORDER',
+      'extraData.repairId': repairId,
+      $or: [
+        { 'extraData.todoState': REPAIR_TODO_STATES.ACTIVE },
+        {
+          title: { $in: ['设备维修待办', '设备维修单已退回'] },
+          'extraData.todoState': { $exists: false }
+        }
+      ]
+    }).select('_id recipient title isRead readAt extraData deduplicationKey').lean();
+    if (session) query.session(session);
+    const activeMessages = await query;
+    const actionable = !TERMINAL_REPAIR_STATUSES.has(order.status);
+    const now = new Date();
+    const audits = [];
+
+    for (const message of activeMessages) {
+      const recipient = normalizeId(message.recipient);
+      const remainsCurrent = actionable &&
+        currentRecipients.has(recipient) &&
+        message.deduplicationKey === currentDeduplicationKey &&
+        message.extraData?.status === order.status &&
+        Number(message.extraData?.revision) === Number(order.revision);
+      if (remainsCurrent) continue;
+
+      const sameStage = actionable &&
+        message.extraData?.status === order.status &&
+        Number(message.extraData?.revision) === Number(order.revision);
+      const todoState = sameStage && recipients.length > 0
+        ? REPAIR_TODO_STATES.TRANSFERRED
+        : REPAIR_TODO_STATES.INVALIDATED;
+      const invalidatedReason = TERMINAL_REPAIR_STATUSES.has(order.status)
+        ? 'WORKFLOW_CLOSED'
+        : sameStage
+          ? 'HANDLER_CHANGED'
+          : recipients.length > 0
+            ? 'WORKFLOW_STAGE_CHANGED'
+            : 'NO_ELIGIBLE_HANDLER';
+      const nextExtraData = {
+        ...(message.extraData || {}),
+        todoState,
+        invalidatedAt: now,
+        invalidatedReason,
+        transferredTo: todoState === REPAIR_TODO_STATES.TRANSFERRED
+          ? [...recipients]
+          : []
+      };
+      const updateOptions = {};
+      if (session) updateOptions.session = session;
+      const result = await MessageModel.updateOne({
+        _id: message._id,
+        $or: [
+          { 'extraData.todoState': REPAIR_TODO_STATES.ACTIVE },
+          { 'extraData.todoState': { $exists: false } }
+        ]
+      }, {
+        $set: {
+          extraData: nextExtraData,
+          isRead: true,
+          readAt: message.readAt || now
+        }
+      }, updateOptions);
+      if (result.modifiedCount !== 1) continue;
+      audits.push({
+        action: AUDIT_ACTIONS.UPDATE,
+        resourceType: AUDIT_RESOURCE_TYPES.MESSAGE,
+        resourceId: message._id,
+        before: {
+          repairId,
+          recipient,
+          status: message.extraData?.status || null,
+          revision: message.extraData?.revision ?? null,
+          todoState: message.extraData?.todoState || REPAIR_TODO_STATES.ACTIVE,
+          isRead: message.isRead === true
+        },
+        after: {
+          repairId,
+          recipient,
+          status: message.extraData?.status || null,
+          revision: message.extraData?.revision ?? null,
+          todoState,
+          invalidatedReason,
+          transferredTo: nextExtraData.transferredTo,
+          isRead: true
+        },
+        reason: `Repair todo ${invalidatedReason.toLowerCase()}`,
+        targetTeamId: order.teamId
+      });
+    }
+    if (audits.length > 0) {
+      await auditService.recordManySystem(audits, { session });
+    }
+  }
+
+  async function createTerminalNotification(order, session) {
+    if (!TERMINAL_REPAIR_STATUSES.has(order.status)) return;
+    const recipient = normalizeId(order.createdBy);
+    if (!recipient) return;
+    const updateOptions = { upsert: true };
+    if (session) updateOptions.session = session;
+    await MessageModel.updateOne({
+      teamId: order.teamId,
+      recipient,
+      deduplicationKey: `repair:${order._id}:revision:${order.revision}`
+    }, {
+      $setOnInsert: {
+        teamId: order.teamId,
+        type: 'system',
+        title: order.status === EQUIPMENT_REPAIR_STATUSES.COMPLETED
+          ? '设备维修流程已完成'
+          : '设备维修流程已作废',
+        content: `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修单状态：${REPAIR_STATUS_MESSAGE_LABELS[order.status] || order.status}`,
+        recipient,
+        extraData: {
+          resourceType: 'REPAIR_ORDER',
+          repairId: normalizeId(order._id),
+          status: order.status,
+          revision: order.revision
+        },
+        deduplicationKey: `repair:${order._id}:revision:${order.revision}`
+      }
+    }, updateOptions);
+  }
+
+  async function syncCurrentStageMessages(order, session = null) {
+    const recipients = await resolveCurrentStageHandlers(order, session);
+    await createCurrentStageMessages(order, recipients, session);
+    await invalidateStaleStageMessages(order, recipients, session);
+    await createTerminalNotification(order, session);
+    return recipients;
+  }
+
+  async function syncOpenRepairMessages({ teamId, session = null } = {}) {
+    const normalizedTeamId = normalizeObjectId(teamId, 'teamId');
+    const query = EquipmentRepairOrderModel.find({
+      teamId: normalizedTeamId,
+      status: {
+        $nin: [
+          EQUIPMENT_REPAIR_STATUSES.COMPLETED,
+          EQUIPMENT_REPAIR_STATUSES.VOIDED
+        ]
+      }
+    }).sort({ _id: 1 }).lean();
+    if (session) query.session(session);
+    const orders = await query;
+    let recipientCount = 0;
+    for (const order of orders) {
+      recipientCount += (await syncCurrentStageMessages(order, session)).length;
+    }
+    return { orderCount: orders.length, recipientCount };
   }
 
   async function resolveReadTeamId(authContext, requestedTeamId) {
@@ -859,12 +1090,10 @@ function createEquipmentRepairService({
         teamId,
         orgUnitId: context.membership.orgUnitId
       });
-      const canLead = await canMembershipActAsSubDepartmentLeader({
-        TeamMembershipModel,
-        OrgUnitModel,
-        membership: context.membership,
+      const canLead = subDepartmentIds.length > 0 && await canActAsSubDepartmentLeader(context, {
         teamId,
-        orgUnitIds: subDepartmentIds
+        orgUnitId: subDepartmentIds[0],
+        status: EQUIPMENT_REPAIR_STATUSES.SUB_DEPARTMENT_REVIEW_PENDING
       });
       if (canLead) {
         todoClauses.push({
@@ -1119,7 +1348,7 @@ function createEquipmentRepairService({
           document.photoAttachments = bound;
           await document.save({ session: session || undefined });
         }
-        await notifyCurrentStage(document, session);
+        await syncCurrentStageMessages(document, session);
         const after = await serializeRepairWithActors(
           document,
           await resolveAllowedActions(context, document, session),
@@ -1370,7 +1599,7 @@ function createEquipmentRepairService({
       if (!updated) {
         throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order changed concurrently');
       }
-      await notifyCurrentStage(updated, session);
+      await syncCurrentStageMessages(updated, session);
       const after = await serializeRepairWithActors(
         updated,
         await resolveAllowedActions(context, updated, session),
@@ -1489,6 +1718,7 @@ function createEquipmentRepairService({
     getRepair,
     listRepairLocations,
     listRepairs,
+    syncOpenRepairMessages,
     transitionRepair,
     updateRepairLocations
   });
