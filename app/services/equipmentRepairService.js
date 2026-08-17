@@ -835,12 +835,13 @@ function createEquipmentRepairService({
         $setOnInsert: {
           teamId: order.teamId,
           type: 'system',
-          title,
-          content,
           recipient,
           deduplicationKey
         },
         $set: {
+          title,
+          content,
+          isRead: false,
           extraData: {
             resourceType: 'REPAIR_ORDER',
             repairId: normalizeId(order._id),
@@ -848,6 +849,9 @@ function createEquipmentRepairService({
             revision: order.revision,
             todoState: REPAIR_TODO_STATES.ACTIVE
           }
+        },
+        $unset: {
+          readAt: 1
         }
       }, updateOptions);
     }
@@ -907,6 +911,12 @@ function createEquipmentRepairService({
           ? [...recipients]
           : []
       };
+      const nextTitle = todoState === REPAIR_TODO_STATES.TRANSFERRED
+        ? '设备维修待办已转交'
+        : '设备维修待办已处理';
+      const nextContent = todoState === REPAIR_TODO_STATES.TRANSFERRED
+        ? `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修待办已转交给当前负责人，无需您处理。`
+        : `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）维修待办已失效，无需您处理。`;
       const updateOptions = {};
       if (session) updateOptions.session = session;
       const result = await MessageModel.updateOne({
@@ -917,6 +927,8 @@ function createEquipmentRepairService({
         ]
       }, {
         $set: {
+          title: nextTitle,
+          content: nextContent,
           extraData: nextExtraData,
           isRead: true,
           readAt: message.readAt || now

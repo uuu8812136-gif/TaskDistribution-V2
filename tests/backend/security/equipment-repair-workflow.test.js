@@ -520,7 +520,7 @@ test('repair todo ownership resyncs from fallback supervisor to a newly eligible
     orgUnitId: fixtures.orgA1._id,
     positionKey: permissions.POSITION_KEYS.SUB_DEPARTMENT_MANAGER
   });
-  await persistActorMembership(replacementManager);
+  const replacementManagerMembership = await persistActorMembership(replacementManager);
   const messageCountBeforeTransfer = await Message.countDocuments({
     'extraData.repairId': repair._id
   });
@@ -551,6 +551,7 @@ test('repair todo ownership resyncs from fallback supervisor to a newly eligible
   assert.equal(transferredSupervisorMessage.extraData.invalidatedReason, 'HANDLER_CHANGED');
   assert.deepEqual(transferredSupervisorMessage.extraData.transferredTo, [replacementManager.userId]);
   assert.equal(transferredSupervisorMessage.isRead, true);
+  assert.equal(transferredSupervisorMessage.title, '设备维修待办已转交');
   assert.equal(await Message.countDocuments({
     'extraData.repairId': repair._id
   }), messageCountBeforeTransfer + 1);
@@ -573,6 +574,32 @@ test('repair todo ownership resyncs from fallback supervisor to a newly eligible
     resourceType: permissions.AUDIT_RESOURCE_TYPES.MESSAGE,
     resourceId: String(supervisorMessage._id)
   }), messageAuditCount);
+
+  await TeamMembership.updateOne(
+    { _id: replacementManagerMembership._id },
+    { $set: { status: permissions.MEMBERSHIP_STATUSES.DISABLED } }
+  );
+  await service.syncOpenRepairMessages({ teamId: fixtures.teamA._id });
+  const restoredSupervisorMessage = await Message.findById(supervisorMessage._id).lean();
+  assert.equal(restoredSupervisorMessage.extraData.todoState, 'ACTIVE');
+  assert.equal(restoredSupervisorMessage.isRead, false);
+  assert.equal(restoredSupervisorMessage.readAt, undefined);
+  assert.equal(restoredSupervisorMessage.title, '设备维修待办');
+  assert.equal((await service.listRepairs({
+    authContext: role.supervisor,
+    query: { todo: true }
+  })).total, 1);
+
+  await TeamMembership.updateOne(
+    { _id: replacementManagerMembership._id },
+    { $set: { status: permissions.MEMBERSHIP_STATUSES.ACTIVE } }
+  );
+  await service.syncOpenRepairMessages({ teamId: fixtures.teamA._id });
+  const restoredManagerMessage = await Message.findById(managerMessage._id).lean();
+  assert.equal(restoredManagerMessage.extraData.todoState, 'ACTIVE');
+  assert.equal(restoredManagerMessage.isRead, false);
+  assert.equal(restoredManagerMessage.readAt, undefined);
+  assert.equal(restoredManagerMessage.title, '设备维修待办');
 
   await persistActorMembership(role.assetAdmin);
   const reviewed = await action(
