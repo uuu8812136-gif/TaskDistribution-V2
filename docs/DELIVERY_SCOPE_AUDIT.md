@@ -1,10 +1,10 @@
 # 客户确认范围与当前交付覆盖审计
 
-## 0. 2026-08-15 当前状态覆写
+## 0. 2026-08-18 当前状态覆写
 
 ### 2026-08-14 冻结 12 项发布状态
 
-> 下表保留 2026-08-14 冻结时点的逐项证据；部署状态由本段和文末“2026-08-15 维修待办、二维码和合同 PDF 复核”覆盖。网站当前活动版本为 `v2-20260815-3078a22`。小程序最新业务提交 `3078a226d1f49cd440ab91aa6916d0e81eb26c1a` 已生产构建并上传为开发版 `0.9.20260815.2`，预览码生成成功；是否设为体验版、微信真机验收、WeChat Review 和正式 Publish 均未确认。
+> 下表保留 2026-08-14 冻结时点的逐项证据；最新部署状态由本段和文末“2026-08-17 维修待办负责人漂移复核”覆盖。网站当前活动版本为 `v2-20260818-ff8598c`。小程序最新业务提交仍为 `3078a226d1f49cd440ab91aa6916d0e81eb26c1a`，已生产构建并上传为开发版 `0.9.20260815.2`；本轮待办修复只涉及后端和线上存量消息同步，无需重新上传小程序。体验版设置、微信真机完整验收、WeChat Review 和正式 Publish 均未确认。
 
 | # | 客户需求 | 实现 | 自动化 | 浏览器/真机 | 提交 | 网站部署 | 小程序上传 |
 |---|---|---|---|---|---|---|---|
@@ -147,13 +147,13 @@ Web 与小程序的集中中文错误表已同步新增的月份、文本长度�
 
 ## 2. 总结论
 
-**当前网站活动版本为 `v2-20260815-3078a22`，已包含执行记录空引用、全站固定表头、维修待办、二维码 Web 深链、合同 PDF ZIP 和车牌号响应补齐。** 发布后公网 API 已完成维修待办真实账号核对、二维码登录回跳/团队隔离、合同 ZIP 权限路由，以及设备详情、二维码查询和月度点检日历三条车牌接口验收。旧站仍因原`E:\ServerVM`虚拟机与隧道脚本丢失而保持`38080`无监听及公网HTTP 502，但客户已明确停用旧站，故不再阻塞 V2 发布；这不表示旧站或丢失数据已恢复。恢复快照之后仍有8条运输提报和16个上传文件没有取得可重建证据。小程序 `0.9.20260815.2` 已上传开发版并生成预览码，但体验版提升、真机完整流程、微信审核和正式发布仍未确认。以下现场或生产验收继续保留：
+**当前网站活动版本为 `v2-20260818-ff8598c`，已包含执行记录空引用、全站固定表头、维修待办负责人重算、二维码 Web 深链、合同 PDF ZIP 和车牌号响应补齐。** 发布后公网 API 已完成 3 名现任维修负责人、超级管理员、团队隔离、二维码登录回跳、合同 ZIP 权限路由，以及设备详情、二维码查询和月度点检日历三条车牌接口验收。旧站仍因原`E:\ServerVM`虚拟机与隧道脚本丢失而保持`38080`无监听及公网HTTP 502，但客户已明确停用旧站，故不再阻塞 V2 发布；这不表示旧站或丢失数据已恢复。恢复快照之后仍有8条运输提报和16个上传文件没有取得可重建证据。小程序 `0.9.20260815.2` 已上传开发版并生成预览码，但体验版提升、真机完整流程、微信审核和正式发布仍未确认。以下现场或生产验收继续保留：
 
 1. 浏览器已证明上述页面可达、数据可读和主要布局正常，但审批、导出、提醒、09:00边界及状态变更等完整写入流程尚未全部逐项运行验收。
 2. 正式 AppID `wxd8f18985dfd63b89` 已接受最新开发版本 `0.9.20260815.2` 并生成预览二维码；用户此前只确认 `0.9.20260814.1` 已设为体验版，不能据此推断新版本已自动替换体验版。新版本体验版设置、记住账号密码、冷启动保持登录、相册选择、扫码授权、点检/保养定位、水印像素、权限拒绝及其余完整写入状态机仍需平台或真机验收。
 3. MongoDB意外退出暴露的旧 `/health` 就绪误报已修复；真实断连时返回HTTP 503和`database=unavailable`，同库恢复后返回HTTP 200。2026-08-12 18:52 CST 的 OOM 已手工恢复且截至最终审计未再次发生，但计划任务声明的重启策略未在本次故障中形成有效自动恢复，仍需修复和演练。
 4. 旧任务生产数据尚未迁移；客户组织人员、首批规则、异常清单决定和正式角色映射等输入仍待确认。新512GB D盘当前为健康SATA SSD，本轮在线恢复点已在D盘生成并复制到独立开发工作站E盘完成解包验签；但小时任务仍返回`1`、15分钟健康任务仍返回`2`，正式定时异机备份状态仍为`DEGRADED_UNCHANGED`。正式生产长期备份周期、外部告警送达、活动环境完整回滚和客户签字仍未执行。
-5. 网站和小程序业务提交 `3078a226d1f49cd440ab91aa6916d0e81eb26c1a` 已激活为 `v2-20260815-3078a22`，并已推送到私有 GitHub；两份交付文档随本次收尾单独提交。四个客户 Excel 曾存在于旧 Git LFS 历史，若要求历史层面彻底清除，仍需单独批准历史改写和强制推送。
+5. 网站业务提交 `ff8598c1ea3363c773bd96fba43e410fcd147c00` 已激活为 `v2-20260818-ff8598c` 并推送到私有 GitHub；小程序仍使用已上传的 `3078a226d1f49cd440ab91aa6916d0e81eb26c1a`。两份交付文档随本次收尾单独提交。四个客户 Excel 曾存在于旧 Git LFS 历史，若要求历史层面彻底清除，仍需单独批准历史改写和强制推送。
 6. 2026-07-23用户可见提示中文化及运行反馈修复复跑为后端360/360、Web 138/138及生产构建、小程序96/96、43个SFC和隔离检查全部通过；278个相关源码/测试文件通过严格UTF-8解码且无替换字符。结构化微信开发者工具运行审计已完成，测试号预览码和版本`0.9.20260723.2`上传成功。2026-07-25正式AppID `wxd8f18985dfd63b89`先后接受开发版本`0.9.20260725.1`（1,497,428字节）和支持现场照片从相册选择的`0.9.20260725.2`（1,497,457字节），两版均生成体验码；尚未提交微信审核或发布给全部客户。
 7. 2026-07-24恢复任务已完成当前工作树整套复跑：后端445/445、Web 174/174、小程序110/110、发布保护48/48、Windows打包测试2/2、43个SFC、隔离检查及Vite正式构建通过；对应修复已由`v2-20260724-e79cefb`激活到公网V2测试环境。
 8. 首次迁移在`v2-20260724-ba1eaec`完成并通过幂等复跑；恢复激活只读复验原迁移、失败恢复和现库证据，复用原执行报告且`migrationWritesPerformed=0`。当次release、备份、客户修复、运输引用和排产唯一索引均通过激活后核验。
@@ -182,7 +182,7 @@ Web 与小程序的集中中文错误表已同步新增的月份、文本长度�
 | 本地 API | `127.0.0.1:18099` 当前未监听 | 隔离候选的既有自动化和浏览器证据继续保留，但当前客户运行状态以公网 API 为准 |
 | 旧本地API | `127.0.0.1:18110` 当前未监听 | 不作为本轮权威进程，避免把历史隔离实例误判为客户运行环境 |
 | 本地 MongoDB | `127.0.0.1:27140` 当前未监听；历史隔离数据目录不作为客户运行证据 | 当前公网客户测试使用客户 Windows 上独立的 `27150/customer_acceptance_v2_test` |
-| 公网 V2 测试版 | 2026-08-15 只读复核 | 固定指纹 `23224` 可登录，当前活动 release 为 `v2-20260815-3078a22`；API/Web/MongoDB、业务隧道和管理隧道五项任务均为`Running`，`18120/18130/27150`仅回环监听，公网首页、`/health`和`/api/auth/login-teams`均为 HTTP 200。旧站不可恢复状态不因本次 V2 发布而改变 |
+| 公网 V2 测试版 | 2026-08-18 发布后复核 | 固定指纹 `23224` 可登录，当前活动 release 为 `v2-20260818-ff8598c`；API/Web/MongoDB、业务隧道和管理隧道五项任务均为`Running`，`18120/18130/27150`仅回环监听，公网首页、`/health`和`/api/auth/login-teams`均为 HTTP 200。旧站不可恢复状态不因本次 V2 发布而改变 |
 | 小程序构建 | 2026-08-15 最新构建与上传回执 | 正式 AppID 已接受开发版本 `0.9.20260815.2`，生产包 1,386,168 字节并生成 470x470 预览码；体验版提升、真机登录持久化、定位/水印/权限拒绝、微信审核及正式发布仍未确认 |
 
 ### 3.2 恢复数据库与历史快照
@@ -487,7 +487,7 @@ PC与小程序最终页面分工仍是客户待确认项；在客户确认前，
 - **Implemented boundary**: a user-level `isSuperAdmin=true` identity remains independent of `TeamMembership`. In `TEAM` mode it passes every registered feature permission without relying on a mutable membership permission checklist. Adding future registered feature permissions therefore does not require assigning those permissions to the super-administrator account.
 - **Preserved controls**: `GLOBAL_READ_ONLY` remains read-only; the administrator must enter a concrete team before a business write. Team scope, workflow state, approval stage and resource ownership checks are not removed. Unknown server permission keys still fail closed.
 - **Account retention gate**: `npm run verify:super-admin` verifies the nominated account exists, is active, remains `isSuperAdmin=true`, and has zero memberships. Adding a user-level super administrator through the ordinary team-member API is rejected.
-- **Current evidence**: backend, Web and Mini Program focused regressions cover empty permission arrays, ordinary-user denial, global-read-only denial, unknown permission keys and membership-free retention. The website release-boundary gate on active `v2-20260815-3078a22` also verified the nominated customer account remains active, `isSuperAdmin=true`, `isSystemAccount=false`, and membership-free. Mini Program development version `0.9.20260815.2` is uploaded, while experience-version promotion and real-device acceptance remain open.
+- **Current evidence**: backend, Web and Mini Program focused regressions cover empty permission arrays, ordinary-user denial, global-read-only denial, unknown permission keys and membership-free retention. The post-audit release-boundary gate on active `v2-20260818-ff8598c` verified the nominated customer account remains active, `isSuperAdmin=true`, `isSystemAccount=false`, and membership-free; its authenticated TEAM-mode todo API returned the exact three open Gearbox repairs and zero Engine repairs. Mini Program development version `0.9.20260815.2` is uploaded, while experience-version promotion and real-device acceptance remain open.
 
 ### 2026-08-14 至 2026-08-15 小程序设备编号、车牌号与未来日历配色补丁
 
@@ -527,4 +527,5 @@ PC与小程序最终页面分工仍是客户待确认项；在客户确认前，
 1. 线上未完成维修单和消息只读核对确认存在“创建/流转时消息接收人”与“当前负责人资格”不一致：旧主管仍保留未读待办消息，但启用有效分部经理后主管不再有审批资格；现任经理能由实时待办规则命中，却可能没有对应的新消息。
 2. 源码已将消息通知、详情动作和待办资格统一到当前账号状态、成员状态、岗位、组织和 `equipment.repair` 权限。分部主负责人存在时主管不再兜底；负责人配置变化会在同一成员管理事务内重算未完成维修单、给现任负责人补发去重消息，并将旧消息标记为已转交或失效。
 3. 该设计不以旧消息作为授权依据，也不扩大团队/组织数据范围；已完成、已作废维修单不会重新成为待办。专项及全量后端回归通过（`678/678`）。
-4. 当前状态仅为“已实现、测试通过”。活动网站仍是 `v2-20260815-3078a22`；新代码发布、线上存量消息同步、现任负责人真实账号公网 `todo=true`、小程序页面及完整审批写入验收仍待完成。
+4. 修复已随 `v2-20260818-ff8598c` 完成不可变发布、停写备份、独立工作站 E 盘验签、稳定/worker 观察、PostAudit 和超级管理员发布后门禁。线上 3 条未完成维修单已在事务内同步并幂等复跑，第二次没有新增消息或审计，重复消息为 0；同步前镜像和执行报告保存在服务器 D 盘及独立开发工作站 E 盘。
+5. 公网真实 `todo=true` API 已验证毕俊学、吕慧良、董永亮分别获得对应维修单和 `SUB_DEPARTMENT_APPROVE`，超级管理员在变速箱团队精确返回 3 条、发动机团队返回 0 条，5 个临时会话全部撤销。旧主管历史消息因缺少 revision 按 `INVALIDATED/WORKFLOW_STAGE_CHANGED` 设为已读并保留审计，不再进入待办或授予审批权限。客户微信真机重新进入页面后的目视截图和完整审批写入仍保留为现场验收项。
