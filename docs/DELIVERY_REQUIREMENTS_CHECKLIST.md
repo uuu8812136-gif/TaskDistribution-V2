@@ -524,4 +524,5 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] 已用客户账号 `bijunxue` 只读复现：公网 `todo=true` 接口返回 1 条维修待办（设备编码 `鲁AA5528`），账号、团队、岗位、权限和后端存量数据均正常。
 - [x] 修复小程序维修列表请求参数：待办模式只发送 `todo=true/page/pageSize`，全部记录只有输入关键词时才发送 `keyword`，不再把 JavaScript `undefined` 序列化为 `keyword=undefined`。
 - [x] 后端维修查询兼容旧小程序：将历史客户端传来的字面量 `keyword=undefined` 视为空关键词，同时保留真实关键词和超长关键词校验。
-- [x] 定向后端单元测试和小程序维修页面测试通过；重新构建、上传体验版和客户微信真机复验在本次交付完成前仍需留证。
+- [x] 定向后端单元测试和小程序维修页面测试通过；源码已提交为 `82af3ddf8862cade19f2a6e84856e59eb6bbf099`，小程序已用 `0.9.20260818.1` 完成 E 盘 HBuilderX 生产构建并上传正式 AppID 开发版，上传回执为 `work/release/miniprogram-upload-receipt-0.9.20260818.1.json`。
+- [ ] `0.9.20260818.1` 的体验版提升、客户微信真机待办截图和完整审批写入仍需分别验收；WeChat Review 和正式 Publish 不由本次开发版上传自动完成。
