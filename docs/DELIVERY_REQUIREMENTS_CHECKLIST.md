@@ -518,3 +518,10 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] 修复已作为不可变版本 `v2-20260818-ff8598c`（`ff8598c1ea3363c773bd96fba43e410fcd147c00`）完成停写备份、独立工作站 E 盘验签、激活、稳定/worker 观察和 PostAudit；发布后超级管理员门禁再次确认 `customer_test_superadmin` 为 active、`isSuperAdmin=true`、`isSystemAccount=false`、零 membership。
 - [x] 已对线上 3 条未完成维修单执行事务化存量同步并立即幂等复跑：3 名现任分部负责人/副负责人各获得 1 条未读 `ACTIVE` 待办，重复消息为 0，第二次同步没有新增消息或审计；旧主管的无 revision 历史消息设为已读 `INVALIDATED` 并保留系统审计。公网真实 `todo=true` API 验收确认毕俊学、吕慧良、董永亮分别返回对应维修单并包含 `SUB_DEPARTMENT_APPROVE`，超级管理员在 `GEARBOX_LOGISTICS` 精确返回 3 条、在 `ENGINE_LOGISTICS` 返回 0 条，5 个临时验收会话全部撤销。
 - [ ] 客户微信真机重新进入“设备维修 -> 我的待办”后的目视截图和后续完整审批写入仍需客户现场确认；该项不再是后端接口或存量数据阻塞，也没有产生新的小程序源码包。
+
+## 2026-08-18 小程序维修待办空列表兼容修复
+
+- [x] 已用客户账号 `bijunxue` 只读复现：公网 `todo=true` 接口返回 1 条维修待办（设备编码 `鲁AA5528`），账号、团队、岗位、权限和后端存量数据均正常。
+- [x] 修复小程序维修列表请求参数：待办模式只发送 `todo=true/page/pageSize`，全部记录只有输入关键词时才发送 `keyword`，不再把 JavaScript `undefined` 序列化为 `keyword=undefined`。
+- [x] 后端维修查询兼容旧小程序：将历史客户端传来的字面量 `keyword=undefined` 视为空关键词，同时保留真实关键词和超长关键词校验。
+- [x] 定向后端单元测试和小程序维修页面测试通过；重新构建、上传体验版和客户微信真机复验在本次交付完成前仍需留证。

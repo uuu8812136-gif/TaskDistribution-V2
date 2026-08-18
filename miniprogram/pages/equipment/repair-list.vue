@@ -161,13 +161,16 @@ export default {
       loading.value = true
       loadError.value = ''
       try {
-        const result = await getEquipmentRepairs({
-          todo: request.mode === 'todo' ? true : undefined,
-          keyword: request.mode === 'all' ? request.keyword || undefined : undefined,
+        const params = {
+          ...(request.mode === 'todo' ? { todo: true } : {}),
+          ...(request.mode === 'all' && request.keyword
+            ? { keyword: request.keyword }
+            : {}),
           page: request.page,
           pageSize,
           ...(userStore.isGlobalReadOnly ? { teamId: request.teamId } : {})
-        })
+        }
+        const result = await getEquipmentRepairs(params)
         if (
           !requestGate.isCurrent(request) ||
           request.contextSignature !== currentContextSignature()

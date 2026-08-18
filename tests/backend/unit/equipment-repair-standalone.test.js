@@ -7,7 +7,8 @@ const appRequire = require('../helpers/appRequire');
 const mongoose = appRequire('mongoose');
 const permissions = require('../../../app/config/permissions');
 const {
-  createEquipmentRepairService
+  createEquipmentRepairService,
+  normalizeRepairQueryKeyword
 } = require('../../../app/services/equipmentRepairService');
 
 function objectId() {
@@ -67,4 +68,12 @@ test('repair creation fails before any business or attachment write on standalon
     error.status === 503 && error.code === 'EQUIPMENT_REPAIR_TRANSACTIONS_REQUIRED'
   ));
   assert.equal(attachmentWrites, 0);
+});
+
+test('repair query treats legacy serialized undefined keyword as empty', () => {
+  assert.equal(normalizeRepairQueryKeyword(undefined), null);
+  assert.equal(normalizeRepairQueryKeyword(''), null);
+  assert.equal(normalizeRepairQueryKeyword('  undefined  '), null);
+  assert.equal(normalizeRepairQueryKeyword('鲁AA5528'), '鲁AA5528');
+  assert.throws(() => normalizeRepairQueryKeyword('x'.repeat(101)), /keyword is too long/);
 });

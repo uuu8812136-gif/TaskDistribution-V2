@@ -138,6 +138,18 @@ function optionalString(value, field, maxLength, fallback = '') {
   return normalized;
 }
 
+// Older mini-program builds serialized an omitted keyword as the literal string
+// "undefined". Treat that compatibility value as an empty filter so those builds
+// can still load the user's todo list while the fixed client rolls out.
+function normalizeRepairQueryKeyword(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') throw inputError('keyword must be a string');
+  const normalized = value.trim();
+  if (!normalized || normalized.toLowerCase() === 'undefined') return null;
+  if (normalized.length > 100) throw inputError('keyword is too long');
+  return normalized;
+}
+
 function normalizeRepairLocations(values) {
   if (!Array.isArray(values) || values.length > 100) {
     throw inputError('locations must contain at most 100 entries');
@@ -560,8 +572,9 @@ function queryFilters(query = {}) {
   if (query.equipmentId) filters.push({ equipmentId: normalizeRelatedId(query.equipmentId, 'equipmentId') });
   if (query.orgUnitId) filters.push({ orgUnitId: normalizeRelatedId(query.orgUnitId, 'orgUnitId') });
   if (query.createdBy) filters.push({ createdBy: normalizeRelatedId(query.createdBy, 'createdBy') });
-  if (query.keyword) {
-    const pattern = { $regex: escapeRegex(requiredString(query.keyword, 'keyword', 100)), $options: 'i' };
+  const keyword = normalizeRepairQueryKeyword(query.keyword);
+  if (keyword) {
+    const pattern = { $regex: escapeRegex(keyword), $options: 'i' };
     filters.push({ $or: [
       { 'equipmentSnapshot.assetCode': pattern },
       { 'equipmentSnapshot.name': pattern },
@@ -1714,7 +1727,7 @@ function createEquipmentRepairService({
           createdBy: query.createdBy
             ? normalizeId(normalizeRelatedId(query.createdBy, 'createdBy'))
             : null,
-          keyword: query.keyword ? requiredString(query.keyword, 'keyword', 100) : null,
+          keyword: normalizeRepairQueryKeyword(query.keyword),
           startDate: query.startDate ? requiredDate(query.startDate, 'startDate').toISOString() : null,
           endDate: query.endDate ? requiredDate(query.endDate, 'endDate').toISOString() : null
         }
@@ -1742,6 +1755,7 @@ module.exports = {
   createEquipmentRepairService,
   normalizeRepairLocations,
   normalizePricedParts,
+  normalizeRepairQueryKeyword,
   repairSummaryText,
   serializeRepair
 };
