@@ -1,5 +1,11 @@
 # 客户确认范围与当前交付覆盖审计
 
+### 2026-08-18 正式域名候选构建（`www.horselink.cn`）
+
+1. 已确认正式域名解析到 `82.156.67.62`；HTTP 访问会跳转 HTTPS，但当前 HTTPS `/health` 返回 Nginx `502 Bad Gateway`，因此正式站后端/反向代理尚未恢复，不能把正式网站标记为已上线。
+2. PC Web 已按同源 `/api` 完成生产构建，静态包位于 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-1d7609b\web-dist`，压缩包 `www-web-dist-v2-20260818-eb85cd1.zip`，SHA-256 为 `9a6a2b08bd294602807f97aaefaf39bf5fa19ec388e7534c671f60922c0023c7`（部署前仍需正式服务器备份、API 环境文件、数据库和反向代理门禁）。
+3. 小程序版本已升级为 `0.9.20260818.3`，HBuilderX 正式编译产物为 40 页、199 个文件，运行配置明确为 `https://www.horselink.cn/api` 和 `https://www.horselink.cn`；构建临时目录和缓存均在 E 盘。自动化测试 `134/134`、46 个 SFC、隔离检查已通过；开发版上传、体验版提升、真机验收、微信审核和正式发布仍分别记录。
+
 ### 2026-08-18 客户账号待办页面上下文刷新修复
 
 1. 使用客户账号 `bijunxue` 进入 `GEARBOX_LOGISTICS` 复核，公网 `GET /api/equipment/repairs?todo=true&page=1&pageSize=20` 稳定返回 1 条待办；截图中的空态不是账号或维修数据缺失。

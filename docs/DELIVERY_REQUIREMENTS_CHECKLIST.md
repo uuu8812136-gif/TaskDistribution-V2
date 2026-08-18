@@ -21,6 +21,13 @@ Completion wording is evidence-based:
 
 If any source conflicts with another, use the least-complete status and keep the item open. After each meaningful task, update this file before giving the user the completion report.
 
+### 2026-08-18 正式域名候选准备
+
+- [x] 已按 `www.horselink.cn` 生成同源 `/api` 的 Web 生产静态包；产物和压缩包均在 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-1d7609b`，Web 压缩包 SHA-256 为 `9a6a2b08bd294602807f97aaefaf39bf5fa19ec388e7534c671f60922c0023c7`。
+- [x] 小程序版本升级为 `0.9.20260818.3`，正式构建配置为 `https://www.horselink.cn/api`，小程序 `134/134`、46 个 SFC 和隔离检查通过；构建缓存均位于 E 盘。
+- [ ] `www.horselink.cn` 当前 HTTPS `/health` 仍返回 Nginx `502`；正式 API/数据库/附件目录、反向代理证书和上线前停写备份尚未形成可消费的生产发布链，因此网站不能标记为已上线。
+- [ ] 小程序正式域名开发版上传、体验版提升、真机验收、WeChat Review 和正式 Publish 仍需独立回执；开发版上传不等于正式发布。
+
 ## 2026-08-14 Frozen 12-Item Release Status
 
 > The table below preserves the frozen 2026-08-14 evidence point. Its later deployment gaps are superseded by the 2026-08-15 section near the end of this file: website release `v2-20260815-3078a22` is active, and mini-program `0.9.20260815.2` from `3078a226d1f49cd440ab91aa6916d0e81eb26c1a` has been uploaded as a development version with a preview QR. The user's earlier confirmation that `0.9.20260814.1` was the experience version does not prove that the new `.2` build has replaced it. Real-device acceptance, WeChat Review, and formal Publish remain separate gates.
