@@ -26,7 +26,7 @@ If any source conflicts with another, use the least-complete status and keep the
 - [x] 已按 `www.horselink.cn` 生成同源 `/api` 的 Web 生产静态包；产物和压缩包均在 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-ac27b59`，Web 压缩包 SHA-256 为 `facd48f4032a8e6f4acbede25dae0a667120de04ab04b084dd33b9ca1ea126f`。
 - [x] 小程序版本升级为 `0.9.20260818.3`（源码提交 `ac27b592d6aff47657326bd755573ba338d343ad`），正式构建配置为 `https://www.horselink.cn/api`，小程序 `134/134`、46 个 SFC 和隔离检查通过；构建回执位于 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-ac27b59`，构建缓存均位于 E 盘。
 - [ ] `www.horselink.cn` 当前 HTTPS `/health` 仍返回 Nginx `502`；正式 API/数据库/附件目录、反向代理证书和上线前停写备份尚未形成可消费的生产发布链，因此网站不能标记为已上线。
-- [ ] 小程序正式域名开发版上传、体验版提升、真机验收、WeChat Review 和正式 Publish 仍需独立回执；开发版上传不等于正式发布。
+- [ ] 小程序正式域名开发版上传、体验版提升、真机验收、WeChat Review 和正式 Publish 仍需独立回执；当前微信开发者工具登录检查通过，但上传调用在本地 IPC 阶段返回 `ECONNRESET` 且没有生成回执，开发版上传不等于正式发布。
 
 ## 2026-08-14 Frozen 12-Item Release Status
 

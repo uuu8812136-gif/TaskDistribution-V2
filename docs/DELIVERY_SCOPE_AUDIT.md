@@ -4,7 +4,7 @@
 
 1. 已确认正式域名解析到 `82.156.67.62`；HTTP 访问会跳转 HTTPS，但当前 HTTPS `/health` 返回 Nginx `502 Bad Gateway`，因此正式站后端/反向代理尚未恢复，不能把正式网站标记为已上线。
 2. PC Web 已按同源 `/api` 完成生产构建，静态包位于 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-ac27b59\web-dist`，压缩包 `www-web-dist-v2-20260818-ac27b59.zip`，SHA-256 为 `facd48f4032a8e6f4acbede25dae0a667120de04ab04b084dd33b9ca1ea126f`（部署前仍需正式服务器备份、API 环境文件、数据库和反向代理门禁）。
-3. 小程序版本已升级为 `0.9.20260818.3`，源提交为 `ac27b592d6aff47657326bd755573ba338d343ad`；HBuilderX 正式编译产物为 40 页、199 个文件，运行配置明确为 `https://www.horselink.cn/api` 和 `https://www.horselink.cn`，构建回执在 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-ac27b59\miniprogram-production-build-receipt-0.9.20260818.3.json`。构建临时目录和缓存均在 E 盘。自动化测试 `134/134`、46 个 SFC、隔离检查已通过；开发版上传、体验版提升、真机验收、微信审核和正式发布仍分别记录。
+3. 小程序版本已升级为 `0.9.20260818.3`，源提交为 `ac27b592d6aff47657326bd755573ba338d343ad`；HBuilderX 正式编译产物为 40 页、199 个文件，运行配置明确为 `https://www.horselink.cn/api` 和 `https://www.horselink.cn`，构建回执在 `E:\TaskDistribution-V2-Offhost\production-candidate-20260818-ac27b59\miniprogram-production-build-receipt-0.9.20260818.3.json`。构建临时目录和缓存均在 E 盘。自动化测试 `134/134`、46 个 SFC、隔离检查已通过；当前微信开发者工具账号登录检查通过，但两次上传/打开项目调用均在本地 IPC 阶段返回 `ECONNRESET`，没有生成上传回执，因此 `.3` 尚未证明上传；体验版提升、真机验收、微信审核和正式发布仍分别记录。
 
 ### 2026-08-18 客户账号待办页面上下文刷新修复
 
