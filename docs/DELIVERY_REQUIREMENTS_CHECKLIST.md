@@ -526,3 +526,9 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] 后端维修查询兼容旧小程序：将历史客户端传来的字面量 `keyword=undefined` 视为空关键词，同时保留真实关键词和超长关键词校验。
 - [x] 定向后端单元测试和小程序维修页面测试通过；源码已提交为 `82af3ddf8862cade19f2a6e84856e59eb6bbf099`，小程序已用 `0.9.20260818.1` 完成 E 盘 HBuilderX 生产构建并上传正式 AppID 开发版，上传回执为 `work/release/miniprogram-upload-receipt-0.9.20260818.1.json`。
 - [ ] `0.9.20260818.1` 的体验版提升、客户微信真机待办截图和完整审批写入仍需分别验收；WeChat Review 和正式 Publish 不由本次开发版上传自动完成。
+
+## 2026-08-18 小程序维修待办上下文刷新修复
+
+- [x] 用客户账号 `bijunxue` 在 `GEARBOX_LOGISTICS` 复核，公网 `todo=true` 接口返回 1 条待办；后端账号、团队、岗位、权限和存量数据均正常。
+- [x] 修复小程序列表页在会话/团队/权限上下文刷新期间丢弃旧响应后不重查的问题：上下文签名变化会清空旧列表、恢复当前待办模式并自动重新加载，页面销毁时注销监听。
+- [x] 小程序全量 `134/134`、46 个 SFC、隔离检查和 `git diff --check` 通过；版本号已更新为 `0.9.20260818.2`，待完成 E 盘独立生产构建、上传和客户真机确认。

@@ -66,7 +66,7 @@
 </template>
 
 <script>
-import { computed, onUnmounted, ref } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { onLoad, onPullDownRefresh, onShow } from '@dcloudio/uni-app'
 import {
   getEquipmentByQrToken,
@@ -195,6 +195,14 @@ export default {
       page.value = 1
       await load()
     }
+    const stopContextWatch = watch(currentContextSignature, (signature, previousSignature) => {
+      if (!previousSignature || signature === previousSignature) return
+      modeSelectedByUser = false
+      repairs.value = []
+      total.value = 0
+      page.value = 1
+      refresh()
+    })
     const setMode = (value) => {
       if (value === 'todo' && !canViewTodos.value) return
       if (mode.value === value) return
@@ -262,6 +270,7 @@ export default {
     onPullDownRefresh(async () => {
       try { await refresh() } finally { uni.stopPullDownRefresh() }
     })
+    onUnmounted(() => stopContextWatch())
     onUnmounted(() => requestGate.invalidate())
 
     return {
