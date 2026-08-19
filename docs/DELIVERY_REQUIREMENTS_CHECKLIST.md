@@ -541,3 +541,13 @@ Unless an item explicitly says otherwise, checked deployment and HTTP results be
 - [x] 小程序全量 `134/134`、46 个 SFC、隔离检查和 `git diff --check` 通过；版本号已更新为 `0.9.20260818.2`，待完成 E 盘独立生产构建、上传和客户真机确认。
 - [x] `0.9.20260818.2` 已用正式 AppID `wxd8f18985dfd63b89` 上传开发版，上传包 `1,386,587` 字节；E 盘生产产物为 40 个页面、199 个文件，预览码保存在 `work/release/miniprogram-preview-0.9.20260818.2.png`。
 - [ ] 微信后台体验版提升、客户扫码后的“我的待办”目视确认和后续审批写入仍待验收；旧体验版不会自动替换为本次开发版。
+
+## 2026-08-19 正式域名、数据基线与服务通知
+
+- [x] `www.horselink.cn` 已切换到 V2 Web，首页、`/health` 和登录团队接口均为 HTTP 200；切换前 Nginx 配置已双份留存。
+- [x] 归零前备份 `backup-20260819T022522Z-66fc4154` 已在客户机 D 盘验签：38 个集合、880 个备份文件、803 个附件文件、564/564 个附件引用，manifest SHA-256 为 `f90aacc08b60d18afa50c419c0210c3e494e0f97cfbfc2aa7f133fba9c42ea4a`。
+- [x] `customer_acceptance_v2_test` 已按确认范围事务化归零，只保留 3 个账号、2 个活动团队和 2 个根部门；所有业务集合为 0，物理 uploads 的 803 个文件已清空并验证为空。
+- [x] `customer_test_superadmin` 和 `demo_readonly` 已通过正式域名实际登录；前者为 membership-free 超级管理员并可见两个团队，后者为隐藏系统账号、每团队一个 membership、权限全部以 `.view` 结尾，写接口返回 HTTP 403。
+- [x] API 重启时发现并恢复被初版归零脚本误清理的 schema capability ledger；恢复前校验目标库、指定备份和设备分类目标唯一索引，恢复后正式 `/health` 返回 HTTP 200。归零脚本已改为保留 `releaseschemaledger`，服务器临时凭据和脚本目录已删除。
+- [ ] 客户要求的微信“服务通知”应使用小程序订阅消息，不是公众号服务号消息。当前尚未实现 OpenID 绑定、用户订阅授权、模板配置和微信发送链路；客户仍需在正式小程序后台选择订阅消息模板并确认字段，运行环境再以受限秘密配置提供 AppSecret 和模板 ID。
+- [ ] 微信服务通知的真实验收必须覆盖：用户主动订阅、后台业务事件产生站内消息、同一事件去重发送微信订阅消息、通知卡片跳回正确小程序页面、拒绝/过期/额度耗尽不影响站内业务，以及 AppSecret/AccessToken 不出现在源码、Git、聊天或日志中。
