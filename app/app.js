@@ -34,7 +34,10 @@ function isDatabaseConnected(connection) {
   return connection?.readyState === MONGOOSE_CONNECTED_STATE;
 }
 
-function createApp(config, { databaseConnection = mongoose.connection } = {}) {
+function createApp(config, {
+  databaseConnection = mongoose.connection,
+  wechatServiceNotificationService
+} = {}) {
   if (!config) {
     throw new Error('createApp requires validated environment configuration');
   }
@@ -83,6 +86,12 @@ function createApp(config, { databaseConnection = mongoose.connection } = {}) {
   app.use('/api/extensions', require('./routes/extensions'));
   app.use('/api/statistics', require('./routes/statistics'));
   app.use('/api/messages', require('./routes/messages'));
+  const { createWechatServiceNotificationService } = require('./services/wechatServiceNotificationService');
+  const { createWechatServiceNotificationsRouter } = require('./routes/wechatServiceNotifications');
+  const wechatService = wechatServiceNotificationService || createWechatServiceNotificationService(
+    config.wechatServiceNotification || { enabled: false }
+  );
+  app.use('/api/wechat-service-notifications', createWechatServiceNotificationsRouter(wechatService));
   app.use('/api/equipment', require('./routes/equipment'));
   app.use('/api/transport-records', require('./routes/transportRecords'));
   app.use('/api/attendance-submissions', require('./routes/attendanceSubmissions'));

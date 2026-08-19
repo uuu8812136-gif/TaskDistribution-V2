@@ -50,8 +50,8 @@ test('WeChat manifest declares the location purpose and private API', () => {
 
 test('release manifest matches the current production candidate and enforces legal domains', () => {
   const manifest = readManifest()
-  assert.equal(manifest.versionName, '0.9.20260818.3')
-  assert.equal(manifest.versionCode, '2026081803')
+  assert.equal(manifest.versionName, '0.9.20260819.1')
+  assert.equal(manifest.versionCode, '2026081901')
   assert.equal(manifest['mp-weixin']?.appid, 'wxd8f18985dfd63b89')
   assert.equal(manifest['mp-weixin']?.setting?.urlCheck, true)
 })

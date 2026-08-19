@@ -49,6 +49,7 @@ $releaseOpsPaths = @(
   'ops/windows/New-V2RecoveryEquipmentCategoryIndexStage.ps1',
   'ops/windows/New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
   'ops/windows/New-V2RecoveryOffhostReceiptSigningKey.ps1',
+  'ops/windows/Set-V2RecoveryWechatServiceNotification.ps1',
   'ops/windows/Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1',
   'ops/windows/Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
 )

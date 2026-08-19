@@ -29,6 +29,60 @@ function parseBoolean(value, fallback = false) {
   throw new Error(`Invalid boolean value: ${value}`);
 }
 
+function optionalTrimmed(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function parseOptionalDate(value, name) {
+  const normalized = optionalTrimmed(value);
+  if (!normalized) return null;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) throw new Error(`${name} must be a valid ISO date`);
+  return parsed;
+}
+
+function loadWechatServiceNotificationEnvironment(env, appEnv) {
+  const enabled = parseBoolean(env.WECHAT_SERVICE_NOTIFICATION_ENABLED, false);
+  const value = {
+    enabled,
+    appId: optionalTrimmed(env.WECHAT_MINIPROGRAM_APP_ID),
+    appSecret: optionalTrimmed(env.WECHAT_MINIPROGRAM_APP_SECRET),
+    templateId: optionalTrimmed(env.WECHAT_SERVICE_NOTIFICATION_TEMPLATE_ID),
+    page: optionalTrimmed(env.WECHAT_SERVICE_NOTIFICATION_PAGE) || 'pages/message/index',
+    activatedAt: parseOptionalDate(
+      env.WECHAT_SERVICE_NOTIFICATION_ACTIVATED_AT,
+      'WECHAT_SERVICE_NOTIFICATION_ACTIVATED_AT'
+    ),
+    workerIntervalMs: parsePositiveInteger(
+      env.WECHAT_SERVICE_NOTIFICATION_WORKER_INTERVAL_MS,
+      30 * 1000,
+      'WECHAT_SERVICE_NOTIFICATION_WORKER_INTERVAL_MS'
+    )
+  };
+  if (value.workerIntervalMs < 1000) {
+    throw new Error('WECHAT_SERVICE_NOTIFICATION_WORKER_INTERVAL_MS must be at least 1000');
+  }
+  if (!enabled) return Object.freeze(value);
+  if (!/^wx[0-9a-f]{16}$/i.test(value.appId)) {
+    throw new Error('WECHAT_MINIPROGRAM_APP_ID is invalid');
+  }
+  if (value.appSecret.length < 16 || PLACEHOLDER_SECRETS.some(
+    (placeholder) => value.appSecret.toLowerCase().includes(placeholder)
+  )) {
+    throw new Error(`WECHAT_MINIPROGRAM_APP_SECRET is invalid for ${appEnv}`);
+  }
+  if (!/^[A-Za-z0-9_-]{20,128}$/.test(value.templateId)) {
+    throw new Error('WECHAT_SERVICE_NOTIFICATION_TEMPLATE_ID is invalid');
+  }
+  if (!/^[A-Za-z0-9_/?=&.-]{1,128}$/.test(value.page) || value.page.startsWith('/')) {
+    throw new Error('WECHAT_SERVICE_NOTIFICATION_PAGE is invalid');
+  }
+  if (!value.activatedAt) {
+    throw new Error('WECHAT_SERVICE_NOTIFICATION_ACTIVATED_AT is required when enabled');
+  }
+  return Object.freeze(value);
+}
+
 function parseApiBindHost(value, appEnv) {
   const host = String(value || LOOPBACK_API_HOST).trim();
   if (!host) throw new Error('API_BIND_HOST is required');
@@ -143,7 +197,8 @@ function loadEnvironment(env = process.env) {
       env.EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS,
       5 * 60 * 1000,
       'EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS'
-    )
+    ),
+    wechatServiceNotification: loadWechatServiceNotificationEnvironment(env, appEnv)
   };
   if (config.equipmentRoutineWorkerIntervalMs < 1000) {
     throw new Error('EQUIPMENT_ROUTINE_WORKER_INTERVAL_MS must be at least 1000');
@@ -179,5 +234,6 @@ function loadEnvironment(env = process.env) {
 
 module.exports = {
   databaseNameFromUri,
-  loadEnvironment
+  loadEnvironment,
+  loadWechatServiceNotificationEnvironment
 };

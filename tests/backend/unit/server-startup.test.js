@@ -131,13 +131,18 @@ test('production startup ensures contract indexes before reporting database read
     ensureRuntimeIndexes: async (value) => {
       ensuredDatabase = value;
       return { format: 'contract-index-test/v1', indexes: ['suppliers.unique'] };
+    },
+    ensureWechatIndexes: async (value) => {
+      assert.equal(value, database);
+      return { format: 'wechat-index-test/v1', indexes: ['bindings.user'] };
     }
   });
 
   assert.equal(ensuredDatabase, database);
   assert.deepEqual(result, {
     schemaCapabilities: [],
-    contractIndexes: { format: 'contract-index-test/v1', indexes: ['suppliers.unique'] }
+    contractIndexes: { format: 'contract-index-test/v1', indexes: ['suppliers.unique'] },
+    wechatNotificationIndexes: { format: 'wechat-index-test/v1', indexes: ['bindings.user'] }
   });
 });
 
@@ -160,5 +165,9 @@ test('development startup relies on automatic indexes and skips production index
     ensureRuntimeIndexes: async () => assert.fail('development should not force production indexes')
   });
 
-  assert.deepEqual(result, { schemaCapabilities: [], contractIndexes: null });
+  assert.deepEqual(result, {
+    schemaCapabilities: [],
+    contractIndexes: null,
+    wechatNotificationIndexes: null
+  });
 });

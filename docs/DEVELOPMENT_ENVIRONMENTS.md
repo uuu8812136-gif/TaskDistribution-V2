@@ -159,6 +159,36 @@ https://v2-test.horselink.cn
 
 The legacy customer system uses the separate edge tunnel `127.0.0.1:38080`. V2 deployment or diagnostics must not stop, rebind, overwrite, or reuse `38080`, the legacy release tree, or the production database. Verify both V2 and legacy health after every V2 deployment.
 
+### WeChat service notification secret entry
+
+The mini-program AppSecret must never be passed as a command-line argument, pasted into chat,
+stored in Git, or copied into a release receipt. After the matching release has been staged on the
+customer Windows host, copy the reviewed operator script from that immutable release to the stable
+recovery `ops` directory. From an elevated **Command Prompt**, first run its read-only plan:
+
+```cmd
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\TaskDistribution-V2\Recovery\ops\Set-V2RecoveryWechatServiceNotification.ps1"
+```
+
+If the displayed AppID, template ID, page, worker interval, and environment path are correct, apply
+the configuration:
+
+```cmd
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\TaskDistribution-V2\Recovery\ops\Set-V2RecoveryWechatServiceNotification.ps1" -Apply -Confirm:$false
+```
+
+The script requests the AppSecret twice with hidden interactive input. It only updates the existing
+`C:\TaskDistribution-V2\Recovery\config\app.env`, does not accept a secret parameter, does not create
+a temporary or backup secret file, restricts that file to `SYSTEM` and `Administrators`, and reports
+only non-sensitive configuration. A successful result has
+`status=WECHAT_SERVICE_NOTIFICATION_CONFIGURATION_UPDATED` and `apiRestartRequired=true`.
+
+Do not restart the API until the immutable release containing the WeChat notification code is the
+approved active candidate. After the controlled API restart, verify local/public health, an
+authenticated `/api/wechat-service-notifications/config` response, real-device subscription consent,
+one actual service-notification delivery, and the notification card's return page. Secret entry and
+HTTP health alone are not delivery acceptance.
+
 ## Guardrails
 
 - Development and test modes reject the known live hosts `www.horselink.cn` and `82.156.67.62`.

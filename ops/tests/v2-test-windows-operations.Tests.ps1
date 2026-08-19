@@ -194,6 +194,7 @@ Describe 'New-V2TestReleasePackage allowlist' {
       'New-V2RecoveryEquipmentCategoryIndexStage.ps1',
       'New-V2RecoveryStoppedBackupOffhostReceipt.ps1',
       'New-V2RecoveryOffhostReceiptSigningKey.ps1',
+      'Set-V2RecoveryWechatServiceNotification.ps1',
       'Invoke-V2RecoveryEquipmentCategoryIndexRelease.ps1',
       'Test-V2RecoveryEquipmentCategoryIndexRelease.ps1'
     )

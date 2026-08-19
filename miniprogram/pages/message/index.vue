@@ -1,9 +1,16 @@
 <template>
   <view class="message-container">
     <!-- 操作栏 -->
-    <view v-if="canWriteMessages" class="action-bar">
-      <button class="action-btn" @click="markAllRead">全部已读</button>
-      <button class="action-btn" @click="clearRead">清空已读</button>
+    <view v-if="showActionBar" class="action-bar">
+      <button
+        v-if="wechatNotificationsEnabled"
+        class="action-btn action-btn--wechat"
+        :loading="wechatSubscriptionPending"
+        :disabled="wechatSubscriptionPending"
+        @click="enableWechatNotifications"
+      >微信提醒</button>
+      <button v-if="canWriteMessages" class="action-btn" @click="markAllRead">全部已读</button>
+      <button v-if="canWriteMessages" class="action-btn" @click="clearRead">清空已读</button>
     </view>
 
     <view style="padding: 0px 24rpx">
@@ -82,6 +89,10 @@ import { useUserStore } from "@/stores/user.js";
 import { formatRelativeTime, getMessageTypeText } from "@/utils/format.js";
 import { messageResourceUrl } from "@/utils/messageNavigation.js";
 import { createLatestRequestGate } from "@/utils/latestRequest.js";
+import {
+  loadWechatServiceNotificationState,
+  requestWechatServiceNotificationSubscription,
+} from "@/utils/wechatServiceNotifications.js";
 import CustomTabbar from "@/components/custom-tab-bar/CustomTabBar.vue";
 
 export default {
@@ -93,6 +104,10 @@ export default {
     const messageStore = useMessageStore();
     const userStore = useUserStore();
     const canWriteMessages = computed(() => userStore.isTeamMode && !userStore.isReadOnly);
+    const wechatNotificationState = ref({ enabled: false, remainingCount: 0 });
+    const wechatSubscriptionPending = ref(false);
+    const wechatNotificationsEnabled = computed(() => wechatNotificationState.value.enabled === true);
+    const showActionBar = computed(() => canWriteMessages.value || wechatNotificationsEnabled.value);
 
     const messages = ref([]);
     const loading = ref(false);
@@ -153,7 +168,46 @@ export default {
     onShow(() => {
       uni.$emit("tabbar-update");
       refreshVisibleMessages();
+      loadWechatNotificationState();
     });
+
+    const loadWechatNotificationState = async () => {
+      try {
+        wechatNotificationState.value = await loadWechatServiceNotificationState({ refresh: true });
+      } catch (error) {
+        console.error("加载微信提醒配置失败:", error);
+        wechatNotificationState.value = { enabled: false, remainingCount: 0 };
+      }
+    };
+
+    const enableWechatNotifications = async () => {
+      if (wechatSubscriptionPending.value) return;
+      wechatSubscriptionPending.value = true;
+      try {
+        const result = await requestWechatServiceNotificationSubscription(wechatNotificationState.value);
+        if (result.result === "accept") {
+          wechatNotificationState.value = {
+            ...wechatNotificationState.value,
+            bound: true,
+            remainingCount: result.remainingCount,
+          };
+          uni.showToast({ title: "微信提醒已开启", icon: "success" });
+        } else if (result.result === "ban") {
+          uni.showModal({
+            title: "微信提醒未开启",
+            content: "请在微信设置中允许接收订阅消息",
+            showCancel: false,
+          });
+        } else {
+          uni.showToast({ title: "已取消微信提醒", icon: "none" });
+        }
+      } catch (error) {
+        console.error("开启微信提醒失败:", error);
+        uni.showToast({ title: error?.message || "微信提醒开启失败", icon: "none" });
+      } finally {
+        wechatSubscriptionPending.value = false;
+      }
+    };
 
     // 下拉刷新
     const onRefresh = () => {
@@ -301,6 +355,9 @@ export default {
     return {
       messages,
       canWriteMessages,
+      showActionBar,
+      wechatNotificationsEnabled,
+      wechatSubscriptionPending,
       loading,
       refreshing,
       hasMore,
@@ -313,6 +370,7 @@ export default {
       getTypeIcon,
       getTypeText,
       formatRelativeTime,
+      enableWechatNotifications,
     };
   },
 };
@@ -350,6 +408,12 @@ export default {
     &::after {
       border: none;
     }
+  }
+
+  .action-btn--wechat {
+    background: #edf9f2;
+    color: #16834b;
+    border: 2rpx solid #b9e7cc;
   }
 }
 

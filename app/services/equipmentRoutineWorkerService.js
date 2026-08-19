@@ -242,6 +242,8 @@ function createEquipmentRoutineWorkerService({
               equipmentId: normalizeId(plan.equipmentId),
               routineType: plan.routineType,
               level: level.key,
+              dueAt: plan.dueAt,
+              status: plan.status,
               page: '/pages/equipment/routine-workbench'
             }
           },

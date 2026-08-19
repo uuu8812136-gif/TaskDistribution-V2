@@ -8,6 +8,12 @@ const { loadEnvironment } = require('./config/environment');
 const { createApp } = require('./app');
 const { ensureContractIndexes } = require('./services/contractIndexService');
 const { startEquipmentRoutineScheduler } = require('./services/equipmentRoutineWorkerService');
+const { ensureWechatNotificationIndexes } = require('./services/wechatNotificationIndexService');
+const { createWechatServiceNotificationService } = require('./services/wechatServiceNotificationService');
+const {
+  createWechatServiceNotificationWorker,
+  startWechatServiceNotificationScheduler
+} = require('./services/wechatServiceNotificationWorker');
 const {
   EXPECTED_SCHEMA_LEDGER,
   SCHEMA_CAPABILITY,
@@ -54,7 +60,8 @@ async function assertRequiredSchemaCapabilities(database, rawCapabilities = '') 
 async function connectDatabaseForServer(config, {
   mongooseClient = mongoose,
   requiredSchemaCapabilities = process.env.REQUIRED_SCHEMA_CAPABILITIES,
-  ensureRuntimeIndexes = ensureContractIndexes
+  ensureRuntimeIndexes = ensureContractIndexes,
+  ensureWechatIndexes = ensureWechatNotificationIndexes
 } = {}) {
   let connected = false;
   try {
@@ -68,7 +75,10 @@ async function connectDatabaseForServer(config, {
     const contractIndexes = connectOptions.autoIndex === false
       ? await ensureRuntimeIndexes(mongooseClient.connection.db)
       : null;
-    return { schemaCapabilities, contractIndexes };
+    const wechatNotificationIndexes = connectOptions.autoIndex === false
+      ? await ensureWechatIndexes(mongooseClient.connection.db)
+      : null;
+    return { schemaCapabilities, contractIndexes, wechatNotificationIndexes };
   } catch (error) {
     if (connected || mongooseClient.connection?.readyState !== 0) {
       try { await mongooseClient.disconnect(); }
@@ -84,11 +94,26 @@ async function startServer() {
   if (databaseReadiness.contractIndexes) {
     console.log(`Contract indexes verified: ${databaseReadiness.contractIndexes.indexes.length}`);
   }
+  if (databaseReadiness.wechatNotificationIndexes) {
+    console.log(`WeChat notification indexes verified: ${databaseReadiness.wechatNotificationIndexes.indexes.length}`);
+  }
 
-  const app = createApp(config);
+  const wechatService = createWechatServiceNotificationService(config.wechatServiceNotification);
+  const app = createApp(config, { wechatServiceNotificationService: wechatService });
   const routineScheduler = startEquipmentRoutineScheduler({
     enabled: config.equipmentRoutineWorkerEnabled,
     intervalMs: config.equipmentRoutineWorkerIntervalMs
+  });
+  const wechatWorker = config.wechatServiceNotification.enabled
+    ? createWechatServiceNotificationWorker({
+        service: wechatService,
+        activatedAt: config.wechatServiceNotification.activatedAt
+      })
+    : null;
+  const wechatScheduler = startWechatServiceNotificationScheduler({
+    enabled: config.wechatServiceNotification.enabled,
+    intervalMs: config.wechatServiceNotification.workerIntervalMs,
+    worker: wechatWorker
   });
   const server = listenForHttpRequests(app, config);
 
@@ -96,6 +121,7 @@ async function startServer() {
     console.log(`${signal} received, shutting down`);
     server.close(async () => {
       routineScheduler.stop();
+      wechatScheduler.stop();
       await mongoose.disconnect();
       process.exit(0);
     });
@@ -104,7 +130,7 @@ async function startServer() {
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));
 
-  return { app, config, server, routineScheduler };
+  return { app, config, server, routineScheduler, wechatScheduler };
 }
 
 if (require.main === module) {

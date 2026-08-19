@@ -7,6 +7,42 @@ function requireTeamId(teamId) {
   return teamId;
 }
 
+const wechatDeliverySchema = new mongoose.Schema({
+  status: {
+    type: String,
+    enum: [
+      'PENDING',
+      'PROCESSING',
+      'RETRY',
+      'SENT',
+      'SKIPPED_UNBOUND',
+      'SKIPPED_UNSUBSCRIBED',
+      'FAILED'
+    ],
+    default: 'PENDING',
+    required: true
+  },
+  attempts: {
+    type: Number,
+    default: 0,
+    min: 0,
+    required: true
+  },
+  nextAttemptAt: Date,
+  leaseUntil: Date,
+  leaseToken: {
+    type: String,
+    trim: true,
+    maxlength: 64
+  },
+  sentAt: Date,
+  lastErrorCode: {
+    type: String,
+    trim: true,
+    maxlength: 100
+  }
+}, { _id: false });
+
 /**
  * 消息模型
  * 用于系统内消息通知
@@ -101,6 +137,13 @@ const messageSchema = new mongoose.Schema({
     trim: true,
     maxlength: 300,
     default: null
+  },
+
+  // Internal delivery outbox. It is never selected by user-facing message APIs.
+  wechatDelivery: {
+    type: wechatDeliverySchema,
+    default: () => ({ status: 'PENDING', attempts: 0 }),
+    select: false
   }
 }, {
   timestamps: true  // 自动添加 createdAt 和 updatedAt
@@ -117,6 +160,10 @@ messageSchema.index(
     partialFilterExpression: { deduplicationKey: { $type: 'string' } },
     name: 'uq_message_team_recipient_deduplication'
   }
+);
+messageSchema.index(
+  { teamId: 1, 'wechatDelivery.status': 1, 'wechatDelivery.nextAttemptAt': 1, createdAt: 1 },
+  { name: 'ix_message_wechat_delivery' }
 );
 
 // 虚拟字段：格式化创建时间

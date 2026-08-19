@@ -251,6 +251,25 @@ export const clearReadMessages = () => {
   return del('/messages/clear-read')
 }
 
+export const getWechatServiceNotificationConfig = () => {
+  return get('/wechat-service-notifications/config', {}, { showLoading: false, silentError: true })
+}
+
+export const getWechatServiceNotificationStatus = () => {
+  return get('/wechat-service-notifications/status', {}, { showLoading: false, silentError: true })
+}
+
+export const bindWechatServiceNotificationAccount = (code) => {
+  return post('/wechat-service-notifications/bind', { code }, { showLoading: false })
+}
+
+export const recordWechatServiceNotificationAuthorization = (templateId, result) => {
+  return post('/wechat-service-notifications/authorization', {
+    templateId,
+    result,
+  }, { showLoading: false })
+}
+
 // ==================== 用户模块 ====================
 
 /**

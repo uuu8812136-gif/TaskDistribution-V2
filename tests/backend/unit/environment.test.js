@@ -53,7 +53,30 @@ test('accepts an isolated non-production configuration', () => {
   assert.equal(config.temporaryFileTtlHours, 24);
   assert.equal(config.equipmentRoutineWorkerEnabled, false);
   assert.equal(config.equipmentRoutineWorkerIntervalMs, 300000);
+  assert.equal(config.wechatServiceNotification.enabled, false);
+  assert.equal(config.wechatServiceNotification.workerIntervalMs, 30000);
   assert.ok(Object.isFrozen(config));
+});
+
+test('WeChat service notifications require a complete secret-backed configuration', () => {
+  const enabled = loadEnvironment(validEnvironment({
+    WECHAT_SERVICE_NOTIFICATION_ENABLED: 'true',
+    WECHAT_MINIPROGRAM_APP_ID: 'wx0123456789abcdef',
+    WECHAT_MINIPROGRAM_APP_SECRET: SAFE_SECRET,
+    WECHAT_SERVICE_NOTIFICATION_TEMPLATE_ID: 'A'.repeat(43),
+    WECHAT_SERVICE_NOTIFICATION_ACTIVATED_AT: '2026-08-19T04:00:00+08:00'
+  }));
+  assert.equal(enabled.wechatServiceNotification.enabled, true);
+  assert.equal(enabled.wechatServiceNotification.templateId, 'A'.repeat(43));
+  assert.equal(enabled.wechatServiceNotification.page, 'pages/message/index');
+  assert.equal(enabled.wechatServiceNotification.activatedAt.toISOString(), '2026-08-18T20:00:00.000Z');
+
+  assert.throws(() => loadEnvironment(validEnvironment({
+    WECHAT_SERVICE_NOTIFICATION_ENABLED: 'true',
+    WECHAT_MINIPROGRAM_APP_ID: 'wx0123456789abcdef',
+    WECHAT_SERVICE_NOTIFICATION_TEMPLATE_ID: 'A'.repeat(43),
+    WECHAT_SERVICE_NOTIFICATION_ACTIVATED_AT: '2026-08-19T04:00:00+08:00'
+  })), /APP_SECRET is invalid/);
 });
 
 test('production API requires the exact IPv4 loopback bind address', () => {
