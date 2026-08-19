@@ -1,5 +1,13 @@
 # 客户确认范围与当前交付覆盖审计
 
+### 2026-08-19 正式域名切换复核（`www.horselink.cn`）
+
+1. 客户机 SSH 服务为 `Running`，管理隧道任务已启动；公网测试入口 `https://v2-test.horselink.cn/health` 返回 HTTP `200`。
+2. 边缘 Nginx 原因已确认：`www.horselink.cn` 原先仍将 `/` 和 `/assets/` 转发到旧版 `127.0.0.1:38080`。旧版停用后因此返回 `502`。
+3. 已在边缘机保留原配置 `C:\nginx\conf\nginx.conf.before-20260819-www-v2`，并在开发工作站 E 盘保存 `E:\TaskDistribution-V2-Offhost\production-cutover-20260819\nginx.conf.before`。候选配置只把正式域名两个转发目标改为新 V2 `127.0.0.1:38130`，其余虚拟主机未改动。
+4. Nginx 配置测试通过并已 reload。公网复核结果：`https://www.horselink.cn/health`、首页、`https://www.horselink.cn/api/auth/login-teams` 均返回 HTTP `200`；HTTP 访问会正常跳转 HTTPS。
+5. 当前正式域名复用已验收的 V2 恢复运行实例和其数据环境；这证明正式域名访问链路已恢复，不等同于已经建立独立的正式数据库/附件环境。后续若要求测试库与正式库物理隔离，仍需另行完成停写备份、数据迁移、附件校验和回滚验收。
+
 ### 2026-08-18 正式域名候选构建（`www.horselink.cn`）
 
 1. 已确认正式域名解析到 `82.156.67.62`；HTTP 访问会跳转 HTTPS，但当前 HTTPS `/health` 返回 Nginx `502 Bad Gateway`，因此正式站后端/反向代理尚未恢复，不能把正式网站标记为已上线。
