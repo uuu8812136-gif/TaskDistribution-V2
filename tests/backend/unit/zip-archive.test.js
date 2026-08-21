@@ -3,7 +3,10 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const zlib = require('node:zlib');
-const { extractZipEntries } = require('../../../app/services/zipArchiveService');
+const {
+  extractPaymentReceiptEntries,
+  extractZipEntries
+} = require('../../../app/services/zipArchiveService');
 
 function crc32(buffer) {
   let value = 0xffffffff;
@@ -82,4 +85,37 @@ test('rejects path traversal and non-PDF-only archives', () => {
   assert.throws(() => extractZipEntries(zipFile([
     { name: 'notes.txt', content: 'not a pdf' }
   ])), (error) => error.code === 'CONTRACT_PDF_ZIP_EMPTY');
+});
+
+test('extracts payment receipts as valid PDF/JPG/JPEG/PNG files only', () => {
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00]);
+  const archive = zipFile([
+    { name: 'SUP-001__RENT-1.pdf', content: '%PDF-1.7\n%%EOF' },
+    { name: 'SUP-001__RENT-2.JPG', content: jpeg, deflate: true },
+    { name: 'SUP-001__RENT-3.jpeg', content: jpeg },
+    { name: 'SUP-001__RENT-4.PNG', content: png }
+  ]);
+  const entries = extractPaymentReceiptEntries(archive);
+  assert.deepEqual(entries.map((entry) => [entry.extension, entry.mimeType]), [
+    ['.pdf', 'application/pdf'],
+    ['.jpg', 'image/jpeg'],
+    ['.jpeg', 'image/jpeg'],
+    ['.png', 'image/png']
+  ]);
+});
+
+test('rejects unsupported, malformed, and unsafe payment receipt entries', () => {
+  assert.throws(() => extractPaymentReceiptEntries(zipFile([
+    { name: 'receipt.txt', content: 'not an attachment' }
+  ])), { code: 'CONTRACT_PAYMENT_ZIP_UNSUPPORTED' });
+  assert.throws(() => extractPaymentReceiptEntries(zipFile([
+    { name: 'receipt.jpg', content: 'not a jpeg' }
+  ])), { code: 'CONTRACT_PAYMENT_FILE_INVALID' });
+  assert.throws(() => extractPaymentReceiptEntries(zipFile([
+    { name: 'receipt.pdf', content: '%PDF-1.7\nmissing eof' }
+  ])), { code: 'CONTRACT_PDF_FILE_INVALID' });
+  assert.throws(() => extractPaymentReceiptEntries(zipFile([
+    { name: 'safe.png', content: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]) }
+  ], { traversal: true })), { code: 'CONTRACT_PDF_ZIP_PATH_INVALID' });
 });

@@ -1201,6 +1201,73 @@ test('bulk contract PDF import matches by supplier and contract number, is idemp
   }), 0);
 });
 
+test('bulk payment receipt import matches only equipment rentals, is idempotent, and stays team-scoped', async () => {
+  const target = await supplier(fixture.contextA, 'PAY-BATCH', 'Payment Batch Supplier');
+  const rental = await record(fixture.contextA, target._id, {
+    category: 'EQUIPMENT_RENTAL',
+    contractNumber: 'RENT-2026-01'
+  });
+  const nonRental = await record(fixture.contextA, target._id, {
+    category: 'MAIN_SERVICE_AGREEMENT',
+    contractNumber: 'MAIN-2026-01'
+  });
+  const pdf = Buffer.from('%PDF-1.7\\npayment\\n%%EOF');
+  const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x01]);
+  const zip = pdfZip([
+    { name: 'PAY-BATCH__RENT-2026-01.pdf', content: pdf, deflate: true },
+    { name: 'PAY-BATCH__RENT-2026-01.jpg', content: jpeg }
+  ]);
+  const request = { method: 'POST', originalUrl: '/api/contracts/suppliers/payment-receipts/import' };
+  const result = await service.importPaymentReceipts({
+    authContext: fixture.contextA,
+    file: { buffer: zip },
+    req: request
+  });
+  assert.deepEqual({ matchedCount: result.matchedCount, importedCount: result.importedCount }, {
+    matchedCount: 2, importedCount: 2
+  });
+  const persisted = await SupplierContractRecord.findById(rental._id).lean();
+  assert.equal(persisted.attachments.length, 2);
+  assert.deepEqual(persisted.attachments.map((item) => item.purpose).sort(), ['PAYMENT_RECEIPT', 'PAYMENT_RECEIPT']);
+  assert.equal((await SupplierContractRecord.findById(nonRental._id).lean()).attachments.length, 0);
+  assert.equal(await FileAsset.countDocuments({
+    teamId: fixture.teamA,
+    ownerId: rental._id,
+    status: FileAsset.FILE_STATUSES.ACTIVE
+  }), 2);
+
+  const repeated = await service.importPaymentReceipts({
+    authContext: fixture.contextA,
+    file: { buffer: zip },
+    req: request
+  });
+  assert.equal(repeated.importedCount, 0);
+  assert.equal(repeated.skippedExisting, 2);
+  await assert.rejects(service.importPaymentReceipts({
+    authContext: fixture.contextB,
+    file: { buffer: zip },
+    req: request
+  }), { status: 409, code: 'CONTRACT_PAYMENT_MATCH_FAILED' });
+  assert.equal(await FileAsset.countDocuments({
+    teamId: fixture.teamB,
+    ownerType: FileAsset.FILE_OWNER_TYPES.SUPPLIER_CONTRACT
+  }), 0);
+});
+
+test('payment receipt import rejects an unresolved file before staging or writing', async () => {
+  const zip = pdfZip([{
+    name: 'UNKNOWN__RENT-404.pdf',
+    content: '%PDF-1.7\\nunknown\\n%%EOF'
+  }]);
+  await assert.rejects(service.importPaymentReceipts({
+    authContext: fixture.contextA,
+    file: { buffer: zip },
+    req: { method: 'POST', originalUrl: '/api/contracts/suppliers/payment-receipts/import' }
+  }), { status: 409, code: 'CONTRACT_PAYMENT_MATCH_FAILED' });
+  assert.equal(await FileAsset.countDocuments({ teamId: fixture.teamA }), 0);
+  assert.deepEqual(await storageFiles(), []);
+});
+
 test('concurrent duplicate contract PDF imports bind once and remove the unbound staged file', async () => {
   const target = await supplier(fixture.contextA, 'PDF-RACE', 'PDF Race Supplier');
   const targetRecord = await record(fixture.contextA, target._id, { contractNumber: 'RACE-1' });

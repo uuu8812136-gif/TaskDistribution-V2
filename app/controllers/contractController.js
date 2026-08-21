@@ -88,6 +88,19 @@ function createContractController({
       }
     },
 
+    async importPaymentReceipts(req, res, next) {
+      try {
+        const result = await service.importPaymentReceipts({
+          authContext: req.authContext,
+          req,
+          file: req.file
+        });
+        return res.status(201).json(result);
+      } catch (error) {
+        return next(error);
+      }
+    },
+
     async exportSuppliers(req, res, next) {
       try {
         const result = await service.supplierExport({

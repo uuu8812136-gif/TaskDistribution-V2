@@ -49,6 +49,19 @@ export function importSupplierContractPdfs(file, params = {}, onUploadProgress) 
   })
 }
 
+export function importSupplierPaymentReceipts(file, params = {}, onUploadProgress) {
+  const data = new FormData()
+  data.append('file', file)
+  return request({
+    url: '/contracts/suppliers/payment-receipts/import',
+    method: 'post',
+    params,
+    data,
+    suppressGlobalError: true,
+    onUploadProgress
+  })
+}
+
 export function exportSuppliers(params) {
   return request({
     url: '/contracts/suppliers/export',

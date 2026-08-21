@@ -75,7 +75,7 @@
         :loading="exporting"
         @click="exportMonthly"
       >
-        导出 A:R 月报
+        导出月度出勤报表
       </el-button>
       <span class="toolbar-spacer" />
       <el-button :loading="activeLoading" circle aria-label="刷新出勤数据" @click="loadActiveView">

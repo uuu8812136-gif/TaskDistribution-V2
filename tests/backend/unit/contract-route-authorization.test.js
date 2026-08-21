@@ -19,6 +19,7 @@ const ROUTES = Object.freeze([
   ['get', '/suppliers/export', 'contract.supplier.export'],
   ['post', '/suppliers/import', 'contract.supplier.import'],
   ['post', '/suppliers/contract-pdfs/import', 'contract.supplier.import'],
+  ['post', '/suppliers/payment-receipts/import', 'contract.supplier.import'],
   ['get', '/suppliers', 'contract.supplier.view'],
   ['post', '/records', 'contract.supplier.manage'],
   ['get', '/suppliers/:supplierId/records', 'contract.supplier.view'],
@@ -102,7 +103,7 @@ test('every contract write requires team context and rejects client teamId', () 
 test('app injects the validated private upload root into the contract router', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../../app/app.js'), 'utf8');
   assert.match(source, /createContractsRouter\(\{\s*storageRoot:\s*config\.uploadPath\s*\}\)/);
-  assert.equal(ROUTES.length, 21);
+  assert.equal(ROUTES.length, 22);
 });
 
 test('supplier overview has no independent create or delete route', () => {

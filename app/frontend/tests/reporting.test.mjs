@@ -107,7 +107,7 @@ test('attendance monthly view downloads the reviewed-only fixed A:R workbook', (
 
   assert.match(apiSource, /attendance-submissions\/summary\/monthly\/export/)
   assert.match(apiSource, /responseType:\s*'blob'/)
-  assert.match(viewSource, /导出 A:R 月报/)
+  assert.match(viewSource, /导出月度出勤报表/)
   assert.match(viewSource, /exportAttendanceMonthlySummary/)
   assert.match(viewSource, /仅包含已审核日报/)
   assert.match(viewSource, /白班临时工/)

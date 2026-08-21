@@ -252,6 +252,15 @@ test('contract API keeps the three independent menu exports and private file tra
   assert.doesNotMatch(apiSource, /\/uploads\//)
 })
 
+test('contract supplier page exposes independent payment receipt ZIP import', () => {
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  const apiSource = readFileSync(new URL('../src/api/contract.js', import.meta.url), 'utf8')
+  assert.match(supplierSource, /批量导入打款凭证/)
+  assert.match(supplierSource, /importSupplierPaymentReceipts/)
+  assert.match(supplierSource, /供应商编码__合同编号\.扩展名/)
+  assert.match(apiSource, /\/contracts\/suppliers\/payment-receipts\/import/)
+})
+
 test('new contract validation errors have direct customer-facing messages', () => {
   const errorSource = readFileSync(new URL('../src/utils/requestErrorMessages.js', import.meta.url), 'utf8')
   assert.match(errorSource, /CONTRACT_EXPORT_SCOPE_INVALID: '供应商合同导出范围不正确，请刷新页面后重试'/)

@@ -333,8 +333,15 @@
 
     <el-dialog v-model="importVisible" title="导入供应商合同" width="min(620px, 94vw)" append-to-body :show-close="!importing">
       <el-alert
-        :title="`请使用57列三级细表模板（D列为托管属性），系统将按供应商编码更新只读汇总；当前供应商：${supplier?.name || '-'}`"
+        :title="`请使用57列三级细表模板（D列为托管属性），系统将按供应商编码更新只读汇总；W、BC、BD三列附件先留空；当前供应商：${supplier?.name || '-'}`"
         type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        class="import-attachment-note"
+        title="合同PDF请在合同页面单独上传；打款凭证请在对应器具租赁明细的“打款凭证”栏上传。Excel里不要填写文件名、路径或URL。"
+        type="warning"
         :closable="false"
         show-icon
       />
@@ -896,6 +903,7 @@ onBeforeUnmount(invalidateDetailPage)
 .attachment-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; padding-top: 16px; border-top: 1px solid var(--zl-border-soft); }
 .attachment-field { min-width: 0; }
 .import-upload { margin-top: 18px; }
+.import-attachment-note { margin-top: 12px; }
 .dialog-footer-row, .dialog-footer-actions { display: flex; align-items: center; gap: 10px; }
 .dialog-footer-row { justify-content: space-between; }
 @media (max-width: 1024px) {

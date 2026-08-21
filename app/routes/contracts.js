@@ -59,6 +59,22 @@ const pdfZipUpload = multer({
   }
 }).single('file');
 
+const paymentZipUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_CONTRACT_PDF_ZIP_SIZE,
+    files: 1,
+    fields: 5,
+    parts: 6,
+    fieldNameSize: 100,
+    fieldSize: 16 * 1024
+  },
+  fileFilter(req, file, callback) {
+    if (/\.zip$/i.test(file.originalname || '')) return callback(null, true);
+    return callback(new ContractManagementError(415, 'CONTRACT_PAYMENT_ZIP_UNSUPPORTED', '仅支持包含打款凭证的 .zip 压缩包'));
+  }
+}).single('file');
+
 function importUploadMiddleware(req, res, next) {
   importUpload(req, res, (error) => {
     if (!error) return next();
@@ -86,6 +102,20 @@ function pdfZipUploadMiddleware(req, res, next) {
         tooLarge ? 'CONTRACT_PDF_ZIP_TOO_LARGE' : 'CONTRACT_PDF_ZIP_UPLOAD_INVALID',
         tooLarge ? 'PDF压缩包不能超过220MB' : 'PDF压缩包上传内容不正确'
       ));
+    }
+    return next(error);
+  });
+}
+
+function paymentZipUploadMiddleware(req, res, next) {
+  paymentZipUpload(req, res, (error) => {
+    if (!error) return next();
+    if (error instanceof ContractManagementError) return next(error);
+    if (error instanceof multer.MulterError) {
+      const tooLarge = error.code === 'LIMIT_FILE_SIZE';
+      return next(new ContractManagementError(tooLarge ? 413 : 400,
+        tooLarge ? 'CONTRACT_PAYMENT_ZIP_TOO_LARGE' : 'CONTRACT_PAYMENT_ZIP_UPLOAD_INVALID',
+        tooLarge ? '打款凭证压缩包不能超过220MB' : '打款凭证压缩包上传内容不正确'));
     }
     return next(error);
   });
@@ -137,6 +167,14 @@ function createContractsRouter({ storageRoot, service } = {}) {
     pdfZipUploadMiddleware,
     rejectWriteTeamId,
     contractController.importContractPdfs
+  );
+  router.post(
+    '/suppliers/payment-receipts/import',
+    requireTeamContext,
+    requirePermission('contract.supplier.import'),
+    paymentZipUploadMiddleware,
+    rejectWriteTeamId,
+    contractController.importPaymentReceipts
   );
   router.get(
     '/suppliers',

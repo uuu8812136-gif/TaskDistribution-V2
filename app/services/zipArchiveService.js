@@ -113,7 +113,16 @@ function readCentralEntries(buffer) {
   return entries;
 }
 
-function extractZipEntries(buffer) {
+function extractZipEntriesWithPolicy(buffer, {
+  allowedExtensions,
+  emptyCode,
+  emptyMessage,
+  fileTooLargeCode,
+  invalidFileCode,
+  validateContent,
+  unsupportedCode,
+  unsupportedMessage
+}) {
   if (!Buffer.isBuffer(buffer) || buffer.length < 22) {
     throw zipError('CONTRACT_PDF_ZIP_INVALID', '请选择有效的ZIP文件');
   }
@@ -128,13 +137,17 @@ function extractZipEntries(buffer) {
       throw zipError('CONTRACT_PDF_ZIP_UNSUPPORTED', 'ZIP内含有不支持的压缩格式');
     }
     if (entry.uncompressedSize > 20 * 1024 * 1024) {
-      throw zipError('CONTRACT_PDF_FILE_TOO_LARGE', `文件“${entry.name}”不能超过20MB`);
+      throw zipError(fileTooLargeCode, `文件“${entry.name}”不能超过20MB`);
     }
     totalBytes += entry.uncompressedSize;
     if (totalBytes > MAX_UNCOMPRESSED_BYTES) {
       throw zipError('CONTRACT_PDF_ZIP_TOO_LARGE', 'ZIP解压后的文件总量不能超过200MB');
     }
-    if (!/\.pdf$/i.test(entry.name)) continue;
+    const extension = path.posix.extname(entry.name).toLocaleLowerCase('en-US');
+    if (!allowedExtensions.has(extension)) {
+      if (unsupportedCode) throw zipError(unsupportedCode, unsupportedMessage);
+      continue;
+    }
     if (entry.localOffset + 30 > buffer.length || buffer.readUInt32LE(entry.localOffset) !== ZIP_LOCAL_SIGNATURE) {
       throw zipError('CONTRACT_PDF_ZIP_INVALID', `文件“${entry.name}”的本地记录无效`);
     }
@@ -157,21 +170,70 @@ function extractZipEntries(buffer) {
     if (content.length !== entry.uncompressedSize || crc32(content) !== entry.crc) {
       throw zipError('CONTRACT_PDF_ZIP_INVALID', `文件“${entry.name}”校验失败`);
     }
-    if (!content.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
-      !content.subarray(Math.max(0, content.length - 1024)).includes(Buffer.from('%%EOF'))) {
-      throw zipError('CONTRACT_PDF_FILE_INVALID', `文件“${entry.name}”不是有效的PDF`);
+    let metadata;
+    try {
+      metadata = validateContent(content, extension);
+    } catch (error) {
+      if (error instanceof ZipArchiveError) throw error;
+      throw zipError(invalidFileCode, `文件“${entry.name}”内容无效`);
     }
-    extracted.push({ name: entry.name, buffer: content });
+    extracted.push({ name: entry.name, buffer: content, extension, ...metadata });
   }
   if (!extracted.length) {
-    throw zipError('CONTRACT_PDF_ZIP_EMPTY', 'ZIP内没有PDF文件');
+    throw zipError(emptyCode, emptyMessage);
   }
   return extracted;
+}
+
+function validatePdfContent(content, extension) {
+  if (extension !== '.pdf' || !content.subarray(0, 5).equals(Buffer.from('%PDF-')) ||
+    !content.subarray(Math.max(0, content.length - 1024)).includes(Buffer.from('%%EOF'))) {
+    throw zipError('CONTRACT_PDF_FILE_INVALID', '文件不是有效的PDF');
+  }
+  return { mimeType: 'application/pdf' };
+}
+
+function extractZipEntries(buffer) {
+  return extractZipEntriesWithPolicy(buffer, {
+    allowedExtensions: new Set(['.pdf']),
+    emptyCode: 'CONTRACT_PDF_ZIP_EMPTY',
+    emptyMessage: 'ZIP内没有PDF文件',
+    fileTooLargeCode: 'CONTRACT_PDF_FILE_TOO_LARGE',
+    invalidFileCode: 'CONTRACT_PDF_FILE_INVALID',
+    validateContent: validatePdfContent
+  });
+}
+
+function validatePaymentReceiptContent(content, extension) {
+  if (extension === '.pdf') return validatePdfContent(content, extension);
+  if (extension === '.png' && content.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) {
+    return { mimeType: 'image/png' };
+  }
+  if (extension === '.jpg' || extension === '.jpeg') {
+    if (content.length >= 3 && content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff) {
+      return { mimeType: 'image/jpeg' };
+    }
+  }
+  throw zipError('CONTRACT_PAYMENT_FILE_INVALID', '文件不是有效的PDF或图片');
+}
+
+function extractPaymentReceiptEntries(buffer) {
+  return extractZipEntriesWithPolicy(buffer, {
+    allowedExtensions: new Set(['.pdf', '.jpg', '.jpeg', '.png']),
+    emptyCode: 'CONTRACT_PAYMENT_ZIP_EMPTY',
+    emptyMessage: 'ZIP内没有PDF或图片文件',
+    fileTooLargeCode: 'CONTRACT_PAYMENT_FILE_TOO_LARGE',
+    invalidFileCode: 'CONTRACT_PAYMENT_FILE_INVALID',
+    unsupportedCode: 'CONTRACT_PAYMENT_ZIP_UNSUPPORTED',
+    unsupportedMessage: '打款凭证ZIP内只允许PDF、JPG、JPEG或PNG文件',
+    validateContent: validatePaymentReceiptContent
+  });
 }
 
 module.exports = {
   MAX_ENTRIES,
   MAX_UNCOMPRESSED_BYTES,
   ZipArchiveError,
-  extractZipEntries
+  extractZipEntries,
+  extractPaymentReceiptEntries
 };

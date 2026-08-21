@@ -14,6 +14,10 @@
           <el-icon><FolderOpened /></el-icon>
           批量导入合同PDF
         </el-button>
+        <el-button v-if="canImport" @click="openPaymentImport">
+          <el-icon><FolderOpened /></el-icon>
+          批量导入打款凭证
+        </el-button>
         <el-button v-if="canExport" :loading="exportingScope === 'overview'" @click="handleExport('overview')">
           <el-icon><Download /></el-icon>
           导出主表汇总
@@ -258,8 +262,15 @@
       :show-close="!importing"
     >
       <el-alert
-        title="请使用57列三级细表模板（D列为托管属性）；导入后主表和二级汇总按供应商编码自动关联"
+        title="请使用57列三级细表模板（D列为托管属性）；W、BC、BD三列附件先留空，导入后再单独上传"
         type="info"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
+        class="import-attachment-note"
+        title="W列/BC列合同PDF：用“批量导入合同PDF”上传；BD列打款凭证：进入对应器具租赁明细，在“打款凭证”栏上传。Excel里不要填写文件名、路径或URL。"
+        type="warning"
         :closable="false"
         show-icon
       />
@@ -320,6 +331,20 @@
         <el-button type="primary" :loading="pdfImporting" :disabled="!pdfImportFile" @click="submitPdfImport">开始匹配并导入</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="paymentImportVisible" title="批量导入打款凭证" width="min(680px, 94vw)" append-to-body :close-on-click-modal="!paymentImporting" :show-close="!paymentImporting">
+      <el-alert title="把打款凭证放进一个ZIP后上传，支持 PDF、JPG、JPEG、PNG；文件名按“供应商编码__合同编号.扩展名”命名" type="info" :closable="false" show-icon />
+      <el-alert class="pdf-import-note" title="系统只绑定已有的器具租赁记录；匹配不完整时整包不写入，单条记录最多10个附件" type="warning" :closable="false" show-icon />
+      <el-upload v-model:file-list="paymentImportFiles" drag :auto-upload="false" :limit="1" accept=".zip,application/zip,application/x-zip-compressed" class="import-upload" :on-change="handlePaymentImportFileChange">
+        <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+        <div class="el-upload__text">拖入 ZIP 压缩包，或<em>点击选择</em></div>
+        <template #tip><div class="el-upload__tip">压缩包不超过220MB，单个凭证不超过20MB</div></template>
+      </el-upload>
+      <template #footer>
+        <el-button :disabled="paymentImporting" @click="paymentImportVisible = false">取消</el-button>
+        <el-button type="primary" :loading="paymentImporting" :disabled="!paymentImportFile" @click="submitPaymentImport">开始匹配并导入</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -344,6 +369,7 @@ import {
   exportSuppliers,
   getSuppliers,
   importSupplierContractPdfs,
+  importSupplierPaymentReceipts,
   importSuppliers
 } from '@/api/contract'
 import { deleteFile, uploadTemporaryFile } from '@/api/file'
@@ -372,6 +398,8 @@ const importing = ref(false)
 const importVisible = ref(false)
 const pdfImportVisible = ref(false)
 const pdfImporting = ref(false)
+const paymentImportVisible = ref(false)
+const paymentImporting = ref(false)
 const firstRecordVisible = ref(false)
 const firstRecordFormRef = ref(null)
 const submittingFirstRecord = ref(false)
@@ -380,6 +408,8 @@ const importFiles = ref([])
 const importFile = ref(null)
 const pdfImportFiles = ref([])
 const pdfImportFile = ref(null)
+const paymentImportFiles = ref([])
+const paymentImportFile = ref(null)
 const suppliers = ref([])
 const total = ref(0)
 const selectedTeamId = ref(String(route.query.teamId || ''))
@@ -388,6 +418,7 @@ let exportRequestId = 0
 let firstRecordSubmitRequestId = 0
 let importRequestId = 0
 let pdfImportRequestId = 0
+let paymentImportRequestId = 0
 let activationReady = false
 let pageActive = true
 let resumeListLoad = false
@@ -505,6 +536,7 @@ function invalidateSupplierResults() {
   firstRecordSubmitRequestId += 1
   importRequestId += 1
   pdfImportRequestId += 1
+  paymentImportRequestId += 1
   suppliers.value = []
   total.value = 0
   loading.value = false
@@ -512,14 +544,18 @@ function invalidateSupplierResults() {
   submittingFirstRecord.value = false
   importing.value = false
   pdfImporting.value = false
+  paymentImporting.value = false
   loadError.value = ''
   firstRecordVisible.value = false
   importVisible.value = false
   pdfImportVisible.value = false
+  paymentImportVisible.value = false
   importFiles.value = []
   importFile.value = null
   pdfImportFiles.value = []
   pdfImportFile.value = null
+  paymentImportFiles.value = []
+  paymentImportFile.value = null
 }
 
 function applyFilters() {
@@ -729,6 +765,12 @@ function openPdfImport() {
   pdfImportVisible.value = true
 }
 
+function openPaymentImport() {
+  paymentImportFiles.value = []
+  paymentImportFile.value = null
+  paymentImportVisible.value = true
+}
+
 function handleImportFileChange(file, files) {
   if (!file.raw || !/\.xlsx$/i.test(file.raw.name || '')) {
     ElMessage.warning('请选择 .xlsx 格式的供应商合同文件')
@@ -747,6 +789,16 @@ function handlePdfImportFileChange(file, files) {
     return
   }
   pdfImportFile.value = file.raw
+}
+
+function handlePaymentImportFileChange(file, files) {
+  if (!file.raw || !/\.zip$/i.test(file.raw.name || '')) {
+    ElMessage.warning('请选择 .zip 格式的打款凭证压缩包')
+    paymentImportFiles.value = files.filter((item) => item.uid !== file.uid)
+    paymentImportFile.value = null
+    return
+  }
+  paymentImportFile.value = file.raw
 }
 
 async function submitImport() {
@@ -790,6 +842,24 @@ async function submitPdfImport() {
     }
   } finally {
     if (requestId === pdfImportRequestId) pdfImporting.value = false
+  }
+}
+
+async function submitPaymentImport() {
+  if (!paymentImportFile.value) return
+  const requestId = ++paymentImportRequestId
+  const context = currentPageContext()
+  paymentImporting.value = true
+  try {
+    const result = await importSupplierPaymentReceipts(paymentImportFile.value, { ...requestTeamParams.value })
+    if (requestId !== paymentImportRequestId || !isCurrentPageContext(context)) return
+    ElMessage.success(`已匹配 ${result.matchedCount || 0} 个文件，导入 ${result.importedCount || 0} 个，跳过重复 ${result.skippedExisting || 0} 个`)
+    paymentImportVisible.value = false
+    await loadSuppliers()
+  } catch (error) {
+    if (requestId === paymentImportRequestId && isCurrentPageContext(context)) ElMessage.error(error?.message || '打款凭证批量导入失败，请稍后重试')
+  } finally {
+    if (requestId === paymentImportRequestId) paymentImporting.value = false
   }
 }
 
@@ -848,18 +918,23 @@ function deactivateSupplierContracts() {
   firstRecordSubmitRequestId += 1
   importRequestId += 1
   pdfImportRequestId += 1
+  paymentImportRequestId += 1
   loading.value = false
   exportingScope.value = ''
   submittingFirstRecord.value = false
   importing.value = false
   pdfImporting.value = false
+  paymentImporting.value = false
   firstRecordVisible.value = false
   importVisible.value = false
   pdfImportVisible.value = false
+  paymentImportVisible.value = false
   importFiles.value = []
   importFile.value = null
   pdfImportFiles.value = []
   pdfImportFile.value = null
+  paymentImportFiles.value = []
+  paymentImportFile.value = null
 }
 
 onDeactivated(deactivateSupplierContracts)
@@ -881,6 +956,7 @@ onBeforeUnmount(deactivateSupplierContracts)
 .table-actions--right { justify-content: flex-end; }
 .pagination-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 16px; color: var(--el-text-color-secondary); }
 .import-upload { margin-top: 18px; }
+.import-attachment-note { margin-top: 12px; }
 .record-context-grid, .record-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 18px; }
 .derived-alert { margin-bottom: 16px; }
 .form-field--wide { grid-column: 1 / -1; }
