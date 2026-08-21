@@ -32,17 +32,51 @@
       <el-col :xs="24" :lg="16" class="profile-main">
         <el-card>
           <template #header>
-            <span>个人信息</span>
+            <div class="card-header-row">
+              <span>个人信息</span>
+              <el-button v-if="!profileEditing" type="primary" plain @click="startEditingProfile">
+                编辑资料
+              </el-button>
+            </div>
           </template>
-          <el-descriptions :column="descriptionColumns" border>
+          <el-form
+            v-if="profileEditing"
+            ref="profileFormRef"
+            :model="profileForm"
+            :rules="profileRules"
+            label-position="top"
+            class="profile-form"
+          >
+            <div class="profile-form-grid">
+              <el-form-item label="用户名">
+                <el-input :model-value="userStore.userInfo?.username" disabled />
+              </el-form-item>
+              <el-form-item label="姓名" prop="name">
+                <el-input v-model="profileForm.name" maxlength="100" />
+              </el-form-item>
+              <el-form-item label="手机号" prop="phone">
+                <el-input v-model="profileForm.phone" maxlength="11" />
+              </el-form-item>
+              <el-form-item label="邮箱" prop="email">
+                <el-input v-model="profileForm.email" maxlength="254" />
+              </el-form-item>
+            </div>
+            <div class="profile-form-actions">
+              <el-button @click="cancelEditingProfile">取消</el-button>
+              <el-button type="primary" :loading="profileSaving" @click="handleUpdateProfile">
+                保存资料
+              </el-button>
+            </div>
+          </el-form>
+          <el-descriptions v-else :column="descriptionColumns" border>
             <el-descriptions-item label="用户名">{{ userStore.userInfo?.username }}</el-descriptions-item>
             <el-descriptions-item label="姓名">{{ userStore.userInfo?.name }}</el-descriptions-item>
-            <el-descriptions-item label="手机号">{{ userStore.userInfo?.phone }}</el-descriptions-item>
-            <el-descriptions-item label="邮箱">{{ userStore.userInfo?.email }}</el-descriptions-item>
-            <el-descriptions-item label="部门">{{ userStore.userInfo?.department }}</el-descriptions-item>
+            <el-descriptions-item label="手机号">{{ userStore.userInfo?.phone || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="邮箱">{{ userStore.userInfo?.email || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="部门">{{ userStore.userInfo?.department || '-' }}</el-descriptions-item>
             <el-descriptions-item label="角色">
               <el-tag v-for="role in userStore.userInfo?.roles" :key="role" size="small" style="margin-right: 5px">
-                {{ roleMap[role] }}
+                {{ roleMap[role] || role }}
               </el-tag>
             </el-descriptions-item>
           </el-descriptions>
@@ -82,14 +116,17 @@
 <script setup>
 import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { useUserStore } from '@/stores/user'
-import { changePassword } from '@/api/auth'
+import { changePassword, updateProfile } from '@/api/auth'
 import { getMyTasks } from '@/api/task'
 import { roleMap } from '@/utils/format'
 import { ElMessage } from 'element-plus'
 
 const userStore = useUserStore()
 const passwordFormRef = ref(null)
+const profileFormRef = ref(null)
 const descriptionColumns = ref(2)
+const profileEditing = ref(false)
+const profileSaving = ref(false)
 
 const syncResponsiveLayout = () => {
   descriptionColumns.value = window.matchMedia('(max-width: 760px)').matches ? 1 : 2
@@ -170,6 +207,55 @@ onMounted(() => {
   fetchStats()
 })
 
+const profileForm = reactive({
+  name: '',
+  phone: '',
+  email: ''
+})
+
+const profileRules = {
+  name: [
+    { required: true, message: '请输入姓名', trigger: 'blur' },
+    { min: 1, max: 100, message: '姓名长度为 1 至 100 个字符', trigger: 'blur' }
+  ],
+  phone: [{ pattern: /^$|^1[3-9]\d{9}$/, message: '请输入有效的手机号', trigger: 'blur' }],
+  email: [{ type: 'email', message: '请输入有效的邮箱地址', trigger: 'blur' }]
+}
+
+const startEditingProfile = () => {
+  Object.assign(profileForm, {
+    name: userStore.userInfo?.name || '',
+    phone: userStore.userInfo?.phone || '',
+    email: userStore.userInfo?.email || ''
+  })
+  profileEditing.value = true
+}
+
+const cancelEditingProfile = () => {
+  profileEditing.value = false
+  profileFormRef.value?.clearValidate()
+}
+
+const handleUpdateProfile = async () => {
+  const valid = await profileFormRef.value?.validate().catch(() => false)
+  if (!valid) return
+  profileSaving.value = true
+  try {
+    await updateProfile({
+      name: profileForm.name,
+      phone: profileForm.phone || null,
+      email: profileForm.email || null
+    })
+    await userStore.fetchUserInfo()
+    profileEditing.value = false
+    ElMessage.success('资料已更新')
+  } catch (error) {
+    console.error('更新个人资料失败:', error)
+  } finally {
+    profileSaving.value = false
+  }
+}
+
 onUnmounted(() => {
   window.removeEventListener('resize', syncResponsiveLayout)
 })
@@ -189,6 +275,25 @@ onUnmounted(() => {
     color: var(--zl-muted);
   }
 
+  .card-header-row,
+  .profile-form-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+
+  .profile-form-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0 18px;
+  }
+
+  .profile-form-actions {
+    justify-content: flex-end;
+    margin-top: 8px;
+  }
+
   .profile-header {
     text-align: center;
     padding: 20px 0;
@@ -204,6 +309,10 @@ onUnmounted(() => {
 @media (max-width: 760px) {
   .profile-view :deep(.el-form-item__label) {
     width: auto !important;
+  }
+
+  .profile-form-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

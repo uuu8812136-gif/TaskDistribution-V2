@@ -85,6 +85,15 @@ export function getCurrentUser() {
   })
 }
 
+/** 更新当前用户可编辑的基础资料 */
+export function updateProfile(data) {
+  return request({
+    url: '/auth/profile',
+    method: 'patch',
+    data
+  })
+}
+
 /**
  * 修改密码
  */

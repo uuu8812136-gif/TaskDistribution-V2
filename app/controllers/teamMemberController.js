@@ -53,6 +53,22 @@ exports.updateMember = async (req, res, next) => {
   }
 };
 
+exports.resetMemberPassword = async (req, res, next) => {
+  try {
+    await teamManagementService.resetMemberPassword({
+      authContext: req.authContext,
+      req,
+      membershipId: req.params.membershipId,
+      input: req.body || {}
+    });
+    return res.json({
+      message: 'Member password reset; the member must sign in again'
+    });
+  } catch (error) {
+    return next(error);
+  }
+};
+
 exports.disableMember = async (req, res, next) => {
   try {
     const member = await teamManagementService.disableMember({

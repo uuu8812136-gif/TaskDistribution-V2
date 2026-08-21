@@ -37,6 +37,9 @@ const API_ERROR_CODES = Object.freeze({
   TEAM_ACCESS_REQUIRED: 'AUTH_TEAM_ACCESS_REQUIRED'
 });
 
+const PHONE_PATTERN = /^1[3-9]\d{9}$/;
+const EMAIL_PATTERN = /^\S+@\S+\.\S+$/;
+
 function sendError(res, status, code, message) {
   return res.status(status).json({ message, code });
 }
@@ -497,6 +500,85 @@ exports.getCurrentUser = async (req, res) => {
       canAccessBusiness: context.canAccessBusiness
     }
   });
+};
+
+exports.updateProfile = async (req, res, next) => {
+  try {
+    const input = req.body || {};
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Profile data must be an object');
+    }
+    const allowed = new Set(['name', 'phone', 'email']);
+    const unknown = Object.keys(input).find((key) => !allowed.has(key));
+    if (unknown) {
+      return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, `Unsupported profile field: ${unknown}`);
+    }
+    if (Object.keys(input).length === 0) {
+      return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'At least one profile field is required');
+    }
+
+    const user = await User.findById(req.authContext.userId);
+    if (!user || user.status !== 'active' || user.isSystemAccount === true) {
+      throw new AuthContextError(401, AUTH_ERROR_CODES.USER_NOT_FOUND, 'Authenticated user does not exist');
+    }
+
+    const before = {
+      name: user.name,
+      phone: user.phone || null,
+      email: user.email || null
+    };
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 100) {
+        return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Name must contain between 1 and 100 characters');
+      }
+      user.name = input.name.trim();
+    }
+    if (input.phone !== undefined) {
+      if (input.phone !== null && typeof input.phone !== 'string') {
+        return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Phone must be a string');
+      }
+      const phone = input.phone === null || input.phone === '' ? null : input.phone.trim();
+      if (phone !== null && !PHONE_PATTERN.test(phone)) {
+        return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Please enter a valid phone number');
+      }
+      user.phone = phone;
+    }
+    if (input.email !== undefined) {
+      if (input.email !== null && typeof input.email !== 'string') {
+        return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Email must be a string');
+      }
+      const email = input.email === null || input.email === '' ? null : input.email.trim().toLowerCase();
+      if (email !== null && (email.length > 254 || !EMAIL_PATTERN.test(email))) {
+        return sendError(res, 400, API_ERROR_CODES.INPUT_INVALID, 'Please enter a valid email address');
+      }
+      user.email = email;
+    }
+
+    await runWithOptionalTransaction(async (dbSession) => {
+      await user.save({ session: dbSession || undefined });
+      await auditService.record({
+        req,
+        authContext: req.authContext,
+        action: AUDIT_ACTIONS.UPDATE,
+        resourceType: AUDIT_RESOURCE_TYPES.USER,
+        resourceId: user._id,
+        before,
+        after: {
+          name: user.name,
+          phone: user.phone || null,
+          email: user.email || null
+        },
+        session: dbSession
+      });
+    });
+
+    return res.json({
+      message: 'Profile updated',
+      user: serializeUser(user)
+    });
+  } catch (error) {
+    return handleError(res, next, error);
+  }
 };
 
 exports.logout = async (req, res, next) => {

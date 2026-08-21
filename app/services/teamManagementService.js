@@ -27,6 +27,7 @@ const {
 } = require('../config/permissions');
 const { normalizeId } = require('./authSessionService');
 const { createAuditService } = require('./auditService');
+const { createSessionLifecycleService } = require('./sessionLifecycleService');
 const { findOrgUnitDependency } = require('./orgUnitDependencyService');
 const { lockActiveOrgUnitReference } = require('./orgUnitReferenceService');
 const { lockSubDepartmentLeadership } = require('./subDepartmentLeadershipService');
@@ -397,6 +398,7 @@ function createTeamManagementService({
   orgUnitDependencyFinder = findOrgUnitDependency,
   repairTodoSynchronizer = null,
   auditService = createAuditService(),
+  sessionLifecycle = createSessionLifecycleService(),
   clock = () => new Date()
 } = {}) {
   async function transaction(work) {
@@ -1193,6 +1195,61 @@ function createTeamManagementService({
     });
   }
 
+  async function resetMemberPassword({ authContext, req, membershipId, input } = {}) {
+    assertAllowedKeys(input, new Set(['newPassword', 'reason']));
+    assertManageMember(authContext);
+    const newPassword = requiredString(input.newPassword, 'newPassword', { min: 6, max: 200 });
+    const reason = optionalString(input.reason, 'reason', { max: 2000 });
+    const teamId = activeTeamId(authContext);
+    const requestedMembershipId = normalizeObjectId(membershipId, 'Team membership');
+
+    return transaction(async (session) => {
+      const membership = await TeamMembershipModel.findOne({
+        _id: requestedMembershipId,
+        teamId
+      }).session(session);
+      if (!membership) throw notFound('Team membership');
+      assertManageMember(authContext, membership);
+
+      const user = await UserModel.findOne({
+        _id: membership.userId,
+        isSystemAccount: { $ne: true },
+        isSuperAdmin: { $ne: true },
+        status: 'active'
+      }).session(session);
+      if (!user) throw notFound('Team member account');
+
+      const previousTokenVersion = Number.isInteger(user.tokenVersion) ? user.tokenVersion : 0;
+      user.password = newPassword;
+      user.tokenVersion = previousTokenVersion + 1;
+      await user.save({ session });
+      await sessionLifecycle.revokeAllForUser(user._id, {
+        reason: SESSION_REVOKE_REASONS.PASSWORD_CHANGED,
+        detail: 'Administrator reset the member password',
+        dbSession: session
+      });
+      await auditService.record({
+        req,
+        authContext,
+        action: AUDIT_ACTIONS.UPDATE,
+        resourceType: AUDIT_RESOURCE_TYPES.USER,
+        resourceId: user._id,
+        before: { tokenVersion: previousTokenVersion },
+        after: {
+          tokenVersion: user.tokenVersion,
+          authenticationStateChanged: true,
+          sessionsRevoked: true,
+          passwordResetByAdministrator: true
+        },
+        reason,
+        targetTeamId: teamId,
+        session
+      });
+
+      return { userId: normalizeId(user._id) };
+    });
+  }
+
   async function disableMember({ authContext, req, membershipId, reason = null } = {}) {
     return updateMember({
       authContext,
@@ -1212,6 +1269,7 @@ function createTeamManagementService({
     listMembers,
     listOrgUnits,
     listTeams,
+    resetMemberPassword,
     updateMember,
     updateOrgUnit,
     updateTeamStatus

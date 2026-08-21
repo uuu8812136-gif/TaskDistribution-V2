@@ -24,6 +24,14 @@ export function updateTeamMember(membershipId, data) {
   })
 }
 
+export function resetTeamMemberPassword(membershipId, data) {
+  return request({
+    url: `/team-members/${membershipId}/reset-password`,
+    method: 'post',
+    data
+  })
+}
+
 export function disableTeamMember(membershipId, reason) {
   return request({
     url: `/team-members/${membershipId}`,

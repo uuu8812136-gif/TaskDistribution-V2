@@ -12,6 +12,7 @@ router.get('/teams', authenticate, authController.listTeams);
 router.post('/switch-team', authenticate, authController.switchTeam);
 router.post('/global-readonly', authenticate, authController.enterGlobalReadOnly);
 router.get('/me', authenticate, authController.getCurrentUser);
+router.patch('/profile', authenticate, authController.updateProfile);
 router.post('/logout', authenticate, authController.logout);
 router.post('/change-password', authenticate, authController.changePassword);
 

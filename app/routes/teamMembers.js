@@ -26,6 +26,12 @@ router.patch(
   businessWriteGuard,
   teamMemberController.updateMember
 );
+router.post(
+  '/:membershipId/reset-password',
+  requirePermission('member.manage'),
+  businessWriteGuard,
+  teamMemberController.resetMemberPassword
+);
 router.delete(
   '/:membershipId',
   requirePermission('member.manage'),
@@ -34,4 +40,3 @@ router.delete(
 );
 
 module.exports = router;
-

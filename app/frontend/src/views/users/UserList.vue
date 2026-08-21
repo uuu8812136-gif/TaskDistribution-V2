@@ -142,7 +142,7 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column v-if="canManageMembers" label="操作" width="132" fixed="right" align="center">
+        <el-table-column v-if="canManageMembers" label="操作" width="190" fixed="right" align="center">
           <template #default="{ row }">
             <div class="table-actions">
               <template v-if="canManageRow(row)">
@@ -156,6 +156,7 @@
                   停用
                 </el-button>
                 <el-button v-else text type="success" @click="enableMember(row)">启用</el-button>
+                <el-button text type="warning" @click="resetMemberPassword(row)">重置密码</el-button>
               </template>
               <el-tooltip v-else content="项目管理员只能由超级管理员维护">
                 <span class="muted">不可维护</span>
@@ -332,6 +333,7 @@ import {
   disableTeamMember,
   getOrgUnits,
   getTeamMembers,
+  resetTeamMemberPassword,
   updateTeamMember
 } from '@/api/teamManagement'
 import { useSessionStore } from '@/stores/session'
@@ -618,6 +620,36 @@ async function enableMember(member) {
   } catch (error) {
     if (error === 'cancel' || error === 'close') return
     ElMessage.error(managementErrorMessage(error, '启用成员失败'))
+  }
+}
+
+async function resetMemberPassword(member) {
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `请输入${member.user?.name || member.user?.username}的新密码（至少 6 位）。重置后，该账号的其他登录会话会失效。`,
+      '重置成员密码',
+      {
+        confirmButtonText: '确认重置',
+        cancelButtonText: '取消',
+        inputType: 'password',
+        inputPlaceholder: '输入新密码',
+        inputValidator: (password) => {
+          if (typeof password !== 'string' || password.length < 6) return '密码至少 6 位'
+          if (password.length > 200) return '密码最多 200 位'
+          return true
+        },
+        inputErrorMessage: '请输入 6 至 200 位的新密码',
+        type: 'warning'
+      }
+    )
+    await resetTeamMemberPassword(member._id, {
+      newPassword: value,
+      reason: '管理员重置成员密码'
+    })
+    ElMessage.success('密码已重置，该成员需要重新登录')
+  } catch (error) {
+    if (error === 'cancel' || error === 'close') return
+    ElMessage.error(managementErrorMessage(error, '重置密码失败'))
   }
 }
 
