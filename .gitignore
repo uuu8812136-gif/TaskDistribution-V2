@@ -52,7 +52,7 @@ WiredTiger*
 *.xlsx
 *.xlsm
 *.xlsb
-screenshots/
+/screenshots/
 attachments/
 
 # Test data and local state
