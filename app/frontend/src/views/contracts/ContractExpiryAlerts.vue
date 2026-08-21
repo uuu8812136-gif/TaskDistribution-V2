@@ -38,7 +38,7 @@
         placeholder="剩余天数小于"
       />
       <el-select v-model="filters.autoRenew" clearable placeholder="是否自动顺延">
-        <el-option v-for="item in YES_NO_OPTIONS" :key="String(item.value)" :label="item.label" :value="item.value" />
+        <el-option v-for="item in AUTO_RENEW_FILTER_OPTIONS" :key="String(item.value)" :label="item.label" :value="item.value" />
       </el-select>
       <el-button type="primary" @click="applyFilters">查询</el-button>
       <el-button @click="resetFilters">重置</el-button>
@@ -103,7 +103,7 @@
           </el-table-column>
           <el-table-column label="自动顺延" min-width="90" align="center">
             <template #default="{ row }">
-              <el-tag :type="row.autoRenew ? 'success' : 'info'" effect="plain">{{ booleanLabel(row.autoRenew) }}</el-tag>
+              <el-tag :type="row.autoRenew === null || row.autoRenew === undefined ? 'warning' : row.autoRenew ? 'success' : 'info'" effect="plain">{{ autoRenewLabel(row.autoRenew) }}</el-tag>
             </template>
           </el-table-column>
           <el-table-column label="操作" min-width="90" align="right">
@@ -119,8 +119,8 @@
         <article v-for="row in alerts" :key="row.recordId" class="mobile-info-item" :class="mobileAlertClass(row)">
           <div class="mobile-item-heading">
             <strong>{{ row.supplierName }}</strong>
-            <el-tag :type="row.autoRenew ? 'success' : alertTagType(row)" effect="plain" size="small">
-              {{ row.autoRenew ? '自动顺延' : alertLabel(row) }}
+            <el-tag :type="row.autoRenew === null || row.autoRenew === undefined ? 'warning' : row.autoRenew ? 'success' : alertTagType(row)" effect="plain" size="small">
+              {{ row.autoRenew === null || row.autoRenew === undefined ? '未设置' : row.autoRenew ? '自动顺延' : alertLabel(row) }}
             </el-tag>
           </div>
           <dl class="mobile-info-grid">
@@ -172,8 +172,8 @@ import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareList
 import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
   CONTRACT_CATEGORY_CONFIGS,
-  YES_NO_OPTIONS,
-  booleanLabel,
+  AUTO_RENEW_FILTER_OPTIONS,
+  autoRenewLabel,
   expiryAlertRowClass,
   saveContractBlob
 } from '@/utils/contract'

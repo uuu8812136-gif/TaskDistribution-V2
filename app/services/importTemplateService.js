@@ -45,7 +45,7 @@ const TEMPLATE_DEFINITIONS = Object.freeze([
     id: 'supplier-contract-detail',
     name: '供应商合同三级明细导入模板',
     module: '合同管理',
-    description: '批量维护供应商及57列合同三级明细，主表和二级汇总由系统生成。',
+    description: '批量维护供应商及60列合同三级明细，主表和二级汇总由系统生成。',
     importEntry: '合同管理 > 供应商合同管理 > 导入三级细表',
     importEndpoint: '/api/contracts/suppliers/import',
     fileName: '供应商合同三级明细导入模板.xlsx',

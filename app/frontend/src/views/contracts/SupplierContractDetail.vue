@@ -247,7 +247,7 @@
             <el-segmented
               v-else-if="item.type === 'boolean'"
               v-model="recordForm[item.key]"
-              :options="YES_NO_OPTIONS"
+              :options="item.key === 'autoRenew' ? AUTO_RENEW_OPTIONS : YES_NO_OPTIONS"
             />
             <el-date-picker
               v-else-if="item.type === 'date'"
@@ -333,7 +333,7 @@
 
     <el-dialog v-model="importVisible" title="导入供应商合同" width="min(620px, 94vw)" append-to-body :show-close="!importing">
       <el-alert
-        :title="`请使用57列三级细表模板（D列为托管属性），系统将按供应商编码更新只读汇总；W、BC、BD三列附件先留空；当前供应商：${supplier?.name || '-'}`"
+        :title="`请使用60列三级细表模板（D列为托管属性），系统将按供应商编码更新只读汇总；W、BF、BG三列附件先留空；当前供应商：${supplier?.name || '-'}`"
         type="info"
         :closable="false"
         show-icon
@@ -397,6 +397,7 @@ import {
   SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS,
   SIGNING_STATUS_OPTIONS,
   YES_NO_OPTIONS,
+  AUTO_RENEW_OPTIONS,
   buildRecordPayload,
   emptyRecordDetails,
   formatContractField,

@@ -19,7 +19,7 @@ test('mini-program maps attendance cutoff errors to Chinese', () => {
   )
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.EQUIPMENT_IMPORT_NOT_CLEANABLE, '请先取消设备导入预览，再清理暂存文件')
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_FILE_UNSUPPORTED, '仅支持 .xlsx 格式的合同管理 Excel 文件')
-  assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED, 'Excel 的 W、BC、BD 附件列不能填写文件名、路径或 URL；请清空后重新导入，再按合同 PDF或打款凭证的入口单独上传')
+  assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED, 'Excel 的 W、BF、BG 附件列不能填写文件名、路径或 URL；请清空后重新导入，再按合同 PDF或打款凭证的入口单独上传')
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_EXPORT_SCOPE_INVALID, '供应商合同导出范围不正确，请刷新页面后重试')
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_EXPORT_DETAIL_CONTEXT_INVALID, '导出三级明细时，请同时选择供应商和合同类型')
   assert.equal(REQUEST_ERROR_CODE_MESSAGES.CONTRACT_IMPORT_OVERSTORAGE_DAYS_INVALID, '合同导入文件中的超储天数不能超过 200 个字符')

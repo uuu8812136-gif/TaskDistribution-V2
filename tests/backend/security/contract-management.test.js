@@ -840,7 +840,7 @@ test('supplier export scopes honor filters and isolate overview, secondary, and 
   const allDetailsWorkbook = new ExcelJS.Workbook();
   await allDetailsWorkbook.xlsx.load(allDetailsResult.buffer);
   assert.equal(allDetailsWorkbook.worksheets[0].name, '三级细表（供应商合同管理）');
-  assert.equal(allDetailsWorkbook.worksheets[0].columnCount, 57);
+  assert.equal(allDetailsWorkbook.worksheets[0].columnCount, 60);
   const exportAudit = await AuditLog.findOne({
     action: permissions.AUDIT_ACTIONS.EXPORT,
     resourceType: permissions.AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD,
@@ -1017,7 +1017,7 @@ async function supplierWorkbook({
   detail.addRow([]);
   detail.addRow(DETAIL_HEADERS);
   const addRow = (input, index) => {
-    const row = Array(57).fill('');
+    const row = Array(60).fill('');
     row[0] = index;
     row[1] = input.code;
     row[2] = input.name;

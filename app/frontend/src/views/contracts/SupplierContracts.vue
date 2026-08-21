@@ -204,7 +204,7 @@
             <el-select v-if="item.type === 'signingStatus'" v-model="firstRecordForm[item.key]" class="full-width">
               <el-option v-for="option in SIGNING_STATUS_OPTIONS" :key="option.value" :label="option.label" :value="option.value" />
             </el-select>
-            <el-segmented v-else-if="item.type === 'boolean'" v-model="firstRecordForm[item.key]" :options="YES_NO_OPTIONS" />
+            <el-segmented v-else-if="item.type === 'boolean'" v-model="firstRecordForm[item.key]" :options="item.key === 'autoRenew' ? AUTO_RENEW_OPTIONS : YES_NO_OPTIONS" />
             <el-date-picker v-else-if="item.type === 'date'" v-model="firstRecordForm[item.key]" type="date" value-format="YYYY-MM-DD" class="full-width" />
             <el-select v-else-if="item.type === 'select'" v-model="firstRecordForm[item.key]" clearable class="full-width">
               <el-option v-for="option in item.options" :key="option.value" :label="option.label" :value="option.value" />
@@ -262,14 +262,14 @@
       :show-close="!importing"
     >
       <el-alert
-        title="请使用57列三级细表模板（D列为托管属性）；W、BC、BD三列附件先留空，导入后再单独上传"
+        title="请使用60列三级细表模板（D列为托管属性）；W、BF、BG三列附件先留空，导入后再单独上传"
         type="info"
         :closable="false"
         show-icon
       />
       <el-alert
         class="import-attachment-note"
-        title="W列/BC列合同PDF：用“批量导入合同PDF”上传；BD列打款凭证：进入对应器具租赁明细，在“打款凭证”栏上传。Excel里不要填写文件名、路径或URL。"
+        title="W列/BF列合同PDF：用“批量导入合同PDF”上传；BG列打款凭证：进入对应器具租赁明细，在“打款凭证”栏上传。Excel里不要填写文件名、路径或URL。"
         type="warning"
         :closable="false"
         show-icon
@@ -382,6 +382,7 @@ import {
   SUPPLIER_TRUSTEE_ATTRIBUTE_OPTIONS,
   SIGNING_STATUS_OPTIONS,
   YES_NO_OPTIONS,
+  AUTO_RENEW_OPTIONS,
   buildRecordPayload,
   emptyRecordDetails,
   optionLabel,

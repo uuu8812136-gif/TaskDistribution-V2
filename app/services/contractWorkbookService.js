@@ -16,13 +16,13 @@ const DETAIL_HEADERS = Object.freeze([
   '供应商签署合同日期', '载信签署合同日期', '载信给供应商回寄合同的日期',
   '载信给供应商回寄合同的快递单号', '合同交付给载信商务部的日期',
   '合同交付给济南变速箱厂的日期', '合同PDF（上传）', '合同是否自动顺延',
-  '物流服务费用及支付方式协定', '合同生效日期', '合同截止日期',
+  '物流服务费用及支付方式协定', '合同是否自动顺延', '合同生效日期', '合同截止日期',
   '仓储服务费率', '超储服务费率', '超储天数', '结算周期', '备注',
-  '周转器具服务协议', '合同编号', '合同生效日期', '合同截止日期',
+  '周转器具服务协议', '合同是否自动顺延', '合同编号', '合同生效日期', '合同截止日期',
   '器具类型', '器具服务价格\n（元/个/次）', '供应商签署合同日期', '载信签署合同日期',
   '载信给供应商回寄合同的日期', '载信给供应商回寄合同的快递单号',
   '合同交付给载信商务部的日期', '合同交付给济南变速箱厂的日期', '备注',
-  '器具租赁合同签订', '合同编号', '合同生效日期', '合同截止日期',
+  '器具租赁合同签订', '合同是否自动顺延', '合同编号', '合同生效日期', '合同截止日期',
   '租赁器具类型', '租赁器具规格', '租赁器具生产批次', '租赁器具颜色',
   '租赁数量', '合同PDF（上传）', '打款凭证（上传）', '备注'
 ]);
@@ -235,17 +235,26 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     );
   }
   DETAIL_HEADERS.forEach((expected, columnIndex) => {
-    if (columnIndex === 29) {
+    if (columnIndex === 30) {
       const actual = text(cellValue(detailSheet, 1, columnIndex));
       if (![expected, '超储天数（无超储/30+15/60+15/90+15）'].includes(actual)) {
         throw workbookError(
           'CONTRACT_IMPORT_TEMPLATE_INVALID',
-          `${DETAIL_SHEET_NAME}表头不匹配：第2行第30列应为“${expected}”`
+          `${DETAIL_SHEET_NAME}表头不匹配：第2行第31列应为“${expected}”`
         );
       }
       return;
     }
-    assertHeader(detailSheet, 1, columnIndex, expected, DETAIL_SHEET_NAME);
+    const aliases = {
+      23: ['合同是否自动顺延，主合同'],
+      25: ['合同是否自动顺延，物流服务费用'],
+      34: ['合同是否自动顺延，周转器具'],
+      48: ['合同是否自动顺延，器具租赁']
+    }[columnIndex] || [];
+    const actual = text(cellValue(detailSheet, 1, columnIndex));
+    if (actual !== expected && !aliases.includes(actual)) {
+      assertHeader(detailSheet, 1, columnIndex, expected, DETAIL_SHEET_NAME);
+    }
   });
 
   let extracted;
@@ -262,7 +271,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
   const rows = [];
   const detailRange = XLSX.utils.decode_range(detailSheet['!ref'] || 'A1:A1');
   for (let rowIndex = 2; rowIndex <= detailRange.e.r; rowIndex += 1) {
-    const values = Array.from({ length: 57 }, (_, columnIndex) => (
+    const values = Array.from({ length: 60 }, (_, columnIndex) => (
       cellValue(detailSheet, rowIndex, columnIndex)
     ));
     const code = text(values[1]);
@@ -271,7 +280,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     if (!code || !name) throw workbookError('CONTRACT_IMPORT_DETAIL_INVALID', `三级细表第${rowIndex + 1}行缺少供应商名称或编码`);
     const trusteeAttribute = parseTrusteeAttribute(values[3]);
     if (!trusteeAttribute) throw workbookError('CONTRACT_IMPORT_DETAIL_INVALID', `三级细表第${rowIndex + 1}行缺少托管属性`);
-    if ([22, 54, 55].some((columnIndex) => text(values[columnIndex]) !== '')) {
+    if ([22, 57, 58].some((columnIndex) => text(values[columnIndex]) !== '')) {
       throw workbookError(
         'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED',
         `三级细表第${rowIndex + 1}行合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传`
@@ -290,7 +299,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     const embeddedRowImages = extracted.imagesByRow.get(
       `${DETAIL_SHEET_NAME}\u0000${rowIndex + 1}`
     ) || [];
-    if (embeddedRowImages.some((image) => /^(?:W|BC|BD)\d+$/i.test(image.cellAddress || ''))) {
+    if (embeddedRowImages.some((image) => /^(?:W|BF|BG)\d+$/i.test(image.cellAddress || ''))) {
       throw workbookError(
         'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED',
         `三级细表第${rowIndex + 1}行合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传`
@@ -324,7 +333,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
         contractNumber: '',
         effectiveDate: null,
         expiryDate: null,
-        autoRenew: false,
+        autoRenew: null,
         details: {
           supplyStatus: parseSupplyStatus(values[4]),
           hasInvoiceInfo: parseBoolean(values[5], { nullable: true }),
@@ -343,7 +352,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       contractNumber: text(values[13]),
       effectiveDate: parseDateOnly(values[14]),
       expiryDate: parseDateOnly(values[15]),
-      autoRenew: parseBoolean(values[23]),
+      autoRenew: parseBoolean(values[23], { nullable: true }),
       details: {
         supplierSignedDate: parseDateOnly(values[16]), companySignedDate: parseDateOnly(values[17]),
         returnDate: parseDateOnly(values[18]), courierNumber: text(values[19]),
@@ -351,37 +360,37 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       },
       importedMedia: []
     });
-    if (rowHasAny(values.slice(24, 32))) records.push({
+    if (rowHasAny(values.slice(24, 33))) records.push({
       category: 'LOGISTICS_FEE_AGREEMENT',
       signingStatus: parseSigningStatus(values[24]),
-      contractNumber: '', effectiveDate: parseDateOnly(values[25]), expiryDate: parseDateOnly(values[26]),
-      autoRenew: false,
+      contractNumber: '', autoRenew: parseBoolean(values[25], { nullable: true }),
+      effectiveDate: parseDateOnly(values[26]), expiryDate: parseDateOnly(values[27]),
       details: {
-        warehouseServiceRate: text(values[27]), overstorageServiceRate: text(values[28]),
-        overstorageDays: parseOverstorageDays(values[29]), settlementCycle: text(values[30]), remarks: text(values[31])
+        warehouseServiceRate: text(values[28]), overstorageServiceRate: text(values[29]),
+        overstorageDays: parseOverstorageDays(values[30]), settlementCycle: text(values[31]), remarks: text(values[32])
       },
       importedMedia: []
     });
-    if (rowHasAny(values.slice(32, 45))) records.push({
+    if (rowHasAny(values.slice(33, 47))) records.push({
       category: 'TURNOVER_EQUIPMENT_SERVICE',
-      signingStatus: parseSigningStatus(values[32]), contractNumber: text(values[33]),
-      effectiveDate: parseDateOnly(values[34]), expiryDate: parseDateOnly(values[35]), autoRenew: false,
+      signingStatus: parseSigningStatus(values[33]), autoRenew: parseBoolean(values[34], { nullable: true }),
+      contractNumber: text(values[35]), effectiveDate: parseDateOnly(values[36]), expiryDate: parseDateOnly(values[37]),
       details: {
-        equipmentType: text(values[36]), equipmentServicePrice: text(values[37]),
-        supplierSignedDate: parseDateOnly(values[38]), companySignedDate: parseDateOnly(values[39]),
-        returnDate: parseDateOnly(values[40]), courierNumber: text(values[41]),
-        deliveredBusinessDate: parseDateOnly(values[42]), deliveredFactoryDate: parseDateOnly(values[43]),
-        remarks: text(values[44])
+        equipmentType: text(values[38]), equipmentServicePrice: text(values[39]),
+        supplierSignedDate: parseDateOnly(values[40]), companySignedDate: parseDateOnly(values[41]),
+        returnDate: parseDateOnly(values[42]), courierNumber: text(values[43]),
+        deliveredBusinessDate: parseDateOnly(values[44]), deliveredFactoryDate: parseDateOnly(values[45]),
+        remarks: text(values[46])
       },
       importedMedia: []
     });
-    if (rowHasAny(values.slice(45, 57))) records.push({
+    if (rowHasAny(values.slice(47, 60))) records.push({
       category: 'EQUIPMENT_RENTAL',
-      signingStatus: parseSigningStatus(values[45]), contractNumber: text(values[46]),
-      effectiveDate: parseDateOnly(values[47]), expiryDate: parseDateOnly(values[48]), autoRenew: false,
+      signingStatus: parseSigningStatus(values[47]), autoRenew: parseBoolean(values[48], { nullable: true }),
+      contractNumber: text(values[49]), effectiveDate: parseDateOnly(values[50]), expiryDate: parseDateOnly(values[51]),
       details: {
-        equipmentType: text(values[49]), specification: text(values[50]), productionBatch: text(values[51]),
-        color: text(values[52]), quantity: text(values[53]), remarks: text(values[56])
+        equipmentType: text(values[52]), specification: text(values[53]), productionBatch: text(values[54]),
+        color: text(values[55]), quantity: text(values[56]), remarks: text(values[59])
       },
       importedMedia: []
     });
@@ -466,7 +475,7 @@ function dateText(value) {
 }
 
 function recordExportRow(record, supplier, index) {
-  const row = Array(57).fill('');
+  const row = Array(60).fill('');
   row[0] = index;
   row[1] = supplier.code;
   row[2] = supplier.name;
@@ -484,22 +493,22 @@ function recordExportRow(record, supplier, index) {
     row[14] = dateText(record.effectiveDate); row[15] = dateText(record.expiryDate);
     row[16] = dateText(d.supplierSignedDate); row[17] = dateText(d.companySignedDate); row[18] = dateText(d.returnDate);
     row[19] = d.courierNumber || ''; row[20] = dateText(d.deliveredBusinessDate); row[21] = dateText(d.deliveredFactoryDate);
-    row[23] = record.autoRenew ? '是' : '否';
+    row[23] = record.autoRenew === null || record.autoRenew === undefined ? '' : record.autoRenew ? '是' : '否';
   } else if (record.category === 'LOGISTICS_FEE_AGREEMENT') {
-    row[24] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[25] = dateText(record.effectiveDate);
-    row[26] = dateText(record.expiryDate); row[27] = d.warehouseServiceRate || ''; row[28] = d.overstorageServiceRate || '';
-    row[29] = d.overstorageDays === 'NONE' ? '无超储' : d.overstorageDays || ''; row[30] = d.settlementCycle || ''; row[31] = d.remarks || '';
+    row[24] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[25] = record.autoRenew === null || record.autoRenew === undefined ? '' : record.autoRenew ? '是' : '否';
+    row[26] = dateText(record.effectiveDate); row[27] = dateText(record.expiryDate); row[28] = d.warehouseServiceRate || ''; row[29] = d.overstorageServiceRate || '';
+    row[30] = d.overstorageDays === 'NONE' ? '无超储' : d.overstorageDays || ''; row[31] = d.settlementCycle || ''; row[32] = d.remarks || '';
   } else if (record.category === 'TURNOVER_EQUIPMENT_SERVICE') {
-    row[32] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[33] = record.contractNumber || '';
-    row[34] = dateText(record.effectiveDate); row[35] = dateText(record.expiryDate); row[36] = d.equipmentType || '';
-    row[37] = d.equipmentServicePrice || ''; row[38] = dateText(d.supplierSignedDate); row[39] = dateText(d.companySignedDate);
-    row[40] = dateText(d.returnDate); row[41] = d.courierNumber || ''; row[42] = dateText(d.deliveredBusinessDate);
-    row[43] = dateText(d.deliveredFactoryDate); row[44] = d.remarks || '';
+    row[33] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[34] = record.autoRenew === null || record.autoRenew === undefined ? '' : record.autoRenew ? '是' : '否'; row[35] = record.contractNumber || '';
+    row[36] = dateText(record.effectiveDate); row[37] = dateText(record.expiryDate); row[38] = d.equipmentType || '';
+    row[39] = d.equipmentServicePrice || ''; row[40] = dateText(d.supplierSignedDate); row[41] = dateText(d.companySignedDate);
+    row[42] = dateText(d.returnDate); row[43] = d.courierNumber || ''; row[44] = dateText(d.deliveredBusinessDate);
+    row[45] = dateText(d.deliveredFactoryDate); row[46] = d.remarks || '';
   } else if (record.category === 'EQUIPMENT_RENTAL') {
-    row[45] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[46] = record.contractNumber || '';
-    row[47] = dateText(record.effectiveDate); row[48] = dateText(record.expiryDate); row[49] = d.equipmentType || '';
-    row[50] = d.specification || ''; row[51] = d.productionBatch || ''; row[52] = d.color || ''; row[53] = d.quantity || '';
-    row[56] = d.remarks || '';
+    row[47] = record.signingStatus === 'SIGNED' ? '已签订' : '未签订'; row[48] = record.autoRenew === null || record.autoRenew === undefined ? '' : record.autoRenew ? '是' : '否'; row[49] = record.contractNumber || '';
+    row[50] = dateText(record.effectiveDate); row[51] = dateText(record.expiryDate); row[52] = d.equipmentType || '';
+    row[53] = d.specification || ''; row[54] = d.productionBatch || ''; row[55] = d.color || ''; row[56] = d.quantity || '';
+    row[59] = d.remarks || '';
   }
   return row.map(formulaSafe);
 }
@@ -610,7 +619,7 @@ async function createExpiryExportWorkbook(alerts) {
   alerts.forEach((item, index) => sheet.addRow([
     index + 1, formulaSafe(item.supplierCode), formulaSafe(item.supplierName), CATEGORY_LABELS[item.category] || item.category,
     formulaSafe(item.contractNumber), dateText(item.effectiveDate), dateText(item.expiryDate),
-    item.remainingDays, item.autoRenew ? '是' : '否', ALERT_LEVEL_LABELS[item.alertLevel] || item.alertLevel
+    item.remainingDays, item.autoRenew === null || item.autoRenew === undefined ? '未设置' : item.autoRenew ? '是' : '否', ALERT_LEVEL_LABELS[item.alertLevel] || item.alertLevel
   ]));
   styleWorksheet(sheet);
   return Buffer.from(await workbook.xlsx.writeBuffer());

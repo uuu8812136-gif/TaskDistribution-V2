@@ -170,7 +170,7 @@ export const REQUEST_ERROR_CODE_MESSAGES = Object.freeze({
   CONTRACT_IMPORT_DETAIL_EMPTY: '三级细表存在没有供应商信息或合同内容的空明细行',
   CONTRACT_IMPORT_MEDIA_INVALID: '合同导入文件中包含无效图片，请检查后重试',
   CONTRACT_IMPORT_MEDIA_MISSING: '合同导入文件中的图片引用缺少对应图片',
-  CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED: 'Excel 的 W、BC、BD 附件列不能填写文件名、路径或 URL；请清空后重新导入，再按合同 PDF或打款凭证的入口单独上传',
+  CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED: 'Excel 的 W、BF、BG 附件列不能填写文件名、路径或 URL；请清空后重新导入，再按合同 PDF或打款凭证的入口单独上传',
   CONTRACT_PDF_ZIP_REQUIRED: '请选择包含合同 PDF 的 ZIP 压缩包',
   CONTRACT_PDF_ZIP_TOO_LARGE: '合同 PDF 压缩包大小超过系统限制',
   CONTRACT_PDF_ZIP_UNSUPPORTED: '仅支持包含 PDF 的普通 ZIP 压缩包',

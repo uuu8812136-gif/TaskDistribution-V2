@@ -259,6 +259,12 @@ function queryBoolean(value, field) {
   throw contractError(400, 'CONTRACT_FILTER_INVALID', `${field}筛选值不正确`);
 }
 
+function queryAutoRenew(value) {
+  if (value === undefined || value === null || value === '') return null;
+  if (value === 'unset') return 'unset';
+  return queryBoolean(value, '是否顺延');
+}
+
 function queryInteger(value, field) {
   if (value === undefined || value === null || value === '') return null;
   const parsed = Number(value);
@@ -434,7 +440,7 @@ function normalizeRecordInput(input, { current = null, partial = false } = {}) {
     contractNumber: isInfo ? '' : optionalText(source.contractNumber, '合同编号', 200),
     effectiveDate,
     expiryDate,
-    autoRenew: isInfo ? false : booleanValue(source.autoRenew ?? false, '是否自动顺延'),
+    autoRenew: isInfo ? null : booleanValue(source.autoRenew, '是否自动顺延', { nullable: true }),
     details: normalizeDetails(
       category,
       current && Object.prototype.hasOwnProperty.call(input || {}, 'details')
@@ -1412,7 +1418,7 @@ function createContractManagementService({
     if (query.supplierName) supplierFilter.name = { $regex: escapeRegex(requiredText(query.supplierName, '供应商名称')), $options: 'i' };
     const suppliers = await SupplierModel.find(supplierFilter).lean();
     const supplierById = new Map(suppliers.map((supplier) => [String(supplier._id), supplier]));
-    const autoRenew = queryBoolean(query.autoRenew, '是否顺延');
+    const autoRenew = queryAutoRenew(query.autoRenew);
     const recordFilter = {
       teamId,
       supplierId: { $in: suppliers.map((supplier) => supplier._id) },
@@ -1421,7 +1427,9 @@ function createContractManagementService({
       effectiveDate: { $ne: null },
       expiryDate: { $ne: null }
     };
-    if (autoRenew !== null) recordFilter.autoRenew = autoRenew;
+    if (autoRenew === 'unset') {
+      recordFilter.$or = [{ autoRenew: null }, { autoRenew: { $exists: false } }];
+    } else if (autoRenew !== null) recordFilter.autoRenew = autoRenew;
     const records = suppliers.length ? await ContractRecordModel.find(recordFilter).lean() : [];
     const today = todayShanghai(now());
     const gt = queryInteger(query.remainingDaysGt, '有效期大于');
@@ -1442,7 +1450,7 @@ function createContractManagementService({
         expiryDate: record.expiryDate,
         remainingDays,
         autoRenew: record.autoRenew,
-        alertLevel: record.autoRenew ? 'NORMAL' : remainingDays < 0 ? 'EXPIRED' : remainingDays <= 30 ? 'WARNING' : 'NORMAL'
+        alertLevel: record.autoRenew === true ? 'NORMAL' : remainingDays < 0 ? 'EXPIRED' : remainingDays <= 30 ? 'WARNING' : 'NORMAL'
       };
     }).filter((item) => (gt === null || item.remainingDays > gt) && (lt === null || item.remainingDays < lt))
       .sort((left, right) => left.remainingDays - right.remainingDays || left.supplierCode.localeCompare(right.supplierCode));

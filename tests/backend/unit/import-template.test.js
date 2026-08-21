@@ -190,7 +190,7 @@ test('equipment template headers are bound to parser aliases and accept a popula
   assert.equal(parsed.rows[0].candidate.assetCode, 'ASSET-TEMPLATE-001');
 });
 
-test('supplier contract template preserves the parser-owned 57-column detail sheet', async () => {
+test('supplier contract template preserves the parser-owned 60-column detail sheet', async () => {
   const template = await download('supplier-contract-detail', ['contract.supplier.view']);
   assert.equal(template.contentType, XLSX_CONTENT_TYPE);
   const workbook = workbookFrom(template.buffer);

@@ -44,6 +44,7 @@ const CUSTOMER_DETAIL_HEADERS = [
   '合同PDF（上传）',
   '合同是否自动顺延',
   '物流服务费用及支付方式协定',
+  '合同是否自动顺延',
   '合同生效日期',
   '合同截止日期',
   '仓储服务费率',
@@ -52,6 +53,7 @@ const CUSTOMER_DETAIL_HEADERS = [
   '结算周期',
   '备注',
   '周转器具服务协议',
+  '合同是否自动顺延',
   '合同编号',
   '合同生效日期',
   '合同截止日期',
@@ -65,6 +67,7 @@ const CUSTOMER_DETAIL_HEADERS = [
   '合同交付给济南变速箱厂的日期',
   '备注',
   '器具租赁合同签订',
+  '合同是否自动顺延',
   '合同编号',
   '合同生效日期',
   '合同截止日期',
@@ -103,7 +106,7 @@ function supplierWorkbook({
     ...supplierRows
   ]), SUPPLIER_SHEET);
   const detailSheet = XLSX.utils.aoa_to_sheet([
-    Array(57).fill(''),
+    Array(60).fill(''),
     detailHeaders,
     ...detailRows.map((row) => row.length === 56
       ? [...row.slice(0, 3), '托管', ...row.slice(3)]
@@ -139,7 +142,7 @@ function extractedMedia(imagesByRow = new Map()) {
   };
 }
 
-test('exported detail headers exactly match the canonical 57-column tertiary workbook', () => {
+test('exported detail headers exactly match the canonical 60-column tertiary workbook', () => {
   assert.deepEqual(DETAIL_HEADERS, CUSTOMER_DETAIL_HEADERS);
 });
 
@@ -149,13 +152,13 @@ test('overstorage days imports arbitrary text and accepts the legacy constrained
     ['超储天数（无超储/30+15/60+15/90+15）', '免超储费']
   ]) {
     const headers = [...CUSTOMER_DETAIL_HEADERS];
-    headers[29] = header;
-    const row = Array(57).fill('');
+    headers[30] = header;
+    const row = Array(60).fill('');
     row[1] = '001078';
     row[2] = '供应商甲';
     row[3] = '托管';
     row[24] = '已签订';
-    row[29] = overstorageDays;
+    row[30] = overstorageDays;
     const { workbook } = supplierWorkbook({ detailHeaders: headers, detailRows: [row] });
     const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
       extractWorkbookMedia: () => extractedMedia()
@@ -184,25 +187,25 @@ test('overstorage days imports arbitrary text and accepts the legacy constrained
     });
     const exported = new ExcelJS.Workbook();
     await exported.xlsx.load(buffer);
-    assert.equal(exported.getWorksheet(DETAIL_SHEET).getRow(3).getCell(30).value, exportedValue);
+    assert.equal(exported.getWorksheet(DETAIL_SHEET).getRow(3).getCell(31).value, exportedValue);
   }
 });
 
-test('customer 57-column row maps every non-attachment field to canonical records', () => {
+test('customer 60-column row maps every non-attachment field to canonical records', () => {
   const legacyValues = [
     1, '001078', '供应商甲', '正常供货', '是', '开票抬头文字',
     '联系人甲；联系人乙', '13800000001；13800000002', 'a@example.com；b@example.com',
     '未签原因', '基础备注',
     '已签订', 'HT-001', '2026-01-01', '2026-12-31', '2025-12-20', '2025-12-21',
     '2025-12-22', 'SF-MAIN', '2025-12-23', '2025-12-24', '', '是',
-    '已签订', '2026-02-01', '2026-11-30', '7‰', '8‰', '30+15', '月结', '费用备注',
-    '已签订', 'ZZ-001', '2026-03-01', '2026-10-31', '铁网框', '10元/个/次',
+    '已签订', '', '2026-02-01', '2026-11-30', '7‰', '8‰', '30+15', '月结', '费用备注',
+    '已签订', '是', 'ZZ-001', '2026-03-01', '2026-10-31', '铁网框', '10元/个/次',
     '2026-02-20', '2026-02-21', '2026-02-22', 'SF-ZZ', '2026-02-23', '2026-02-24', '周转备注',
-    '已签订', 'ZL-001', '2026-04-01', '2026-09-30', '塑料托盘', '1200x1000',
+    '已签订', '否', 'ZL-001', '2026-04-01', '2026-09-30', '塑料托盘', '1200x1000',
     '2026-A', '蓝色', '30个', '', '', '租赁备注'
   ];
   const row = [...legacyValues.slice(0, 3), '托管', ...legacyValues.slice(3)];
-  assert.equal(row.length, 57);
+  assert.equal(row.length, 60);
   const { workbook } = supplierWorkbook({ detailRows: [row] });
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia()
@@ -249,6 +252,7 @@ test('customer 57-column row maps every non-attachment field to canonical record
 
   const logistics = records.get('LOGISTICS_FEE_AGREEMENT');
   assert.equal(logistics.signingStatus, 'SIGNED');
+  assert.equal(logistics.autoRenew, null);
   assert.equal(date(logistics.effectiveDate), '2026-02-01');
   assert.equal(date(logistics.expiryDate), '2026-11-30');
   assert.deepEqual(logistics.details, {
@@ -261,6 +265,7 @@ test('customer 57-column row maps every non-attachment field to canonical record
 
   const turnover = records.get('TURNOVER_EQUIPMENT_SERVICE');
   assert.equal(turnover.signingStatus, 'SIGNED');
+  assert.equal(turnover.autoRenew, true);
   assert.equal(turnover.contractNumber, 'ZZ-001');
   assert.equal(date(turnover.effectiveDate), '2026-03-01');
   assert.equal(date(turnover.expiryDate), '2026-10-31');
@@ -285,6 +290,7 @@ test('customer 57-column row maps every non-attachment field to canonical record
 
   const rental = records.get('EQUIPMENT_RENTAL');
   assert.equal(rental.signingStatus, 'SIGNED');
+  assert.equal(rental.autoRenew, false);
   assert.equal(rental.contractNumber, 'ZL-001');
   assert.equal(date(rental.effectiveDate), '2026-04-01');
   assert.equal(date(rental.expiryDate), '2026-09-30');
@@ -299,7 +305,7 @@ test('customer 57-column row maps every non-attachment field to canonical record
 });
 
 test('tertiary import rejects an identity-only row instead of creating an orphan supplier', () => {
-  const row = Array(57).fill('');
+  const row = Array(60).fill('');
   row[0] = 1;
   row[1] = 'IDENTITY-ONLY';
   row[2] = '只有身份信息';
@@ -312,17 +318,18 @@ test('tertiary import rejects an identity-only row instead of creating an orphan
 });
 
 test('supplier workbook keeps repeated supplier codes as separate history rows', () => {
-  const rowA = Array(56).fill('');
+  const rowA = Array(59).fill('');
   rowA[1] = '001078';
   rowA[2] = '供应商甲';
-  rowA[11] = '已签订';
-  rowA[12] = 'HT-001';
-  rowA[13] = '2026-01-01';
-  rowA[14] = '2026-12-31';
+  rowA[3] = '托管';
+  rowA[12] = '已签订';
+  rowA[13] = 'HT-001';
+  rowA[14] = '2026-01-01';
+  rowA[15] = '2026-12-31';
   const rowB = [...rowA];
-  rowB[12] = 'HT-002';
-  rowB[13] = '2027-01-01';
-  rowB[14] = '2027-12-31';
+  rowB[13] = 'HT-002';
+  rowB[14] = '2027-01-01';
+  rowB[15] = '2027-12-31';
   const { workbook } = supplierWorkbook({ detailRows: [rowA, rowB] });
 
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
@@ -343,10 +350,11 @@ test('tertiary sheet is the canonical supplier source and stale main-sheet rows 
     '',
     ''
   ];
-  const detailRow = Array(56).fill('');
+  const detailRow = Array(59).fill('');
   detailRow[1] = '001078';
   detailRow[2] = '供应商甲';
-  detailRow[3] = '正常供货';
+  detailRow[3] = '托管';
+  detailRow[4] = '正常供货';
   const { workbook } = supplierWorkbook({ detailRows: [detailRow], supplierRows: [
     [1, '过期主表名称', 'OLD-CODE', '非托', '', ''],
     [], [], [],
@@ -362,12 +370,13 @@ test('tertiary sheet is the canonical supplier source and stale main-sheet rows 
 });
 
 test('WPS DISPIMG with #NAME? display in detail column G becomes invoice media instead of text', () => {
-  const row = Array(56).fill('');
+  const row = Array(59).fill('');
   row[1] = '001078';
   row[2] = '供应商甲';
-  row[3] = '正常供货';
-  row[4] = '是';
-  row[5] = '=DISPIMG("ID_INVOICE",1)';
+  row[3] = '托管';
+  row[4] = '正常供货';
+  row[5] = '是';
+  row[6] = '=DISPIMG("ID_INVOICE",1)';
   const { workbook, detailSheet } = supplierWorkbook({ detailRows: [row] });
   detailSheet.G3 = {
     t: 's',
@@ -397,10 +406,11 @@ test('WPS DISPIMG with #NAME? display in detail column G becomes invoice media i
 });
 
 test('DISPIMG formula without its media is rejected instead of silently imported blank', () => {
-  const row = Array(56).fill('');
+  const row = Array(59).fill('');
   row[1] = '001078';
   row[2] = '供应商甲';
-  row[5] = '=DISPIMG("ID_MISSING",1)';
+  row[3] = '托管';
+  row[6] = '=DISPIMG("ID_MISSING",1)';
   const { workbook, detailSheet } = supplierWorkbook({ detailRows: [row] });
   detailSheet.G3 = {
     t: 's',
@@ -415,10 +425,11 @@ test('DISPIMG formula without its media is rejected instead of silently imported
 });
 
 test('drawing images are accepted only from invoice column G and attachment columns fail closed', () => {
-  const row = Array(56).fill('');
+  const row = Array(59).fill('');
   row[1] = '001078';
   row[2] = '供应商甲';
-  row[3] = '正常供货';
+  row[3] = '托管';
+  row[4] = '正常供货';
   const { workbook } = supplierWorkbook({ detailRows: [row] });
   const invoice = {
     isValid: true,
@@ -447,12 +458,12 @@ test('drawing images are accepted only from invoice column G and attachment colu
   }), (error) => error.code === 'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED');
 });
 
-test('contract workbook rejects a missing or renamed header in any of its 57 columns', () => {
+test('contract workbook rejects a missing or renamed header in any of its 60 columns', () => {
   for (let columnIndex = 0; columnIndex < CUSTOMER_DETAIL_HEADERS.length; columnIndex += 1) {
     for (const invalidHeader of ['', `错误列-${columnIndex + 1}`]) {
       const headers = [...CUSTOMER_DETAIL_HEADERS];
       headers[columnIndex] = invalidHeader;
-      const row = Array(56).fill('');
+      const row = Array(59).fill('');
       row[1] = '001078';
       row[2] = '供应商甲';
       row[11] = '已签订';
@@ -511,10 +522,11 @@ test('settlement Excel serial 45870 normalizes to month 2025-08', () => {
 });
 
 test('detail supplier is imported without a matching supplier main-sheet row', () => {
-  const row = Array(56).fill('');
+  const row = Array(59).fill('');
   row[1] = '009999';
   row[2] = '明细独有供应商';
-  row[3] = '正常供货';
+  row[3] = '托管';
+  row[4] = '正常供货';
   const { workbook } = supplierWorkbook({ detailRows: [row], supplierRows: [] });
 
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
@@ -525,12 +537,13 @@ test('detail supplier is imported without a matching supplier main-sheet row', (
 });
 
 test('every populated contract group requires an explicit signing status', () => {
-  const populatedColumns = [12, 24, 32, 45];
+  const populatedColumns = [12, 24, 33, 47];
   for (const columnIndex of populatedColumns) {
-    const row = Array(56).fill('');
+    const row = Array(59).fill('');
     row[1] = '001078';
     row[2] = '供应商甲';
-    row[columnIndex] = columnIndex === 24 ? '2026-01-01' : `VALUE-${columnIndex}`;
+    row[3] = '托管';
+      row[columnIndex === 12 ? 13 : columnIndex === 24 ? 26 : columnIndex === 33 ? 35 : 49] = columnIndex === 24 ? '2026-01-01' : `VALUE-${columnIndex}`;
     const { workbook } = supplierWorkbook({ detailRows: [row] });
 
     assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
@@ -539,12 +552,13 @@ test('every populated contract group requires an explicit signing status', () =>
   }
 });
 
-test('unresolved attachment cells W, BC and BD are rejected instead of silently discarded', () => {
-  for (const columnIndex of [21, 53, 54]) {
-    const row = Array(56).fill('');
+test('unresolved attachment cells W, BF and BG are rejected instead of silently discarded', () => {
+  for (const columnIndex of [22, 57, 58]) {
+    const row = Array(59).fill('');
     row[1] = '001078';
     row[2] = '供应商甲';
-    row[columnIndex < 44 ? 11 : 44] = '已签订';
+    row[3] = '托管';
+    row[columnIndex < 44 ? 12 : 47] = '已签订';
     row[columnIndex] = `unresolved-${columnIndex + 1}.pdf`;
     const { workbook } = supplierWorkbook({ detailRows: [row] });
 
@@ -603,13 +617,13 @@ test('filtered supplier export stays canonical and writes trustee attribute in c
   await workbook.xlsx.load(buffer);
   const sheet = workbook.getWorksheet(DETAIL_SHEET);
 
-  assert.equal(sheet.columnCount, 57);
+  assert.equal(sheet.columnCount, 60);
   assert.equal(sheet.getRow(2).getCell(4).value, '托管属性');
   assert.equal(sheet.getRow(3).getCell(4).value, '托管');
-  assert.equal(sheet.getRow(2).getCell(57).value, '备注');
+  assert.equal(sheet.getRow(2).getCell(60).value, '备注');
 });
 
-test('canonical 57-column supplier export can be imported back without identity or contract drift', async () => {
+test('canonical 60-column supplier export can be imported back without identity or contract drift', async () => {
   const supplier = {
     _id: 'supplier-roundtrip',
     code: '000178',
@@ -742,7 +756,7 @@ test('supplier export scopes create only the requested workbook level', async ()
     DETAIL_SHEET,
     ATTACHMENT_SHEET_NAME
   ]);
-  assert.equal(detailWorkbook.getWorksheet(DETAIL_SHEET).columnCount, 57);
+  assert.equal(detailWorkbook.getWorksheet(DETAIL_SHEET).columnCount, 60);
 });
 
 test('attachment sheet is omitted outside detail scope and when detail has no attachments', async () => {

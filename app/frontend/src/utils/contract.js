@@ -23,6 +23,18 @@ export const YES_NO_OPTIONS = Object.freeze([
   { value: false, label: '否' }
 ])
 
+export const AUTO_RENEW_OPTIONS = Object.freeze([
+  { value: true, label: '是' },
+  { value: false, label: '否' },
+  { value: null, label: '未设置' }
+])
+
+export const AUTO_RENEW_FILTER_OPTIONS = Object.freeze([
+  { value: true, label: '是' },
+  { value: false, label: '否' },
+  { value: 'unset', label: '未设置' }
+])
+
 const field = (key, label, type = 'text', extra = {}) => Object.freeze({ key, label, type, ...extra })
 const rootField = (key, label, type = 'text', extra = {}) => field(key, label, type, { ...extra, root: true })
 
@@ -73,7 +85,7 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '物流服务费用及支付方式协定',
     shortLabel: '物流费用',
     attachmentGroups: [{ purpose: 'GENERAL', label: '协议附件', accept: '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx' }],
-    summaryKeys: ['signingStatus', 'effectiveDate', 'expiryDate', 'settlementCycle'],
+    summaryKeys: ['signingStatus', 'effectiveDate', 'expiryDate', 'autoRenew', 'settlementCycle'],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('effectiveDate', '生效日期', 'date'),
@@ -91,7 +103,7 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '周转器具服务协议',
     shortLabel: '周转器具',
     attachmentGroups: [{ purpose: 'GENERAL', label: '协议附件', accept: '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx' }],
-    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'expiryDate'],
+    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'expiryDate', 'autoRenew'],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('contractNumber', '合同编号'),
@@ -117,7 +129,7 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
       { purpose: 'CONTRACT_PDF', label: '合同 PDF', accept: '.pdf' },
       { purpose: 'PAYMENT_RECEIPT', label: '打款凭证', accept: '.jpg,.jpeg,.png,.pdf' }
     ],
-    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'quantity', 'expiryDate'],
+    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'quantity', 'expiryDate', 'autoRenew'],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('contractNumber', '合同编号'),
@@ -155,6 +167,11 @@ export function booleanLabel(value) {
   if (value === true || value === 'true' || value === 'YES') return '是'
   if (value === false || value === 'false' || value === 'NO') return '否'
   return '-'
+}
+
+export function autoRenewLabel(value) {
+  if (value === null || value === undefined || value === '' || value === 'unset') return '未设置'
+  return booleanLabel(value)
 }
 
 export function normalizeRecord(record = {}) {
@@ -203,7 +220,7 @@ export function buildRecordPayload(config, source = {}, attachments = []) {
   const root = Object.fromEntries(config.fields.filter((item) => item.root).map((item) => [
     item.key,
     item.type === 'boolean'
-      ? source[item.key] === true
+      ? (source[item.key] === null || source[item.key] === undefined ? null : source[item.key] === true)
       : item.type === 'date'
         ? (source[item.key] ? String(source[item.key]).trim() : null)
         : String(source[item.key] ?? '').trim()
@@ -219,7 +236,7 @@ export function buildRecordPayload(config, source = {}, attachments = []) {
 
 export function formatContractField(value, item) {
   if (item.key === 'overstorageDays' && value === 'NONE') return '无超储'
-  if (item.type === 'boolean') return booleanLabel(value)
+  if (item.type === 'boolean') return item.key === 'autoRenew' ? autoRenewLabel(value) : booleanLabel(value)
   if (item.type === 'signingStatus') return optionLabel(SIGNING_STATUS_OPTIONS, value)
   if (item.type === 'date') return value && dayjs(value).isValid() ? dayjs(value).format('YYYY-MM-DD') : '-'
   if (item.type === 'money') return formatMoney(value)

@@ -111,7 +111,8 @@ const supplierContractRecordSchema = new mongoose.Schema({
   contractNumber: { type: String, trim: true, maxlength: 200, default: '' },
   effectiveDate: { type: Date, default: null },
   expiryDate: { type: Date, default: null },
-  autoRenew: { type: Boolean, required: true, default: false },
+  // null means the customer has not maintained the renewal choice yet.
+  autoRenew: { type: Boolean, required: false, default: null },
   details: { type: detailsSchema, required: true, default: () => ({}) },
   attachments: { type: [attachmentSchema], default: [] },
   createdBy: {
