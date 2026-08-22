@@ -268,6 +268,12 @@
         show-icon
       />
       <el-alert
+        title="模板不能只保留表头，请先填写供应商编码、供应商名称和至少一项合同明细后再导入"
+        type="warning"
+        :closable="false"
+        show-icon
+      />
+      <el-alert
         class="import-attachment-note"
         title="W列/BF列合同PDF：用“批量导入合同PDF”上传；BG列打款凭证：进入对应器具租赁明细，在“打款凭证”栏上传。Excel里不要填写文件名、路径或URL。"
         type="warning"

@@ -407,6 +407,19 @@ test('tertiary import rejects an identity-only row instead of creating an orphan
   }), (error) => error.code === 'CONTRACT_IMPORT_DETAIL_EMPTY');
 });
 
+test('empty contract template explains that data must be filled before import', () => {
+  const { workbook } = supplierWorkbook({ detailRows: [] });
+
+  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  }), (error) => {
+    assert.equal(error.code, 'CONTRACT_IMPORT_EMPTY');
+    assert.equal(error.status, 400);
+    assert.equal(error.message, '合同导入模板只有表头，请先填写供应商和合同明细后再导入');
+    return true;
+  });
+});
+
 test('supplier workbook keeps repeated supplier codes as separate history rows', () => {
   const rowA = Array(59).fill('');
   rowA[1] = '001078';
@@ -564,6 +577,29 @@ test('contract workbook rejects a missing or renamed header in any of its 60 col
       }), (error) => error.code === 'CONTRACT_IMPORT_TEMPLATE_INVALID');
     }
   }
+});
+
+test('contract workbook header errors expose the exact worksheet cell', () => {
+  const headers = [...CUSTOMER_DETAIL_HEADERS];
+  headers[48] = '错误的顺延列名';
+  const row = Array(60).fill('');
+  row[1] = 'HEADER-001';
+  row[2] = '表头错误供应商';
+  row[3] = '托管';
+  const { workbook } = supplierWorkbook({ detailHeaders: headers, detailRows: [row] });
+
+  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  }), (error) => {
+    assert.equal(error.code, 'CONTRACT_IMPORT_TEMPLATE_INVALID');
+    assert.deepEqual(error.details, {
+      sheetName: DETAIL_SHEET,
+      rowNumber: 2,
+      columnNumber: 49,
+      columnLabel: '合同是否自动顺延'
+    });
+    return true;
+  });
 });
 
 test('settlement workbook rejects duplicate normalized month and supplier code as one batch', () => {

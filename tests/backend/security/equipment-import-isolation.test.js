@@ -743,6 +743,35 @@ test('new ledger imports resolve the exact four-level category path before publi
   assert.equal(asset.emissionStandard, '国5');
 });
 
+test('equipment imports tolerate one missing closing category bracket during lookup', async () => {
+  const ids = [objectId(), objectId(), objectId(), objectId()];
+  await EquipmentCategory.collection.insertMany([
+    { _id: ids[0], teamId: fixture.teamA, name: '装卸搬运设备', parentId: null, status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[1], teamId: fixture.teamA, name: '工业车辆', parentId: ids[0], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[2], teamId: fixture.teamA, name: '电动叉车（分类：铅酸电池', parentId: ids[1], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 },
+    { _id: ids[3], teamId: fixture.teamA, name: '电动叉车', parentId: ids[2], status: 'ACTIVE', sortOrder: 0, createdBy: fixture.userA1, updatedBy: fixture.userA1 }
+  ]);
+  const authContext = context({
+    teamId: fixture.teamA,
+    orgUnitId: fixture.orgA1,
+    userId: fixture.userA1
+  });
+  const upload = multiSheetWorkbookUpload([['设备台账模板', [{
+    序号: 1,
+    设备所属大类: '装卸搬运设备',
+    设备所属类型: '工业车辆',
+    设备一级名称: '电动叉车（分类：铅酸电池）',
+    设备二级名称: '电动叉车',
+    固定资产编号: 'BRACKET-IMPORT-001',
+    所在部室: 'A1',
+    使用人: 'User A1',
+    状态: '在用'
+  }]]]);
+  const preview = await createEquipmentImportService().createPreview({ authContext, upload, input: {} });
+  assert.equal(preview.exceptionCount, 0);
+  assert.equal(preview.importJob.rows[0].candidate.categoryId, String(ids[3]));
+});
+
 test('confirmation replaces stale preview names with the current renamed and moved category path', async () => {
   const ids = {
     major: objectId(),

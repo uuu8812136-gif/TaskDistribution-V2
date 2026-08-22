@@ -175,6 +175,19 @@ function normalizeLookupText(value) {
   return textValue(value, 500).normalize('NFKC').replace(/\s+/g, '').toLocaleLowerCase('zh-CN');
 }
 
+// Customer workbooks may contain a closing bracket that was omitted from an
+// older category name. Keep stored names unchanged and only normalize this
+// harmless punctuation typo while resolving an import path.
+function normalizeCategoryLookupText(value) {
+  let normalized = normalizeLookupText(value);
+  for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']]) {
+    const opens = [...normalized].filter((character) => character === open).length;
+    const closes = [...normalized].filter((character) => character === close).length;
+    if (opens === closes + 1 && !normalized.endsWith(close)) normalized += close;
+  }
+  return normalized;
+}
+
 function candidateCategoryHierarchy(candidate = {}) {
   return [
     candidate.majorCategoryName,
@@ -200,10 +213,10 @@ function categoryHierarchy(category, categoriesById) {
 }
 
 function categoryHierarchyMatches(candidate, category, categoriesById) {
-  const expected = candidateCategoryHierarchy(candidate).map(normalizeLookupText);
+  const expected = candidateCategoryHierarchy(candidate).map(normalizeCategoryLookupText);
   if (expected.length === 0) return false;
   const actual = categoryHierarchy(category, categoriesById)
-    .map(({ name }) => normalizeLookupText(name));
+    .map(({ name }) => normalizeCategoryLookupText(name));
   return actual.length === expected.length && actual.every((value, index) => (
     value === expected[index]
   ));

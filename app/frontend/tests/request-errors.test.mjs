@@ -19,6 +19,7 @@ test('Web and mini-program expose the same centralized Chinese error-code map', 
   assert.equal(webMessages.GLOBAL_READ_ONLY, '跨团队查看模式为只读，请先进入具体团队后再修改')
   assert.equal(webMessages.EQUIPMENT_IMPORT_FILE_UNSUPPORTED, '仅支持符合模板的 .xlsx 文件')
   assert.equal(webMessages.CONTRACT_IMPORT_FILE_UNSUPPORTED, '仅支持 .xlsx 格式的合同管理 Excel 文件')
+  assert.equal(webMessages.CONTRACT_IMPORT_EMPTY, '合同导入模板只有表头，请先填写供应商和合同明细后再导入')
   assert.equal(webMessages.CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED, 'Excel 的 W、BF、BG 附件列不能填写文件名、路径或 URL；请清空后重新导入，再按合同 PDF或打款凭证的入口单独上传')
   assert.equal(webMessages.CONTRACT_SETTLEMENT_SUPPLIER_IMMUTABLE, '结算记录创建后不能更换供应商')
   assert.equal(
@@ -58,6 +59,15 @@ test('stable codes replace English API messages on both clients', () => {
   const expected = '09:00 后补报或修改出勤时，请填写修正原因'
   assert.equal(resolveRequestErrorMessage(response, '保存失败'), expected)
   assert.equal(resolveMiniProgramErrorMessage(response, '保存失败'), expected)
+
+  assert.equal(
+    resolveRequestErrorMessage({ statusCode: 413, message: '' }, '请求失败'),
+    '上传文件超过服务器限制，请压缩文件或联系管理员调整上传限制'
+  )
+  assert.equal(
+    resolveMiniProgramErrorMessage({ statusCode: 413, message: '' }, '请求失败'),
+    '上传文件超过服务器限制，请压缩文件或联系管理员调整上传限制'
+  )
 
   assert.equal(
     resolveRequestErrorMessage({

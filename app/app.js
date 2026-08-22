@@ -130,11 +130,17 @@ function createApp(config, {
     if (res.headersSent) return next(err);
     const status = Number.isInteger(err.status) ? err.status : 500;
     if (status >= 500) console.error(err.stack || err);
-    return res.status(status).json({
+    const response = {
       message: status >= 500 ? '服务器内部错误' : err.message,
       code: err.code,
       error: status >= 500 && config.nodeEnv === 'development' ? err.message : undefined
-    });
+    };
+    // Import validators attach safe worksheet coordinates for customer correction.
+    // Only explicitly exposed errors may return structured details to the client.
+    if (err.expose === true && err.details && typeof err.details === 'object') {
+      response.details = err.details;
+    }
+    return res.status(status).json(response);
   });
 
   return app;

@@ -255,7 +255,13 @@ function assertHeader(
   if (actual !== expected) {
     throw workbookError(
       errorCode,
-      `${label}表头不匹配：第${rowIndex + 1}行第${columnIndex + 1}列应为“${expected}”`
+      `${label}表头不匹配：第${rowIndex + 1}行第${columnIndex + 1}列应为“${expected}”`,
+      {
+        sheetName: label,
+        rowNumber: rowIndex + 1,
+        columnNumber: columnIndex + 1,
+        columnLabel: expected
+      }
     );
   }
 }
@@ -299,7 +305,13 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       if (![expected, '超储天数（无超储/30+15/60+15/90+15）'].includes(actual)) {
         throw workbookError(
           'CONTRACT_IMPORT_TEMPLATE_INVALID',
-          `${DETAIL_SHEET_NAME}表头不匹配：第2行第31列应为“${expected}”`
+          `${DETAIL_SHEET_NAME}表头不匹配：第2行第31列应为“${expected}”`,
+          {
+            sheetName: DETAIL_SHEET_NAME,
+            rowNumber: 2,
+            columnNumber: 31,
+            columnLabel: expected
+          }
         );
       }
       return;
@@ -501,7 +513,12 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     rows.push({ rowNumber: rowIndex + 1, supplierCode: code, records });
   }
 
-  if (suppliersByCode.size === 0) throw workbookError('CONTRACT_IMPORT_EMPTY', 'Excel中没有可导入的供应商数据');
+  if (suppliersByCode.size === 0) {
+    throw workbookError(
+      'CONTRACT_IMPORT_EMPTY',
+      '合同导入模板只有表头，请先填写供应商和合同明细后再导入'
+    );
+  }
   return {
     suppliers: [...suppliersByCode.values()],
     rows,

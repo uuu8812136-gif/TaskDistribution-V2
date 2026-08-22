@@ -154,7 +154,7 @@ export const REQUEST_ERROR_CODE_MESSAGES = Object.freeze({
   CONTRACT_IMPORT_UPLOAD_INVALID: '合同管理 Excel 上传内容不正确',
   CONTRACT_IMPORT_WORKBOOK_INVALID: '合同工作簿无法读取，请检查文件后重试',
   CONTRACT_IMPORT_TEMPLATE_INVALID: '合同导入模板不正确，请使用客户确认的原始模板',
-  CONTRACT_IMPORT_EMPTY: '合同导入文件中没有可导入的数据',
+  CONTRACT_IMPORT_EMPTY: '合同导入模板只有表头，请先填写供应商和合同明细后再导入',
   CONTRACT_IMPORT_SUPPLIER_INVALID: '合同导入文件中的供应商信息不完整',
   CONTRACT_IMPORT_SUPPLIER_CONFLICT: '合同导入文件中同一供应商编码对应了不同信息',
   CONTRACT_IMPORT_SUPPLIER_NOT_IN_MAIN: '合同明细中的供应商未出现在供应商主表',
@@ -404,6 +404,7 @@ export function resolveRequestErrorMessage({ code, message, statusCode } = {}, f
 
   const familyMessage = prefixMessage(code)
   if (familyMessage) return familyMessage
+  if (statusCode === 413) return '上传文件超过服务器限制，请压缩文件或联系管理员调整上传限制'
   if (containsChineseText(fallback)) return fallback.trim()
   if (statusCode === 401) return '登录状态已失效，请重新登录'
   if (statusCode === 403) return '没有执行该操作的权限'
