@@ -304,6 +304,96 @@ test('customer 60-column row maps every non-attachment field to canonical record
   });
 });
 
+test('supplier import reports the worksheet row and column for invalid contract dates', () => {
+  const row = Array(60).fill('');
+  row[1] = 'DATE-001';
+  row[2] = '日期错误供应商';
+  row[3] = '托管';
+  row[12] = '已签订';
+  row[13] = 'DATE-001-MAIN';
+  row[14] = '2026-02-30';
+  row[15] = '2026-12-31';
+  const { workbook } = supplierWorkbook({ detailRows: [row] });
+
+  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  }), (error) => {
+    assert.equal(error.code, 'CONTRACT_IMPORT_DATE_INVALID');
+    assert.match(error.message, /三级细表（供应商合同管理）第3行第15列/);
+    assert.match(error.message, /合同生效日期/);
+    assert.deepEqual(error.details, {
+      sheetName: DETAIL_SHEET,
+      rowNumber: 3,
+      columnNumber: 15,
+      columnLabel: '合同生效日期'
+    });
+    return true;
+  });
+});
+
+test('contract dates accept editor ISO values and common US short dates', () => {
+  const row = Array(60).fill('');
+  row[1] = 'DATE-002';
+  row[2] = '日期兼容供应商';
+  row[3] = '托管';
+  row[12] = '已签订';
+  row[14] = '2026-08-22T00:00:00.000Z';
+  row[15] = '08/22/23';
+  const { workbook } = supplierWorkbook({ detailRows: [row] });
+  const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  });
+  const main = parsed.rows[0].records.find((record) => record.category === 'MAIN_SERVICE_AGREEMENT');
+  assert.equal(main.effectiveDate.toISOString().slice(0, 10), '2026-08-22');
+  assert.equal(main.expiryDate.toISOString().slice(0, 10), '2023-08-22');
+});
+
+test('supplier import accepts strict ISO dates and MM/DD/YY dates', () => {
+  const row = Array(60).fill('');
+  row[1] = 'DATE-FORMATS';
+  row[2] = '日期格式供应商';
+  row[3] = '托管';
+  row[12] = '已签订';
+  row[13] = 'DATE-FORMATS-MAIN';
+  row[14] = '2026-08-21T12:30:00Z';
+  row[15] = '08/22/26';
+  const { workbook } = supplierWorkbook({ detailRows: [row] });
+  const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  });
+  const [record] = parsed.rows[0].records;
+  assert.equal(record.effectiveDate.toISOString().slice(0, 10), '2026-08-21');
+  assert.equal(record.expiryDate.toISOString().slice(0, 10), '2026-08-22');
+});
+
+test('supplier import annotates non-date field errors with their worksheet cell', () => {
+  const cases = [
+    { column: 3, value: '未知属性' },
+    { column: 4, value: '未知供货状态', setup: (row) => { row[3] = '托管'; } },
+    { column: 5, value: '未知是否值', setup: (row) => { row[3] = '托管'; row[4] = '正常供货'; } },
+    { column: 12, value: '未知签订状态', setup: (row) => { row[3] = '托管'; } },
+    { column: 23, value: '未知顺延值', setup: (row) => { row[3] = '托管'; row[12] = '已签订'; } },
+    { column: 30, value: 'x'.repeat(201), setup: (row) => { row[3] = '托管'; row[24] = '已签订'; } }
+  ];
+  for (const item of cases) {
+    const row = Array(60).fill('');
+    row[1] = 'FIELD-' + item.column;
+    row[2] = '字段错误供应商';
+    row[item.column] = item.value;
+    item.setup?.(row);
+    const { workbook } = supplierWorkbook({ detailRows: [row] });
+    assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+      extractWorkbookMedia: () => extractedMedia()
+    }), (error) => {
+      assert.equal(error.details?.rowNumber, 3);
+      assert.equal(error.details?.columnNumber, item.column + 1);
+      assert.equal(error.details?.columnLabel, CUSTOMER_DETAIL_HEADERS[item.column]);
+      assert.match(error.message, new RegExp(`第3行第${item.column + 1}列`));
+      return true;
+    });
+  }
+});
+
 test('tertiary import rejects an identity-only row instead of creating an orphan supplier', () => {
   const row = Array(60).fill('');
   row[0] = 1;

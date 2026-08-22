@@ -958,6 +958,35 @@ test('team management APIs enforce tenant isolation, fixed privilege rules, and 
     assert.ok(response.body.members.length >= 2);
   });
 
+  await t.test('project administrator can reset a member password and revoke old sessions', async () => {
+    const oldToken = seeded.memberAToken;
+    await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${oldToken}`)
+      .expect(200);
+
+    await request(app)
+      .post(`/api/team-members/${seeded.memberMembershipA._id}/reset-password`)
+      .set('Authorization', `Bearer ${seeded.adminAToken}`)
+      .send({ newPassword: 'reset-password-456', reason: 'Integration reset' })
+      .expect(200);
+
+    await request(app)
+      .get('/api/auth/me')
+      .set('Authorization', `Bearer ${oldToken}`)
+      .expect(401);
+
+    const login = await request(app)
+      .post('/api/auth/login')
+      .send({
+        username: seeded.memberA.username,
+        password: 'reset-password-456',
+        teamId: seeded.teamA._id.toString()
+      })
+      .expect(200);
+    assert.ok(login.body.token);
+  });
+
   await t.test('a super administrator inside team A can promote a member', async () => {
     const response = await request(app)
       .patch(`/api/team-members/${seeded.memberMembershipA._id}`)

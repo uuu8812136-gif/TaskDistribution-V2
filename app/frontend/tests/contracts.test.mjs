@@ -183,6 +183,14 @@ test('contract status fields stay at the record root and are not duplicated in d
   }
 })
 
+test('manual renewal choices are serialized as boolean or null at the record root', () => {
+  const mainContract = categoryByValue.get(CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT)
+  assert.equal(buildRecordPayload(mainContract, { autoRenew: true }).autoRenew, true)
+  assert.equal(buildRecordPayload(mainContract, { autoRenew: false }).autoRenew, false)
+  assert.equal(buildRecordPayload(mainContract, { autoRenew: null }).autoRenew, null)
+  assert.equal(buildRecordPayload(mainContract, {}).autoRenew, null)
+})
+
 test('third-level details are the only supplier maintenance surface', () => {
   const apiSource = readFileSync(new URL('../src/api/contract.js', import.meta.url), 'utf8')
   const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')

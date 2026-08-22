@@ -158,7 +158,13 @@ function optionalText(value, field, max = 5000) {
 
 function booleanValue(value, field, { nullable = false } = {}) {
   if (nullable && (value === null || value === undefined || value === '')) return null;
+  if (nullable && typeof value === 'string' && ['unset', '未设置'].includes(value.trim().toLowerCase())) return null;
   if (value === true || value === false) return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', 'yes', 'y', '1', '是', '有', '自动顺延'].includes(normalized)) return true;
+    if (['false', 'no', 'n', '0', '否', '无', '不顺延'].includes(normalized)) return false;
+  }
   throw contractError(400, 'CONTRACT_INPUT_INVALID', `${field}必须是布尔值`);
 }
 

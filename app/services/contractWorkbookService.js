@@ -133,18 +133,77 @@ function dateOnlyFromParts(year, month, day) {
 function parseDateOnly(value) {
   if (value === null || value === undefined || value === '') return null;
   if (value instanceof Date && Number.isFinite(value.getTime())) {
-    return dateOnlyFromParts(value.getFullYear(), value.getMonth() + 1, value.getDate());
+    const date = dateOnlyFromParts(value.getFullYear(), value.getMonth() + 1, value.getDate());
+    if (!date) throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无效日期：${value.toISOString()}`);
+    return date;
   }
   if (typeof value === 'number' && Number.isFinite(value)) {
     const parsed = XLSX.SSF.parse_date_code(value);
-    return parsed ? dateOnlyFromParts(parsed.y, parsed.m, parsed.d) : null;
+    const date = parsed ? dateOnlyFromParts(parsed.y, parsed.m, parsed.d) : null;
+    if (!date) throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无效日期序列：${value}`);
+    return date;
   }
   const normalized = text(value);
-  const match = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:\s.*)?$/.exec(normalized);
-  if (!match) throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无法识别日期：${normalized}`);
-  const date = dateOnlyFromParts(Number(match[1]), Number(match[2]), Number(match[3]));
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?(Z|[+-]\d{2}:?\d{2})?)?$/.exec(normalized);
+  const shortUsMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/.exec(normalized);
+  const legacyMatch = /^(\d{4})[./-](\d{1,2})[./-](\d{1,2})(?:\s.*)?$/.exec(normalized);
+  let year;
+  let month;
+  let day;
+  if (isoMatch) {
+    year = Number(isoMatch[1]);
+    month = Number(isoMatch[2]);
+    day = Number(isoMatch[3]);
+    if (isoMatch[4] !== undefined) {
+      const hour = Number(isoMatch[4]);
+      const minute = Number(isoMatch[5]);
+      const second = isoMatch[6] === undefined ? 0 : Number(isoMatch[6]);
+      const zone = isoMatch[8];
+      if (hour > 23 || minute > 59 || second > 59 || (zone && !/^(?:Z|[+-](?:[01]\d|2[0-3]):?[0-5]\d)$/.test(zone))) {
+        throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无效ISO日期：${normalized}`);
+      }
+    }
+  } else if (shortUsMatch) {
+    month = Number(shortUsMatch[1]);
+    day = Number(shortUsMatch[2]);
+    const shortYear = Number(shortUsMatch[3]);
+    year = shortYear >= 70 ? 1900 + shortYear : 2000 + shortYear;
+  } else if (legacyMatch) {
+    year = Number(legacyMatch[1]);
+    month = Number(legacyMatch[2]);
+    day = Number(legacyMatch[3]);
+  } else {
+    throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无法识别日期：${normalized}`);
+  }
+  const date = dateOnlyFromParts(year, month, day);
   if (!date) throw workbookError('CONTRACT_IMPORT_DATE_INVALID', `无效日期：${normalized}`);
   return date;
+}
+
+function supplierCellError(error, rowIndex, columnIndex) {
+  const rowNumber = rowIndex + 1;
+  const columnNumber = columnIndex + 1;
+  const columnLabel = DETAIL_HEADERS[columnIndex] || `第${columnNumber}列`;
+  const source = error instanceof ContractWorkbookError
+    ? error
+    : workbookError('CONTRACT_IMPORT_DETAIL_INVALID', error?.message || '字段值无效');
+  return workbookError(
+    source.code,
+    `${DETAIL_SHEET_NAME}第${rowNumber}行第${columnNumber}列“${columnLabel}”：${source.message}`,
+    { sheetName: DETAIL_SHEET_NAME, rowNumber, columnNumber, columnLabel }
+  );
+}
+
+function parseSupplierCell(value, rowIndex, columnIndex, parser) {
+  try {
+    return parser(value);
+  } catch (error) {
+    throw supplierCellError(error, rowIndex, columnIndex);
+  }
+}
+
+function parseSupplierDate(value, rowIndex, columnIndex) {
+  return parseSupplierCell(value, rowIndex, columnIndex, parseDateOnly);
 }
 
 function parseMonth(value) {
@@ -277,13 +336,28 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     const code = text(values[1]);
     const name = text(values[2]);
     if (!code && !name) continue;
-    if (!code || !name) throw workbookError('CONTRACT_IMPORT_DETAIL_INVALID', `三级细表第${rowIndex + 1}行缺少供应商名称或编码`);
-    const trusteeAttribute = parseTrusteeAttribute(values[3]);
-    if (!trusteeAttribute) throw workbookError('CONTRACT_IMPORT_DETAIL_INVALID', `三级细表第${rowIndex + 1}行缺少托管属性`);
-    if ([22, 57, 58].some((columnIndex) => text(values[columnIndex]) !== '')) {
-      throw workbookError(
-        'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED',
-        `三级细表第${rowIndex + 1}行合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传`
+    if (!code || !name) {
+      const missingColumn = code ? 2 : 1;
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_DETAIL_INVALID', `缺少供应商名称或编码`),
+        rowIndex,
+        missingColumn
+      );
+    }
+    const trusteeAttribute = parseSupplierCell(values[3], rowIndex, 3, parseTrusteeAttribute);
+    if (!trusteeAttribute) {
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_DETAIL_INVALID', '缺少托管属性'),
+        rowIndex,
+        3
+      );
+    }
+    const unresolvedAttachmentColumn = [22, 57, 58].find((columnIndex) => text(values[columnIndex]) !== '');
+    if (unresolvedAttachmentColumn !== undefined) {
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED', '合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传'),
+        rowIndex,
+        unresolvedAttachmentColumn
       );
     }
     const existingSupplier = suppliersByCode.get(code);
@@ -292,17 +366,23 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     )) {
       throw workbookError(
         'CONTRACT_IMPORT_SUPPLIER_CONFLICT',
-        `三级细表第${rowIndex + 1}行供应商编码${code}的名称或托管属性与前面行不一致`
+        `${DETAIL_SHEET_NAME}第${rowIndex + 1}行第2列“供应商编码”：供应商编码${code}的名称或托管属性与前面行不一致`,
+        { sheetName: DETAIL_SHEET_NAME, rowNumber: rowIndex + 1, columnNumber: 2, columnLabel: '供应商编码' }
       );
     }
     suppliersByCode.set(code, { code, name, trusteeAttribute });
     const embeddedRowImages = extracted.imagesByRow.get(
       `${DETAIL_SHEET_NAME}\u0000${rowIndex + 1}`
     ) || [];
-    if (embeddedRowImages.some((image) => /^(?:W|BF|BG)\d+$/i.test(image.cellAddress || ''))) {
-      throw workbookError(
-        'CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED',
-        `三级细表第${rowIndex + 1}行合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传`
+    const unresolvedAttachmentImage = embeddedRowImages.find((image) => /^(?:W|BF|BG)\d+$/i.test(image.cellAddress || ''));
+    if (unresolvedAttachmentImage) {
+      const attachmentColumn = /^(W)\d+$/i.test(unresolvedAttachmentImage.cellAddress || '')
+        ? 22
+        : /^(BF)\d+$/i.test(unresolvedAttachmentImage.cellAddress || '') ? 57 : 58;
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_ATTACHMENT_UNRESOLVED', '合同PDF或打款凭证无法从Excel安全绑定，请导入后在页面手工上传'),
+        rowIndex,
+        attachmentColumn
       );
     }
 
@@ -317,9 +397,10 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
         (/DISPIMG\s*\(/i.test(invoiceFormula) || /^#(?:NAME|UNKNOWN)[!?]?$/i.test(invoiceDisplay)) &&
         invoiceImages.length === 0
       ) {
-        throw workbookError(
-          'CONTRACT_IMPORT_MEDIA_MISSING',
-          `三级细表第${rowIndex + 1}行开票图片引用无法解析`
+        throw supplierCellError(
+          workbookError('CONTRACT_IMPORT_MEDIA_MISSING', '开票图片引用无法解析'),
+          rowIndex,
+          6
         );
       }
       const invoiceInfoText = (
@@ -335,8 +416,8 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
         expiryDate: null,
         autoRenew: null,
         details: {
-          supplyStatus: parseSupplyStatus(values[4]),
-          hasInvoiceInfo: parseBoolean(values[5], { nullable: true }),
+          supplyStatus: parseSupplierCell(values[4], rowIndex, 4, parseSupplyStatus),
+          hasInvoiceInfo: parseSupplierCell(values[5], rowIndex, 5, (value) => parseBoolean(value, { nullable: true })),
           invoiceInfoText,
           contacts: contactsFromColumns(values[7], values[8]),
           reconciliationEmails: splitMulti(values[9]),
@@ -348,46 +429,46 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     }
     if (rowHasAny(values.slice(12, 24))) records.push({
       category: 'MAIN_SERVICE_AGREEMENT',
-      signingStatus: parseSigningStatus(values[12]),
+      signingStatus: parseSupplierCell(values[12], rowIndex, 12, parseSigningStatus),
       contractNumber: text(values[13]),
-      effectiveDate: parseDateOnly(values[14]),
-      expiryDate: parseDateOnly(values[15]),
-      autoRenew: parseBoolean(values[23], { nullable: true }),
+      effectiveDate: parseSupplierDate(values[14], rowIndex, 14),
+      expiryDate: parseSupplierDate(values[15], rowIndex, 15),
+      autoRenew: parseSupplierCell(values[23], rowIndex, 23, (value) => parseBoolean(value, { nullable: true })),
       details: {
-        supplierSignedDate: parseDateOnly(values[16]), companySignedDate: parseDateOnly(values[17]),
-        returnDate: parseDateOnly(values[18]), courierNumber: text(values[19]),
-        deliveredBusinessDate: parseDateOnly(values[20]), deliveredFactoryDate: parseDateOnly(values[21])
+        supplierSignedDate: parseSupplierDate(values[16], rowIndex, 16), companySignedDate: parseSupplierDate(values[17], rowIndex, 17),
+        returnDate: parseSupplierDate(values[18], rowIndex, 18), courierNumber: text(values[19]),
+        deliveredBusinessDate: parseSupplierDate(values[20], rowIndex, 20), deliveredFactoryDate: parseSupplierDate(values[21], rowIndex, 21)
       },
       importedMedia: []
     });
     if (rowHasAny(values.slice(24, 33))) records.push({
       category: 'LOGISTICS_FEE_AGREEMENT',
-      signingStatus: parseSigningStatus(values[24]),
-      contractNumber: '', autoRenew: parseBoolean(values[25], { nullable: true }),
-      effectiveDate: parseDateOnly(values[26]), expiryDate: parseDateOnly(values[27]),
+      signingStatus: parseSupplierCell(values[24], rowIndex, 24, parseSigningStatus),
+      contractNumber: '', autoRenew: parseSupplierCell(values[25], rowIndex, 25, (value) => parseBoolean(value, { nullable: true })),
+      effectiveDate: parseSupplierDate(values[26], rowIndex, 26), expiryDate: parseSupplierDate(values[27], rowIndex, 27),
       details: {
         warehouseServiceRate: text(values[28]), overstorageServiceRate: text(values[29]),
-        overstorageDays: parseOverstorageDays(values[30]), settlementCycle: text(values[31]), remarks: text(values[32])
+        overstorageDays: parseSupplierCell(values[30], rowIndex, 30, parseOverstorageDays), settlementCycle: text(values[31]), remarks: text(values[32])
       },
       importedMedia: []
     });
     if (rowHasAny(values.slice(33, 47))) records.push({
       category: 'TURNOVER_EQUIPMENT_SERVICE',
-      signingStatus: parseSigningStatus(values[33]), autoRenew: parseBoolean(values[34], { nullable: true }),
-      contractNumber: text(values[35]), effectiveDate: parseDateOnly(values[36]), expiryDate: parseDateOnly(values[37]),
+      signingStatus: parseSupplierCell(values[33], rowIndex, 33, parseSigningStatus), autoRenew: parseSupplierCell(values[34], rowIndex, 34, (value) => parseBoolean(value, { nullable: true })),
+      contractNumber: text(values[35]), effectiveDate: parseSupplierDate(values[36], rowIndex, 36), expiryDate: parseSupplierDate(values[37], rowIndex, 37),
       details: {
         equipmentType: text(values[38]), equipmentServicePrice: text(values[39]),
-        supplierSignedDate: parseDateOnly(values[40]), companySignedDate: parseDateOnly(values[41]),
-        returnDate: parseDateOnly(values[42]), courierNumber: text(values[43]),
-        deliveredBusinessDate: parseDateOnly(values[44]), deliveredFactoryDate: parseDateOnly(values[45]),
+        supplierSignedDate: parseSupplierDate(values[40], rowIndex, 40), companySignedDate: parseSupplierDate(values[41], rowIndex, 41),
+        returnDate: parseSupplierDate(values[42], rowIndex, 42), courierNumber: text(values[43]),
+        deliveredBusinessDate: parseSupplierDate(values[44], rowIndex, 44), deliveredFactoryDate: parseSupplierDate(values[45], rowIndex, 45),
         remarks: text(values[46])
       },
       importedMedia: []
     });
     if (rowHasAny(values.slice(47, 60))) records.push({
       category: 'EQUIPMENT_RENTAL',
-      signingStatus: parseSigningStatus(values[47]), autoRenew: parseBoolean(values[48], { nullable: true }),
-      contractNumber: text(values[49]), effectiveDate: parseDateOnly(values[50]), expiryDate: parseDateOnly(values[51]),
+      signingStatus: parseSupplierCell(values[47], rowIndex, 47, parseSigningStatus), autoRenew: parseSupplierCell(values[48], rowIndex, 48, (value) => parseBoolean(value, { nullable: true })),
+      contractNumber: text(values[49]), effectiveDate: parseSupplierDate(values[50], rowIndex, 50), expiryDate: parseSupplierDate(values[51], rowIndex, 51),
       details: {
         equipmentType: text(values[52]), specification: text(values[53]), productionBatch: text(values[54]),
         color: text(values[55]), quantity: text(values[56]), remarks: text(values[59])
@@ -398,15 +479,23 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       record.category !== 'SUPPLIER_INFO' && !record.signingStatus
     ));
     if (missingStatus) {
-      throw workbookError(
-        'CONTRACT_IMPORT_SIGNING_STATUS_REQUIRED',
-        `三级细表第${rowIndex + 1}行${CATEGORY_LABELS[missingStatus.category]}缺少签订状态`
+      const statusColumn = {
+        MAIN_SERVICE_AGREEMENT: 12,
+        LOGISTICS_FEE_AGREEMENT: 24,
+        TURNOVER_EQUIPMENT_SERVICE: 33,
+        EQUIPMENT_RENTAL: 47
+      }[missingStatus.category];
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_SIGNING_STATUS_REQUIRED', `${CATEGORY_LABELS[missingStatus.category]}缺少签订状态`),
+        rowIndex,
+        statusColumn
       );
     }
     if (records.length === 0) {
-      throw workbookError(
-        'CONTRACT_IMPORT_DETAIL_EMPTY',
-        `三级细表第${rowIndex + 1}行没有可导入的供应商信息或合同内容`
+      throw supplierCellError(
+        workbookError('CONTRACT_IMPORT_DETAIL_EMPTY', '没有可导入的供应商信息或合同内容'),
+        rowIndex,
+        1
       );
     }
     rows.push({ rowNumber: rowIndex + 1, supplierCode: code, records });

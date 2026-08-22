@@ -85,6 +85,21 @@ test('record input accepts nullable contract dates and nullable detail dates', (
   assert.equal(normalized.details.companySignedDate, null);
 });
 
+test('manual contract renewal input accepts boolean values and legacy labels', () => {
+  const base = {
+    category: 'MAIN_SERVICE_AGREEMENT',
+    signingStatus: 'SIGNED',
+    effectiveDate: '2026-01-01',
+    expiryDate: '2026-12-31',
+    details: {}
+  };
+  assert.equal(normalizeRecordInput({ ...base, autoRenew: true }).autoRenew, true);
+  assert.equal(normalizeRecordInput({ ...base, autoRenew: false }).autoRenew, false);
+  assert.equal(normalizeRecordInput({ ...base, autoRenew: '是' }).autoRenew, true);
+  assert.equal(normalizeRecordInput({ ...base, autoRenew: '否' }).autoRenew, false);
+  assert.equal(normalizeRecordInput({ ...base, autoRenew: '未设置' }).autoRenew, null);
+});
+
 test('record PATCH deep-merges only the current category details', () => {
   const current = {
     category: 'LOGISTICS_FEE_AGREEMENT',
