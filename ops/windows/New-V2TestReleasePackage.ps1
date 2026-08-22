@@ -23,6 +23,7 @@ $allowedTrackedRasterPaths = @(
   'app/frontend/src/assets/login-logistics.jpg',
   'miniprogram/static/logo.png'
 )
+$allowedTrackedRasterPrefixes = @('docs/screenshots/')
 $trackedRasterExtensions = @('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff')
 $releaseOpsPaths = @(
   'ops/backup.js',
@@ -214,7 +215,8 @@ $forbiddenTrackedPaths = @($trackedPaths | Where-Object {
     $name -like '*.env' -or $name -like '*.env.*'
   ) -and $name -notmatch '\.(example|template)$'
   $isUnexpectedRaster = $extension -in $trackedRasterExtensions -and
-    $relativePath -notin $allowedTrackedRasterPaths
+    $relativePath -notin $allowedTrackedRasterPaths -and
+    -not ($allowedTrackedRasterPrefixes | Where-Object { $relativePath.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
   $isPrivateKeyXmlName = $extension -eq '.xml' -and
     $name -match '(?i)(private|secret|signing)'
   $relativePath -match '(^|/)(\.test-data|test-data|work|customer-data|references|attachments|screenshots|uploads|logs|backups?|dumps?|node_modules|dist|build|out|coverage|unpackage|test-results|playwright-report)(/|$)' -or
