@@ -219,7 +219,10 @@ $forbiddenTrackedPaths = @($trackedPaths | Where-Object {
     -not ($allowedTrackedRasterPrefixes | Where-Object { $relativePath.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) })
   $isPrivateKeyXmlName = $extension -eq '.xml' -and
     $name -match '(?i)(private|secret|signing)'
-  $relativePath -match '(^|/)(\.test-data|test-data|work|customer-data|references|attachments|screenshots|uploads|logs|backups?|dumps?|node_modules|dist|build|out|coverage|unpackage|test-results|playwright-report)(/|$)' -or
+  (
+    $relativePath -match '(^|/)(\.test-data|test-data|work|customer-data|references|attachments|screenshots|uploads|logs|backups?|dumps?|node_modules|dist|build|out|coverage|unpackage|test-results|playwright-report)(/|$)' -and
+    -not $relativePath.StartsWith('docs/screenshots/', [StringComparison]::OrdinalIgnoreCase)
+  ) -or
     $extension -in @(
       '.xls', '.xlsx', '.xlsm', '.xlsb', '.log', '.bson', '.wt', '.sqlite',
       '.sqlite3', '.pem', '.key', '.pfx', '.p12', '.ppk', '.zip', '.tar',
