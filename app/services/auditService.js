@@ -589,6 +589,21 @@ function createAuditService(options = {}) {
     return AuditLog.create(payload);
   }
 
+  async function recordMany(inputs, { session = null } = {}) {
+    if (!Array.isArray(inputs) || inputs.length === 0) return { insertedCount: 0 };
+    if (typeof AuditLog.bulkWrite !== 'function') {
+      throw new TypeError('AuditLog model with a bulkWrite function is required');
+    }
+    const operations = inputs.map((input) => ({
+      insertOne: { document: buildPayload(input) }
+    }));
+    const result = await AuditLog.bulkWrite(operations, { session, ordered: true });
+    if (result.insertedCount !== operations.length) {
+      throw new Error('Audit bulk insert count mismatch');
+    }
+    return result;
+  }
+
   async function recordManySystem(inputs, { session = null } = {}) {
     if (!Array.isArray(inputs) || inputs.length === 0) {
       throw new TypeError('recordManySystem requires a non-empty input array');
@@ -608,6 +623,7 @@ function createAuditService(options = {}) {
 
   return Object.freeze({
     record,
+    recordMany,
     recordSystem(input = {}) {
       return record({ ...input, systemActor: true });
     },

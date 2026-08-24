@@ -427,18 +427,16 @@ test('postdeploy audit proves the two-phase evidence chain index state and all f
   assert.match(audit, /rollbackReady -ne \$false/)
   assert.match(audit, /requiredRecovery -ne 'FORWARD_FIX_OR_RESTORE_TO_NEW_DATABASE'/)
   assert.match(audit, /businessTunnelRestored -ne \$true/)
-  assert.match(audit, /--primary-name \$leadAcidForkliftPrimaryName/)
-  assert.match(audit, /--primary-name \$lithiumForkliftPrimaryName/)
-  assert.match(audit, /--primary-name \$rollerConveyorPrimaryName/)
+  assert.match(audit, /Start-Process @businessAuditArguments/)
+  assert.match(audit, /RedirectStandardOutput = \$businessAuditStdoutPath/)
+  assert.match(audit, /Text\.UTF8Encoding\(\$false, \$true\)/)
   assert.doesNotMatch(audit, /--expect-primary/)
   assert.doesNotMatch(audit, /expectedPrimaryInUseCounts/)
-  assert.match(audit, /\[int\]\$target\.inUseEquipmentCount -le 0/)
-  assert.match(audit, /@\(\$target\.activeRules\)\.Count -le 0/)
-  assert.match(audit, /@\(\$target\.missingAssets\)\.Count -ne 0/)
   assert.match(audit, /duplicateOpenPlanGroupCount -ne 0/)
   assert.match(audit, /@\(\$businessAudit\.duplicateOpenPlanGroups\)\.Count -ne 0/)
+  assert.match(audit, /@\(\$businessAudit\.filters\.primaryNames\)\.Count -ne 0/)
   assert.match(audit, /@\(\$businessAudit\.filters\.expectedPrimaries\)\.Count -ne 0/)
-  assert.match(audit, /\$reportedFilterNames -ccontains \[string\]\$requiredName/)
+  assert.match(audit, /\[int\]\$businessAudit\.summary\.violationCount -ne 0/)
 })
 
 test('runtime inputs schema capability and the fixed candidate public key are hash-bound end to end', () => {
@@ -492,22 +490,19 @@ test('Hold and Execute seal an unchanged Mongo write anchor before the migration
   }
 })
 
-test('postdeploy audit uses dynamic equipment counts while requiring complete target coverage', () => {
+test('postdeploy audit uses data-driven equipment coverage without fixed fixture names', () => {
   assert.match(audit, /app\\script\\auditEquipmentRoutineBusiness\.js/)
-  assert.match(audit, /--team-code 'GEARBOX_LOGISTICS'/)
-  assert.match(audit, /--primary-name \$leadAcidForkliftPrimaryName/)
-  assert.match(audit, /--primary-name \$lithiumForkliftPrimaryName/)
-  assert.match(audit, /--primary-name \$rollerConveyorPrimaryName/)
+  assert.match(audit, /ArgumentList = @\(\$businessAuditCli, '--team-code', 'GEARBOX_LOGISTICS'\)/)
+  assert.doesNotMatch(audit, /--primary-name/)
   assert.doesNotMatch(audit, /--expect-primary/)
-  assert.doesNotMatch(audit, /\$leadAcidForkliftPrimaryName=6/)
-  assert.doesNotMatch(audit, /\$lithiumForkliftPrimaryName=5/)
   assert.match(audit, /taskdistribution-v2-equipment-routine-business-audit-v1/)
   assert.match(audit, /postdeploy_equipment_routine_business_gate_failed/)
   assert.match(audit, /equipmentRoutineBusiness = \[ordered\]@\{/)
   assert.match(audit, /reportSha256 = Get-Sha256 \$BusinessAuditReport/)
   assert.match(audit, /writePerformed -ne \$false/)
-  assert.match(audit, /requiredPrimaryNames = @\(\$requiredPrimaryNames\)/)
-  assert.match(audit, /observedPrimaryInUseCounts = if \(\$businessAudit\)/)
+  assert.match(audit, /primaryNames = if \(\$businessAudit\)/)
+  assert.match(audit, /activeRuleCount = if \(\$businessAudit\)/)
+  assert.match(audit, /duplicateOpenPlanGroupCount = if \(\$businessAudit\)/)
 })
 
 test('release packaging includes and syntax-checks migration and Windows safety tools', () => {

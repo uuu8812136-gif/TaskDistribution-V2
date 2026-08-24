@@ -1075,6 +1075,36 @@ test('supplier import writes one atomic supplier and history batch and constrain
     contractNumber: 'MAIN-1', supplierId: { $ne: imported._id } }), null);
 });
 
+test('large supplier imports write tertiary records and audit entries as one batch', async () => {
+  const buffer = await supplierWorkbook({
+    code: 'BATCH-IMPORT-000',
+    name: '批量导入供应商0',
+    additionalRows: Array.from({ length: 149 }, (_, index) => ({
+      code: `BATCH-IMPORT-${String(index + 1).padStart(3, '0')}`,
+      name: `批量导入供应商${index + 1}`,
+      contractNumber: `BATCH-CONTRACT-${index + 1}`,
+      trustee: '托管'
+    }))
+  });
+  const result = await service.importSuppliers({
+    authContext: fixture.contextA,
+    file: { buffer }
+  });
+
+  assert.equal(result.createdSuppliers, 150);
+  assert.equal(result.createdRecords, 150);
+  assert.equal(await Supplier.countDocuments({ teamId: fixture.teamA }), 150);
+  assert.equal(await SupplierContractRecord.countDocuments({ teamId: fixture.teamA }), 150);
+  assert.equal(await AuditLog.countDocuments({
+    targetTeamId: fixture.teamA,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.SUPPLIER
+  }), 150);
+  assert.equal(await AuditLog.countDocuments({
+    targetTeamId: fixture.teamA,
+    resourceType: permissions.AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD
+  }), 150);
+});
+
 test('supplier import stores customer-provided reversed dates and returns a non-blocking warning', async () => {
   const buffer = await supplierWorkbook({
     code: 'DATE-WARNING-IMPORT',

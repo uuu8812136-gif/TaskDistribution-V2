@@ -1359,6 +1359,7 @@ function createContractManagementService({
       }
       const result = await runWrite(async (session) => {
         const supplierByCode = new Map();
+        const auditEntries = [];
         let createdSuppliers = 0;
         let updatedSuppliers = 0;
         for (const input of parsed.suppliers) {
@@ -1375,43 +1376,68 @@ function createContractManagementService({
             supplier.updatedBy = context.userId;
             await supplier.save({ session });
             updatedSuppliers += 1;
-            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
+            auditEntries.push({ req, authContext: context, action: AUDIT_ACTIONS.UPDATE,
               resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
-              before, after: plain(supplier), targetTeamId: teamId, session });
+              before, after: plain(supplier), targetTeamId: teamId });
           } else {
             supplier = await createOne(SupplierModel, { teamId, name: input.name, code: input.code,
               trusteeAttribute: input.trusteeAttribute, createdBy: context.userId, updatedBy: context.userId }, session);
             createdSuppliers += 1;
-            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
+            auditEntries.push({ req, authContext: context, action: AUDIT_ACTIONS.CREATE,
               resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER, resourceId: supplier._id,
-              after: plain(supplier), targetTeamId: teamId, session });
+              after: plain(supplier), targetTeamId: teamId });
           }
           supplierByCode.set(input.code, supplier);
         }
 
-        let createdRecords = 0;
-        let importedImages = 0;
+        const recordInputs = [];
+        const recordValues = [];
         for (const row of parsed.rows) {
           const supplier = supplierByCode.get(row.supplierCode);
           for (const input of row.records) {
-            const record = await createOne(ContractRecordModel, {
+            recordInputs.push(input);
+            recordValues.push({
               teamId, supplierId: supplier._id, category: input.category,
               signingStatus: input.signingStatus, contractNumber: input.contractNumber,
               effectiveDate: input.effectiveDate, expiryDate: input.expiryDate,
               autoRenew: input.autoRenew, details: input.details, attachments: [],
               createdBy: context.userId, updatedBy: context.userId
-            }, session);
-            for (const [index, media] of (input.importedMedia || []).entries()) {
-              record.attachments.push(await persistImportedInvoiceMedia({
-                staged: stagedByMedia.get(media), context, req, teamId, record, session
-              }));
-              importedImages += 1;
-            }
+            });
+          }
+        }
+
+        // A populated customer workbook can contain thousands of tertiary records.
+        // Insert the records in one transaction batch instead of opening one
+        // create/save round-trip per row, which previously caused production
+        // imports to exceed the transaction lifetime and return HTTP 500.
+        const insertedRecords = recordValues.length > 0
+          ? await ContractRecordModel.insertMany(recordValues, { session, ordered: true })
+          : [];
+        let createdRecords = insertedRecords.length;
+        let importedImages = 0;
+        for (const [index, record] of insertedRecords.entries()) {
+          const input = recordInputs[index];
+          for (const media of (input.importedMedia || [])) {
+            record.attachments.push(await persistImportedInvoiceMedia({
+              staged: stagedByMedia.get(media), context, req, teamId, record, session
+            }));
+            importedImages += 1;
+          }
+          if ((input.importedMedia || []).length > 0) {
             await record.save({ session });
-            createdRecords += 1;
-            await auditService.record({ req, authContext: context, action: AUDIT_ACTIONS.IMPORT,
-              resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
-              after: plain(record), targetTeamId: teamId, session });
+          }
+          auditEntries.push({ req, authContext: context, action: AUDIT_ACTIONS.IMPORT,
+            resourceType: AUDIT_RESOURCE_TYPES.SUPPLIER_CONTRACT_RECORD, resourceId: record._id,
+            after: plain(record), targetTeamId: teamId });
+        }
+
+        if (auditEntries.length > 0) {
+          if (typeof auditService.recordMany === 'function') {
+            await auditService.recordMany(auditEntries, { session });
+          } else {
+            // Keep injected/test audit services compatible while the production
+            // implementation uses one ordered bulk insert.
+            for (const entry of auditEntries) await auditService.record({ ...entry, session });
           }
         }
         return {
