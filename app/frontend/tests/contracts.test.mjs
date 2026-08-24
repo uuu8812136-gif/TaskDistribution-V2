@@ -269,6 +269,11 @@ test('contract supplier page exposes independent payment receipt ZIP import', ()
   assert.match(apiSource, /\/contracts\/suppliers\/payment-receipts\/import/)
 })
 
+test('large supplier contract workbook import has an isolated long timeout', () => {
+  const apiSource = readFileSync(new URL('../src/api/contract.js', import.meta.url), 'utf8')
+  assert.match(apiSource, /url: '\/contracts\/suppliers\/import'[\s\S]*timeout: 15 \* 60 \* 1000/)
+})
+
 test('new contract validation errors have direct customer-facing messages', () => {
   const errorSource = readFileSync(new URL('../src/utils/requestErrorMessages.js', import.meta.url), 'utf8')
   assert.match(errorSource, /CONTRACT_EXPORT_SCOPE_INVALID: '供应商合同导出范围不正确，请刷新页面后重试'/)

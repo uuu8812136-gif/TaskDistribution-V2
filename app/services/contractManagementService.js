@@ -1308,35 +1308,35 @@ function createContractManagementService({
     const { context, teamId } = teamForWrite(authContext, 'contract.supplier.import');
     if (!file || !Buffer.isBuffer(file.buffer)) throw contractError(400, 'CONTRACT_IMPORT_FILE_REQUIRED', '请选择合同Excel文件');
     if (file.buffer.length > MAX_IMPORT_FILE_SIZE) throw contractError(413, 'CONTRACT_IMPORT_FILE_TOO_LARGE', '合同Excel文件不能超过20MB');
-    const parsed = parseSupplierWorkbook(file.buffer);
-    let targetSupplier = null;
-    if (supplierId) {
-      targetSupplier = await SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }).lean();
-      if (!targetSupplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
-      if (parsed.suppliers.some((supplier) => supplier.code !== targetSupplier.code)) {
-        throw contractError(409, 'CONTRACT_IMPORT_SUPPLIER_MISMATCH', '导入文件中的供应商编码与当前供应商不一致');
-      }
-    }
-
-    const dummySupplierIds = new Map(parsed.suppliers.map((supplier) => [supplier.code, new mongoose.Types.ObjectId()]));
-    for (const supplier of parsed.suppliers) {
-      await new SupplierModel({ teamId, name: supplier.name, code: supplier.code,
-        trusteeAttribute: supplier.trusteeAttribute, createdBy: context.userId, updatedBy: context.userId }).validate();
-    }
-    for (const row of parsed.rows) {
-      for (const record of row.records) {
-        await new ContractRecordModel({ teamId, supplierId: dummySupplierIds.get(row.supplierCode),
-          category: record.category, signingStatus: record.signingStatus,
-          contractNumber: record.contractNumber, effectiveDate: record.effectiveDate,
-          expiryDate: record.expiryDate, autoRenew: record.autoRenew,
-          details: record.details, attachments: [],
-          createdBy: context.userId, updatedBy: context.userId }).validate();
-      }
-    }
-
     const stagedByMedia = new Map();
     const stagedFiles = [];
     try {
+      const parsed = parseSupplierWorkbook(file.buffer);
+      let targetSupplier = null;
+      if (supplierId) {
+        targetSupplier = await SupplierModel.findOne({ _id: normalizeId(supplierId, '供应商'), teamId }).lean();
+        if (!targetSupplier) throw contractError(404, 'CONTRACT_SUPPLIER_NOT_FOUND', '供应商不存在');
+        if (parsed.suppliers.some((supplier) => supplier.code !== targetSupplier.code)) {
+          throw contractError(409, 'CONTRACT_IMPORT_SUPPLIER_MISMATCH', '导入文件中的供应商编码与当前供应商不一致');
+        }
+      }
+
+      const dummySupplierIds = new Map(parsed.suppliers.map((supplier) => [supplier.code, new mongoose.Types.ObjectId()]));
+      for (const supplier of parsed.suppliers) {
+        await new SupplierModel({ teamId, name: supplier.name, code: supplier.code,
+          trusteeAttribute: supplier.trusteeAttribute, createdBy: context.userId, updatedBy: context.userId }).validate();
+      }
+      for (const row of parsed.rows) {
+        for (const record of row.records) {
+          await new ContractRecordModel({ teamId, supplierId: dummySupplierIds.get(row.supplierCode),
+            category: record.category, signingStatus: record.signingStatus,
+            contractNumber: record.contractNumber, effectiveDate: record.effectiveDate,
+            expiryDate: record.expiryDate, autoRenew: record.autoRenew,
+            details: record.details, attachments: [],
+            createdBy: context.userId, updatedBy: context.userId }).validate();
+        }
+      }
+
       for (const row of parsed.rows) {
         for (const record of row.records) {
           for (const [index, media] of (record.importedMedia || []).entries()) {

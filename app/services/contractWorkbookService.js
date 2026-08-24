@@ -206,6 +206,16 @@ function parseSupplierDate(value, rowIndex, columnIndex) {
   return parseSupplierCell(value, rowIndex, columnIndex, parseDateOnly);
 }
 
+function assertContractDateRange(record, rowIndex, expiryColumnIndex) {
+  if (!record.effectiveDate || !record.expiryDate) return;
+  if (record.expiryDate >= record.effectiveDate) return;
+  throw supplierCellError(
+    workbookError('CONTRACT_IMPORT_DATE_RANGE_INVALID', '合同截止日期不能早于合同生效日期'),
+    rowIndex,
+    expiryColumnIndex
+  );
+}
+
 function parseMonth(value) {
   if (value === null || value === undefined || value === '') return '';
   if (value instanceof Date && Number.isFinite(value.getTime())) {
@@ -487,6 +497,18 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
       },
       importedMedia: []
     });
+    const expiryColumnByCategory = {
+      MAIN_SERVICE_AGREEMENT: 15,
+      LOGISTICS_FEE_AGREEMENT: 27,
+      TURNOVER_EQUIPMENT_SERVICE: 37,
+      EQUIPMENT_RENTAL: 51
+    };
+    for (const record of records) {
+      const expiryColumnIndex = expiryColumnByCategory[record.category];
+      if (expiryColumnIndex !== undefined) {
+        assertContractDateRange(record, rowIndex, expiryColumnIndex);
+      }
+    }
     const missingStatus = records.find((record) => (
       record.category !== 'SUPPLIER_INFO' && !record.signingStatus
     ));

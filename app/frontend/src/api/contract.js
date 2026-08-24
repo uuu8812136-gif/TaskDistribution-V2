@@ -32,6 +32,10 @@ export function importSuppliers(file, params = {}, onUploadProgress) {
     method: 'post',
     params,
     data,
+    // A populated 60-column workbook can spend several minutes in the
+    // transactional validation/write path; keep the global request timeout
+    // unchanged for normal operations.
+    timeout: 15 * 60 * 1000,
     onUploadProgress
   })
 }

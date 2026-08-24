@@ -338,14 +338,40 @@ test('contract dates accept editor ISO values and common US short dates', () => 
   row[3] = '托管';
   row[12] = '已签订';
   row[14] = '2026-08-22T00:00:00.000Z';
-  row[15] = '08/22/23';
+  row[15] = '08/22/27';
   const { workbook } = supplierWorkbook({ detailRows: [row] });
   const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia()
   });
   const main = parsed.rows[0].records.find((record) => record.category === 'MAIN_SERVICE_AGREEMENT');
   assert.equal(main.effectiveDate.toISOString().slice(0, 10), '2026-08-22');
-  assert.equal(main.expiryDate.toISOString().slice(0, 10), '2023-08-22');
+  assert.equal(main.expiryDate.toISOString().slice(0, 10), '2027-08-22');
+});
+
+test('supplier import rejects a contract expiry date before its effective date', () => {
+  const row = Array(60).fill('');
+  row[1] = 'DATE-RANGE-001';
+  row[2] = '日期区间供应商';
+  row[3] = '托管';
+  row[12] = '已签订';
+  row[14] = '2028-08-01';
+  row[15] = '2027-07-31';
+  const { workbook } = supplierWorkbook({ detailRows: [row] });
+
+  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+    extractWorkbookMedia: () => extractedMedia()
+  }), (error) => {
+    assert.equal(error.code, 'CONTRACT_IMPORT_DATE_RANGE_INVALID');
+    assert.match(error.message, /第3行第16列/);
+    assert.match(error.message, /合同截止日期不能早于合同生效日期/);
+    assert.deepEqual(error.details, {
+      sheetName: DETAIL_SHEET,
+      rowNumber: 3,
+      columnNumber: 16,
+      columnLabel: '合同截止日期'
+    });
+    return true;
+  });
 });
 
 test('supplier import accepts strict ISO dates and MM/DD/YY dates', () => {
