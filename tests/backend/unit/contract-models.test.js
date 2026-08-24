@@ -121,7 +121,7 @@ test('supplier information rejects contract-only fields and empty contacts', asy
   });
 });
 
-test('contract rows require signing status and reject an expiry before the effective date', async () => {
+test('contract rows require signing status and preserve customer-provided date order', async () => {
   const base = {
     teamId: objectId(),
     supplierId: objectId(),
@@ -133,14 +133,12 @@ test('contract rows require signing status and reject an expiry before the effec
 
   await assert.rejects(new SupplierContractRecord(base).validate(), (error) => {
     assert.ok(error.errors.signingStatus);
-    assert.ok(error.errors.expiryDate);
     return true;
   });
 
   const valid = new SupplierContractRecord({
     ...base,
     signingStatus: SupplierContractRecord.CONTRACT_SIGNING_STATUSES.SIGNED,
-    expiryDate: new Date('2027-08-01T00:00:00.000Z'),
     autoRenew: true,
     details: {
       contacts: [{ name: '张三', phone: '13800000000' }],
@@ -149,6 +147,7 @@ test('contract rows require signing status and reject an expiry before the effec
     }
   });
   await valid.validate();
+  assert.equal(valid.expiryDate.toISOString(), '2026-08-01T00:00:00.000Z');
   assert.equal(valid.autoRenew, true);
   assert.equal(valid.details.quantity, '30个');
   assert.equal(valid.details.equipmentServicePrice, '10元/个/次');

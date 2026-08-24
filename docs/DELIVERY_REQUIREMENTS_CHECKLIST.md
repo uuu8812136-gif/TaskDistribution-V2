@@ -1,5 +1,12 @@
 # Delivery Requirements Checklist
 
+## 2026-08-24 Contract Import Data-Responsibility Boundary
+
+- [x] Customer confirmation: the system is responsible for accepting and storing an importable supplier-contract workbook; the customer is responsible for the correctness of its business data. A contract expiry date earlier than its effective date is therefore imported unchanged and returned as a non-blocking warning with worksheet, row, column, and field details.
+- [x] Structural failures that make a record impossible to establish still fail closed: unreadable/corrupt files, an invalid 60-column template, completely unparseable dates, missing supplier identity, unresolved attachment cells, or other required schema values. Manual create and actual date edits retain date-order validation; editing automatic renewal or binding a PDF to an already imported reversed-date record is allowed.
+- [x] Focused contract checks pass `65/65` backend and `32/32` Web. Full regression passes backend `712/712` and Web `296/296`; `git diff --check` passes. The customer workbook `供应商合同三级明细导入模板(3)(1).xlsx` was parsed read-only as 266 suppliers, 266 rows, and 1,330 tertiary records, with two non-blocking warnings at row 3/column 52 and row 10/column 52. No customer workbook data was written during this verification.
+- [ ] The code is verified locally but must still complete immutable release packaging, stopped-write backup, independent off-host verification, activation, PostAudit, and a small disposable live import acceptance before it is reported as running in production.
+
 ## 2026-08-22 Candidate Verification
 
 - Candidate source is `5b264f7de3886e098a76ac83454fe3a966c6cd15`; the supplier tertiary workbook is 60 columns `A:BH`, with independent nullable `autoRenew` fields at `X`, `Z`, `AI`, and `AW`.

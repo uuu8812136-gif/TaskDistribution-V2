@@ -839,9 +839,17 @@ async function submitImport() {
   const file = importFile.value
   importing.value = true
   try {
-    await importSuppliers(file, { ...requestTeamParams.value, supplierId: supplierId.value })
+    const result = await importSuppliers(file, { ...requestTeamParams.value, supplierId: supplierId.value })
     if (requestId !== importRequestId || !isCurrentPageContext(context)) return
     ElMessage.success('供应商合同导入完成')
+    if (Number(result.warningCount) > 0) {
+      const firstWarning = result.warnings?.[0]?.message || '存在日期先后异常，已按原数据导入'
+      ElMessage.warning({
+        message: `已保留 ${result.warningCount} 处异常数据：${firstWarning}`,
+        duration: 10000,
+        showClose: true
+      })
+    }
     importVisible.value = false
     for (const state of Object.values(recordState)) state.loaded = false
     await Promise.all([

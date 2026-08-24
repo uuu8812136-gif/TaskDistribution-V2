@@ -348,7 +348,7 @@ test('contract dates accept editor ISO values and common US short dates', () => 
   assert.equal(main.expiryDate.toISOString().slice(0, 10), '2027-08-22');
 });
 
-test('supplier import rejects a contract expiry date before its effective date', () => {
+test('supplier import preserves a contract expiry date before its effective date and reports a warning', () => {
   const row = Array(60).fill('');
   row[1] = 'DATE-RANGE-001';
   row[2] = '日期区间供应商';
@@ -358,19 +358,21 @@ test('supplier import rejects a contract expiry date before its effective date',
   row[15] = '2027-07-31';
   const { workbook } = supplierWorkbook({ detailRows: [row] });
 
-  assert.throws(() => parseSupplierWorkbook(workbookBuffer(workbook), {
+  const parsed = parseSupplierWorkbook(workbookBuffer(workbook), {
     extractWorkbookMedia: () => extractedMedia()
-  }), (error) => {
-    assert.equal(error.code, 'CONTRACT_IMPORT_DATE_RANGE_INVALID');
-    assert.match(error.message, /第3行第16列/);
-    assert.match(error.message, /合同截止日期不能早于合同生效日期/);
-    assert.deepEqual(error.details, {
+  });
+  const main = parsed.rows[0].records.find((record) => record.category === 'MAIN_SERVICE_AGREEMENT');
+  assert.equal(main.effectiveDate.toISOString().slice(0, 10), '2028-08-01');
+  assert.equal(main.expiryDate.toISOString().slice(0, 10), '2027-07-31');
+  assert.equal(parsed.warnings.length, 1);
+  assert.equal(parsed.warnings[0].code, 'CONTRACT_IMPORT_DATE_RANGE_INVALID');
+  assert.match(parsed.warnings[0].message, /第3行第16列/);
+  assert.match(parsed.warnings[0].message, /已按原数据导入/);
+  assert.deepEqual(parsed.warnings[0].details, {
       sheetName: DETAIL_SHEET,
       rowNumber: 3,
       columnNumber: 16,
       columnLabel: '合同截止日期'
-    });
-    return true;
   });
 });
 

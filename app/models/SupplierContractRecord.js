@@ -140,9 +140,6 @@ supplierContractRecordSchema.pre('validate', function validateCategoryFields(nex
     }
   } else {
     if (!this.signingStatus) this.invalidate('signingStatus', 'Contract signing status is required');
-    if (this.effectiveDate && this.expiryDate && this.effectiveDate > this.expiryDate) {
-      this.invalidate('expiryDate', 'expiryDate must be on or after effectiveDate');
-    }
   }
   next();
 });

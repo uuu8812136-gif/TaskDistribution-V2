@@ -818,8 +818,16 @@ async function submitImport() {
   try {
     const result = await importSuppliers(file, teamParams)
     if (requestId !== importRequestId || !isCurrentPageContext(context)) return
-    const count = Number(result.importedCount ?? result.createdCount ?? result.totalImported)
+    const count = Number(result.createdRecords ?? result.importedCount ?? result.createdCount ?? result.totalImported)
     ElMessage.success(Number.isFinite(count) ? `已导入 ${count} 条三级明细数据` : '三级细表导入完成')
+    if (Number(result.warningCount) > 0) {
+      const firstWarning = result.warnings?.[0]?.message || '存在日期先后异常，已按原数据导入'
+      ElMessage.warning({
+        message: `已保留 ${result.warningCount} 处异常数据：${firstWarning}`,
+        duration: 10000,
+        showClose: true
+      })
+    }
     importVisible.value = false
     filters.page = 1
     await loadSuppliers()

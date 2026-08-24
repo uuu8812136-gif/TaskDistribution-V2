@@ -1006,6 +1006,8 @@ async function supplierWorkbook({
   name,
   contractNumber = 'MAIN-1',
   trustee = '托管',
+  effectiveDate = '2026-01-01',
+  expiryDate = '2026-12-31',
   additionalRows = []
 }) {
   const workbook = new ExcelJS.Workbook();
@@ -1024,12 +1026,12 @@ async function supplierWorkbook({
     row[3] = input.trustee;
     row[12] = '已签订';
     row[13] = input.contractNumber;
-    row[14] = '2026-01-01';
-    row[15] = '2026-12-31';
+    row[14] = input.effectiveDate || effectiveDate;
+    row[15] = input.expiryDate || expiryDate;
     row[23] = '否';
     detail.addRow(row);
   };
-  addRow({ code, name, contractNumber, trustee }, 1);
+  addRow({ code, name, contractNumber, trustee, effectiveDate, expiryDate }, 1);
   additionalRows.forEach((row, index) => addRow(row, index + 2));
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
@@ -1071,6 +1073,56 @@ test('supplier import writes one atomic supplier and history batch and constrain
   assert.equal(await Supplier.exists({ teamId: fixture.teamA, code: 'ROLLBACK-IMPORT' }), null);
   assert.equal(await SupplierContractRecord.exists({ teamId: fixture.teamA,
     contractNumber: 'MAIN-1', supplierId: { $ne: imported._id } }), null);
+});
+
+test('supplier import stores customer-provided reversed dates and returns a non-blocking warning', async () => {
+  const buffer = await supplierWorkbook({
+    code: 'DATE-WARNING-IMPORT',
+    name: 'Date Warning Supplier',
+    contractNumber: 'DATE-WARNING-1',
+    effectiveDate: '2028-08-01',
+    expiryDate: '2027-07-31'
+  });
+  const result = await service.importSuppliers({
+    authContext: fixture.contextA,
+    file: { buffer }
+  });
+
+  assert.equal(result.createdRecords, 1);
+  assert.equal(result.warningCount, 1);
+  assert.equal(result.warnings[0].code, 'CONTRACT_IMPORT_DATE_RANGE_INVALID');
+  assert.match(result.warnings[0].message, /已按原数据导入/);
+  const persisted = await SupplierContractRecord.findOne({
+    teamId: fixture.teamA,
+    contractNumber: 'DATE-WARNING-1'
+  }).lean();
+  assert.equal(persisted.effectiveDate.toISOString().slice(0, 10), '2028-08-01');
+  assert.equal(persisted.expiryDate.toISOString().slice(0, 10), '2027-07-31');
+
+  const updated = await service.updateRecord({
+    authContext: fixture.contextA,
+    recordId: persisted._id,
+    input: { autoRenew: true }
+  });
+  assert.equal(updated.autoRenew, true);
+  assert.equal(new Date(updated.effectiveDate).toISOString().slice(0, 10), '2028-08-01');
+  assert.equal(new Date(updated.expiryDate).toISOString().slice(0, 10), '2027-07-31');
+
+  await assert.rejects(service.updateRecord({
+    authContext: fixture.contextA,
+    recordId: persisted._id,
+    input: { expiryDate: '2027-06-30' }
+  }), { status: 400, code: 'CONTRACT_DATE_RANGE_INVALID' });
+
+  const pdf = Buffer.from('%PDF-1.7\nreversed-date\n%%EOF');
+  const zip = pdfZip([{ name: 'DATE-WARNING-IMPORT__DATE-WARNING-1.pdf', content: pdf }]);
+  const attachmentResult = await service.importContractPdfs({
+    authContext: fixture.contextA,
+    file: { buffer: zip },
+    req: { method: 'POST', originalUrl: '/api/contracts/suppliers/contract-pdfs/import' }
+  });
+  assert.equal(attachmentResult.importedCount, 1);
+  assert.equal((await SupplierContractRecord.findById(persisted._id).lean()).attachments.length, 1);
 });
 
 test('supplier and settlement imports use the authenticated team when codes overlap', async () => {

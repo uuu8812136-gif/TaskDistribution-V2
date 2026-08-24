@@ -352,9 +352,18 @@ test('contract detail loads all five totals and enforces record-wide attachment 
   assert.match(detailSource, /totalAttachments > 10/)
   assert.match(detailSource, /同一条记录最多上传 10 个附件/)
   assert.match(detailSource, /截止日期不能早于生效日期/)
+  assert.match(detailSource, /warningCount/)
+  assert.match(detailSource, /已按原数据导入/)
   assert.match(detailSource, /对账邮箱.*格式不正确/)
   assert.match(uploadSource, /:disabled="disabled"/)
   assert.match(uploadSource, /allowedExtensions/)
+})
+
+test('supplier workbook import reports non-blocking data warnings after a successful write', () => {
+  const supplierSource = readFileSync(new URL('../src/views/contracts/SupplierContracts.vue', import.meta.url), 'utf8')
+  assert.match(supplierSource, /result\.createdRecords/)
+  assert.match(supplierSource, /result\.warningCount/)
+  assert.match(supplierSource, /已保留.*处异常数据/)
 })
 
 test('settlement table summary consumes backend totals instead of reducing the visible page', () => {

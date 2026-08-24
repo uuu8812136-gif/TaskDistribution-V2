@@ -206,14 +206,19 @@ function parseSupplierDate(value, rowIndex, columnIndex) {
   return parseSupplierCell(value, rowIndex, columnIndex, parseDateOnly);
 }
 
-function assertContractDateRange(record, rowIndex, expiryColumnIndex) {
-  if (!record.effectiveDate || !record.expiryDate) return;
-  if (record.expiryDate >= record.effectiveDate) return;
-  throw supplierCellError(
-    workbookError('CONTRACT_IMPORT_DATE_RANGE_INVALID', '合同截止日期不能早于合同生效日期'),
+function contractDateRangeWarning(record, rowIndex, expiryColumnIndex) {
+  if (!record.effectiveDate || !record.expiryDate) return null;
+  if (record.expiryDate >= record.effectiveDate) return null;
+  const warning = supplierCellError(
+    workbookError('CONTRACT_IMPORT_DATE_RANGE_INVALID', '合同截止日期早于合同生效日期，已按原数据导入'),
     rowIndex,
     expiryColumnIndex
   );
+  return {
+    code: warning.code,
+    message: warning.message,
+    details: warning.details
+  };
 }
 
 function parseMonth(value) {
@@ -350,6 +355,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
 
   const suppliersByCode = new Map();
   const rows = [];
+  const warnings = [];
   const detailRange = XLSX.utils.decode_range(detailSheet['!ref'] || 'A1:A1');
   for (let rowIndex = 2; rowIndex <= detailRange.e.r; rowIndex += 1) {
     const values = Array.from({ length: 60 }, (_, columnIndex) => (
@@ -506,7 +512,8 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
     for (const record of records) {
       const expiryColumnIndex = expiryColumnByCategory[record.category];
       if (expiryColumnIndex !== undefined) {
-        assertContractDateRange(record, rowIndex, expiryColumnIndex);
+        const warning = contractDateRangeWarning(record, rowIndex, expiryColumnIndex);
+        if (warning) warnings.push(warning);
       }
     }
     const missingStatus = records.find((record) => (
@@ -544,6 +551,7 @@ function parseSupplierWorkbook(buffer, { extractWorkbookMedia = extractEquipment
   return {
     suppliers: [...suppliersByCode.values()],
     rows,
+    warnings,
     mediaSummary: extracted.summary
   };
 }

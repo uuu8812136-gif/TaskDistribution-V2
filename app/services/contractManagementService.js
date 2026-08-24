@@ -428,7 +428,17 @@ function normalizeRecordInput(input, { current = null, partial = false } = {}) {
   }
   const effectiveDate = isInfo ? null : normalizeDate(source.effectiveDate, '合同生效日期');
   const expiryDate = isInfo ? null : normalizeDate(source.expiryDate, '合同截止日期');
-  if (effectiveDate && expiryDate && effectiveDate > expiryDate) {
+  const sameDate = (left, right) => {
+    if (!left && !right) return true;
+    if (!left || !right) return false;
+    return new Date(left).getTime() === new Date(right).getTime();
+  };
+  const dateRangeChanged = !current ||
+    (Object.prototype.hasOwnProperty.call(input || {}, 'effectiveDate') &&
+      !sameDate(effectiveDate, current.effectiveDate)) ||
+    (Object.prototype.hasOwnProperty.call(input || {}, 'expiryDate') &&
+      !sameDate(expiryDate, current.expiryDate));
+  if (dateRangeChanged && effectiveDate && expiryDate && effectiveDate > expiryDate) {
     throw contractError(400, 'CONTRACT_DATE_RANGE_INVALID', '合同截止日期不能早于生效日期');
   }
   if (partial && Object.keys(input || {}).length === 0) throw contractError(400, 'CONTRACT_INPUT_INVALID', '至少修改一个字段');
@@ -1404,8 +1414,15 @@ function createContractManagementService({
               after: plain(record), targetTeamId: teamId, session });
           }
         }
-        return { createdSuppliers, updatedSuppliers, createdRecords, importedImages,
-          mediaSummary: parsed.mediaSummary };
+        return {
+          createdSuppliers,
+          updatedSuppliers,
+          createdRecords,
+          importedImages,
+          warningCount: parsed.warnings.length,
+          warnings: parsed.warnings,
+          mediaSummary: parsed.mediaSummary
+        };
       });
       return result;
     } catch (error) {
