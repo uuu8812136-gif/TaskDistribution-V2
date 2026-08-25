@@ -113,6 +113,7 @@ async function ensureAccount({ username, password, UserModel = User }) {
       roles: ['executor'],
       isSuperAdmin: false,
       isSystemAccount: true,
+      isReadOnlyDemo: true,
       tokenVersion: 0,
       status: 'active'
     });
@@ -127,9 +128,14 @@ async function ensureAccount({ username, password, UserModel = User }) {
     if (!await account.comparePassword(password)) {
       throw new Error('READONLY_DEMO_PASSWORD does not match the existing account');
     }
-    if (account.name !== SYSTEM_ACCOUNT_DISPLAY_NAME || !sameArray(account.roles, ['executor'])) {
+    if (
+      account.name !== SYSTEM_ACCOUNT_DISPLAY_NAME ||
+      !sameArray(account.roles, ['executor']) ||
+      account.isReadOnlyDemo !== true
+    ) {
       account.name = SYSTEM_ACCOUNT_DISPLAY_NAME;
       account.roles = ['executor'];
+      account.isReadOnlyDemo = true;
       await account.save();
     }
   }

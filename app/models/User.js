@@ -71,6 +71,15 @@ const userSchema = new mongoose.Schema({
     required: true
   },
 
+  // The customer-facing read-only demo identity gets response-level data
+  // masking. This is separate from system-account redaction and never grants
+  // or removes business permissions.
+  isReadOnlyDemo: {
+    type: Boolean,
+    default: false,
+    required: true
+  },
+
   // Incrementing this value invalidates every JWT issued for the user.
   tokenVersion: {
     type: Number,

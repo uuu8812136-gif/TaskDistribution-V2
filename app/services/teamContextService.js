@@ -242,6 +242,7 @@ function buildContext({
     permissionKeys: Object.freeze([]),
     moduleDataScopes: Object.freeze({}),
     equipmentOrgUnitScopeIds: Object.freeze([]),
+    isReadOnlyDemo: user.isReadOnlyDemo === true,
     readOnly: claims.mode !== SESSION_MODES.TEAM,
     canAccessBusiness: claims.mode !== SESSION_MODES.TEAM_SELECTION
   };
@@ -425,7 +426,7 @@ function createTeamContextService({
   const userFinder = findUserById || (User
     ? (userId) => executeQuery(
       User.findById(userId),
-      { select: '_id username name phone email avatar roles status isSuperAdmin isSystemAccount tokenVersion' }
+      { select: '_id username name phone email avatar roles status isSuperAdmin isSystemAccount isReadOnlyDemo tokenVersion' }
     )
     : null);
   const teamFinder = findTeamById || (ProjectTeam

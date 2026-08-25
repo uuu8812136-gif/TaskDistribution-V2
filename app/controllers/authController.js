@@ -17,6 +17,7 @@ const {
 const { createAuditService } = require('../services/auditService');
 const { normalizeId } = require('../services/authSessionService');
 const { createSessionLifecycleService } = require('../services/sessionLifecycleService');
+const { maskDemoResponse } = require('../services/readOnlyDemoDataMaskingService');
 const { runWithOptionalTransaction } = require('../services/transactionService');
 const {
   AUTH_ERROR_CODES,
@@ -182,7 +183,7 @@ async function findAccessibleTeams({ userId, isSuperAdmin }) {
 }
 
 function serializeIssuedSession(issued, user, teams, lastLoginAt) {
-  return {
+  const response = {
     message: 'Login successful',
     token: issued.token,
     expiresAt: issued.expiresAt,
@@ -191,6 +192,7 @@ function serializeIssuedSession(issued, user, teams, lastLoginAt) {
     user: serializeUser(user, { lastLoginAt }),
     teams
   };
+  return user.isReadOnlyDemo === true ? maskDemoResponse(response) : response;
 }
 
 function serializeRotatedSession(issued) {

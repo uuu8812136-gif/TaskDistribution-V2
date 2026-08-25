@@ -18,6 +18,7 @@ const {
   resolveTaskTemporaryUploadContext
 } = require('../services/taskLeadershipAccessService');
 const { validatedExtension } = require('../services/fileStorageService');
+const { denyReadOnlyDemoFileDownload } = require('../middlewares/readOnlyDemoDataMasking');
 
 function createUpload(maxFileSize) {
   return multer({
@@ -122,7 +123,7 @@ function createFilesRouter({ storageRoot, maxFileSize, temporaryFileLimits } = {
     controller.uploadTemporary
   );
   router.get('/:fileId', controller.getMetadata);
-  router.get('/:fileId/download', controller.download);
+  router.get('/:fileId/download', denyReadOnlyDemoFileDownload, controller.download);
   router.patch('/:fileId/bind', requireTeamContext, businessWriteGuard, controller.bind);
   router.delete('/:fileId', requireTeamContext, businessWriteGuard, controller.remove);
 

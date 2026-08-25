@@ -2,6 +2,7 @@ const { randomUUID } = require('node:crypto');
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const { readOnlyDemoDataMasking } = require('./middlewares/readOnlyDemoDataMasking');
 
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const MONGOOSE_CONNECTED_STATE = 1;
@@ -52,6 +53,10 @@ function createApp(config, {
   app.use(cors(createCorsOptions(config)));
   app.use(express.json({ limit: '2mb' }));
   app.use(express.urlencoded({ extended: true, limit: '2mb' }));
+  // The middleware decides at response time, after route authentication has
+  // populated req.authContext. Normal accounts and public health responses are
+  // returned byte-for-byte unchanged.
+  app.use(readOnlyDemoDataMasking);
 
   if (config.enableLegacyPublicUploads) {
     app.use('/uploads', express.static(config.uploadPath));
