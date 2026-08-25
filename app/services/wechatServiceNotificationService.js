@@ -102,14 +102,18 @@ function messageProgress(message) {
 }
 
 function buildTemplateData(message) {
-  const deadline = shanghaiDateTime(messageDeadline(message));
+  // The approved template requires time4 even for system notices without a
+  // business deadline. Use the notification timestamp as a valid fallback so
+  // WeChat does not reject the entire message with 47003.
+  const notificationTime = shanghaiDateTime(message.createdAt || new Date()) || shanghaiDateTime(new Date());
+  const deadline = shanghaiDateTime(messageDeadline(message)) || notificationTime;
   const data = {
     thing1: { value: compactText(message.relatedTask?.taskName || message.title) },
     thing5: { value: messageProgress(message) },
-    time3: { value: shanghaiDateTime(message.createdAt || new Date()) },
+    time3: { value: notificationTime },
     thing2: { value: '进入小程序查看处理' }
   };
-  if (deadline) data.time4 = { value: deadline };
+  data.time4 = { value: deadline };
   return data;
 }
 

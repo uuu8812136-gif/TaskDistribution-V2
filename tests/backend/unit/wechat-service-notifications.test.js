@@ -56,14 +56,14 @@ test('template data uses the exact approved keyword mapping and Shanghai time', 
   assert.equal(shanghaiDateTime('invalid'), null);
 });
 
-test('template omits deadline instead of inventing one for a deadline-free workflow', () => {
+test('template supplies a valid fallback deadline for a deadline-free workflow', () => {
   const data = buildTemplateData({
     title: '维修审批待办',
     content: '请审批',
     createdAt: new Date('2026-08-19T01:02:03.000Z'),
     extraData: { workflowStatus: 'DEPARTMENT_REVIEW' }
   });
-  assert.equal(data.time4, undefined);
+  assert.equal(data.time4.value, '2026-08-19 09:02:03');
   assert.equal(data.thing5.value, '待处理');
 });
 
