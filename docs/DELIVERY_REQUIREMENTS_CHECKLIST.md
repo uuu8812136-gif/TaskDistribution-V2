@@ -1,5 +1,12 @@
 # Delivery Requirements Checklist
 
+## 2026-08-25 Pre-Migration Recovery And Receipt Timestamp Fix
+
+- [x] Candidate `v2-20260825-714bbf8` stopped closed before migration because the signed off-host receipt compared `2026-08-25T07:30:38.960Z` with a Windows PowerShell-normalized `2026-08-25T07:30:38.96Z`; the backup archive, manifest, and independent checks remained valid.
+- [x] The previous active release `v2-20260824-a21ac4b` was restored from the captured pre-migration runtime state. API/Web/business tunnel/management tunnel/MongoDB are running, loopback `18120/18130/27150` listeners are present, and `https://www.horselink.cn/health`, `/`, and `/api/auth/login-teams` return HTTP `200`.
+- [x] Receipt generation now preserves the exact manifest timestamp text through Windows PowerShell 5.1 JSON parsing; the regression fixture covers millisecond values with significant trailing zeros.
+- [ ] The corrected candidate still requires a new immutable package, stopped-write backup/off-host receipt, Plan/Hold/Execute, PostAudit, and live notification acceptance before activation is reported.
+
 ## 2026-08-24 Contract Import Data-Responsibility Boundary
 
 - [x] Customer confirmation: the system is responsible for accepting and storing an importable supplier-contract workbook; the customer is responsible for the correctness of its business data. A contract expiry date earlier than its effective date is therefore imported unchanged and returned as a non-blocking warning with worksheet, row, column, and field details.

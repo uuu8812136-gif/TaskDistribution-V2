@@ -365,8 +365,20 @@ verifyBackupSet(process.argv[2], { verifyFiles: true }).then((result) => {
 '@
 $verificationOutput = @(& $NodePath -e $verifyProgram $BackupCorePath $extractedBackup 2>&1)
 if ($LASTEXITCODE -ne 0) { throw "Independent full backup verification failed: $($verificationOutput -join ' ')" }
-try { $verified = ($verificationOutput -join "`n") | ConvertFrom-Json }
+$verificationJson = $verificationOutput -join "`n"
+try { $verified = $verificationJson | ConvertFrom-Json }
 catch { throw "Independent verification output is invalid JSON: $($_.Exception.Message)" }
+
+# Windows PowerShell 5.1 converts ISO timestamps to DateTime during ConvertFrom-Json
+# and drops insignificant trailing milliseconds (for example, .960Z -> .96Z). Keep
+# the manifest's exact timestamp text for the signed receipt identity chain.
+$createdAtMatch = [regex]::Match($verificationJson, '"createdAt"\s*:\s*"([^"]+)"')
+$completedAtMatch = [regex]::Match($verificationJson, '"completedAt"\s*:\s*"([^"]+)"')
+if (-not $createdAtMatch.Success -or -not $completedAtMatch.Success) {
+  throw 'Independent verification output is missing exact manifest timestamps'
+}
+$verifiedCreatedAtText = $createdAtMatch.Groups[1].Value
+$verifiedCompletedAtText = $completedAtMatch.Groups[1].Value
 
 $requiredBson = "database/$expectedDatabase/equipmentcategories.bson"
 $requiredMetadata = "database/$expectedDatabase/equipmentcategories.metadata.json"
@@ -409,8 +421,8 @@ $receipt = [ordered]@{
   }
   backupId = $BackupId
   manifestSha256 = $BackupManifestSha256
-  manifestCreatedAt = $verified.createdAt
-  manifestCompletedAt = $verified.completedAt
+  manifestCreatedAt = $verifiedCreatedAtText
+  manifestCompletedAt = $verifiedCompletedAtText
   stoppedHandoffSha256 = $StoppedHandoffSha256
   handoffNonce = $HandoffNonce
   sourceHost = $SourceHost

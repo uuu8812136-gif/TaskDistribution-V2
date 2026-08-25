@@ -70,8 +70,8 @@ async function writeFixtureBackup(root, backupId, {
   const manifest = {
     format: 'task-distribution-v2-backup/v1',
     backupId,
-    createdAt: '2026-08-10T12:00:01.000Z',
-    completedAt: '2026-08-10T12:00:02.000Z',
+    createdAt: '2026-08-10T12:00:01.006Z',
+    completedAt: '2026-08-10T12:00:02.960Z',
     retentionTags: ['daily'],
     database: {
       name: databaseName,
@@ -317,6 +317,8 @@ test('independent E-drive generator rejects source hash drift then creates a ful
   assert.equal(receipt.archiveSha256, parameters.archiveSha256)
   assert.equal(receipt.archiveBytes, parameters.archiveBytes)
   assert.equal(receipt.manifestSha256, manifestSha256)
+  assert.equal(receipt.manifestCreatedAt, '2026-08-10T12:00:01.006Z')
+  assert.equal(receipt.manifestCompletedAt, '2026-08-10T12:00:02.960Z')
   assert.deepEqual(receipt.databaseTarget, {
     hosts: ['127.0.0.1'],
     servers: ['127.0.0.1:27150'],
