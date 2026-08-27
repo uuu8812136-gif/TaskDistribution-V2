@@ -100,6 +100,39 @@ test('contract detail configuration covers the five Excel groups without duplica
   }
 })
 
+test('contract summary cards expose every business field without opening details', () => {
+  for (const config of CONTRACT_CATEGORY_CONFIGS) {
+    assert.deepEqual(
+      config.summaryKeys,
+      config.fields.map((item) => item.key),
+      `${config.label} summary must include every configured business field`
+    )
+  }
+})
+
+test('contract summary cards render configured fields from normalized record data', () => {
+  const detailSource = readFileSync(new URL('../src/views/contracts/SupplierContractDetail.vue', import.meta.url), 'utf8')
+  assert.match(detailSource, /v-for="item in summaryFields\(activeConfig\)"/)
+  assert.match(detailSource, /formatContractField\(record\[item\.key\], item\)/)
+
+  const mainContract = categoryByValue.get(CONTRACT_RECORD_CATEGORIES.MAIN_SERVICE_AGREEMENT)
+  const record = normalizeRecord({
+    signingStatus: 'SIGNED',
+    details: {
+      supplierSignedDate: '2026-08-01',
+      companySignedDate: '2026-08-02',
+      returnDate: '2026-08-03',
+      courierNumber: 'SF123456',
+      deliveredBusinessDate: '2026-08-04',
+      deliveredFactoryDate: '2026-08-05'
+    }
+  })
+  assert.equal(formatContractField(record.supplierSignedDate, mainContract.fields.find((item) => item.key === 'supplierSignedDate')), '2026-08-01')
+  assert.equal(formatContractField(record.courierNumber, mainContract.fields.find((item) => item.key === 'courierNumber')), 'SF123456')
+  assert.ok(mainContract.summaryKeys.includes('supplierSignedDate'))
+  assert.ok(mainContract.summaryKeys.includes('courierNumber'))
+})
+
 test('overstorage days is maintained as ordinary text', () => {
   const logistics = categoryByValue.get(CONTRACT_RECORD_CATEGORIES.LOGISTICS_FEE_AGREEMENT)
   const overstorageDays = logistics.fields.find((field) => field.key === 'overstorageDays')

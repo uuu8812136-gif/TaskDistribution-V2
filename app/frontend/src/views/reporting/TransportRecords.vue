@@ -67,7 +67,14 @@
     </section>
 
     <section class="table-shell">
-      <el-table v-loading="loading" :data="records" row-key="_id" stripe empty-text="暂无运输提报">
+      <el-table
+        v-loading="loading"
+        :data="records"
+        row-key="_id"
+        stripe
+        empty-text="暂无运输提报"
+        :row-class-name="transportRowClass"
+      >
         <el-table-column prop="reportDate" label="日期" width="112" fixed="left" />
         <el-table-column prop="driverName" label="司机" min-width="110" />
         <el-table-column prop="vehiclePlate" label="车牌号" min-width="120" />
@@ -412,7 +419,8 @@ import {
   dailyCountText,
   entityName,
   naturalMonthRange,
-  saveBlob
+  saveBlob,
+  transportRowClass
 } from '@/utils/reporting'
 
 const route = useRoute()
@@ -1131,6 +1139,10 @@ onBeforeUnmount(deactivateTransportRecords)
 .keyword-input { width: min(280px, 100%); }
 .toolbar-spacer { flex: 1; }
 .table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
+:deep(.transport-row--delivery > td.el-table__cell) { background-color: #f0f9e9; }
+:deep(.transport-row--return-rack > td.el-table__cell) { background-color: #fff7e6; }
+:deep(.transport-row--delivery:hover > td.el-table__cell) { background-color: #e2f3d5 !important; }
+:deep(.transport-row--return-rack:hover > td.el-table__cell) { background-color: #ffedc2 !important; }
 .table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }

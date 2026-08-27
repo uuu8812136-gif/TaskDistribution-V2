@@ -373,6 +373,12 @@ export function rowQuantityTotal(row, fields) {
   return fields.reduce((total, { key }) => total + (Number(row?.[key]) || 0), 0)
 }
 
+export function transportRowClass({ row } = {}) {
+  if (row?.dispatchType === '配送') return 'transport-row--delivery'
+  if (row?.dispatchType === '返架') return 'transport-row--return-rack'
+  return ''
+}
+
 export function transportChangedFields(change) {
   if (!change?.before) return ['创建记录']
   return Object.keys(TRANSPORT_FIELD_LABELS)

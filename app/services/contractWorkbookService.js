@@ -649,6 +649,42 @@ function recordExportRow(record, supplier, index) {
   return row.map(formulaSafe);
 }
 
+function mergedDetailCellValue(current, next) {
+  const currentText = text(current);
+  const nextText = text(next);
+  if (!currentText) return next;
+  if (!nextText) return current;
+
+  const values = new Set(currentText.split('；'));
+  if (values.has(nextText)) return current;
+  return `${currentText}；${nextText}`;
+}
+
+function mergedDetailExportRows(records, suppliersById) {
+  const rowsBySupplier = new Map();
+  let index = 1;
+
+  for (const record of records) {
+    const supplier = suppliersById.get(String(record.supplierId));
+    if (!supplier) continue;
+
+    const supplierKey = String(supplier._id);
+    const exported = recordExportRow(record, supplier, index);
+    const existing = rowsBySupplier.get(supplierKey);
+    if (!existing) {
+      rowsBySupplier.set(supplierKey, exported);
+      index += 1;
+      continue;
+    }
+
+    for (let columnIndex = 4; columnIndex < DETAIL_HEADERS.length; columnIndex += 1) {
+      existing[columnIndex] = mergedDetailCellValue(existing[columnIndex], exported[columnIndex]);
+    }
+  }
+
+  return [...rowsBySupplier.values()];
+}
+
 function styleWorksheet(sheet, { headerRow = 1 } = {}) {
   sheet.views = [{ state: 'frozen', ySplit: headerRow }];
   const header = sheet.getRow(headerRow);
@@ -716,11 +752,13 @@ async function createSupplierExportWorkbook({ scope, suppliers, records, categor
     const details = workbook.addWorksheet(DETAIL_SHEET_NAME);
     details.addRow([]);
     details.addRow(DETAIL_HEADERS);
-    let index = 1;
-    detailRecords.forEach((record) => {
-      const supplier = suppliersById.get(String(record.supplierId));
-      if (supplier) details.addRow(recordExportRow(record, supplier, index++));
-    });
+    const detailRows = category
+      ? detailRecords.flatMap((record, index) => {
+        const supplier = suppliersById.get(String(record.supplierId));
+        return supplier ? [recordExportRow(record, supplier, index + 1)] : [];
+      })
+      : mergedDetailExportRows(detailRecords, suppliersById);
+    detailRows.forEach((row) => details.addRow(row));
     styleWorksheet(details, { headerRow: 2 });
   }
 

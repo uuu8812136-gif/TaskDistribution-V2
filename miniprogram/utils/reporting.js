@@ -50,6 +50,23 @@ export const MONTHLY_SCHEDULE_FIELDS = Object.freeze([
   Object.freeze({ key: 'bLineNight', label: 'B线夜班' })
 ])
 
+export function dailyScheduleTotal(schedule = {}) {
+  return (schedule.dailyEntries || []).reduce(
+    (scheduleTotal, entry) => scheduleTotal + DAILY_SCHEDULE_FIELDS.reduce(
+      (entryTotal, { key }) => entryTotal + (Number(entry?.[key]) || 0),
+      0
+    ),
+    0
+  )
+}
+
+export function monthlyScheduleTotal(schedule = {}) {
+  return MONTHLY_SCHEDULE_FIELDS.reduce(
+    (total, { key }) => total + (Number(schedule.monthlyTotals?.[key]) || 0),
+    0
+  )
+}
+
 const FILE_ID_PATTERN = /^[0-9a-f]{24}$/i
 const GLOBAL_READ_ONLY = 'GLOBAL_READ_ONLY'
 

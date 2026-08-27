@@ -16,7 +16,9 @@ import {
   buildTransportPayload,
   businessNaturalDate,
   configuredTransportLoadItems,
+  dailyScheduleTotal,
   dailyReportSourceSummary,
+  monthlyScheduleTotal,
   scopedReportingParams
 } from '../utils/reporting.js'
 
@@ -175,6 +177,30 @@ test('reporting helpers preserve Shanghai natural dates and fixed schedule colum
   )
 })
 
+test('monthly schedule total is computed from the current organization values', () => {
+  assert.equal(monthlyScheduleTotal({
+    monthlyTotals: {
+      aLine: 10,
+      northLine: '2',
+      transferCaseLine: null,
+      bLineDay: 3,
+      bLineNight: 1,
+      total: 999
+    }
+  }), 16)
+  assert.equal(monthlyScheduleTotal({ monthlyTotals: {} }), 0)
+})
+
+test('daily schedule month total is recomputed from daily entries', () => {
+  assert.equal(dailyScheduleTotal({
+    dailyEntries: [
+      { aLineDay: 1, aLineNight: '2', northLine: 3, total: 999 },
+      { transferCaseLine: 4, bLineDay: 5, bLineNight: 6 }
+    ]
+  }), 21)
+  assert.equal(dailyScheduleTotal({ dailyEntries: [] }), 0)
+})
+
 test('organization options are scoped, active and deduplicated', () => {
   assert.deepEqual(buildOrgUnitOptions(
     [
@@ -226,6 +252,8 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   const attendanceSource = fs.readFileSync(`${root}/pages/reporting/attendance.vue`, 'utf8')
   const attendanceFormSource = fs.readFileSync(`${root}/pages/reporting/attendance-form.vue`, 'utf8')
   const dailyReportSource = fs.readFileSync(`${root}/pages/reporting/daily-report.vue`, 'utf8')
+  const scheduleSource = fs.readFileSync(`${root}/pages/reporting/schedule.vue`, 'utf8')
+  const clipboardSource = fs.readFileSync(`${root}/utils/clipboard.js`, 'utf8')
   const pages = JSON.parse(fs.readFileSync(`${root}/pages.json`, 'utf8'))
   const registered = new Set(pages.pages.map(({ path }) => path))
 
@@ -246,7 +274,10 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   assert.match(attendanceSource, /date: request\.date/)
   assert.match(attendanceSource, /requestGate\.isCurrent\(request\)/)
   assert.match(attendanceSource, /reviewAttendanceDailySummary/)
-  assert.match(attendanceSource, /setClipboardData/)
+  assert.match(attendanceSource, /copyTextToClipboard/)
+  assert.match(attendanceSource, /await copyTextToClipboard\(summary\.value\.review\?\.finalText/)
+  assert.match(attendanceSource, /canCopyFinalText/)
+  assert.match(clipboardSource, /setClipboardData/)
   assert.deepEqual(
     ATTENDANCE_NAMED_FIELDS.map(({ label }) => label),
     ['请假', '休班', '病假', '旷工', '未入职', '待离职', '临时工']
@@ -261,7 +292,14 @@ test('mini-program reporting pages use authenticated file APIs and are registere
   assert.match(reportingIndexSource, /openDailyReport/)
   assert.match(apiSource, /generated-daily-reports/)
   assert.match(dailyReportSource, /report\.daily\.generate/)
-  assert.match(dailyReportSource, /setClipboardData/)
+  assert.match(dailyReportSource, /copyTextToClipboard/)
+  assert.match(dailyReportSource, /await copyTextToClipboard\(report\.value\?\.finalText/)
+  assert.match(dailyReportSource, /canCopyText/)
   assert.match(dailyReportSource, /availableVersions/)
   assert.match(dailyReportSource, /来源追溯/)
+  assert.match(scheduleSource, /月度排产合计/)
+  assert.match(scheduleSource, /currentDailyScheduleTotal/)
+  assert.match(scheduleSource, /monthlyGrandTotal/)
+  assert.match(scheduleSource, /dailyScheduleTotal\(currentDailySchedule\.value\)/)
+  assert.match(scheduleSource, /monthlyScheduleTotal\(schedule\)/)
 })

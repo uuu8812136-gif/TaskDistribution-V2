@@ -44,7 +44,15 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '供应商基本信息',
     shortLabel: '基础信息',
     attachmentGroups: [{ purpose: 'INVOICE_INFO', label: '开票资料附件', accept: '.jpg,.jpeg,.png,.pdf' }],
-    summaryKeys: ['supplyStatus', 'hasInvoiceInfo', 'reconciliationEmails'],
+    summaryKeys: [
+      'supplyStatus',
+      'hasInvoiceInfo',
+      'invoiceInfoText',
+      'contacts',
+      'reconciliationEmails',
+      'unsignedReason',
+      'remarks'
+    ],
     fields: [
       field('supplyStatus', '供方供货情况', 'select', {
         options: [
@@ -65,7 +73,19 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '主合同签订情况',
     shortLabel: '主合同',
     attachmentGroups: [{ purpose: 'CONTRACT_PDF', label: '合同 PDF', accept: '.pdf' }],
-    summaryKeys: ['signingStatus', 'contractNumber', 'effectiveDate', 'expiryDate', 'autoRenew'],
+    summaryKeys: [
+      'signingStatus',
+      'contractNumber',
+      'effectiveDate',
+      'expiryDate',
+      'supplierSignedDate',
+      'companySignedDate',
+      'returnDate',
+      'courierNumber',
+      'deliveredBusinessDate',
+      'deliveredFactoryDate',
+      'autoRenew'
+    ],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('contractNumber', '合同编号'),
@@ -85,7 +105,17 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '物流服务费用及支付方式协定',
     shortLabel: '物流费用',
     attachmentGroups: [{ purpose: 'GENERAL', label: '协议附件', accept: '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx' }],
-    summaryKeys: ['signingStatus', 'effectiveDate', 'expiryDate', 'autoRenew', 'settlementCycle'],
+    summaryKeys: [
+      'signingStatus',
+      'effectiveDate',
+      'expiryDate',
+      'warehouseServiceRate',
+      'overstorageServiceRate',
+      'overstorageDays',
+      'settlementCycle',
+      'autoRenew',
+      'remarks'
+    ],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('effectiveDate', '生效日期', 'date'),
@@ -103,7 +133,22 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
     label: '周转器具服务协议',
     shortLabel: '周转器具',
     attachmentGroups: [{ purpose: 'GENERAL', label: '协议附件', accept: '.jpg,.jpeg,.png,.pdf,.doc,.docx,.xls,.xlsx' }],
-    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'expiryDate', 'autoRenew'],
+    summaryKeys: [
+      'signingStatus',
+      'contractNumber',
+      'effectiveDate',
+      'expiryDate',
+      'equipmentType',
+      'equipmentServicePrice',
+      'supplierSignedDate',
+      'companySignedDate',
+      'returnDate',
+      'courierNumber',
+      'deliveredBusinessDate',
+      'deliveredFactoryDate',
+      'autoRenew',
+      'remarks'
+    ],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('contractNumber', '合同编号'),
@@ -129,7 +174,19 @@ export const CONTRACT_CATEGORY_CONFIGS = Object.freeze([
       { purpose: 'CONTRACT_PDF', label: '合同 PDF', accept: '.pdf' },
       { purpose: 'PAYMENT_RECEIPT', label: '打款凭证', accept: '.jpg,.jpeg,.png,.pdf' }
     ],
-    summaryKeys: ['signingStatus', 'contractNumber', 'equipmentType', 'quantity', 'expiryDate', 'autoRenew'],
+    summaryKeys: [
+      'signingStatus',
+      'contractNumber',
+      'effectiveDate',
+      'expiryDate',
+      'equipmentType',
+      'specification',
+      'productionBatch',
+      'color',
+      'quantity',
+      'autoRenew',
+      'remarks'
+    ],
     fields: [
       rootField('signingStatus', '签订状态', 'signingStatus'),
       rootField('contractNumber', '合同编号'),

@@ -23,7 +23,7 @@
         <button v-if="canGenerate" class="primary-button" :loading="generating" @click="generate">
           生成日报
         </button>
-        <button class="secondary-button" :disabled="!report" @click="copyText">复制文字</button>
+        <button class="secondary-button" :disabled="!canCopyText" @click="copyText">复制文字</button>
       </view>
     </view>
 
@@ -92,6 +92,7 @@ import {
   scopedReportingParams
 } from '@/utils/reporting.js'
 import { requestErrorMessage } from '@/utils/requestErrorMessages.js'
+import { copyTextToClipboard } from '@/utils/clipboard.js'
 
 export default {
   name: 'GeneratedDailyReport',
@@ -111,6 +112,9 @@ export default {
       teamRequired: true
     }))
     const sourceSummary = computed(() => dailyReportSourceSummary(report.value || {}))
+    const canCopyText = computed(() => (
+      Boolean(String(report.value?.finalText || '').trim())
+    ))
     const versionOptions = computed(() => (report.value?.availableVersions || []).map((item) => ({
       ...item,
       label: `版本 ${item.version}`
@@ -222,9 +226,10 @@ export default {
         generating.value = false
       }
     }
-    const copyText = () => {
-      if (!report.value?.finalText) return
-      uni.setClipboardData({ data: report.value.finalText })
+    const copyText = async () => {
+      return await copyTextToClipboard(report.value?.finalText, {
+        emptyMessage: '暂无可复制的日报文字'
+      })
     }
     const openRecord = (item) => {
       date.value = item.reportDate
@@ -240,6 +245,7 @@ export default {
       generating,
       generationBlock,
       canGenerate,
+      canCopyText,
       sourceSummary,
       versionOptions,
       versionIndex,

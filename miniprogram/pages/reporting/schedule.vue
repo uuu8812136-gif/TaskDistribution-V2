@@ -26,6 +26,10 @@
           <text>本月生产计划（预测）</text>
           <text class="forecast-value">{{ displayQuantity(currentDailySchedule.productionPlanForecast) }}</text>
         </view>
+        <view class="daily-monthly-summary">
+          <text class="daily-monthly-summary-label">月度排产合计</text>
+          <text class="daily-monthly-summary-value">{{ currentDailyScheduleTotal }}</text>
+        </view>
         <scroll-view class="table-scroll" scroll-x enhanced>
           <view class="daily-table">
             <view class="table-row table-header">
@@ -58,10 +62,15 @@
       </view>
 
       <view v-if="monthlySchedules.length" class="monthly-list">
+        <view class="monthly-summary">
+          <view class="monthly-summary-label">月度排产合计</view>
+          <view class="monthly-summary-value">{{ monthlyGrandTotal }}</view>
+          <view class="monthly-summary-note">{{ monthlyMonth }} · {{ monthlySchedules.length }}个组织</view>
+        </view>
         <view v-for="schedule in monthlySchedules" :key="schedule._id" class="monthly-card">
           <view class="monthly-header">
             <text class="monthly-org">{{ displayOrg(schedule.orgUnitId) }}</text>
-            <text class="monthly-total">合计 {{ schedule.monthlyTotals?.total || 0 }}</text>
+            <text class="monthly-total">合计 {{ monthlyScheduleTotal(schedule) }}</text>
           </view>
           <view class="monthly-grid">
             <view v-for="field in monthlyFields" :key="field.key" class="monthly-cell">
@@ -93,6 +102,8 @@ import {
   MONTHLY_SCHEDULE_FIELDS,
   buildOrgUnitOptions,
   businessNaturalMonth,
+  dailyScheduleTotal,
+  monthlyScheduleTotal,
   orgUnitLabel,
   scopedReportingParams
 } from '@/utils/reporting.js'
@@ -122,6 +133,11 @@ export default {
     const currentDailySchedule = computed(() => dailySchedules.value[dailyOrgIndex.value] || null)
     const currentDailyOrgLabel = computed(() => (
       dailyOrgOptions.value[dailyOrgIndex.value]?.label || '请选择组织'
+    ))
+    const currentDailyScheduleTotal = computed(() => dailyScheduleTotal(currentDailySchedule.value))
+    const monthlyGrandTotal = computed(() => monthlySchedules.value.reduce(
+      (total, schedule) => total + monthlyScheduleTotal(schedule),
+      0
     ))
 
     const readParams = (extra = {}) => scopedReportingParams(
@@ -239,8 +255,10 @@ export default {
       dailyOrgIndex,
       currentDailySchedule,
       currentDailyOrgLabel,
+      currentDailyScheduleTotal,
       monthlyMonth,
       monthlySchedules,
+      monthlyGrandTotal,
       loading,
       dailyFields: DAILY_SCHEDULE_FIELDS,
       monthlyFields: MONTHLY_SCHEDULE_FIELDS,
@@ -250,6 +268,8 @@ export default {
       onMonthlyMonthChange,
       displayQuantity,
       displayOrg,
+      dailyScheduleTotal,
+      monthlyScheduleTotal,
       weekday
     }
   }
@@ -282,8 +302,15 @@ export default {
 .weekday { margin-top: 3rpx; color: #909399; font-size: 19rpx; }
 .quantity-cell { color: #606266; }
 .total-cell { border-right: none; color: var(--zl-primary, #4096ff); font-weight: 600; }
+.daily-monthly-summary { display: flex; align-items: baseline; justify-content: space-between; gap: 20rpx; padding: 20rpx 24rpx; background: #f0f7ff; border: 1px solid rgba(64, 150, 255, 0.24); border-left: 6rpx solid var(--zl-primary, #4096ff); }
+.daily-monthly-summary-label { color: #606266; font-size: 24rpx; }
+.daily-monthly-summary-value { color: var(--zl-primary, #4096ff); font-size: 36rpx; font-weight: 700; line-height: 1.2; }
 .monthly-toolbar { margin-bottom: 16rpx; }
 .monthly-list { padding: 0 24rpx; }
+.monthly-summary { padding: 24rpx; margin-bottom: 20rpx; background: #f0f7ff; border: 1px solid rgba(64, 150, 255, 0.24); border-left: 6rpx solid var(--zl-primary, #4096ff); border-radius: var(--zl-card-radius, 16rpx); }
+.monthly-summary-label { color: #606266; font-size: 24rpx; }
+.monthly-summary-value { margin-top: 8rpx; color: var(--zl-primary, #4096ff); font-size: 40rpx; font-weight: 700; line-height: 1.2; }
+.monthly-summary-note { margin-top: 8rpx; color: #909399; font-size: 22rpx; }
 .monthly-card { padding: 24rpx; margin-bottom: 20rpx; background: rgba(255, 255, 255, 0.96); border: 1px solid var(--zl-border, rgba(100, 116, 139, 0.18)); border-left: 6rpx solid var(--zl-success, #52c41a); border-radius: var(--zl-card-radius, 16rpx); box-shadow: 0 8rpx 28rpx rgba(15, 23, 42, 0.05); }
 .monthly-header { display: flex; align-items: center; justify-content: space-between; gap: 20rpx; padding-bottom: 18rpx; border-bottom: 1px solid #ebeef5; }
 .monthly-org { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #303133; font-size: 28rpx; font-weight: 600; }

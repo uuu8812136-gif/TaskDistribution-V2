@@ -25,7 +25,8 @@ import {
   dailyCountText,
   emptyTransportLoadDetails,
   naturalMonthRange,
-  transportChangedFields
+  transportChangedFields,
+  transportRowClass
 } from '../src/utils/reporting.js'
 
 test('attendance division options keep only active level-2 sub-departments', () => {
@@ -202,6 +203,13 @@ test('transport payload emits only the fixed form and opaque photo ids', () => {
     '64b000000000000000000002'
   ])
   assert.equal('teamId' in payload, false)
+})
+
+test('transport list assigns restrained row classes for each dispatch type', () => {
+  assert.equal(transportRowClass({ row: { dispatchType: '配送' } }), 'transport-row--delivery')
+  assert.equal(transportRowClass({ row: { dispatchType: '返架' } }), 'transport-row--return-rack')
+  assert.equal(transportRowClass({ row: { dispatchType: '未知' } }), '')
+  assert.equal(transportRowClass(), '')
 })
 
 test('transport load items come from active master data and preserve unavailable history', () => {

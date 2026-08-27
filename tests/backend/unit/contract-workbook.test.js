@@ -777,6 +777,100 @@ test('filtered supplier export stays canonical and writes trustee attribute in c
   assert.equal(sheet.getRow(2).getCell(60).value, '备注');
 });
 
+test('unfiltered detail export merges all categories into one supplier row without hiding history or attachments', async () => {
+  const supplier = {
+    _id: 'supplier-merged-detail',
+    code: '001079',
+    name: '汇总供应商',
+    trusteeAttribute: 'HOSTED',
+    hasSignedContract: true,
+    contractValid: true
+  };
+  const base = { supplierId: supplier._id, attachments: [] };
+  const records = [
+    {
+      ...base,
+      category: 'SUPPLIER_INFO',
+      details: { supplyStatus: 'NORMAL', contacts: [{ name: '张三', phone: '13800000000' }] }
+    },
+    {
+      ...base,
+      category: 'MAIN_SERVICE_AGREEMENT',
+      signingStatus: 'SIGNED',
+      contractNumber: 'MAIN-NEW',
+      effectiveDate: new Date('2026-01-01T00:00:00.000Z'),
+      expiryDate: new Date('2026-12-31T00:00:00.000Z'),
+      autoRenew: true,
+      details: { courierNumber: 'SF-NEW' },
+      attachments: [{ purpose: 'CONTRACT_PDF', originalName: 'main-new.pdf' }]
+    },
+    {
+      ...base,
+      category: 'MAIN_SERVICE_AGREEMENT',
+      signingStatus: 'SIGNED',
+      contractNumber: 'MAIN-OLD',
+      effectiveDate: new Date('2025-01-01T00:00:00.000Z'),
+      expiryDate: new Date('2025-12-31T00:00:00.000Z'),
+      autoRenew: false,
+      details: { courierNumber: 'SF-OLD' },
+      attachments: [{ purpose: 'CONTRACT_PDF', originalName: 'main-old.pdf' }]
+    },
+    {
+      ...base,
+      category: 'LOGISTICS_FEE_AGREEMENT',
+      signingStatus: 'SIGNED',
+      effectiveDate: new Date('2026-02-01T00:00:00.000Z'),
+      expiryDate: new Date('2026-11-30T00:00:00.000Z'),
+      autoRenew: false,
+      details: { warehouseServiceRate: '10元/件', settlementCycle: '月结' }
+    },
+    {
+      ...base,
+      category: 'TURNOVER_EQUIPMENT_SERVICE',
+      signingStatus: 'SIGNED',
+      contractNumber: 'TURN-001',
+      effectiveDate: new Date('2026-03-01T00:00:00.000Z'),
+      expiryDate: new Date('2026-10-31T00:00:00.000Z'),
+      autoRenew: true,
+      details: { equipmentType: '周转箱' }
+    },
+    {
+      ...base,
+      category: 'EQUIPMENT_RENTAL',
+      signingStatus: 'SIGNED',
+      contractNumber: 'RENT-001',
+      effectiveDate: new Date('2026-04-01T00:00:00.000Z'),
+      expiryDate: new Date('2026-09-30T00:00:00.000Z'),
+      autoRenew: false,
+      details: { equipmentType: '租赁托盘', quantity: 20 }
+    }
+  ];
+  const buffer = await createSupplierExportWorkbook({ scope: 'detail', suppliers: [supplier], records });
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const details = workbook.getWorksheet(DETAIL_SHEET);
+  const row = details.getRow(3);
+
+  assert.equal(details.columnCount, 60);
+  assert.equal(details.rowCount, 3);
+  assert.equal(row.getCell(2).value, supplier.code);
+  assert.equal(row.getCell(8).value, '张三');
+  assert.equal(row.getCell(14).value, 'MAIN-NEW；MAIN-OLD');
+  assert.equal(row.getCell(20).value, 'SF-NEW；SF-OLD');
+  assert.equal(row.getCell(29).value, '10元/件');
+  assert.equal(row.getCell(32).value, '月结');
+  assert.equal(row.getCell(36).value, 'TURN-001');
+  assert.equal(row.getCell(39).value, '周转箱');
+  assert.equal(row.getCell(50).value, 'RENT-001');
+  assert.equal(row.getCell(53).value, '租赁托盘');
+  assert.equal(row.getCell(57).value, 20);
+
+  const attachments = workbook.getWorksheet(ATTACHMENT_SHEET_NAME);
+  assert.equal(attachments.rowCount, 3);
+  assert.equal(attachments.getRow(2).getCell(6).value, 'main-new.pdf');
+  assert.equal(attachments.getRow(3).getCell(6).value, 'main-old.pdf');
+});
+
 test('canonical 60-column supplier export can be imported back without identity or contract drift', async () => {
   const supplier = {
     _id: 'supplier-roundtrip',

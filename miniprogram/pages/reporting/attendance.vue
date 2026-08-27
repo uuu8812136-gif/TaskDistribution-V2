@@ -127,7 +127,7 @@
             <text class="section-title">最终汇报文字</text>
             <text class="reviewed-time">已审核，数据永久锁定</text>
           </view>
-          <button class="copy-button" @click="copyFinalText">复制</button>
+          <button class="copy-button" :disabled="!canCopyFinalText" @click="copyFinalText">复制</button>
         </view>
         <text class="final-text" selectable>{{ summary.review.finalText }}</text>
       </view>
@@ -158,6 +158,7 @@ import {
   scopedReportingParams
 } from '@/utils/reporting.js'
 import { createLatestRequestGate } from '@/utils/latestRequest.js'
+import { copyTextToClipboard } from '@/utils/clipboard.js'
 
 export default {
   name: 'AttendanceReporting',
@@ -196,6 +197,9 @@ export default {
     const leaveTotal = computed(() => (
       Number(summary.value.dayShift?.leaveWithSickCount || 0) +
       Number(summary.value.nightShift?.leaveWithSickCount || 0)
+    ))
+    const canCopyFinalText = computed(() => (
+      Boolean(String(summary.value.review?.finalText || '').trim())
     ))
 
     const orgName = (orgUnitId) => (
@@ -296,10 +300,10 @@ export default {
         await loadData()
       }
     }
-    const copyFinalText = () => {
-      const text = summary.value.review?.finalText || ''
-      if (!text) return
-      uni.setClipboardData({ data: text })
+    const copyFinalText = async () => {
+      return await copyTextToClipboard(summary.value.review?.finalText, {
+        emptyMessage: '暂无可复制的汇报文字'
+      })
     }
 
     return {
@@ -313,6 +317,7 @@ export default {
       canSubmitPermission,
       canSubmit,
       canReview,
+      canCopyFinalText,
       leaveTotal,
       namedFields,
       summaryShifts,
