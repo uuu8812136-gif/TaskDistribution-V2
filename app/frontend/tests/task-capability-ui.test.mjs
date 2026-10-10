@@ -8,7 +8,9 @@ const read = (relativePath) => readFileSync(
 )
 
 const taskListSource = read('src/views/tasks/TaskList.vue')
+const taskTableSource = read('src/views/tasks/components/TaskTable.vue')
 const taskDetailSource = read('src/views/tasks/TaskDetail.vue')
+const taskFormatSource = read('src/utils/format.js')
 const taskFormSource = read('src/views/tasks/TaskForm.vue')
 const extensionListSource = read('src/views/extensions/ExtensionList.vue')
 const mainLayoutSource = read('src/layouts/MainLayout.vue')
@@ -30,6 +32,20 @@ test('task list uses aggregate and row server capabilities with a stable action 
   assert.match(taskListSource, /if \(!canEditRow\(row\)\) return/)
   assert.match(taskListSource, /if \(!canDeleteRow\(row\)\) return/)
   assert.match(taskListSource, /console\.error\('删除失败:'[\s\S]*?await fetchData\(\)/)
+  assert.match(taskListSource, /label="是否逾期" width="90"/)
+  assert.match(taskListSource, /label="逾期天数" width="90"/)
+  assert.match(taskListSource, /rowIsOverdue\(row\)/)
+  assert.match(taskListSource, /rowOverdueDays\(row\)/)
+  assert.match(taskFormatSource, /overdue: '已逾期'/)
+  assert.match(taskFormatSource, /overdue: 'danger'/)
+})
+
+test('my-task table renders the same overdue state and days as the task list', () => {
+  assert.match(taskTableSource, /label="是否逾期" width="90"/)
+  assert.match(taskTableSource, /label="逾期天数" width="90"/)
+  assert.match(taskTableSource, /typeof task\?\.isOverdue === 'boolean'/)
+  assert.match(taskTableSource, /getTaskOverdueDays\(/)
+  assert.match(taskTableSource, /isTaskOverdue\(/)
 })
 
 test('task detail privileged actions use fresh server capabilities without CC or session permission gates', () => {
@@ -43,6 +59,9 @@ test('task detail privileged actions use fresh server capabilities without CC or
   assert.match(taskDetailSource, /if \(confirmSubmitting\.value \|\| !canConfirm\.value\) return/)
   assert.match(taskDetailSource, /if \(extensionApprovalSubmitting\.value \|\| !canApproveExtension\.value\) return/)
   assert.equal((taskDetailSource.match(/await refreshAfterMutationError\(error,/g) || []).length, 5)
+  assert.match(taskDetailSource, /title="该任务已逾期！"/)
+  assert.match(taskDetailSource, /已逾期 \$\{overdueDays\} 天/)
+  assert.match(taskDetailSource, /typeof task\.value\.isOverdue === 'boolean'/)
 })
 
 test('extension list uses per-request capabilities and revokes stale dialogs on refresh failure', () => {

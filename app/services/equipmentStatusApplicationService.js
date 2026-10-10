@@ -5,11 +5,13 @@ const EquipmentAsset = require('../models/EquipmentAsset');
 const EquipmentStatusApplication = require('../models/EquipmentStatusApplication');
 const EquipmentStatusApproval = require('../models/EquipmentStatusApproval');
 const EquipmentRoutinePlan = require('../models/EquipmentRoutinePlan');
+const EquipmentRoutineRule = require('../models/EquipmentRoutineRule');
 const FileAsset = require('../models/FileAsset');
 const Message = require('../models/Message');
 const OrgUnit = require('../models/OrgUnit');
 const ProjectTeam = require('../models/ProjectTeam');
 const TeamMembership = require('../models/TeamMembership');
+const User = require('../models/User');
 const {
   AUDIT_ACTIONS,
   AUDIT_RESOURCE_TYPES,
@@ -55,6 +57,7 @@ const {
   EQUIPMENT_ROUTINE_PLAN_STATUSES,
   EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS
 } = EquipmentRoutinePlan;
+const { EQUIPMENT_ROUTINE_TYPES } = EquipmentRoutineRule;
 const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
   EQUIPMENT_ROUTINE_PLAN_STATUSES.PLANNED,
   EQUIPMENT_ROUTINE_PLAN_STATUSES.IN_WINDOW,
@@ -203,8 +206,9 @@ function serializeApplication(document, availableActions = []) {
   };
 }
 
-function serializeApproval(document) {
+function serializeApproval(document, actorNames = new Map()) {
   const value = plain(document);
+  const actorId = normalizeId(value.actorId);
   return {
     _id: normalizeId(value._id),
     applicationId: normalizeId(value.applicationId),
@@ -212,7 +216,8 @@ function serializeApproval(document) {
     action: value.action,
     fromStatus: value.fromStatus || null,
     toStatus: value.toStatus,
-    actorId: normalizeId(value.actorId),
+    actorId,
+    actorName: actorNames.get(actorId) || '',
     actorPositionKey: value.actorPositionKey || '',
     opinion: value.opinion || '',
     applicationSnapshot: value.applicationSnapshot,
@@ -417,6 +422,7 @@ function createEquipmentStatusApplicationService({
   OrgUnitModel = OrgUnit,
   ProjectTeamModel = ProjectTeam,
   TeamMembershipModel = TeamMembership,
+  UserModel = User,
   fileAssetService = null,
   auditService = createAuditService(),
   connection = mongoose.connection
@@ -594,6 +600,15 @@ function createEquipmentStatusApplicationService({
     return { applications, total, page, pageSize };
   }
 
+  async function actorNameMap(approvals) {
+    const actorIds = [...new Set(
+      approvals.map((approval) => normalizeId(approval.actorId)).filter(Boolean)
+    )];
+    if (actorIds.length === 0) return new Map();
+    const users = await UserModel.find({ _id: { $in: actorIds } }).select('_id name').lean();
+    return new Map(users.map((user) => [normalizeId(user._id), user.name || '']));
+  }
+
   async function getApplication({ authContext, requestedTeamId, method = 'GET', applicationId }) {
     const { context, filter } = await readFilter({
       authContext,
@@ -607,9 +622,10 @@ function createEquipmentStatusApplicationService({
       teamId: application.teamId,
       applicationId: application._id
     }).sort({ actedAt: 1, _id: 1 }).lean();
+    const names = await actorNameMap(approvals);
     return {
       application: serializeApplication(application, availableActions(context, application)),
-      approvals: approvals.map(serializeApproval)
+      approvals: approvals.map((approval) => serializeApproval(approval, names))
     };
   }
 
@@ -866,11 +882,21 @@ function createEquipmentStatusApplicationService({
             throw conflict('Equipment status changed after the application was submitted');
           }
           if (current.targetStatus !== EQUIPMENT_STATUS_APPLICATION_TYPES.IN_USE) {
-            await EquipmentRoutinePlanModel.updateMany({
+            const planFilter = {
               teamId: context.activeTeamId,
               equipmentId: current.equipmentId,
               status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
-            }, {
+            };
+            // Idle and stopped equipment keeps maintenance plans, but any
+            // open inspection plan is no longer applicable. Scrapping closes
+            // every open plan because the equipment is permanently retired.
+            if (
+              current.targetStatus === EQUIPMENT_STATUS_APPLICATION_TYPES.IDLE ||
+              current.targetStatus === EQUIPMENT_STATUS_APPLICATION_TYPES.STOPPED
+            ) {
+              planFilter.routineType = EQUIPMENT_ROUTINE_TYPES.INSPECTION;
+            }
+            await EquipmentRoutinePlanModel.updateMany(planFilter, {
               $set: {
                 status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
                 cancellationReason:

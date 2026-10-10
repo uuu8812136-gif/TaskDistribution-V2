@@ -271,6 +271,18 @@ const equipmentRepairOrderSchema = new mongoose.Schema({
       }
     ]
   },
+  // 一次性写入语义由 CAS（sourceRepairId:null 条件）+ 部分唯一索引 + 服务层校验保证；
+  // 不用 immutable：mongoose 会在 updateOne 中剥离 immutable 字段，回填脚本将无法写入。
+  sourceRepairId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'EquipmentRepairOrder',
+    default: null
+  },
+  followupRepairId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'EquipmentRepairOrder',
+    default: null
+  },
   returnedFromStatus: {
     type: String,
     enum: [...EQUIPMENT_REPAIR_STATUS_VALUES, null],
@@ -359,6 +371,14 @@ equipmentRepairOrderSchema.index(
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
     name: 'uq_equipment_repair_team_creator_idempotency'
+  }
+);
+equipmentRepairOrderSchema.index(
+  { teamId: 1, sourceRepairId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { sourceRepairId: { $type: 'objectId' } },
+    name: 'uq_equipment_repair_source_followup'
   }
 );
 

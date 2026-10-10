@@ -71,7 +71,7 @@
                 <strong>{{ statusApplicationActionLabel(item.action) }}</strong>
                 <span>{{ statusApplicationWorkflowLabel(item.fromStatus) }} → {{ statusApplicationWorkflowLabel(item.toStatus) }}</span>
                 <p v-if="item.opinion">{{ item.opinion }}</p>
-                <small>{{ positionLabel(item.actorPositionKey) }} · 用户 {{ String(item.actorId).slice(-6) }} · 版本 {{ item.applicationRevision }}</small>
+                <small>{{ positionLabel(item.actorPositionKey) }} · {{ item.actorName || `用户 ${String(item.actorId).slice(-6)}` }} · 版本 {{ item.applicationRevision }}</small>
               </div>
             </el-timeline-item>
           </el-timeline>
@@ -149,6 +149,10 @@ const positionLabel = (value) => ({
   DEPARTMENT_DEPUTY_MANAGER: '部门副经理',
   DEPARTMENT_MANAGER_ASSISTANT: '部门经理助理',
   DEPARTMENT_MANAGER: '部门经理',
+  SUB_DEPARTMENT_MANAGER: '分部经理',
+  SUB_DEPARTMENT_DEPUTY_MANAGER: '分部副经理',
+  SUPERVISOR: '主管',
+  TEAM_LEADER: '班组长',
   EMPLOYEE: '设备管理员'
 }[value] || value || '用户')
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'

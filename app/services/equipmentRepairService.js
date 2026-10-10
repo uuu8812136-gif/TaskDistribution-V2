@@ -78,8 +78,13 @@ const REPAIR_STATUS_MESSAGE_LABELS = Object.freeze({
 const REPAIR_TODO_STATES = Object.freeze({
   ACTIVE: 'ACTIVE',
   TRANSFERRED: 'TRANSFERRED',
-  INVALIDATED: 'INVALIDATED'
+  INVALIDATED: 'INVALIDATED',
+  COMPLETED: 'COMPLETED'
 });
+const REPAIR_TODO_KINDS = Object.freeze({
+  FOLLOWUP_CHOICE: 'FOLLOWUP_CHOICE'
+});
+const FOLLOWUP_CHOICE_DEDUP_SUFFIX = 'followup-choice';
 const TERMINAL_REPAIR_STATUSES = new Set([
   EQUIPMENT_REPAIR_STATUSES.COMPLETED,
   EQUIPMENT_REPAIR_STATUSES.VOIDED
@@ -311,8 +316,14 @@ function repairSummaryText(value) {
   return lines.join('\n');
 }
 
-function serializeRepair(document, availableActions = [], actorNames = new Map()) {
+function serializeRepair(
+  document,
+  availableActions = [],
+  actorNames = new Map(),
+  creatorNames = new Map()
+) {
   const value = plain(document);
+  const creatorId = normalizeId(value.createdBy);
   return {
     _id: normalizeId(value._id),
     teamId: normalizeId(value.teamId),
@@ -322,7 +333,13 @@ function serializeRepair(document, availableActions = [], actorNames = new Map()
     type: value.type,
     status: value.status,
     equipmentSnapshot: value.equipmentSnapshot || {},
-    createdBy: normalizeId(value.createdBy),
+    createdBy: creatorId,
+    creatorName: creatorNames.get(creatorId) || '',
+    sourceRepairId: normalizeId(value.sourceRepairId),
+    standaloneFollowup: Boolean(
+      value.type !== EQUIPMENT_REPAIR_TYPES.FAULT_REPORT && !value.sourceRepairId
+    ),
+    followupRepairId: normalizeId(value.followupRepairId),
     reportTime: value.reportTime || null,
     reportLocation: value.reportLocation || '',
     plateNumber: value.plateNumber || '',
@@ -594,6 +611,30 @@ function queryFilters(query = {}) {
   return filters.length ? { $and: filters } : {};
 }
 
+function pendingFollowupFilter() {
+  return {
+    type: EQUIPMENT_REPAIR_TYPES.FAULT_REPORT,
+    status: EQUIPMENT_REPAIR_STATUSES.COMPLETED,
+    followupRepairId: null
+  };
+}
+
+function mergedPrimaryCondition() {
+  return {
+    $or: [
+      { type: EQUIPMENT_REPAIR_TYPES.FAULT_REPORT },
+      {
+        type: { $in: [
+          EQUIPMENT_REPAIR_TYPES.PARTS_REPAIR,
+          EQUIPMENT_REPAIR_TYPES.NO_PARTS_REPAIR
+        ]
+      },
+        sourceRepairId: null
+      }
+    ]
+  };
+}
+
 async function execute(query, session) {
   if (session && typeof query.session === 'function') query.session(session);
   return query;
@@ -653,8 +694,26 @@ function createEquipmentRepairService({
     return new Map(users.map((user) => [normalizeId(user._id), user.name || '']));
   }
 
+  async function creatorNameMap(documents, session = null) {
+    const creatorIds = [...new Set(
+      (Array.isArray(documents) ? documents : [documents])
+        .map((document) => normalizeId(plain(document)?.createdBy))
+        .filter(Boolean)
+    )];
+    if (creatorIds.length === 0) return new Map();
+    const query = UserModel.find({ _id: { $in: creatorIds } }).select('_id name').lean();
+    if (session) query.session(session);
+    const users = await query;
+    return new Map(users.map((user) => [normalizeId(user._id), user.name || '']));
+  }
+
   async function serializeRepairWithActors(document, availableActions = [], session = null) {
-    return serializeRepair(document, availableActions, await actorNameMap(document, session));
+    return serializeRepair(
+      document,
+      availableActions,
+      await actorNameMap(document, session),
+      await creatorNameMap(document, session)
+    );
   }
 
   async function activeMembershipUserIds(filter, session = null) {
@@ -879,6 +938,8 @@ function createEquipmentRepairService({
       type: 'system',
       'extraData.resourceType': 'REPAIR_ORDER',
       'extraData.repairId': repairId,
+      // 后续维修二选一待办有独立生命周期，不能被阶段失效逻辑误伤
+      'extraData.todoKind': { $ne: REPAIR_TODO_KINDS.FOLLOWUP_CHOICE },
       $or: [
         { 'extraData.todoState': REPAIR_TODO_STATES.ACTIVE },
         {
@@ -1009,6 +1070,63 @@ function createEquipmentRepairService({
     }, updateOptions);
   }
 
+  // 故障报修完成后的"需更换配件/不需更换配件"强制二选一待办。
+  // dedup key 使用独立命名空间，避免与终态通知（revision key）撞唯一索引。
+  async function createFollowupChoiceMessage(order, session) {
+    if (order.type !== EQUIPMENT_REPAIR_TYPES.FAULT_REPORT) return;
+    if (order.status !== EQUIPMENT_REPAIR_STATUSES.COMPLETED) return;
+    if (order.followupRepairId) return;
+    const recipient = normalizeId(order.createdBy);
+    if (!recipient) return;
+    const deduplicationKey = `repair:${order._id}:${FOLLOWUP_CHOICE_DEDUP_SUFFIX}`;
+    const updateOptions = { upsert: true };
+    if (session) updateOptions.session = session;
+    await MessageModel.updateOne({
+      teamId: order.teamId,
+      recipient,
+      deduplicationKey
+    }, {
+      $setOnInsert: {
+        teamId: order.teamId,
+        type: 'system',
+        title: '待选择后续维修方式',
+        content: `${order.equipmentSnapshot?.name || '设备'}（${order.equipmentSnapshot?.assetCode || '-'}）故障报修已完成，请选择后续维修方式：需更换配件维修 / 不需更换配件维修。`,
+        recipient,
+        extraData: {
+          resourceType: 'REPAIR_ORDER',
+          repairId: normalizeId(order._id),
+          status: order.status,
+          todoState: REPAIR_TODO_STATES.ACTIVE,
+          todoKind: REPAIR_TODO_KINDS.FOLLOWUP_CHOICE
+        },
+        deduplicationKey
+      }
+    }, updateOptions);
+  }
+
+  async function completeFollowupChoiceMessage(source, followupId, session) {
+    const recipient = normalizeId(source.createdBy);
+    if (!recipient) return;
+    const now = new Date();
+    const updateOptions = {};
+    if (session) updateOptions.session = session;
+    await MessageModel.updateOne({
+      teamId: source.teamId,
+      recipient,
+      deduplicationKey: `repair:${source._id}:${FOLLOWUP_CHOICE_DEDUP_SUFFIX}`,
+      'extraData.todoState': REPAIR_TODO_STATES.ACTIVE
+    }, {
+      $set: {
+        title: '后续维修待办已处理',
+        content: `${source.equipmentSnapshot?.name || '设备'}（${source.equipmentSnapshot?.assetCode || '-'}）已创建后续维修单，待办完成。`,
+        isRead: true,
+        readAt: now,
+        'extraData.todoState': REPAIR_TODO_STATES.COMPLETED,
+        'extraData.followupRepairId': normalizeId(followupId)
+      }
+    }, updateOptions);
+  }
+
   async function syncCurrentStageMessages(order, session = null) {
     const recipients = await resolveCurrentStageHandlers(order, session);
     await createCurrentStageMessages(order, recipients, session);
@@ -1088,6 +1206,14 @@ function createEquipmentRepairService({
   // an approval-stage OR cannot widen an ORG_UNIT data scope.
   async function buildTodoFilter(context, teamId) {
     const todoClauses = [];
+    // 故障报修已完成后产生的二选一待办不再对应可流转状态；
+    // 仍须按创建人加入“我的待办”，否则创建人只能靠搜索或“待补后续”筛选才能看到。
+    todoClauses.push({
+      type: EQUIPMENT_REPAIR_TYPES.FAULT_REPORT,
+      status: EQUIPMENT_REPAIR_STATUSES.COMPLETED,
+      followupRepairId: null,
+      createdBy: context.userId
+    });
     if (context.isSuperAdmin === true) {
       todoClauses.push({
         status: {
@@ -1158,6 +1284,30 @@ function createEquipmentRepairService({
     const permissionKey = todoOnly ? 'equipment.repair' : 'equipment.view';
     const { page, pageSize, skip } = pagination(query);
     const baseFilter = queryFilters(query);
+
+    // 合并视图：主行 = 全部故障报修 + 未挂源的后续单；已挂源的后续单并入源报修行展示。
+    // 注意：合并视图下 userFilter 不并入 readFilter（筛选语义在 listMergedRepairs 内
+    // 重新组合为"任一段命中"），readFilter 只保留团队/数据权限约束。
+    if (query.view === 'merged') {
+      const { teamId: mergedTeamId, filter: mergedScope } = await readFilter({
+        authContext: context,
+        requestedTeamId,
+        method,
+        userFilter: {},
+        permissionKey
+      });
+      return await listMergedRepairs({
+        context,
+        teamId: mergedTeamId,
+        scopedFilter: mergedScope,
+        query,
+        todoOnly,
+        page,
+        pageSize,
+        skip
+      });
+    }
+
     const { teamId, filter: scopedFilter } = await readFilter({
       authContext: context,
       requestedTeamId,
@@ -1174,6 +1324,7 @@ function createEquipmentRepairService({
         ]
       };
     }
+
     const [documents, total] = await Promise.all([
       EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(pageSize).lean(),
       EquipmentRepairOrderModel.countDocuments(filter)
@@ -1186,6 +1337,138 @@ function createEquipmentRepairService({
       serializeRepair(document, availableActions[index], names)
     ));
     return { repairs, total, page, pageSize };
+  }
+
+  // 合并视图两阶段查询：
+  // 1) 主行集合 = scopedFilter ∧ queryFilters ∧ (todo 过滤) ∧ 主行条件（fault 全量 / 独立后续单），分页以主行为准；
+  // 2) 批量取主行已挂源的后续单，挂在行的 followup 字段。所有 $or 均包在 scopedFilter 的 $and 内，不放宽数据权限。
+  async function listMergedRepairs({
+    context,
+    teamId,
+    scopedFilter,
+    query,
+    todoOnly,
+    page,
+    pageSize,
+    skip
+  }) {
+    const hasSegmentFilter = Boolean(
+      query.type || query.status || normalizeRepairQueryKeyword(query.keyword)
+    );
+    const baseFilter = queryFilters(query);
+
+    // 阶段 0：找出"命中筛选条件的已挂源后续单"的 sourceRepairId，这些源报修行也要入选。
+    let followupSourceIds = [];
+    if (hasSegmentFilter) {
+      const followupFilter = {
+        $and: [
+          scopedFilter,
+          baseFilter,
+          { sourceRepairId: { $ne: null } }
+        ]
+      };
+      const followups = await EquipmentRepairOrderModel.find(followupFilter)
+        .select('sourceRepairId')
+        .lean();
+      followupSourceIds = [...new Set(
+        followups.map(({ sourceRepairId }) => normalizeId(sourceRepairId)).filter(Boolean)
+      )];
+    }
+
+    // 主行匹配条件："（故障报修或独立后续单）且主行本身命中筛选" 或 "其后续单命中筛选"。
+    const primaryClauses = [
+      { $and: [mergedPrimaryCondition(), baseFilter] }
+    ];
+    if (followupSourceIds.length > 0) {
+      primaryClauses.push({ _id: { $in: followupSourceIds } });
+    }
+    const primaryMatcher = primaryClauses.length === 1
+      ? primaryClauses[0]
+      : { $or: primaryClauses };
+
+    const andParts = [scopedFilter, primaryMatcher];
+    if (todoOnly) {
+      // todo 语义同样放宽到"任一段命中"：待办命中的后续单，其源报修行也算待办行。
+      const todoFilter = await buildTodoFilter(context, teamId);
+      const todoFollowups = await EquipmentRepairOrderModel.find({
+        $and: [
+          scopedFilter,
+          todoFilter,
+          { sourceRepairId: { $ne: null } }
+        ]
+      }).select('sourceRepairId').lean();
+      const todoSourceIds = [...new Set(
+        todoFollowups.map(({ sourceRepairId }) => normalizeId(sourceRepairId)).filter(Boolean)
+      )];
+      const todoPrimaryClauses = [todoFilter];
+      if (todoSourceIds.length > 0) {
+        todoPrimaryClauses.push({ _id: { $in: todoSourceIds } });
+      }
+      andParts.push(todoPrimaryClauses.length === 1
+        ? todoPrimaryClauses[0]
+        : { $or: todoPrimaryClauses });
+    }
+    if (query.followup === 'pending') {
+      andParts.push(pendingFollowupFilter());
+    }
+    const primaryFilter = { $and: andParts };
+
+    const [primaryDocs, total] = await Promise.all([
+      EquipmentRepairOrderModel.find(primaryFilter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(pageSize)
+        .lean(),
+      EquipmentRepairOrderModel.countDocuments(primaryFilter)
+    ]);
+
+    // 阶段 2：批量补已挂源的后续单（唯一索引保证每源至多一条）。
+    const primaryIds = primaryDocs.map(({ _id }) => _id);
+    const followupDocs = primaryIds.length === 0
+      ? []
+      : await EquipmentRepairOrderModel.find({
+          $and: [
+            scopedFilter,
+            { sourceRepairId: { $in: primaryIds } }
+          ]
+        }).lean();
+    const followupBySource = new Map(
+      followupDocs.map((doc) => [normalizeId(doc.sourceRepairId), doc])
+    );
+
+    const allDocs = [...primaryDocs, ...followupDocs];
+    const [primaryActions, followupActions, names, creators] = await Promise.all([
+      Promise.all(primaryDocs.map((document) => resolveAllowedActions(context, document))),
+      Promise.all(followupDocs.map((document) => resolveAllowedActions(context, document))),
+      actorNameMap(allDocs),
+      creatorNameMap(allDocs)
+    ]);
+    const followupActionBySource = new Map(
+      followupDocs.map((doc, index) => [normalizeId(doc.sourceRepairId), followupActions[index]])
+    );
+
+    const repairs = primaryDocs.map((document, index) => {
+      const serialized = serializeRepair(
+        document,
+        primaryActions[index],
+        names,
+        creators
+      );
+      const followupDoc = followupBySource.get(normalizeId(document._id)) || null;
+      const followup = followupDoc
+        ? serializeRepair(followupDoc, followupActionBySource.get(normalizeId(document._id)) || [], names, creators)
+        : null;
+      return {
+        ...serialized,
+        followup,
+        needsFollowup: Boolean(
+          document.type === EQUIPMENT_REPAIR_TYPES.FAULT_REPORT &&
+          document.status === EQUIPMENT_REPAIR_STATUSES.COMPLETED &&
+          !document.followupRepairId
+        )
+      };
+    });
+    return { repairs, total, page, pageSize, view: 'merged' };
   }
 
   async function getRepair({ authContext, requestedTeamId, method = 'GET', repairId }) {
@@ -1295,12 +1578,33 @@ function createEquipmentRepairService({
     if (!EQUIPMENT_REPAIR_TYPE_VALUES.includes(input.type)) throw inputError('Invalid repair type');
     const idempotencyKey = optionalString(input.idempotencyKey, 'idempotencyKey', 128, null) || null;
     const equipmentId = normalizeRelatedId(input.equipmentId, 'equipmentId');
+    const sourceRepairId = input.sourceRepairId == null || input.sourceRepairId === ''
+      ? null
+      : normalizeRelatedId(input.sourceRepairId, 'sourceRepairId');
+    if (!sourceRepairId && input.type !== EQUIPMENT_REPAIR_TYPES.FAULT_REPORT) {
+      throw repairError(
+        409,
+        'EQUIPMENT_REPAIR_SOURCE_REQUIRED',
+        'Follow-up repairs must be created from a completed fault report'
+      );
+    }
+    if (sourceRepairId && input.type === EQUIPMENT_REPAIR_TYPES.FAULT_REPORT) {
+      throw inputError('Fault reports cannot be created as follow-up repairs');
+    }
     const assetFilter = buildScopedDetailFilter({
       authContext: context,
       moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
       id: equipmentId,
       method: 'POST'
     });
+    const sourceFilter = sourceRepairId
+      ? buildScopedDetailFilter({
+        authContext: context,
+        moduleKey: DATA_SCOPE_MODULES.EQUIPMENT,
+        id: sourceRepairId,
+        method: 'POST'
+      })
+      : null;
 
     try {
       return await runRepairTransaction(async (session) => {
@@ -1315,6 +1619,51 @@ function createEquipmentRepairService({
             await resolveAllowedActions(context, existing, session),
             session
           );
+        }
+        let source = null;
+        if (sourceRepairId) {
+          source = await execute(EquipmentRepairOrderModel.findOne(sourceFilter), session);
+          if (!source) throw notFound();
+          if (source.type !== EQUIPMENT_REPAIR_TYPES.FAULT_REPORT ||
+              source.status !== EQUIPMENT_REPAIR_STATUSES.COMPLETED) {
+            throw repairError(
+              409,
+              'EQUIPMENT_REPAIR_SOURCE_NOT_ELIGIBLE',
+              'Only completed fault reports can be continued with a follow-up repair'
+            );
+          }
+          if (!sameId(context.userId, source.createdBy)) {
+            throw repairError(
+              403,
+              'EQUIPMENT_REPAIR_SOURCE_FORBIDDEN',
+              'Only the fault report creator can choose the follow-up repair type'
+            );
+          }
+          if (source.followupRepairId) {
+            throw repairError(
+              409,
+              'EQUIPMENT_REPAIR_SOURCE_ALREADY_LINKED',
+              'This fault report already has a follow-up repair'
+            );
+          }
+          if (!sameId(equipmentId, source.equipmentId)) {
+            throw repairError(
+              409,
+              'EQUIPMENT_REPAIR_SOURCE_NOT_ELIGIBLE',
+              'Follow-up repair must target the same equipment as the source fault report'
+            );
+          }
+          const alreadyLinked = await execute(EquipmentRepairOrderModel.exists({
+            teamId: context.activeTeamId,
+            sourceRepairId: source._id
+          }), session);
+          if (alreadyLinked) {
+            throw repairError(
+              409,
+              'EQUIPMENT_REPAIR_SOURCE_ALREADY_LINKED',
+              'This fault report already has a follow-up repair'
+            );
+          }
         }
         const asset = await execute(EquipmentAssetModel.findOne(assetFilter), session);
         if (!asset) throw repairError(404, 'EQUIPMENT_NOT_FOUND', 'Equipment does not exist');
@@ -1343,6 +1692,7 @@ function createEquipmentRepairService({
           },
           createdBy: context.userId,
           ...typeFields,
+          sourceRepairId,
           lastActionBy: context.userId,
           lastActionAt: now,
           revision: 0,
@@ -1357,6 +1707,21 @@ function createEquipmentRepairService({
             actedAt: now
           }]
         }, session);
+
+        if (source) {
+          const linked = await execute(EquipmentRepairOrderModel.updateOne(
+            { _id: source._id, followupRepairId: null },
+            { $set: { followupRepairId: document._id } }
+          ), session);
+          if (linked.modifiedCount !== 1) {
+            throw repairError(
+              409,
+              'EQUIPMENT_REPAIR_SOURCE_ALREADY_LINKED',
+              'This fault report already has a follow-up repair'
+            );
+          }
+          await completeFollowupChoiceMessage(source, document._id, session);
+        }
 
         if (input.type === EQUIPMENT_REPAIR_TYPES.FAULT_REPORT) {
           const bound = await files.reconcileOwnerFiles({
@@ -1401,6 +1766,13 @@ function createEquipmentRepairService({
         if (existing) return serializeRepairWithActors(
           existing,
           await resolveAllowedActions(context, existing)
+        );
+      }
+      if (error?.code === 11000 && sourceRepairId) {
+        throw repairError(
+          409,
+          'EQUIPMENT_REPAIR_SOURCE_ALREADY_LINKED',
+          'This fault report already has a follow-up repair'
         );
       }
       throw error;
@@ -1625,6 +1997,7 @@ function createEquipmentRepairService({
         throw repairError(409, 'EQUIPMENT_REPAIR_CONFLICT', 'Repair order changed concurrently');
       }
       await syncCurrentStageMessages(updated, session);
+      await createFollowupChoiceMessage(updated, session);
       const after = await serializeRepairWithActors(
         updated,
         await resolveAllowedActions(context, updated, session),
@@ -1665,38 +2038,115 @@ function createEquipmentRepairService({
       userFilter,
       permissionKey: 'equipment.export'
     });
-    const documents = await EquipmentRepairOrderModel.find(filter).sort({ createdAt: -1, _id: -1 }).lean();
+    const exportFilter = query.followup === 'pending'
+      ? { $and: [filter, pendingFollowupFilter()] }
+      : filter;
+    const documents = await EquipmentRepairOrderModel.find(exportFilter)
+      .sort({ createdAt: -1, _id: -1 })
+      .lean();
+    // 合并导出：与列表合并视图一致，源报修与后续单归并为一行；独立后续单单独成行。
+    const { filter: scopedFilter } = await readFilter({
+      authContext,
+      requestedTeamId,
+      method,
+      userFilter: {},
+      permissionKey: 'equipment.export'
+    });
+    const matchingFollowups = query.followup === 'pending'
+      ? []
+      : await EquipmentRepairOrderModel.find({
+          $and: [
+            scopedFilter,
+            userFilter,
+            { sourceRepairId: { $ne: null } }
+          ]
+        }).select('sourceRepairId').lean();
+    const sourceIds = [...new Set([
+      ...documents.map(({ _id }) => normalizeId(_id)),
+      ...matchingFollowups.map(({ sourceRepairId }) => normalizeId(sourceRepairId))
+    ].filter(Boolean))];
+    const sourceDocuments = sourceIds.length === 0
+      ? []
+      : await EquipmentRepairOrderModel.find({
+          $and: [scopedFilter, { _id: { $in: sourceIds } }]
+        }).lean();
+    const documentsById = new Map([
+      ...documents,
+      ...sourceDocuments
+    ].map((document) => [normalizeId(document._id), document]));
+    const allDocumentsForScope = [...documentsById.values()];
+    const followups = allDocumentsForScope.length === 0
+      ? []
+      : await EquipmentRepairOrderModel.find({
+          $and: [
+            scopedFilter,
+            { sourceRepairId: { $in: allDocumentsForScope.map(({ _id }) => _id) } }
+          ]
+        }).lean();
+    const followupBySource = new Map(
+      followups.map((doc) => [normalizeId(doc.sourceRepairId), doc])
+    );
+    const linkedFollowupIds = new Set(followups.map(({ _id }) => normalizeId(_id)));
+    // 过滤条件可能命中后续单，此时 sourceDocuments 已被补回
+    // allDocumentsForScope；必须从完整集合生成主行，否则导出会只剩后续单，
+    // 无法保持列表“一台设备一行”的合并语义。
+    const primaryDocuments = allDocumentsForScope
+      .filter((document) => !linkedFollowupIds.has(normalizeId(document._id)))
+      .sort((a, b) => {
+        const timeDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+        if (timeDiff !== 0) return timeDiff;
+        return normalizeId(b._id).localeCompare(normalizeId(a._id));
+      });
+    const allDocuments = [...primaryDocuments, ...followups];
+    const creators = await creatorNameMap(allDocuments);
     const typeLabels = {
       [EQUIPMENT_REPAIR_TYPES.FAULT_REPORT]: '故障报修',
       [EQUIPMENT_REPAIR_TYPES.PARTS_REPAIR]: '需更换配件维修',
       [EQUIPMENT_REPAIR_TYPES.NO_PARTS_REPAIR]: '不需换件维修'
     };
-    const rows = documents.map((document) => {
-      const value = serializeRepair(document);
+    const partItemsText = (value) => value.partItems.map((item) => (
+      `${item.name}${item.specification ? `(${item.specification})` : ''}` +
+      `${item.quantity == null ? '' : ` x ${item.quantity}`}` +
+      `${item.amount == null ? '' : ` = ${item.amount.toFixed(2)}元`}`
+    )).join('\n');
+    const rows = primaryDocuments.map((document) => {
+      const value = serializeRepair(document, [], new Map(), creators);
+      const followupDoc = followupBySource.get(normalizeId(document._id)) || null;
+      const followupValue = followupDoc
+        ? serializeRepair(followupDoc, [], new Map(), creators)
+        : null;
+      const isFault = value.type === EQUIPMENT_REPAIR_TYPES.FAULT_REPORT;
+      const needsFollowup = isFault &&
+        value.status === EQUIPMENT_REPAIR_STATUSES.COMPLETED &&
+        !followupValue;
       const row = {
-        '维修单号': value._id,
+        '源报修单号': isFault ? value._id : '',
+        '后续维修单号': followupValue ? followupValue._id : value._id,
         '类型': typeLabels[value.type] || value.type,
         '状态': value.status,
         '设备编码': value.equipmentSnapshot.assetCode || '',
         '设备名称': value.equipmentSnapshot.name || '',
         '部门': value.equipmentSnapshot.departmentName || '',
         '分部': value.equipmentSnapshot.orgUnitName || '',
+        '创建人': value.creatorName || '',
         '报修时间': value.reportTime || '',
         '报修地点': value.reportLocation,
         '车牌号': value.plateNumber,
         '联系人': value.contactName,
         '联系电话': value.contactPhone,
         '故障描述': value.faultDescription,
-        '维修日期': value.repairDate || '',
-        '维修人': value.repairerName,
-        '维修说明': value.repairDescription,
-        '配件明细': value.partItems.map((item) => (
-          `${item.name}${item.specification ? `(${item.specification})` : ''}` +
-          `${item.quantity == null ? '' : ` x ${item.quantity}`}` +
-          `${item.amount == null ? '' : ` = ${item.amount.toFixed(2)}元`}`
-        )).join('\n'),
-        '总金额（元）': value.totalAmount.toFixed(2),
+        '故障报修状态': isFault
+          ? (REPAIR_STATUS_MESSAGE_LABELS[value.status] || value.status)
+          : '',
+        '后续类型': followupValue ? (typeLabels[followupValue.type] || followupValue.type) : '',
+        '后续状态': followupValue ? followupValue.status : '',
+        '维修日期': (followupValue || value).repairDate || '',
+        '维修人': (followupValue || value).repairerName || '',
+        '维修说明': (followupValue || value).repairDescription,
+        '配件明细': partItemsText(followupValue || value),
+        '总金额（元）': (followupValue || value).totalAmount.toFixed(2),
         '照片数量': value.photoAttachments.length,
+        '待补后续': needsFollowup ? '是' : '',
         '创建时间': value.createdAt || '',
         '完成时间': value.status === EQUIPMENT_REPAIR_STATUSES.COMPLETED ? value.lastActionAt : ''
       };
@@ -1705,7 +2155,7 @@ function createEquipmentRepairService({
       );
     });
     const workbook = XLSX.utils.book_new();
-    const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '维修单号': '' }]);
+    const worksheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ '源报修单号': '' }]);
     XLSX.utils.book_append_sheet(workbook, worksheet, '维修记录');
     const buffer = XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
     await auditService.record({

@@ -11,9 +11,12 @@
 
     <view class="form-section">
       <text class="section-title">维修类型</text>
-      <view class="type-segment">
+      <view v-if="sourceRepairId" class="followup-banner">
+        <text>该设备故障报修已完成，请在两种后续维修方式中选择其一</text>
+      </view>
+      <view class="type-segment" :class="{ 'two-options': sourceRepairId }">
         <button
-          v-for="item in REPAIR_TYPES"
+          v-for="item in activeRepairTypes"
           :key="item.value"
           class="type-option"
           :class="{ active: form.type === item.value }"
@@ -107,7 +110,7 @@
 </template>
 
 <script>
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import {
   createEquipmentRepair,
@@ -134,10 +137,17 @@ export default {
   name: 'EquipmentRepairForm',
   setup() {
     const equipmentId = ref('')
+    const sourceRepairId = ref('')
     const equipment = ref(null)
     const submitting = ref(false)
     const photos = ref([])
     const repairLocations = ref([])
+    // 补录后续时类型收窄为"需更换配件/不需换件"二选一
+    const activeRepairTypes = computed(() => (
+      sourceRepairId.value
+        ? REPAIR_TYPES.filter((item) => item.value !== 'FAULT_REPORT')
+        : REPAIR_TYPES
+    ))
     const form = reactive({
       type: 'FAULT_REPORT',
       reportDate: today(),
@@ -233,6 +243,7 @@ export default {
         await createEquipmentRepair({
           type: form.type,
           equipmentId: equipmentId.value,
+          ...(sourceRepairId.value ? { sourceRepairId: sourceRepairId.value } : {}),
           idempotencyKey: `mini-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           ...(form.type === 'FAULT_REPORT'
             ? {
@@ -277,6 +288,10 @@ export default {
 
     onLoad(async (options) => {
       equipmentId.value = options.equipmentId || ''
+      sourceRepairId.value = options.sourceRepairId || ''
+      if (sourceRepairId.value && !['PARTS_REPAIR', 'NO_PARTS_REPAIR'].includes(options.type)) {
+        form.type = 'NO_PARTS_REPAIR'
+      }
       if (!equipmentId.value) {
         uni.showToast({ title: '设备参数缺失', icon: 'none' })
         return
@@ -284,11 +299,16 @@ export default {
       const locationsResult = await getEquipmentRepairLocations()
       repairLocations.value = locationsResult.locations || []
       await loadEquipment()
-      if (REPAIR_TYPES.some((item) => item.value === options.type)) form.type = options.type
+      if (REPAIR_TYPES.some((item) => item.value === options.type) &&
+          (!sourceRepairId.value || options.type !== 'FAULT_REPORT')) {
+        form.type = options.type
+      }
     })
 
     return {
       REPAIR_TYPES,
+      activeRepairTypes,
+      sourceRepairId,
       equipment,
       form,
       photos,

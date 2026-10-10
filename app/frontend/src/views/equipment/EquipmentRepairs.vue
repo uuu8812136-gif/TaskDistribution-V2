@@ -43,8 +43,16 @@
       <el-select v-model="filters.type" clearable placeholder="维修类型">
         <el-option v-for="item in REPAIR_TYPE_OPTIONS" :key="item.value" :label="item.label" :value="item.value" />
       </el-select>
-      <el-select v-model="filters.status" clearable placeholder="流程状态">
+      <el-select v-model="filters.status" clearable placeholder="流程状态（任一段命中）">
         <el-option v-for="(label, value) in REPAIR_STATUS_LABELS" :key="value" :label="label" :value="value" />
+      </el-select>
+      <el-select v-model="filters.followup" clearable placeholder="后续状态" class="followup-select">
+        <el-option
+          v-for="item in REPAIR_FOLLOWUP_FILTER_OPTIONS"
+          :key="item.value"
+          :label="item.label"
+          :value="item.value"
+        />
       </el-select>
       <el-checkbox v-if="canViewRepairTodos" v-model="filters.todo">只看我的待办</el-checkbox>
       <el-button type="primary" @click="applyFilters">查询</el-button>
@@ -56,8 +64,8 @@
     </section>
 
     <section class="table-shell">
-      <el-table v-loading="loading" :data="repairs" row-key="_id" stripe empty-text="暂无维修记录">
-        <el-table-column label="设备" min-width="190" fixed="left">
+      <el-table class="repair-table" v-loading="loading" :data="repairs" row-key="_id" stripe empty-text="暂无维修记录">
+        <el-table-column label="设备信息" min-width="210" fixed="left">
           <template #default="{ row }">
             <div class="asset-cell">
               <strong>{{ row.equipmentSnapshot?.name || '-' }}</strong>
@@ -65,34 +73,86 @@
             </div>
           </template>
         </el-table-column>
-        <el-table-column label="类型" min-width="150">
-          <template #default="{ row }">{{ repairTypeLabel(row.type) }}</template>
-        </el-table-column>
-        <el-table-column label="所属分部" min-width="140" show-overflow-tooltip>
+        <el-table-column label="所属分部" min-width="130" show-overflow-tooltip>
           <template #default="{ row }">{{ row.equipmentSnapshot?.orgUnitName || '-' }}</template>
         </el-table-column>
-        <el-table-column label="状态" min-width="190">
+        <el-table-column label="使用人" min-width="100" show-overflow-tooltip>
+          <template #default="{ row }">{{ row.creatorName || '-' }}</template>
+        </el-table-column>
+        <el-table-column label="维修进度" min-width="420">
           <template #default="{ row }">
-            <el-tag :type="repairStatusTone(row.status)" effect="light">
-              {{ repairStatusLabel(row.status) }}
-            </el-tag>
+            <div class="repair-flow">
+              <div v-if="row.type === 'FAULT_REPORT'" class="repair-flow-item fault-flow">
+                <div class="repair-flow-head">
+                  <strong class="repair-flow-label">故障报修</strong>
+                  <el-tag :type="repairStatusTone(row.status)" effect="light">
+                    {{ repairStatusLabel(row.status) }}
+                  </el-tag>
+                </div>
+                <div class="repair-flow-content">
+                  <span class="repair-flow-date">报修：{{ displayDate(row.reportTime) }}</span>
+                  <el-button text type="primary" @click="openDetail(row)">
+                    {{ row.availableActions?.length ? '处理' : '详情' }}
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="followupRepairOfType(row, 'NO_PARTS_REPAIR')" class="repair-flow-item no-parts-flow">
+                <div class="repair-flow-head">
+                  <strong class="repair-flow-label">不需换件维修</strong>
+                  <el-tag v-if="row.standaloneFollowup" type="warning" effect="light">
+                    未关联故障报修
+                  </el-tag>
+                  <el-tag :type="repairStatusTone(followupRepairOfType(row, 'NO_PARTS_REPAIR').status)" effect="light">
+                    {{ repairStatusLabel(followupRepairOfType(row, 'NO_PARTS_REPAIR').status) }}
+                  </el-tag>
+                </div>
+                <div class="repair-flow-content">
+                  <span class="repair-flow-date">维修：{{ displayDate(followupRepairOfType(row, 'NO_PARTS_REPAIR').repairDate) }}</span>
+                  <el-button text type="primary" @click="openDetail(followupRepairOfType(row, 'NO_PARTS_REPAIR'))">
+                    {{ followupRepairOfType(row, 'NO_PARTS_REPAIR').availableActions?.length ? '处理' : '详情' }}
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="followupRepairOfType(row, 'PARTS_REPAIR')" class="repair-flow-item parts-flow">
+                <div class="repair-flow-head">
+                  <strong class="repair-flow-label">需要配件维修</strong>
+                  <el-tag v-if="row.standaloneFollowup" type="warning" effect="light">
+                    未关联故障报修
+                  </el-tag>
+                  <el-tag :type="repairStatusTone(followupRepairOfType(row, 'PARTS_REPAIR').status)" effect="light">
+                    {{ repairStatusLabel(followupRepairOfType(row, 'PARTS_REPAIR').status) }}
+                  </el-tag>
+                </div>
+                <div class="repair-flow-content">
+                  <span class="repair-flow-date">维修：{{ displayDate(followupRepairOfType(row, 'PARTS_REPAIR').repairDate) }}</span>
+                  <span class="repair-flow-amount">金额：￥{{ Number(followupRepairOfType(row, 'PARTS_REPAIR').totalAmount || 0).toFixed(2) }}</span>
+                  <el-button text type="primary" @click="openDetail(followupRepairOfType(row, 'PARTS_REPAIR'))">
+                    {{ followupRepairOfType(row, 'PARTS_REPAIR').availableActions?.length ? '处理' : '详情' }}
+                  </el-button>
+                </div>
+              </div>
+
+              <div v-if="row.needsFollowup && !followupRepair(row)" class="repair-flow-item pending-flow">
+                <div class="repair-flow-head">
+                  <strong class="repair-flow-label">待选择维修方式</strong>
+                  <el-tag type="warning" effect="light">待补后续</el-tag>
+                </div>
+                <div class="repair-flow-content">
+                  <span class="repair-flow-date">故障报修已完成，请选择后续维修方式</span>
+                  <el-button v-if="canCreate && isRowCreator(row)" text type="warning" @click="openCreate(row)">
+                    补后续
+                  </el-button>
+                </div>
+              </div>
+
+              <span v-if="!row.type && !followupRepair(row)" class="repair-flow-empty">-</span>
+            </div>
           </template>
         </el-table-column>
-        <el-table-column label="报修/维修日期" width="150">
-          <template #default="{ row }">{{ displayDate(row.reportTime || row.repairDate) }}</template>
-        </el-table-column>
-        <el-table-column label="金额" width="110" align="right">
-          <template #default="{ row }">{{ row.type === 'PARTS_REPAIR' ? `¥${row.totalAmount.toFixed(2)}` : '-' }}</template>
-        </el-table-column>
-        <el-table-column label="更新时间" width="172">
-          <template #default="{ row }">{{ displayTime(row.updatedAt) }}</template>
-        </el-table-column>
-        <el-table-column label="操作" width="130" fixed="right" align="center">
-          <template #default="{ row }">
-            <el-button text type="primary" @click="openDetail(row)">
-              {{ row.availableActions?.length ? '处理' : '详情' }}
-            </el-button>
-          </template>
+        <el-table-column label="最后更新时间" width="165">
+          <template #default="{ row }">{{ displayTime(latestUpdatedAt(row)) }}</template>
         </el-table-column>
       </el-table>
     </section>
@@ -111,19 +171,33 @@
 
     <el-dialog
       v-model="createVisible"
-      title="新建设备维修单"
+      :title="createForm.sourceRepairId ? '补录后续维修单' : '新建设备维修单'"
       width="min(940px, 96vw)"
       destroy-on-close
       append-to-body
       @closed="resetCreateForm"
     >
+      <el-alert
+        v-if="createForm.sourceRepairId"
+        type="info"
+        :closable="false"
+        show-icon
+        title="该设备故障报修已完成，请选择后续维修方式：需更换配件维修 或 不需更换配件维修"
+        class="followup-alert"
+      />
       <el-form ref="createFormRef" :model="createForm" :rules="createRules" label-position="top">
         <div class="form-grid">
           <el-form-item label="维修类型" prop="type" class="wide-field">
-            <el-segmented v-model="createForm.type" :options="repairTypeSegments" block />
+            <el-segmented v-model="createForm.type" :options="activeRepairTypeSegments" block />
           </el-form-item>
           <el-form-item label="设备" prop="equipmentId" class="wide-field">
-            <el-select v-model="createForm.equipmentId" filterable class="full-width" placeholder="输入设备编码或名称搜索">
+            <el-select
+              v-model="createForm.equipmentId"
+              filterable
+              class="full-width"
+              placeholder="输入设备编码或名称搜索"
+              :disabled="Boolean(createForm.sourceRepairId)"
+            >
               <el-option
                 v-for="asset in equipmentOptions"
                 :key="asset._id"
@@ -271,12 +345,12 @@ import { createMutationAwareListRefreshTracker } from '@/utils/mutationAwareList
 import { requestErrorMessage } from '@/utils/request'
 import { SUCCESSFUL_MUTATION_SCOPES } from '@/utils/successfulMutationRevision'
 import {
+  REPAIR_FOLLOWUP_FILTER_OPTIONS,
   REPAIR_STATUS_LABELS,
   REPAIR_TYPE_OPTIONS,
   emptyRepairPart,
   repairStatusLabel,
   repairStatusTone,
-  repairTypeLabel,
   saveRepairWorkbook
 } from '@/utils/equipmentRepair'
 
@@ -313,7 +387,7 @@ const mutationRefresh = createMutationAwareListRefreshTracker({
   scopes: SUCCESSFUL_MUTATION_SCOPES.EQUIPMENT_REPAIRS
 })
 
-const filters = reactive({ keyword: '', type: '', status: '', todo: false, page: 1, pageSize: 20 })
+const filters = reactive({ keyword: '', type: '', status: '', followup: '', todo: false, page: 1, pageSize: 20 })
 const createForm = reactive(emptyCreateForm())
 const canCreate = computed(() => session.can('equipment.repair', { write: true, teamRequired: true }))
 const canViewRepairTodos = computed(() => (
@@ -325,6 +399,15 @@ const requestTeamParams = computed(() => (
   session.isGlobalReadOnly && selectedTeamId.value ? { teamId: selectedTeamId.value } : {}
 ))
 const repairTypeSegments = REPAIR_TYPE_OPTIONS.map((item) => ({ label: item.label, value: item.value }))
+const followupTypeSegments = REPAIR_TYPE_OPTIONS
+  .filter((item) => item.value !== 'FAULT_REPORT')
+  .map((item) => ({ label: item.label, value: item.value }))
+const faultTypeSegments = REPAIR_TYPE_OPTIONS
+  .filter((item) => item.value === 'FAULT_REPORT')
+  .map((item) => ({ label: item.label, value: item.value }))
+const activeRepairTypeSegments = computed(() => (
+  createForm.sourceRepairId ? followupTypeSegments : faultTypeSegments
+))
 
 const createRules = {
   type: [{ required: true, message: '请选择维修类型', trigger: 'change' }],
@@ -342,6 +425,7 @@ function emptyCreateForm() {
   return {
     type: 'FAULT_REPORT',
     equipmentId: '',
+    sourceRepairId: '',
     reportTime: dayjs().format('YYYY-MM-DDTHH:mm:ssZ'),
     reportLocation: '',
     plateNumber: '',
@@ -358,6 +442,22 @@ function emptyCreateForm() {
 
 const displayDate = (value) => value ? dayjs(value).format('YYYY-MM-DD') : '-'
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
+const latestUpdatedAt = (row) => (
+  row.followup?.updatedAt && row.updatedAt && new Date(row.followup.updatedAt) > new Date(row.updatedAt)
+    ? row.followup.updatedAt
+    : row.updatedAt
+)
+// Merged rows normally contain a fault report and one follow-up; standalone follow-ups remain valid detail rows.
+const followupRepair = (row) => row.followup || (
+  row.type && row.type !== 'FAULT_REPORT' ? row : null
+)
+const followupRepairOfType = (row, type) => {
+  const repair = followupRepair(row)
+  return repair?.type === type ? repair : null
+}
+const isRowCreator = (row) => Boolean(
+  session.user?._id && row.createdBy && String(session.user._id) === String(row.createdBy)
+)
 const currentTeamContextId = () => String(
   session.isGlobalReadOnly ? selectedTeamId.value : session.activeTeamId || ''
 )
@@ -369,9 +469,11 @@ function defaultTodoFilter() {
 function listParams(extra = {}) {
   return {
     ...requestTeamParams.value,
+    view: 'merged',
     keyword: filters.keyword.trim() || undefined,
     type: filters.type || undefined,
     status: filters.status || undefined,
+    followup: filters.followup || undefined,
     todo: filters.todo || undefined,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -448,7 +550,7 @@ function applyFilters() {
 }
 
 function resetFilters() {
-  Object.assign(filters, { keyword: '', type: '', status: '', todo: defaultTodoFilter(), page: 1 })
+  Object.assign(filters, { keyword: '', type: '', status: '', followup: '', todo: defaultTodoFilter(), page: 1 })
   loadRepairs()
 }
 
@@ -473,7 +575,7 @@ function invalidateRepairTeamContext() {
 
 async function handleTeamChange(teamId) {
   invalidateRepairTeamContext()
-  Object.assign(filters, { keyword: '', type: '', status: '', todo: defaultTodoFilter(), page: 1 })
+  Object.assign(filters, { keyword: '', type: '', status: '', followup: '', todo: defaultTodoFilter(), page: 1 })
   await router.replace({ query: teamId ? { teamId } : {} })
   await Promise.all([loadRepairs(), loadRepairLocations()])
 }
@@ -496,8 +598,16 @@ async function saveLocations() {
   }
 }
 
-function openCreate() {
+function openCreate(sourceRow = null) {
   resetCreateForm()
+  if (sourceRow) {
+    // 从"待补后续"行进入：锁定源报修与设备，类型收窄为二选一
+    createForm.sourceRepairId = String(sourceRow._id || '')
+    createForm.equipmentId = String(sourceRow.equipmentId || '')
+    createForm.type = 'NO_PARTS_REPAIR'
+    createVisible.value = true
+    return
+  }
   const requestedEquipmentId = String(route.query.equipmentId || '')
   if (requestedEquipmentId && equipmentOptions.value.some((item) => item._id === requestedEquipmentId)) {
     createForm.equipmentId = requestedEquipmentId
@@ -507,7 +617,7 @@ function openCreate() {
 
 function currentCreateToken() {
   if (route.name !== 'EquipmentRepairs' || route.query.create !== '1') return ''
-  return `${String(route.query.create)}:${String(route.query.equipmentId || '')}`
+  return `${String(route.query.create)}:${String(route.query.equipmentId || '')}:${String(route.query.sourceRepairId || '')}`
 }
 
 async function syncRouteCreateAction() {
@@ -530,8 +640,18 @@ async function syncRouteCreateAction() {
   routeCreateToken = token
   if (!equipmentOptions.value.length) await loadEquipmentOptions()
   if (!pageActive || currentCreateToken() !== token) return
-  openCreate()
-  await router.replace({ query: { ...route.query, create: undefined, equipmentId: undefined } })
+  const routedSourceRepairId = String(route.query.sourceRepairId || '')
+  if (routedSourceRepairId) {
+    // 从详情页/消息跳转补录：根据源报修构造上下文
+    const sourceRow = repairs.value.find((item) => String(item._id) === routedSourceRepairId)
+    openCreate(sourceRow || {
+      _id: routedSourceRepairId,
+      equipmentId: String(route.query.equipmentId || '')
+    })
+  } else {
+    openCreate()
+  }
+  await router.replace({ query: { ...route.query, create: undefined, equipmentId: undefined, sourceRepairId: undefined } })
 }
 
 function openDetail(row) {
@@ -578,6 +698,7 @@ async function submitCreate() {
     await createEquipmentRepair({
       type: createForm.type,
       equipmentId: createForm.equipmentId,
+      ...(createForm.sourceRepairId ? { sourceRepairId: createForm.sourceRepairId } : {}),
       idempotencyKey: createForm.idempotencyKey,
       ...(createForm.type === 'FAULT_REPORT'
         ? {
@@ -651,7 +772,7 @@ watch(
   }
 )
 
-watch(() => [route.name, route.query.teamId, route.query.create, route.query.equipmentId], () => {
+watch(() => [route.name, route.query.teamId, route.query.create, route.query.equipmentId, route.query.sourceRepairId], () => {
   if (pageActive) void syncRouteCreateAction()
 })
 
@@ -699,8 +820,28 @@ onDeactivated(() => {
 .toolbar { flex-wrap: wrap; padding: 12px 0; border-top: 1px solid #dce4ee; border-bottom: 1px solid #dce4ee; }
 .toolbar .keyword-input { width: min(300px, 100%); }
 .toolbar .team-select { width: 220px; }
+.toolbar .followup-select { width: 150px; }
+.followup-alert { margin-bottom: 14px; }
 .toolbar-spacer { flex: 1; }
 .table-shell { overflow: hidden; border: 1px solid #dce4ee; border-radius: 6px; background: #fff; }
+.repair-table :deep(.el-table__header th) { padding: 7px 6px; color: #344054; font-size: 12px; }
+.repair-table :deep(.el-table__body td) { padding: 7px 6px; }
+.repair-table :deep(.el-table__header-wrapper .cell) { white-space: normal; line-height: 1.35; }
+.repair-table :deep(.el-table__body-wrapper .cell) { line-height: 1.35; }
+.repair-flow { display: grid; gap: 5px; min-width: 0; }
+.repair-flow-item { display: grid; gap: 2px; min-width: 0; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; }
+.repair-flow-item.fault-flow { background: #f1f8e9; border-color: #c6e0b4; }
+.repair-flow-item.no-parts-flow { background: #eaf3ff; border-color: #b8d6f5; }
+.repair-flow-item.parts-flow { background: #fff1f4; border-color: #f1c2cc; }
+.repair-flow-item.pending-flow { background: #fff8e6; border-color: #f1d18a; }
+.repair-flow-head, .repair-flow-content { display: flex; align-items: center; min-width: 0; gap: 7px; }
+.repair-flow-head { flex-wrap: wrap; }
+.repair-flow-content { justify-content: space-between; }
+.repair-flow-label { flex: 0 0 auto; color: #344054; font-size: 12px; }
+.repair-flow-date { min-width: 0; overflow: hidden; color: #475467; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.repair-flow-amount { flex: 0 0 auto; color: #b42318; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.repair-flow-item > .repair-flow-content > .el-button { flex: 0 0 auto; padding: 2px 4px; }
+.repair-flow-empty { color: #98a2b3; }
 .asset-cell { display: grid; gap: 4px; min-width: 0; }
 .asset-cell strong, .asset-cell span { overflow-wrap: anywhere; }
 .asset-cell span { color: #667085; font-size: 12px; }
@@ -719,5 +860,8 @@ onDeactivated(() => {
   .form-grid { grid-template-columns: 1fr; }
   .wide-field { grid-column: auto; }
   .pagination-row { align-items: flex-start; flex-direction: column; overflow-x: auto; }
+  .repair-flow-item { padding: 5px 6px; }
+  .repair-flow-content { align-items: flex-start; }
+  .repair-flow-date { white-space: normal; }
 }
 </style>

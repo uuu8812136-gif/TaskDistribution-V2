@@ -50,7 +50,7 @@
               />
             </el-select>
             <div class="field-hint">
-              普通执行人和抄送人必须属于该组织，创建后不能修改归属。
+              执行人和抄送人须属于该组织或其下级组织，创建后不能修改归属。
             </div>
           </el-form-item>
           <el-form-item label="任务名称" prop="taskName">
@@ -251,11 +251,19 @@ const rules = {
 
 const isTeamTaskScope = computed(() => session.moduleDataScopes.task === 'TEAM')
 const orgUnitOptions = computed(() => buildTaskOrgUnitOptions(users.value))
+const candidateUsers = ref([])
 const assignableUsers = computed(() => filterTaskParticipants(
-  users.value,
+  candidateUsers.value,
   form.orgUnitId,
   isTeamTaskScope.value
 ))
+
+const loadCandidateUsers = async () => {
+  const params = { limit: 1000 }
+  if (form.orgUnitId) params.orgUnitId = form.orgUnitId
+  const result = await getTaskAssignableUsers(params)
+  candidateUsers.value = result.users
+}
 
 const getUserName = (userId) => {
   return users.value.find(u => u._id === userId)?.name || ''
@@ -269,6 +277,7 @@ const handleOrgUnitChange = () => {
   form.executor = []
   form.mainExecutor = ''
   form.ccUsers = []
+  loadCandidateUsers().catch(() => {})
 }
 
 const addSubTask = () => {
@@ -419,6 +428,7 @@ onMounted(async () => {
       })
       fileList.value = existingAttachmentFileList(taskData.task.attachments)
     }
+    await loadCandidateUsers()
     formReady.value = true
   } catch (error) {
     console.error('初始化失败:', error)

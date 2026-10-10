@@ -18,6 +18,23 @@
       </view>
     </view>
 
+    <view v-if="repair && (repair.sourceRepairId || repair.followupRepairId || canFollowupNow)" class="section-band">
+      <text class="section-title">关联单据</text>
+      <view v-if="repair.sourceRepairId" class="related-row">
+        <button class="related-link" @click="openRelated(repair.sourceRepairId)">查看源故障报修</button>
+      </view>
+      <view v-if="repair.followupRepairId" class="related-row">
+        <button class="related-link" @click="openRelated(repair.followupRepairId)">查看后续维修单</button>
+      </view>
+      <view v-if="canFollowupNow" class="followup-choice">
+        <text class="followup-hint">该报修已完成，请选择后续维修方式：</text>
+        <view class="followup-buttons">
+          <button class="followup-button primary" @click="startFollowup('PARTS_REPAIR')">需更换配件维修</button>
+          <button class="followup-button" @click="startFollowup('NO_PARTS_REPAIR')">不需换件维修</button>
+        </view>
+      </view>
+    </view>
+
     <view v-if="repair?.type === 'FAULT_REPORT'" class="section-band">
       <text class="section-title">故障报修信息</text>
       <view class="detail-grid">
@@ -169,6 +186,7 @@ import {
   transitionEquipmentRepair
 } from '@/api/index.js'
 import { formatDate } from '@/utils/format.js'
+import { useUserStore } from '@/stores/user.js'
 import {
   createRepairPart,
   repairActionLabel,
@@ -182,6 +200,7 @@ import {
 export default {
   name: 'EquipmentRepairDetail',
   setup() {
+    const userStore = useUserStore()
     const repairId = ref('')
     const teamId = ref('')
     const repair = ref(null)
@@ -212,6 +231,32 @@ export default {
       (sum, item) => sum + repairLineAmount(item),
       0
     ))
+
+    // 报修创建人本人 + 已完成 + 无后续 → 可二选一补录后续维修
+    const canFollowupNow = computed(() => Boolean(
+      repair.value &&
+      repair.value.type === 'FAULT_REPORT' &&
+      repair.value.status === 'COMPLETED' &&
+      !repair.value.followupRepairId &&
+      userStore.userInfo?._id &&
+      String(userStore.userInfo._id) === String(repair.value.createdBy)
+    ))
+
+    const openRelated = (relatedRepairId) => {
+      uni.navigateTo({
+        url: `/pages/equipment/repair-detail?repairId=${relatedRepairId}` +
+          (teamId.value ? `&teamId=${teamId.value}` : '')
+      })
+    }
+
+    const startFollowup = (type) => {
+      if (!repair.value) return
+      uni.navigateTo({
+        url: `/pages/equipment/repair-form?equipmentId=${repair.value.equipmentId}` +
+          `&sourceRepairId=${repair.value._id}&type=${type}` +
+          (teamId.value ? `&teamId=${teamId.value}` : '')
+      })
+    }
 
     function emptyActionForm() {
       return {
@@ -385,6 +430,7 @@ export default {
       showFaultResubmit,
       noteRequired,
       pricingTotal,
+      canFollowupNow,
       selectAction,
       selectRepairLocation,
       copyRepairSummary,
@@ -392,6 +438,8 @@ export default {
       removePart,
       submitAction,
       previewRepairPhoto,
+      openRelated,
+      startFollowup,
       repairActionLabel,
       repairLineAmount,
       repairPositionLabel,
@@ -407,6 +455,13 @@ export default {
 <style scoped lang="scss">
 .repair-detail-page { min-height: 100vh; padding: 24rpx; box-sizing: border-box; background: #eef3fb; }
 .asset-band, .section-band { margin-bottom: 20rpx; padding: 24rpx; border: 1px solid #dce4ee; border-radius: 8rpx; background: #fff; }
+.related-row { margin-bottom: 12rpx; }
+.related-link { font-size: 26rpx; color: #2563eb; text-align: left; padding: 0; background: none; line-height: 40rpx; }
+.followup-choice { margin-top: 8rpx; }
+.followup-hint { display: block; font-size: 26rpx; color: #b45309; margin-bottom: 12rpx; }
+.followup-buttons { display: flex; gap: 16rpx; }
+.followup-button { flex: 1; font-size: 26rpx; margin: 0; }
+.followup-button.primary { background: #2563eb; color: #fff; }
 .asset-heading, .section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18rpx; }
 .asset-copy { min-width: 0; flex: 1; }
 .asset-name, .asset-code { display: block; overflow-wrap: anywhere; }

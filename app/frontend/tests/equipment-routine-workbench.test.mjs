@@ -15,6 +15,11 @@ import {
 } from '../src/utils/equipment.js'
 import { routeComponentKey } from '../src/utils/routeComponentKey.js'
 
+const routineWorkflowSource = readFileSync(
+  new URL('../../services/equipmentRoutineWorkflowService.js', import.meta.url),
+  'utf8'
+)
+
 const workbenchSource = readFileSync(
   new URL('../src/views/equipment/EquipmentRoutineWorkbench.vue', import.meta.url),
   'utf8'
@@ -95,6 +100,27 @@ test('Web exposes a cross-device routine workbench, fixed export, exception acti
   assert.match(ruleDialogSource, /添加窗口/)
   assert.match(ruleDialogSource, /inspectionEscalationMinutes/)
   assert.match(ruleDialogSource, /PENDING_CONFIRMATION/)
+})
+
+test('routine plans return and render the equipment custodian', () => {
+  assert.match(
+    routineWorkflowSource,
+    /EquipmentAssetModel\.find\([\s\S]*?\.select\('_id assetCode name location plateNumber custodianUserId custodianDisplayName'\)/
+  )
+  const plansSection = workbenchSource.slice(
+    workbenchSource.indexOf('<section v-if="activeTab === \'plans\'"'),
+    workbenchSource.indexOf('<section v-else-if="activeTab === \'records\'"')
+  )
+  assert.ok(
+    plansSection.indexOf('label="组织"') < plansSection.indexOf('label="使用人"'),
+    '设备使用人应位于组织列之后'
+  )
+  assert.match(
+    plansSection,
+    /<el-table-column label="使用人" width="120" class-name="routine-plan-custodian-column" header-cell-class-name="routine-plan-custodian-header">/
+  )
+  assert.match(plansSection, /class="routine-plan-table"/)
+  assert.match(plansSection, /row\.equipment\?\.custodianDisplayName \|\| '-'/)
 })
 
 test('routine workbench keeps its component mounted while tab query parameters change', () => {

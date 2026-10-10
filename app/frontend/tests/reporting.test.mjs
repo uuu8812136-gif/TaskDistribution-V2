@@ -212,6 +212,21 @@ test('transport list assigns restrained row classes for each dispatch type', () 
   assert.equal(transportRowClass(), '')
 })
 
+test('transport rows use blue and white full-row styles with rounded ends', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url))
+  const viewSource = fs.readFileSync(`${root}/src/views/reporting/TransportRecords.vue`, 'utf8')
+
+  assert.match(viewSource, /class="transport-table"/)
+  assert.match(viewSource, /transport-row--delivery[\s\S]*background-color:\s*#eaf3ff/i)
+  assert.match(viewSource, /transport-row--return-rack[\s\S]*background-color:\s*#ffffff/i)
+  assert.match(viewSource, /transport-row--delivery:hover[\s\S]*background-color:\s*#dbeafe/i)
+  assert.match(viewSource, /transport-row--delivery\.hover-row[\s\S]*background-color:\s*#dbeafe/i)
+  assert.match(viewSource, /transport-row--return-rack\.hover-row[\s\S]*background-color:\s*#f8fafc/i)
+  assert.match(viewSource, /border-radius:\s*10px\s+0\s+0\s+10px/)
+  assert.match(viewSource, /border-radius:\s*0\s+10px\s+10px\s+0/)
+  assert.doesNotMatch(viewSource, /#fff7e6|#ffedc2|#f0f9e9|#e2f3d5/i)
+})
+
 test('transport load items come from active master data and preserve unavailable history', () => {
   const items = configuredTransportLoadItems([
     { _id: 'type-1', kind: 'LOAD_TYPE', status: 'ACTIVE', name: '塑料托盘' },

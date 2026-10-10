@@ -29,6 +29,25 @@
           </el-descriptions>
         </section>
 
+        <section v-if="repair.sourceRepairId || repair.followupRepairId || canFollowupNow" class="info-band">
+          <div class="section-heading">
+            <h2>关联单据</h2>
+            <el-button v-if="canFollowupNow" type="warning" @click="startFollowupCreate">
+              <el-icon><Plus /></el-icon>
+              补录后续维修（需/不需更换配件）
+            </el-button>
+          </div>
+          <div class="related-links">
+            <el-button v-if="repair.sourceRepairId" text type="primary" @click="openRelated(repair.sourceRepairId)">
+              查看源故障报修
+            </el-button>
+            <el-button v-if="repair.followupRepairId" text type="primary" @click="openRelated(repair.followupRepairId)">
+              查看后续维修单
+            </el-button>
+            <el-tag v-if="canFollowupNow" type="warning" effect="light">该报修已完成，尚未选择后续维修方式</el-tag>
+          </div>
+        </section>
+
         <section class="info-band">
           <h2>{{ repair.type === 'FAULT_REPORT' ? '故障报修信息' : '维修信息' }}</h2>
           <el-descriptions v-if="repair.type === 'FAULT_REPORT'" :column="3" border>
@@ -241,6 +260,7 @@ import dayjs from 'dayjs'
 import { ElMessage } from 'element-plus'
 import AuthenticatedAttachments from '@/components/AuthenticatedAttachments.vue'
 import { requestErrorMessage } from '@/utils/request'
+import { useSessionStore } from '@/stores/session'
 import { getEquipmentRepair, getEquipmentRepairLocations, transitionEquipmentRepair } from '@/api/equipment'
 import {
   REPAIR_ACTION_TONES,
@@ -254,6 +274,7 @@ import {
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
 const repair = ref(null)
 const repairLocations = ref([])
 const loading = ref(false)
@@ -303,6 +324,37 @@ function emptyActionForm() {
 const displayDate = (value) => value ? dayjs(value).format('YYYY-MM-DD') : '-'
 const displayTime = (value) => value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '-'
 const lineAmount = (row) => Math.round((Number(row.quantity) || 0) * (Number(row.unitPrice) || 0) * 100) / 100
+
+// 报修创建人本人 + 已完成 + 无后续 → 可补录后续维修
+const canFollowupNow = computed(() => Boolean(
+  repair.value &&
+  repair.value.type === 'FAULT_REPORT' &&
+  repair.value.status === 'COMPLETED' &&
+  !repair.value.followupRepairId &&
+  session.user?._id &&
+  String(session.user._id) === String(repair.value.createdBy)
+))
+
+function openRelated(relatedRepairId) {
+  router.push({
+    name: 'EquipmentRepairDetail',
+    params: { repairId: relatedRepairId },
+    query: route.query.teamId ? { teamId: String(route.query.teamId) } : {}
+  })
+}
+
+function startFollowupCreate() {
+  if (!repair.value) return
+  router.push({
+    name: 'EquipmentRepairs',
+    query: {
+      create: '1',
+      sourceRepairId: String(repair.value._id),
+      equipmentId: String(repair.value.equipmentId || ''),
+      ...(route.query.teamId ? { teamId: String(route.query.teamId) } : {})
+    }
+  })
+}
 
 async function loadRepair() {
   loading.value = true

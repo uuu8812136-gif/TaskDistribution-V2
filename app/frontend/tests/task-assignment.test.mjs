@@ -21,11 +21,11 @@ test('task organization options are deduplicated from scoped team members', () =
   ])
 })
 
-test('team-wide assignment lists only members from the selected organization', () => {
+test('assignment participants mirror the backend subtree-filtered list', () => {
   assert.deepEqual(
     filterTaskParticipants(users, 'org-1', true).map((user) => user._id),
-    ['u1', 'u3']
+    ['u1', 'u2', 'u3']
   )
-  assert.deepEqual(filterTaskParticipants(users, '', true), [])
+  assert.deepEqual(filterTaskParticipants(users, '', true), users)
   assert.equal(filterTaskParticipants(users, '', false), users)
 })

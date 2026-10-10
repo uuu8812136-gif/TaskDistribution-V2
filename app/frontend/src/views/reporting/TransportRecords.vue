@@ -68,6 +68,7 @@
 
     <section class="table-shell">
       <el-table
+        class="transport-table"
         v-loading="loading"
         :data="records"
         row-key="_id"
@@ -1139,10 +1140,45 @@ onBeforeUnmount(deactivateTransportRecords)
 .keyword-input { width: min(280px, 100%); }
 .toolbar-spacer { flex: 1; }
 .table-shell { margin-top: 16px; overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 16px; }
-:deep(.transport-row--delivery > td.el-table__cell) { background-color: #f0f9e9; }
-:deep(.transport-row--return-rack > td.el-table__cell) { background-color: #fff7e6; }
-:deep(.transport-row--delivery:hover > td.el-table__cell) { background-color: #e2f3d5 !important; }
-:deep(.transport-row--return-rack:hover > td.el-table__cell) { background-color: #ffedc2 !important; }
+/* Keep dispatch types readable in every Element Plus table clone, including fixed columns. */
+:deep(.transport-table .transport-row--delivery > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--delivery > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--delivery > td.el-table__cell) {
+  background-color: #eaf3ff !important;
+}
+:deep(.transport-table .transport-row--return-rack > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--return-rack > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--return-rack > td.el-table__cell) {
+  background-color: #ffffff !important;
+}
+:deep(.transport-table .transport-row--delivery:hover > td.el-table__cell),
+:deep(.transport-table .transport-row--delivery.hover-row > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--delivery:hover > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--delivery.hover-row > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--delivery:hover > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--delivery.hover-row > td.el-table__cell) {
+  background-color: #dbeafe !important;
+}
+:deep(.transport-table .transport-row--return-rack:hover > td.el-table__cell),
+:deep(.transport-table .transport-row--return-rack.hover-row > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--return-rack:hover > td.el-table__cell),
+:deep(.transport-table .el-table__fixed .transport-row--return-rack.hover-row > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--return-rack:hover > td.el-table__cell),
+:deep(.transport-table .el-table__fixed-right .transport-row--return-rack.hover-row > td.el-table__cell) {
+  background-color: #f8fafc !important;
+}
+:deep(.transport-table .transport-row--delivery > td:first-child),
+:deep(.transport-table .transport-row--return-rack > td:first-child),
+:deep(.transport-table .el-table__fixed .transport-row--delivery > td:first-child),
+:deep(.transport-table .el-table__fixed .transport-row--return-rack > td:first-child) {
+  border-radius: 10px 0 0 10px;
+}
+:deep(.transport-table .transport-row--delivery > td:last-child),
+:deep(.transport-table .transport-row--return-rack > td:last-child),
+:deep(.transport-table .el-table__fixed-right .transport-row--delivery > td:last-child),
+:deep(.transport-table .el-table__fixed-right .transport-row--return-rack > td:last-child) {
+  border-radius: 0 10px 10px 0;
+}
 .table-actions { justify-content: center; }
 .pagination-row { justify-content: space-between; gap: 16px; margin-top: 16px; color: #606266; }
 .form-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 18px; }

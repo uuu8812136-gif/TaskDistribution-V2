@@ -1,12 +1,28 @@
 const DEFAULT_EMPTY_MESSAGE = '暂无可复制内容'
 const DEFAULT_SUCCESS_MESSAGE = '已复制'
 const DEFAULT_FAILURE_MESSAGE = '复制失败，请重试'
+const DEFAULT_PRIVACY_MESSAGE = '复制失败：隐私协议未声明剪贴板'
+
+// errno 112: the clipboard scope is missing from the mini-program's
+// 用户隐私保护指引 in the WeChat admin console. No client retry can fix it.
+function isPrivacyScopeMissing(error) {
+  if (!error) return false
+  if (error.errno === 112) return true
+  const errMsg = String(error.errMsg || error.message || '')
+  return errMsg.includes('not declared in the privacy agreement')
+}
 
 function runtimeUni() {
   return typeof uni === 'undefined' ? null : uni
 }
 
 function runtimeWx() {
+  // The uni-app compiler rewrites bare `wx`/`uni` identifiers into imports of
+  // a bundled copy of the WeChat namespace. On real devices that copy can be
+  // detached from the native bridge, while property access on `globalThis` is
+  // left untouched and still points at the true global object.
+  const globalScope = typeof globalThis === 'undefined' ? null : globalThis
+  if (globalScope && globalScope.wx) return globalScope.wx
   return typeof wx === 'undefined' ? null : wx
 }
 
@@ -66,9 +82,12 @@ export function copyTextToClipboard(value, options = {}) {
   const settle = (ok, error, reason) => {
     if (settled) return
     settled = true
+    const privacyBlocked = !ok && isPrivacyScopeMissing(error)
     if (ok) showToast(successMessage)
+    else if (privacyBlocked) showToast(DEFAULT_PRIVACY_MESSAGE)
     else showToast(failureMessage)
-    resolveResult({ ok, ...(reason ? { reason } : {}), ...(error ? { error } : {}) })
+    const finalReason = privacyBlocked ? 'privacy' : reason
+    resolveResult({ ok, ...(finalReason ? { reason: finalReason } : {}), ...(error ? { error } : {}) })
   }
 
   if (runtime) {
@@ -121,4 +140,4 @@ export function copyTextToClipboard(value, options = {}) {
   return result
 }
 
-export { DEFAULT_EMPTY_MESSAGE, DEFAULT_FAILURE_MESSAGE, DEFAULT_SUCCESS_MESSAGE }
+export { DEFAULT_EMPTY_MESSAGE, DEFAULT_FAILURE_MESSAGE, DEFAULT_PRIVACY_MESSAGE, DEFAULT_SUCCESS_MESSAGE }

@@ -20,7 +20,7 @@ export function buildTaskOrgUnitOptions(users = []) {
 }
 
 export function filterTaskParticipants(users = [], orgUnitId, teamScope) {
-	if (!teamScope) return users
-	if (!orgUnitId) return []
-	return users.filter((user) => membershipOrgUnitId(user) === orgUnitId)
+	// Assignment candidates are resolved by the backend assignable-users API,
+	// which already restricts members to the task organization subtree.
+	return users
 }

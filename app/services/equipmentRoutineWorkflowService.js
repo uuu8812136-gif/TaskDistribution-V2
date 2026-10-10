@@ -665,7 +665,7 @@ function createEquipmentRoutineWorkflowService({
       EquipmentAssetModel.find({
         _id: { $in: equipmentIds },
         teamId: { $in: teamIds }
-      }).select('_id assetCode name location plateNumber').lean(),
+      }).select('_id assetCode name location plateNumber custodianUserId custodianDisplayName').lean(),
       OrgUnitModel.find({
         _id: { $in: orgUnitIds },
         teamId: { $in: teamIds }

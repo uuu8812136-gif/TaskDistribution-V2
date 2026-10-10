@@ -114,6 +114,17 @@ const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
   EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
 ]);
 
+function routineTypeAllowedForEquipmentStatus(routineType, status) {
+  if (routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE) {
+    return [
+      EQUIPMENT_STATUSES.IN_USE,
+      EQUIPMENT_STATUSES.IDLE,
+      EQUIPMENT_STATUSES.STOPPED
+    ].includes(status);
+  }
+  return status === EQUIPMENT_STATUSES.IN_USE;
+}
+
 function routineError(status, code, message) {
   return new EquipmentRegistryError(status, code, message);
 }
@@ -2682,7 +2693,13 @@ function createEquipmentRoutineService({
         asset = await execute(EquipmentAssetModel.findOneAndUpdate({
           _id: asset._id,
           teamId: context.activeTeamId,
-          status: EQUIPMENT_STATUSES.IN_USE
+          status: {
+            $in: [
+              EQUIPMENT_STATUSES.IN_USE,
+              EQUIPMENT_STATUSES.IDLE,
+              EQUIPMENT_STATUSES.STOPPED
+            ]
+          }
         }, {
           $inc: { routineMaterializationRevision: 1 }
         }, {
@@ -2711,6 +2728,15 @@ function createEquipmentRoutineService({
         }), session);
         if (!rule) throw notFound('Equipment routine rule');
         assertPermission(context, routinePermission(rule.routineType));
+        if (!routineTypeAllowedForEquipmentStatus(rule.routineType, asset.status)) {
+          throw routineError(
+            409,
+            'EQUIPMENT_ROUTINE_EQUIPMENT_NOT_IN_USE',
+            rule.routineType === EQUIPMENT_ROUTINE_TYPES.INSPECTION
+              ? 'Inspection can only be submitted for equipment that is in use'
+              : 'Maintenance cannot be submitted for scrapped equipment'
+          );
+        }
 
         const runtimeRequired = [
           EQUIPMENT_ROUTINE_SCHEDULE_TYPES.RUNTIME_HOURS,

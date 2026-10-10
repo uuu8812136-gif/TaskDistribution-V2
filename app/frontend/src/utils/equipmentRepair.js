@@ -4,6 +4,10 @@ export const REPAIR_TYPE_OPTIONS = Object.freeze([
   Object.freeze({ value: 'NO_PARTS_REPAIR', label: '不需换件维修' })
 ])
 
+export const REPAIR_FOLLOWUP_FILTER_OPTIONS = Object.freeze([
+  Object.freeze({ value: 'pending', label: '待补后续' })
+])
+
 export const REPAIR_STATUS_LABELS = Object.freeze({
   SUB_DEPARTMENT_REVIEW_PENDING: '待分部负责人审核',
   SUB_DEPARTMENT_ACCEPTANCE_PENDING: '待分部负责人验收',

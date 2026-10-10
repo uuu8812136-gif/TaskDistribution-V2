@@ -56,6 +56,22 @@ const OPEN_ROUTINE_PLAN_STATUSES = Object.freeze([
   EQUIPMENT_ROUTINE_PLAN_STATUSES.OVERDUE
 ]);
 
+// In-use equipment supports both routine types. Idle and stopped equipment
+// remains eligible for maintenance, while scrapped equipment is ineligible.
+function eligibleEquipmentStatuses(routineType) {
+  return routineType === EQUIPMENT_ROUTINE_TYPES.MAINTENANCE
+    ? [
+        EQUIPMENT_STATUSES.IN_USE,
+        EQUIPMENT_STATUSES.IDLE,
+        EQUIPMENT_STATUSES.STOPPED
+      ]
+    : [EQUIPMENT_STATUSES.IN_USE];
+}
+
+function routineTypeAllowedForEquipmentStatus(routineType, status) {
+  return eligibleEquipmentStatuses(routineType).includes(status);
+}
+
 function modelQuery(query, session) {
   if (session && typeof query.session === 'function') query.session(session);
   return query;
@@ -447,7 +463,7 @@ function createEquipmentRoutineWorkerService({
         _id: assetId,
         teamId: rule.teamId,
         categoryId: { $in: allowedCategoryIds },
-        status: EQUIPMENT_STATUSES.IN_USE
+        status: { $in: eligibleEquipmentStatuses(rule.routineType) }
       }, {
         $inc: { routineMaterializationRevision: 1 }
       }, {
@@ -554,7 +570,7 @@ function createEquipmentRoutineWorkerService({
         teamId: rule.teamId,
         ruleId: rule._id,
         status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
-      }).select('_id equipmentId').lean(), session);
+      }).select('_id equipmentId routineType').lean(), session);
       if (openPlans.length === 0) return;
 
       const ruleIsActive = rule.status === EQUIPMENT_ROUTINE_RULE_STATUSES.ACTIVE;
@@ -568,13 +584,44 @@ function createEquipmentRoutineWorkerService({
           .filter(Boolean);
         const applicableAssets = await modelQuery(EquipmentAssetModel.find({
           _id: { $in: equipmentIds },
-          teamId: rule.teamId,
-          categoryId: { $in: allowedCategoryIds }
-        }).select('_id').lean(), session);
-        const applicableAssetIds = new Set(applicableAssets.map(({ _id }) => normalizeId(_id)));
-        planIds = openPlans
-          .filter(({ equipmentId }) => !applicableAssetIds.has(normalizeId(equipmentId)))
-          .map(({ _id }) => _id);
+          teamId: rule.teamId
+        }).select('_id categoryId status').lean(), session);
+        const assetsById = new Map(
+          applicableAssets.map((asset) => [normalizeId(asset._id), asset])
+        );
+        const planIdsByReason = new Map([
+          [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED, []],
+          [EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED, []]
+        ]);
+        for (const plan of openPlans) {
+          const asset = assetsById.get(normalizeId(plan.equipmentId));
+          const reason = !asset || !allowedCategoryIds.some((categoryId) => (
+            normalizeId(categoryId) === normalizeId(asset.categoryId)
+          ))
+            ? EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_CATEGORY_CHANGED
+            : !routineTypeAllowedForEquipmentStatus(plan.routineType, asset.status)
+              ? EQUIPMENT_ROUTINE_PLAN_CANCELLATION_REASONS.EQUIPMENT_STATUS_CHANGED
+              : null;
+          if (reason) planIdsByReason.get(reason).push(plan._id);
+        }
+        for (const [reason, ids] of planIdsByReason) {
+          if (ids.length > 0) {
+            await EquipmentRoutinePlanModel.updateMany({
+              _id: { $in: ids },
+              teamId: rule.teamId,
+              ruleId: rule._id,
+              status: { $in: OPEN_ROUTINE_PLAN_STATUSES }
+            }, {
+              $set: {
+                status: EQUIPMENT_ROUTINE_PLAN_STATUSES.CANCELLED,
+                cancellationReason: reason,
+                cancelledAt: instant,
+                cancelledBy: null
+              }
+            }, { session });
+          }
+        }
+        return;
       }
       if (planIds.length === 0) return;
 
@@ -616,7 +663,7 @@ function createEquipmentRoutineWorkerService({
       const assets = await EquipmentAssetModel.find({
         teamId: rule.teamId,
         categoryId: { $in: allowedCategoryIds },
-        status: EQUIPMENT_STATUSES.IN_USE
+        status: { $in: eligibleEquipmentStatuses(rule.routineType) }
       }).lean();
       for (const asset of assets) {
         const materialized = await materializeRuleForAsset(rule, asset._id, instant);

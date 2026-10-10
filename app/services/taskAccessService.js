@@ -43,6 +43,7 @@ function taskScopeForMembership(membership) {
 function assertTaskParticipantOrgUnits({
   authContext,
   memberships,
+  allowedOrgUnitIds = null,
   taskOrgUnitId = null,
   enforceActorOrgScope = true
 } = {}) {
@@ -62,23 +63,64 @@ function assertTaskParticipantOrgUnits({
     throw relatedResourceError();
   }
 
-  if (!taskOrgUnitId) return participantMemberships;
-  let normalizedTaskOrgUnitId;
-  try {
-    normalizedTaskOrgUnitId = normalizeObjectId(taskOrgUnitId, 'taskOrgUnitId');
-  } catch {
-    throw relatedResourceError();
+  if (!allowedOrgUnitIds && !taskOrgUnitId) return participantMemberships;
+
+  // Prefer the precomputed task organization subtree; fall back to the exact
+  // task organization unit when no subtree was resolved.
+  const allowedSet = new Set(
+    (Array.isArray(allowedOrgUnitIds) ? allowedOrgUnitIds : [taskOrgUnitId])
+      .map((orgUnitId) => String(orgUnitId).toLowerCase())
+  );
+  if (taskOrgUnitId) {
+    let normalizedTaskOrgUnitId;
+    try {
+      normalizedTaskOrgUnitId = normalizeObjectId(taskOrgUnitId, 'taskOrgUnitId');
+    } catch {
+      throw relatedResourceError();
+    }
+    allowedSet.add(normalizedTaskOrgUnitId);
   }
 
   // Team-wide participants can see every unit. Everyone else must belong to
-  // the unit that owns the task, otherwise the assignment would be invisible.
+  // the task organization subtree, otherwise the assignment would be invisible.
   if (participantMemberships.some((membership) => (
     taskScopeForMembership(membership) !== DATA_SCOPES.TEAM &&
-    !sameId(membership.orgUnitId, normalizedTaskOrgUnitId)
+    !allowedSet.has(String(membership.orgUnitId).toLowerCase())
   ))) {
     throw relatedResourceError();
   }
   return participantMemberships;
+}
+
+async function resolveTaskOrgUnitSubtreeIds({
+  teamId,
+  orgUnitId,
+  session = null
+} = {}) {
+  if (orgUnitId === null || orgUnitId === undefined) return null;
+  let normalizedOrgUnitId;
+  try {
+    normalizedOrgUnitId = normalizeObjectId(orgUnitId, 'orgUnitId');
+  } catch {
+    return null;
+  }
+  const unit = await withSession(OrgUnit.findOne({
+    _id: normalizedOrgUnitId,
+    teamId,
+    status: ORG_UNIT_STATUSES.ACTIVE
+  }).select('path'), session);
+  if (!unit) return null;
+
+  const subtreePrefix = `${unit.path}${normalizedOrgUnitId}/`;
+  const descendants = await withSession(OrgUnit.find({
+    teamId,
+    status: ORG_UNIT_STATUSES.ACTIVE,
+    path: { $regex: `^${subtreePrefix}` }
+  }).select('_id'), session);
+  return [
+    normalizedOrgUnitId,
+    ...descendants.map((descendant) => String(descendant._id).toLowerCase())
+  ];
 }
 
 function withSession(query, session) {
@@ -177,9 +219,19 @@ async function validateActiveTeamUsers({
     throw relatedResourceError();
   }
 
+  let allowedOrgUnitIds = null;
+  if (taskOrgUnitId) {
+    allowedOrgUnitIds = await resolveTaskOrgUnitSubtreeIds({
+      teamId: context.activeTeamId,
+      orgUnitId: taskOrgUnitId,
+      session
+    });
+  }
+
   assertTaskParticipantOrgUnits({
     authContext: context,
     memberships,
+    allowedOrgUnitIds,
     taskOrgUnitId,
     enforceActorOrgScope
   });
@@ -201,6 +253,7 @@ module.exports = {
   assertTaskParticipantOrgUnits,
   buildTaskDetailFilter,
   buildTaskScopedFilter,
+  resolveTaskOrgUnitSubtreeIds,
   resolveTrustedTaskOrgUnit,
   taskScopeForMembership,
   validateActiveTeamUsers,

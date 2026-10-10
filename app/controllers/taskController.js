@@ -25,7 +25,10 @@ const {
 const { createAuditService } = require('../services/auditService');
 const { runWithOptionalTransaction } = require('../services/transactionService');
 const { lockActiveOrgUnitReference } = require('../services/orgUnitReferenceService');
-const { assertTaskParticipantOrgUnits } = require('../services/taskAccessService');
+const {
+  assertTaskParticipantOrgUnits,
+  resolveTaskOrgUnitSubtreeIds
+} = require('../services/taskAccessService');
 const {
   buildTaskAggregateCapabilities,
   buildTaskCapabilities,
@@ -59,6 +62,18 @@ const {
 
 const TASK_MODULE = 'task';
 const RELATED_RESOURCE_ERROR = 'RELATED_RESOURCE_INVALID';
+const TASK_DAY_MS = 24 * 60 * 60 * 1000;
+const NON_OVERDUE_TASK_STATUSES = new Set(['finished', 'pending_confirm']);
+
+function taskStatusConstraint(status, now = new Date()) {
+  if (status === 'overdue') {
+    return {
+      plannedCompletionTime: { $lt: now },
+      status: { $nin: [...NON_OVERDUE_TASK_STATUSES] }
+    };
+  }
+  return status ? { status } : null;
+}
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object || {}, key);
@@ -71,11 +86,33 @@ function asSnapshot(document) {
     : document;
 }
 
+function overdueDaysForTask(task, now = Date.now()) {
+  if (!task || NON_OVERDUE_TASK_STATUSES.has(task.status)) return 0;
+  const planned = new Date(task.plannedCompletionTime).getTime();
+  const current = now instanceof Date ? now.getTime() : Number(now);
+  if (!Number.isFinite(planned) || !Number.isFinite(current) || planned >= current) {
+    return 0;
+  }
+  return Math.max(1, Math.ceil((current - planned) / TASK_DAY_MS));
+}
+
+function overdueState(task) {
+  const overdueDays = overdueDaysForTask(task);
+  return { isOverdue: overdueDays > 0, overdueDays };
+}
+
 function taskResponseValue(task, capabilities) {
   const value = task && typeof task.toJSON === 'function'
     ? task.toJSON()
     : { ...(task || {}) };
-  return { ...value, capabilities };
+  const decorate = (item) => (item
+    ? { ...item, ...overdueState(item) }
+    : item);
+  const decorated = decorate(value);
+  if (Array.isArray(value.subTasks)) {
+    decorated.subTasks = value.subTasks.map(decorate);
+  }
+  return { ...decorated, capabilities };
 }
 
 function assignableUserValue(membership) {
@@ -370,9 +407,19 @@ function createTaskController(overrides = {}) {
     const membershipUserIds = new Set(memberships.map((membership) => String(membership.userId)));
     if (normalizedIds.some((id) => !membershipUserIds.has(id))) throw relatedResourceError();
 
+    let allowedOrgUnitIds = null;
+    if (taskOrgUnitId) {
+      allowedOrgUnitIds = await resolveTaskOrgUnitSubtreeIds({
+        teamId,
+        orgUnitId: taskOrgUnitId,
+        session
+      });
+    }
+
     assertTaskParticipantOrgUnits({
       authContext,
       memberships,
+      allowedOrgUnitIds,
       taskOrgUnitId,
       enforceActorOrgScope
     });
@@ -701,7 +748,7 @@ function createTaskController(overrides = {}) {
       const { status, priority, keyword, startDate, endDate } = req.query;
       const userFilter = combineUserConstraints([
         { isMainTask: true },
-        status ? { status } : null,
+        taskStatusConstraint(status),
         priority ? { priority } : null,
         keywordConstraint(keyword),
         dateConstraint(startDate, endDate)
@@ -787,16 +834,39 @@ function createTaskController(overrides = {}) {
       const keyword = typeof req.query?.keyword === 'string'
         ? req.query.keyword.trim().slice(0, 100).toLocaleLowerCase()
         : '';
+      const teamId = normalizeInputId(req.authContext.activeTeamId, 'activeTeamId');
+      const requestedOrgUnitId = typeof req.query?.orgUnitId === 'string' &&
+        req.query.orgUnitId.trim() !== ''
+        ? req.query.orgUnitId.trim()
+        : null;
+
       const filter = {
-        teamId: normalizeInputId(req.authContext.activeTeamId, 'activeTeamId'),
+        teamId,
         status: MEMBERSHIP_STATUSES.ACTIVE
       };
       if (authorization.mode === 'DYNAMIC_LEADERSHIP') {
-        filter.orgUnitId = { $in: authorization.orgUnitIds };
+        const subtreeIds = await Promise.all(
+          (authorization.orgUnitIds || []).map((orgUnitId) => resolveTaskOrgUnitSubtreeIds({
+            teamId,
+            orgUnitId
+          }))
+        );
+        const orgUnitIds = [...new Set(subtreeIds.flatMap((ids) => ids || []))];
+        if (orgUnitIds.length > 0) filter.orgUnitId = { $in: orgUnitIds };
       } else {
         const dataScope = resolveModuleDataScope(req.authContext, TASK_MODULE);
         if (dataScope.scope === DATA_SCOPES.ORG_UNIT) {
-          filter.orgUnitId = normalizeInputId(dataScope.orgUnitId, 'orgUnitId');
+          const subtreeIds = await resolveTaskOrgUnitSubtreeIds({
+            teamId,
+            orgUnitId: dataScope.orgUnitId
+          });
+          filter.orgUnitId = { $in: subtreeIds || [normalizeInputId(dataScope.orgUnitId, 'orgUnitId')] };
+        } else if (requestedOrgUnitId) {
+          const subtreeIds = await resolveTaskOrgUnitSubtreeIds({
+            teamId,
+            orgUnitId: requestedOrgUnitId
+          });
+          filter.orgUnitId = { $in: subtreeIds || [normalizeInputId(requestedOrgUnitId, 'orgUnitId')] };
         }
       }
 
@@ -1191,7 +1261,7 @@ function createTaskController(overrides = {}) {
           : { executor: req.authContext.userId };
       const userFilter = combineUserConstraints([
         ownConstraint,
-        status ? { status } : null
+        taskStatusConstraint(status)
       ]);
       const tasks = await TaskModel.find(scopedListFilter(req, userFilter))
         .populate('creator', 'name username isSystemAccount')
@@ -1207,7 +1277,7 @@ function createTaskController(overrides = {}) {
           })
         })
         .sort({ createdAt: -1 });
-      return res.json({ tasks });
+      return res.json({ tasks: tasks.map((task) => taskResponseValue(task)) });
     } catch (error) {
       return sendControllerError(res, next, error, '获取我的任务错误:');
     }
@@ -1219,7 +1289,7 @@ function createTaskController(overrides = {}) {
       const { startDate, endDate, status, priority, keyword } = req.query;
       const userFilter = combineUserConstraints([
         { isMainTask: true },
-        status ? { status } : null,
+        taskStatusConstraint(status),
         priority ? { priority } : null,
         keywordConstraint(keyword),
         dateConstraint(startDate, endDate, true)
@@ -1411,7 +1481,8 @@ function getStatusText(status) {
     completed: '已完成',
     pending_review: '待审核',
     pending_confirm: '待确认',
-    finished: '已完结'
+    finished: '已完结',
+    overdue: '已逾期'
   })[status] || status;
 }
 
@@ -1420,14 +1491,14 @@ function getPriorityText(priority) {
 }
 
 function isOverdue(task) {
-  if (task.status === 'finished' || task.status === 'pending_confirm') return false;
-  if (!task.plannedCompletionTime) return false;
-  return Date.now() > new Date(task.plannedCompletionTime).getTime();
+  return overdueDaysForTask(task) > 0;
 }
 
 const controller = createTaskController();
 
 module.exports = {
   ...controller,
-  createTaskController
+  createTaskController,
+  isOverdue,
+  overdueDaysForTask
 };

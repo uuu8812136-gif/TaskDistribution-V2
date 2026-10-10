@@ -19,7 +19,7 @@
 							<text>{{ selectedOrgUnitLabel || '请选择任务归属的分部或组织' }}</text>
 						</view>
 					</picker>
-					<text class="form-hint">普通参与人须属于该组织，创建后不能修改归属</text>
+					<text class="form-hint">参与人须属于该组织或其下级组织，创建后不能修改归属</text>
 				</view>
 				
 				<view class="form-item">
@@ -298,11 +298,24 @@ export default {
 		const selectedOrgUnitLabel = computed(() => (
 			orgUnitOptions.value.find((item) => item.value === orgUnitId.value)?.label || ''
 		))
+		const candidateUsers = ref([])  // 当前任务组织子树内的可选人员
 		const assignableUsers = computed(() => filterTaskParticipants(
-			allUsers.value,
+			candidateUsers.value,
 			orgUnitId.value,
 			isTeamTaskScope.value
 		))
+
+		const loadCandidateUsers = async () => {
+			const params = { page: 1, limit: 1000 }
+			if (orgUnitId.value) params.orgUnitId = orgUnitId.value
+			try {
+				const response = await getTaskAssignableUsers(params)
+				candidateUsers.value = response.users || []
+			} catch (error) {
+				console.error('加载可选人员失败:', error)
+				candidateUsers.value = []
+			}
+		}
 		
 		const priorityOptions = [
 			{ label: '低', value: 'low' },
@@ -421,6 +434,7 @@ export default {
 				if (!isEdit.value && isTeamTaskScope.value && orgUnitOptions.value.length === 1) {
 					orgUnitId.value = orgUnitOptions.value[0].value
 				}
+				await loadCandidateUsers()
 			} catch (error) {
 				console.error('校验任务操作权限失败:', error)
 				denyEntry()
@@ -486,6 +500,7 @@ export default {
 			selectedExecutors.value = []
 			selectedCcUsers.value = []
 			mainExecutor.value = null
+			loadCandidateUsers()
 		}
 		
 		// 优先级选择

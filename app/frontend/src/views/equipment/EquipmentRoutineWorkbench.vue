@@ -126,6 +126,7 @@
         ref="planTableRef"
         v-loading="loading"
         :data="plans"
+        class="routine-plan-table"
         :row-class-name="planRowClass"
         row-key="_id"
         stripe
@@ -145,6 +146,9 @@
           </template>
         </el-table-column>
         <el-table-column label="组织" min-width="130"><template #default="{ row }">{{ row.orgUnit?.name || '-' }}</template></el-table-column>
+        <el-table-column label="使用人" width="120" class-name="routine-plan-custodian-column" header-cell-class-name="routine-plan-custodian-header">
+          <template #default="{ row }">{{ row.equipment?.custodianDisplayName || '-' }}</template>
+        </el-table-column>
         <el-table-column label="类型" width="90"><template #default="{ row }">{{ routineLabel(row.routineType) }}</template></el-table-column>
         <el-table-column label="规则" min-width="190" show-overflow-tooltip>
           <template #default="{ row }">{{ row.ruleSnapshot?.name || '-' }}</template>
@@ -1275,6 +1279,15 @@ onBeforeUnmount(() => {
 .toolbar > .el-select:not(.team-select) { width: 190px; }
 .workbench-tabs { margin-top: 10px; }
 .table-shell { overflow: hidden; border: 1px solid var(--zl-border-soft); border-radius: 8px; }
+:deep(.routine-plan-table) { width: 100%; }
+:deep(.routine-plan-table .routine-plan-custodian-column),
+:deep(.routine-plan-table .routine-plan-custodian-header) { min-width: 120px; }
+:deep(.routine-plan-table .routine-plan-custodian-column .cell),
+:deep(.routine-plan-table .routine-plan-custodian-header .cell) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
 .primary-cell, .watermark-list { display: grid; gap: 3px; }
 .primary-cell span, .watermark-list { color: var(--zl-muted); font-size: 12px; }
 .watermark-list span { overflow-wrap: anywhere; }

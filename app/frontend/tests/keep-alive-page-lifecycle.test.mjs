@@ -40,12 +40,15 @@ test('stable list instances consume every supported route action after activatio
   assert.match(transport, /async function syncRouteEditAction\(\)/)
   assert.match(transport, /await openEdit\(editId\)/)
 
-  for (const page of [repairs, statusApplications]) {
-    assert.match(page, /watch\(\(\) => \[route\.name, route\.query\.teamId, route\.query\.create, route\.query\.equipmentId\]/)
-    assert.match(page, /async function syncRouteCreateAction\(\)/)
-    assert.match(page, /create: undefined, equipmentId: undefined/)
-    assert.match(page, /onActivated\(\(\) =>/)
-  }
+  assert.match(repairs, /watch\(\(\) => \[route\.name, route\.query\.teamId, route\.query\.create, route\.query\.equipmentId, route\.query\.sourceRepairId\]/)
+  assert.match(repairs, /async function syncRouteCreateAction\(\)/)
+  assert.match(repairs, /create: undefined, equipmentId: undefined/)
+  assert.match(repairs, /onActivated\(\(\) =>/)
+
+  assert.match(statusApplications, /watch\(\(\) => \[route\.name, route\.query\.teamId, route\.query\.create, route\.query\.equipmentId\]/)
+  assert.match(statusApplications, /async function syncRouteCreateAction\(\)/)
+  assert.match(statusApplications, /create: undefined, equipmentId: undefined/)
+  assert.match(statusApplications, /onActivated\(\(\) =>/)
 
   assert.match(rules, /watch\(\(\) => \[route\.name, route\.query\.teamId, route\.query\.categoryId, route\.query\.routineType\]/)
   assert.match(rules, /async function syncRouteRuleContext\(\)/)

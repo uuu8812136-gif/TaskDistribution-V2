@@ -7,6 +7,7 @@ function groupedEntries(message, codes) {
 }
 
 export const REQUEST_ERROR_CODE_MESSAGES = Object.freeze({
+  REQUEST_TIMEOUT: '请求超时，请检查网络后重试',
   ...groupedEntries('登录状态已失效，请重新登录', [
     'AUTH_TOKEN_REQUIRED',
     'AUTH_TOKEN_INVALID',

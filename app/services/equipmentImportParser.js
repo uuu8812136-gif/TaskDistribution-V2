@@ -751,7 +751,7 @@ function parseDataRow({
 
   const rawUnit = textValue(readAlias(row, headerMap, HEADER_ALIASES.unit), 100);
   let unit = rawUnit || quantityResult.embeddedUnit || accountQuantityResult.embeddedUnit;
-  if (/部$/.test(rawUnit) || rawUnit === '变速箱物流部') {
+  if (/部$/.test(rawUnit)) {
     const suggestedUnit = /运输|装卸/.test(categoryName) ? '辆' : '台';
     exceptions.push(buildException({
       field: 'unit',

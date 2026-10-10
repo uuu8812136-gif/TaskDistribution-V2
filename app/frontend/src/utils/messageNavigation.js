@@ -44,7 +44,9 @@ export function messageResourceLocation(message, { includeTeamId = false } = {})
     return {
       name: 'EquipmentRepairDetail',
       params: { repairId },
-      query
+      query: extraData.todoKind === 'FOLLOWUP_CHOICE'
+        ? { ...query, followupChoice: '1' }
+        : query
     }
   }
 

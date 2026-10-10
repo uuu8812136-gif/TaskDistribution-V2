@@ -28,8 +28,8 @@
       <!-- 逾期醒目提示横幅 -->
       <el-alert
         v-if="isOverdue"
-        title="⚠️ 该任务已逾期！"
-        :description="`计划完成时间：${formatDate(task.plannedCompletionTime)}，已超期 ${overdueDays} 天，请尽快处理。`"
+        title="该任务已逾期！"
+        :description="`计划完成时间：${formatDate(task.plannedCompletionTime)}，已逾期 ${overdueDays} 天，请尽快处理。`"
         type="error"
         show-icon
         :closable="false"
@@ -530,7 +530,15 @@ import { useRoute, useRouter } from 'vue-router'
 import { getTaskDetail, getTaskReviews, completeTask, reviewTask, confirmTask } from '@/api/task'
 import { applyExtension, approveExtension } from '@/api/extension'
 import { deleteFile, uploadTaskTemporaryFile, uploadTemporaryFile } from '@/api/file'
-import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
+import {
+  formatDate,
+  getTaskOverdueDays,
+  isTaskOverdue,
+  taskStatusMap,
+  taskStatusType,
+  priorityMap,
+  priorityType
+} from '@/utils/format'
 import {
   cleanupTemporaryFiles,
   prepareAttachmentReferences
@@ -686,28 +694,19 @@ const goBack = () => {
   router.back()
 }
 
-// 权限判断
-const isTaskOverdue = (plannedCompletionTime, status) => {
-  if (status === 'finished' || status === 'pending_confirm') {
-    return false
-  }
-  if (!plannedCompletionTime) return false
-  const plannedTime = new Date(plannedCompletionTime)
-  const now = new Date()
-  return now.getTime() > plannedTime.getTime()
-}
-
 const isOverdue = computed(() => {
   if (!task.value) return false
-  return isTaskOverdue(task.value.plannedCompletionTime, task.value.status)
+  return typeof task.value.isOverdue === 'boolean'
+    ? task.value.isOverdue
+    : isTaskOverdue(task.value.plannedCompletionTime, task.value.status)
 })
 
-// 计算逾期天数
 const overdueDays = computed(() => {
   if (!task.value || !isOverdue.value) return 0
-  const now = new Date()
-  const planned = new Date(task.value.plannedCompletionTime)
-  return Math.ceil((now.getTime() - planned.getTime()) / (1000 * 60 * 60 * 24))
+  const value = Number(task.value.overdueDays)
+  return Number.isFinite(value) && value > 0
+    ? Math.ceil(value)
+    : getTaskOverdueDays(task.value.plannedCompletionTime, task.value.status)
 })
 
 // 处理执行人完成记录：按提交时间排序

@@ -48,7 +48,8 @@ export const taskStatusMap = {
   // completed: '已完成',
   pending_review: '待审核',
   pending_confirm: '待确认',
-  finished: '已完结'
+  finished: '已完结',
+  overdue: '已逾期'
 }
 
 /**
@@ -63,7 +64,23 @@ export const taskStatusType = {
   completed: 'success',
   pending_review: 'warning',
   pending_confirm: 'warning',
-  finished: 'success'
+  finished: 'success',
+  overdue: 'danger'
+}
+
+const TASK_DAY_MS = 24 * 60 * 60 * 1000
+const NON_OVERDUE_TASK_STATUSES = new Set(['finished', 'pending_confirm'])
+
+export function getTaskOverdueDays(plannedCompletionTime, status, now = Date.now()) {
+  if (NON_OVERDUE_TASK_STATUSES.has(status) || !plannedCompletionTime) return 0
+  const planned = new Date(plannedCompletionTime).getTime()
+  const current = now instanceof Date ? now.getTime() : Number(now)
+  if (!Number.isFinite(planned) || !Number.isFinite(current) || planned >= current) return 0
+  return Math.max(1, Math.ceil((current - planned) / TASK_DAY_MS))
+}
+
+export function isTaskOverdue(plannedCompletionTime, status, now = Date.now()) {
+  return getTaskOverdueDays(plannedCompletionTime, status, now) > 0
 }
 
 /**

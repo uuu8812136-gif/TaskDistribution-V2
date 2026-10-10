@@ -6,6 +6,16 @@
         <el-tag type="info" size="small">{{ resolveTeamName(row) }}</el-tag>
       </template>
     </el-table-column>
+    <el-table-column label="是否逾期" width="90" align="center">
+      <template #default="{ row }">
+        <el-tag :type="rowIsOverdue(row) ? 'danger' : 'success'" size="small">
+          {{ rowIsOverdue(row) ? '是' : '否' }}
+        </el-tag>
+      </template>
+    </el-table-column>
+    <el-table-column label="逾期天数" width="90" align="center">
+      <template #default="{ row }">{{ rowOverdueDays(row) }}</template>
+    </el-table-column>
     <el-table-column label="状态" width="120">
       <template #default="{ row }">
         <el-tag :type="taskStatusType[row.status]" size="small">
@@ -36,7 +46,15 @@
 </template>
 
 <script setup>
-import { taskStatusMap, taskStatusType, priorityMap, priorityType, formatDate } from '@/utils/format'
+import {
+  taskStatusMap,
+  taskStatusType,
+  priorityMap,
+  priorityType,
+  formatDate,
+  getTaskOverdueDays,
+  isTaskOverdue
+} from '@/utils/format'
 
 const props = defineProps({
   tasks: Array,
@@ -52,6 +70,20 @@ const resolveTeamName = (task) => {
   const value = task?.teamId
   const teamId = String(value?._id || value || '')
   return value?.name || props.teams.find((team) => String(team._id) === teamId)?.name || '未知团队'
+}
+
+const rowIsOverdue = (task) => (
+  typeof task?.isOverdue === 'boolean'
+    ? task.isOverdue
+    : isTaskOverdue(task?.plannedCompletionTime, task?.status)
+)
+
+const rowOverdueDays = (task) => {
+  if (!rowIsOverdue(task)) return 0
+  const value = Number(task?.overdueDays)
+  return Number.isFinite(value) && value > 0
+    ? Math.ceil(value)
+    : getTaskOverdueDays(task?.plannedCompletionTime, task?.status)
 }
 
 defineEmits(['view'])

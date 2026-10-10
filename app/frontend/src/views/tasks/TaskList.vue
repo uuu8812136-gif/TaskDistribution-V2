@@ -70,6 +70,16 @@
       <!-- 任务表格 -->
       <el-table :data="taskList" v-loading="loading" border>
         <el-table-column prop="taskName" label="任务名称" min-width="200" show-overflow-tooltip />
+        <el-table-column label="是否逾期" width="90" align="center">
+          <template #default="{ row }">
+            <el-tag :type="rowIsOverdue(row) ? 'danger' : 'success'" size="small">
+              {{ rowIsOverdue(row) ? '是' : '否' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="逾期天数" width="90" align="center">
+          <template #default="{ row }">{{ rowOverdueDays(row) }}</template>
+        </el-table-column>
         <el-table-column v-if="session.isGlobalReadOnly" label="项目团队" min-width="150">
           <template #default="{ row }">
             <el-tag type="info" size="small">{{ resolveTeamName(row) }}</el-tag>
@@ -142,7 +152,15 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, react
 import { useRoute, useRouter } from 'vue-router'
 import { useSessionStore } from '@/stores/session'
 import { getTaskList, deleteTask, batchExportTasks } from '@/api/task'
-import { formatDate, taskStatusMap, taskStatusType, priorityMap, priorityType } from '@/utils/format'
+import {
+  formatDate,
+  getTaskOverdueDays,
+  isTaskOverdue,
+  taskStatusMap,
+  taskStatusType,
+  priorityMap,
+  priorityType
+} from '@/utils/format'
 import {
   canCreateTask,
   canDeleteTask,
@@ -212,6 +230,18 @@ const resolveTeamName = (task) => {
 
 const canEditRow = (task) => canEditTask(task)
 const canDeleteRow = (task) => canDeleteTask(task)
+const rowIsOverdue = (task) => (
+  typeof task?.isOverdue === 'boolean'
+    ? task.isOverdue
+    : isTaskOverdue(task?.plannedCompletionTime, task?.status)
+)
+const rowOverdueDays = (task) => {
+  if (!rowIsOverdue(task)) return 0
+  const value = Number(task?.overdueDays)
+  return Number.isFinite(value) && value > 0
+    ? Math.ceil(value)
+    : getTaskOverdueDays(task?.plannedCompletionTime, task?.status)
+}
 
 const fetchData = async ({ preserveExisting = false } = {}) => {
   const loadStartRevision = mutationRefresh.currentRevision()
